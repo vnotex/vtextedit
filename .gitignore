@@ -1,0 +1,5 @@
+*.pro.user*
+CMakeLists.txt.user
+build
+.ccls
+compile_flags.txt

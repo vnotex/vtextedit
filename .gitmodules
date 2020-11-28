@@ -1,0 +1,3 @@
+[submodule "src/libs/syntax-highlighting"]
+	path = src/libs/syntax-highlighting
+	url = https://github.com/vnotex/syntax-highlighting.git

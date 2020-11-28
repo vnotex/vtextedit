@@ -1,0 +1,6 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+ <qresource prefix="/vtextedit/editor/data/themes">
+  <file>default.theme</file>
+ </qresource>
+</RCC>

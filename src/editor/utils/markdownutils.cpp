@@ -1,0 +1,1035 @@
+#include <vtextedit/markdownutils.h>
+
+#include <QRegExp>
+#include <QStringList>
+#include <QFileInfo>
+#include <QDir>
+#include <QUrl>
+#include <QTextEdit>
+#include <QTextDocument>
+#include <QTextBlock>
+#include <QRegularExpression>
+#include <QSet>
+
+#include "textutils.h"
+#include <vtextedit/texteditutils.h>
+#include <markdowneditor/pegparser.h>
+
+using namespace vte;
+
+const QString MarkdownUtils::c_fencedCodeBlockStartRegExp = QString("^(\\s*)([`~])\\2{2}((?:(?!\\2)[^\\r\\n])*)$");
+
+const QString MarkdownUtils::c_fencedCodeBlockEndRegExp = QString("^(\\s*)([`~])\\2{2}\\s*$");
+
+const QString MarkdownUtils::c_imageTitleRegExp = QString("[^\\[\\]]*");
+
+const QString MarkdownUtils::c_imageAltRegExp = QString("[^\"'()]*");
+
+const QString MarkdownUtils::c_imageLinkRegExp = QString("\\!\\[([^\\[\\]]*)\\]"
+                                                         "\\(\\s*"
+                                                         "([^\\)\"'\\s]+)"
+                                                         "(\\s*(\"[^\"\\)\\n\\r]*\")|('[^'\\)\\n\\r]*'))?"
+                                                         "(\\s*=(\\d*)x(\\d*))?"
+                                                         "\\s*\\)");
+
+const QString MarkdownUtils::c_headerRegExp = QString("^(#{1,6})\\s+(((\\d+\\.)+(?=\\s))?\\s*(\\S.*)?)$");
+
+const QString MarkdownUtils::c_headerPrefixRegExp = QString("^(#{1,6}\\s+((\\d+\\.)+(?=\\s))?\\s*)($|(\\S.*)?$)");
+
+const QString MarkdownUtils::c_todoListRegExp = QString("^(\\s*)([\\*-])\\s+\\[([ x])\\]\\s*(.*)$");
+
+const QString MarkdownUtils::c_orderedListRegExp = QString("^(\\s*)(\\d+)\\.\\s+(.*)$");
+
+const QString MarkdownUtils::c_unorderedListRegExp = QString("^(\\s*)([\\*-])\\s+(.*)$");
+
+const QString MarkdownUtils::c_quoteRegExp = QString("^(\\s*)>\\s+(.*)$");
+
+QString MarkdownUtils::unindentCodeBlockText(const QString &p_text)
+{
+    if (p_text.isEmpty()) {
+        return p_text;
+    }
+
+    QStringList lines = p_text.split('\n');
+    Q_ASSERT(lines.size() > 1);
+    Q_ASSERT(isFencedCodeBlockStartMark(lines[0]));
+
+    int nrSpaces = TextUtils::fetchIndentation(lines[0]);
+    if (nrSpaces == 0) {
+        return p_text;
+    }
+
+    QString res = lines[0].right(lines[0].size() - nrSpaces);
+    for (int i = 1; i < lines.size(); ++i) {
+        res = res + "\n" + TextUtils::unindentText(lines[i], nrSpaces);
+    }
+
+    return res;
+}
+
+bool MarkdownUtils::isFencedCodeBlockStartMark(const QString &p_text)
+{
+    auto text = p_text.trimmed();
+    return text.startsWith(QStringLiteral("```")) || text.startsWith(QStringLiteral("~~~"));
+}
+
+QString MarkdownUtils::fetchImageLinkUrl(const QString &p_text, int &p_width, int &p_height)
+{
+    QRegExp regExp(c_imageLinkRegExp);
+
+    p_width = p_height = -1;
+
+    int index = regExp.indexIn(p_text);
+    if (index == -1) {
+        return QString();
+    }
+
+    int lastIndex = regExp.lastIndexIn(p_text);
+    if (lastIndex != index) {
+        return QString();
+    }
+
+    QString tmp(regExp.cap(7));
+    if (!tmp.isEmpty()) {
+        p_width = tmp.toInt();
+        if (p_width <= 0) {
+            p_width = -1;
+        }
+    }
+
+    tmp = regExp.cap(8);
+    if (!tmp.isEmpty()) {
+        p_height = tmp.toInt();
+        if (p_height <= 0) {
+            p_height = -1;
+        }
+    }
+
+    return regExp.cap(2).trimmed();
+}
+
+QString MarkdownUtils::linkUrlToPath(const QString &p_basePath, const QString &p_url)
+{
+    QString fullPath;
+    QFileInfo info(p_basePath, TextUtils::purifyUrl(p_url));
+    if (info.exists()) {
+        if (info.isNativePath() || isQrcPath(p_basePath)) {
+            // Local file.
+            fullPath = QDir::cleanPath(info.absoluteFilePath());
+        } else {
+            fullPath = p_url;
+        }
+    } else {
+        QString decodedUrl(p_url);
+        TextUtils::decodeUrl(decodedUrl);
+        QFileInfo dinfo(p_basePath, decodedUrl);
+        if (dinfo.exists()) {
+            if (dinfo.isNativePath() || isQrcPath(p_basePath)) {
+                // Local file.
+                fullPath = QDir::cleanPath(dinfo.absoluteFilePath());
+            } else {
+                fullPath = p_url;
+            }
+        } else {
+            QUrl url(p_url);
+            if (url.isLocalFile()) {
+                fullPath = url.toLocalFile();
+            } else {
+                fullPath = url.toString();
+            }
+        }
+    }
+
+    return fullPath;
+}
+
+bool MarkdownUtils::isQrcPath(const QString &p_path)
+{
+    return p_path.startsWith(QStringLiteral(":/"));
+}
+
+QPixmap MarkdownUtils::scaleImage(const QPixmap &p_img,
+                                  int p_width,
+                                  int p_height,
+                                  qreal p_scaleFactor)
+{
+    const Qt::TransformationMode tMode = Qt::SmoothTransformation;
+    if (p_width > 0) {
+        if (p_height > 0) {
+            return p_img.scaled(p_width * p_scaleFactor,
+                                p_height * p_scaleFactor,
+                                Qt::IgnoreAspectRatio,
+                                tMode);
+        } else {
+            return p_img.scaledToWidth(p_width * p_scaleFactor, tMode);
+        }
+    } else if (p_height > 0) {
+        return p_img.scaledToHeight(p_height * p_scaleFactor, tMode);
+    } else {
+        if (p_scaleFactor < 1.1) {
+            return p_img;
+        } else {
+            return p_img.scaledToWidth(p_img.width() * p_scaleFactor, tMode);
+        }
+    }
+}
+
+void MarkdownUtils::typeHeading(QTextEdit *p_edit, int p_level)
+{
+    doOnSelectedLinesOrCurrentLine(p_edit, &MarkdownUtils::insertHeading, &p_level);
+}
+
+bool MarkdownUtils::insertHeading(QTextCursor &p_cursor, const QTextBlock &p_block, void *p_level)
+{
+    if (!p_block.isValid()) {
+        return false;
+    }
+
+    const int targetLevel = *static_cast<int *>(p_level);
+    Q_ASSERT(targetLevel >= 0 && targetLevel <= 6);
+
+    p_cursor.setPosition(p_block.position());
+
+    // Test if this block contains title marks.
+    QRegExp headerReg(c_headerRegExp);
+    QString text = p_block.text();
+    bool textChanged = false;
+    if (headerReg.exactMatch(text)) {
+        const int level = headerReg.cap(1).length();
+        if (level == targetLevel) {
+            return false;
+        } else {
+            // Remove the title mark.
+            int length = level;
+            if (targetLevel == 0) {
+                // Remove the whole prefix till the heading content.
+                QRegExp prefixReg(c_headerPrefixRegExp);
+                const bool preMatched = prefixReg.exactMatch(text);
+                Q_UNUSED(preMatched);
+                Q_ASSERT(preMatched);
+                length = prefixReg.cap(1).length();
+            }
+
+            p_cursor.movePosition(QTextCursor::NextCharacter,
+                                  QTextCursor::KeepAnchor,
+                                  length);
+            p_cursor.removeSelectedText();
+            textChanged = true;
+        }
+    }
+
+    // Insert heading mark + " " at the front of the block.
+    if (targetLevel > 0) {
+        // Remove the spaces at front.
+        if (textChanged) {
+            text = p_block.text();
+        }
+        const int firstNonSpaceChar = TextUtils::firstNonSpace(text);
+        p_cursor.movePosition(QTextCursor::NextCharacter,
+                              QTextCursor::KeepAnchor,
+                              firstNonSpaceChar > -1 ? firstNonSpaceChar : text.length());
+
+        const QString mark(targetLevel, '#');
+        p_cursor.insertText(mark + " ");
+    }
+
+    // Go to the end of this block.
+    p_cursor.movePosition(QTextCursor::EndOfBlock);
+    return true;
+}
+
+// TODO: get more information from highlighter result.
+void MarkdownUtils::typeMarker(QTextEdit *p_edit,
+                               const QString &p_startMarker,
+                               const QString &p_endMarker,
+                               bool p_allowSpacesAtTwoEnds)
+{
+    const int totalMarkersSize = p_startMarker.size() + p_endMarker.size();
+    auto cursor = p_edit->textCursor();
+    cursor.beginEditBlock();
+    if (cursor.hasSelection()) {
+        bool done = false;
+        int start = cursor.selectionStart();
+        int end = cursor.selectionEnd();
+        if (TextEditUtils::crossBlocks(p_edit, start, end)) {
+            // Do not support markers corssing blocks.
+            done = true;
+            cursor.endEditBlock();
+            return;
+        }
+
+        if (end - start >= totalMarkersSize) {
+            const auto text = cursor.selectedText();
+            if (text.startsWith(p_startMarker) && text.endsWith(p_endMarker)) {
+                // Remove the marker.
+                done = true;
+                cursor.clearSelection();
+
+                cursor.setPosition(start, QTextCursor::MoveAnchor);
+                cursor.movePosition(QTextCursor::NextCharacter,
+                                    QTextCursor::KeepAnchor,
+                                    p_startMarker.size());
+                cursor.deleteChar();
+
+                cursor.setPosition(end - p_startMarker.size(), QTextCursor::MoveAnchor);
+                cursor.movePosition(QTextCursor::PreviousCharacter,
+                                    QTextCursor::KeepAnchor,
+                                    p_endMarker.size());
+                cursor.deleteChar();
+            }
+        }
+
+        if (!done) {
+            cursor.clearSelection();
+            cursor.setPosition(start, QTextCursor::MoveAnchor);
+            cursor.insertText(p_startMarker);
+            cursor.setPosition(end + p_startMarker.size(), QTextCursor::MoveAnchor);
+            cursor.insertText(p_endMarker);
+        }
+    } else {
+        const int pib = cursor.positionInBlock();
+        const QString text = cursor.block().text();
+        bool done = false;
+
+        {
+            // Use regexp to match current line to check if we already locate within
+            // one pair of markers. If so, remove the markers. Otherwise, insert new ones.
+            QString regExp;
+            if (p_allowSpacesAtTwoEnds) {
+                if (p_endMarker.size() == 1) {
+                    regExp = QString("%1[^%2]+%2").arg(QRegExp::escape(p_startMarker),
+                                                       QRegExp::escape(p_endMarker));
+                } else {
+                    regExp = QString("%1(?:[^%2]|%2(?!%3))+%4").arg(QRegExp::escape(p_startMarker),
+                                                                    QRegExp::escape(p_endMarker[0]),
+                                                                    QRegExp::escape(p_endMarker.mid(1)),
+                                                                    QRegExp::escape(p_endMarker));
+                }
+            } else {
+                if (p_endMarker.size() == 1) {
+                    regExp = QString("%1[^%2\\s](?:\\s*[^%2\\s]*)*%2").arg(QRegExp::escape(p_startMarker),
+                                                                           QRegExp::escape(p_endMarker));
+                } else {
+                    regExp = QString("%1(?:[^%2\\s]|%2(?!%3))(?:\\s*(?:[^%2\\s]|%2(?!%3))*)*%4")
+                        .arg(QRegExp::escape(p_startMarker),
+                             QRegExp::escape(p_endMarker[0]),
+                             QRegExp::escape(p_endMarker.mid(1)),
+                             QRegExp::escape(p_endMarker));
+                }
+            }
+
+            QRegExp reg(regExp);
+            int pos = 0;
+            while (pos < text.size()) {
+                int idx = text.indexOf(reg, pos);
+                if (idx == -1 || idx > pib) {
+                    break;
+                }
+                pos = idx + reg.matchedLength();
+                if (pib == pos - p_endMarker.size()) {
+                    // Just skip the end marker.
+                    done = true;
+                    cursor.movePosition(QTextCursor::NextCharacter,
+                                        QTextCursor::MoveAnchor,
+                                        p_endMarker.size());
+                    break;
+                } else if (pib >= idx && pib < pos) {
+                    // Cursor hits. Remove the markers.
+                    done = true;
+                    cursor.movePosition(QTextCursor::PreviousCharacter,
+                                        QTextCursor::MoveAnchor,
+                                        pib - idx);
+                    cursor.movePosition(QTextCursor::NextCharacter,
+                                        QTextCursor::KeepAnchor,
+                                        p_startMarker.size());
+                    cursor.deleteChar();
+
+                    cursor.movePosition(QTextCursor::NextCharacter,
+                                        QTextCursor::MoveAnchor,
+                                        reg.matchedLength() - totalMarkersSize);
+                    cursor.movePosition(QTextCursor::NextCharacter,
+                                        QTextCursor::KeepAnchor,
+                                        p_endMarker.size());
+                    cursor.deleteChar();
+
+                    // Restore cursor.
+                    int cursorPos = cursor.block().position() + pib;
+                    if (pib > idx) {
+                        cursorPos -= p_startMarker.size();
+                    }
+                    cursor.setPosition(cursorPos);
+                    break;
+                }
+            }
+        }
+
+        if (!done && pib <= text.size() - p_endMarker.size()) {
+            if (pib <= text.size() - totalMarkersSize) {
+                if (text.mid(pib, totalMarkersSize) == p_startMarker + p_endMarker) {
+                    done = true;
+                    cursor.movePosition(QTextCursor::NextCharacter,
+                                        QTextCursor::KeepAnchor,
+                                        totalMarkersSize);
+                    cursor.removeSelectedText();
+                }
+            }
+
+            if (!done && text.mid(pib, p_endMarker.size()) == p_endMarker) {
+                done = true;
+                if (pib >= p_startMarker.size()
+                    && text.mid(pib - p_startMarker.size(), p_startMarker.size()) == p_startMarker) {
+                    cursor.movePosition(QTextCursor::PreviousCharacter,
+                                        QTextCursor::MoveAnchor,
+                                        p_startMarker.size());
+                    cursor.movePosition(QTextCursor::NextCharacter,
+                                        QTextCursor::KeepAnchor,
+                                        totalMarkersSize);
+                    cursor.removeSelectedText();
+                } else {
+                    cursor.movePosition(QTextCursor::NextCharacter,
+                                        QTextCursor::MoveAnchor,
+                                        p_endMarker.size());
+                }
+            }
+        }
+
+        if (!done) {
+            cursor.insertText(p_startMarker + p_endMarker);
+            cursor.movePosition(QTextCursor::PreviousCharacter,
+                                QTextCursor::MoveAnchor,
+                                p_endMarker.size());
+        }
+    }
+
+    cursor.endEditBlock();
+    p_edit->setTextCursor(cursor);
+}
+
+void MarkdownUtils::typeBold(QTextEdit *p_edit)
+{
+    typeMarker(p_edit, QStringLiteral("**"), QStringLiteral("**"));
+}
+
+void MarkdownUtils::typeItalic(QTextEdit *p_edit)
+{
+    typeMarker(p_edit, QStringLiteral("*"), QStringLiteral("*"));
+}
+
+void MarkdownUtils::typeStrikethrough(QTextEdit *p_edit)
+{
+    typeMarker(p_edit, QStringLiteral("~~"), QStringLiteral("~~"));
+}
+
+void MarkdownUtils::typeUnorderedList(QTextEdit *p_edit)
+{
+    doOnSelectedLinesOrCurrentLine(p_edit, &MarkdownUtils::insertUnorderedList, nullptr);
+}
+
+bool MarkdownUtils::insertUnorderedList(QTextCursor &p_cursor,
+                                        const QTextBlock &p_block,
+                                        void *p_data)
+{
+    // 1. If we have selection, we process each line one by one;
+    // 2. If current line is a todo list, turn it into a normal unordered list;
+    // 3. If current line is an ordered list, turn it into an unordered list;
+    // 4. If current line is an unordered list, turn it into a normal line;
+    // 5. Insert an unordered list treating the front spaces as indentation.
+    Q_UNUSED(p_data);
+    p_cursor.setPosition(p_block.position());
+
+    const auto text = p_block.text();
+
+    // Check todo list.
+    {
+        QRegularExpression reg(c_todoListRegExp);
+        auto match = reg.match(text);
+        if (match.hasMatch()) {
+            TextEditUtils::selectBlockUnderCursor(p_cursor);
+            p_cursor.insertText(QString("%1%2 %3").arg(match.captured(1),
+                                                       match.captured(2),
+                                                       match.captured(4)));
+            return true;
+        }
+    }
+
+    // Check ordered list.
+    {
+        QRegularExpression reg(c_orderedListRegExp);
+        auto match = reg.match(text);
+        if (match.hasMatch()) {
+            TextEditUtils::selectBlockUnderCursor(p_cursor);
+            p_cursor.insertText(QString("%1* %2").arg(match.captured(1),
+                                                      match.captured(3)));
+            return true;
+        }
+    }
+
+    // Check unordered list.
+    {
+        QRegularExpression reg(c_unorderedListRegExp);
+        auto match = reg.match(text);
+        if (match.hasMatch()) {
+            TextEditUtils::selectBlockUnderCursor(p_cursor);
+            p_cursor.insertText(QString("%1%2").arg(match.captured(1),
+                                                    match.captured(3)));
+            return true;
+        }
+    }
+
+    // Insert unordered list.
+    {
+        int indentation = TextUtils::fetchIndentation(text);
+        p_cursor.movePosition(QTextCursor::NextCharacter, QTextCursor::MoveAnchor, indentation);
+        p_cursor.insertText(QStringLiteral("* "));
+        p_cursor.movePosition(QTextCursor::EndOfBlock);
+        return true;
+    }
+}
+
+void MarkdownUtils::doOnSelectedLinesOrCurrentLine(QTextEdit *p_edit,
+    const std::function<bool(QTextCursor &, const QTextBlock &, void *)> &p_func,
+    void *p_data)
+{
+    auto doc = p_edit->document();
+    auto cursor = p_edit->textCursor();
+    auto firstBlock = cursor.block();
+    auto lastBlock = firstBlock;
+
+    if (cursor.hasSelection()) {
+        firstBlock = doc->findBlock(cursor.selectionStart());
+        lastBlock = doc->findBlock(cursor.selectionEnd());
+    }
+
+    bool changed = false;
+
+    cursor.beginEditBlock();
+    cursor.clearSelection();
+    while (firstBlock.isValid()) {
+        changed = p_func(cursor, firstBlock, p_data) | changed;
+        if (!(firstBlock < lastBlock)) {
+            break;
+        }
+        firstBlock = firstBlock.next();
+    }
+    cursor.endEditBlock();
+
+    if (changed) {
+        p_edit->setTextCursor(cursor);
+    }
+}
+
+void MarkdownUtils::typeOrderedList(QTextEdit *p_edit)
+{
+    doOnSelectedLinesOrCurrentLine(p_edit, &MarkdownUtils::insertOrderedList, nullptr);
+}
+
+bool MarkdownUtils::insertOrderedList(QTextCursor &p_cursor,
+                                      const QTextBlock &p_block,
+                                      void *p_data)
+{
+    // 1. If we have selection, we process each line one by one;
+    // 2. If current line is an unordered list, turn it into an ordered list;
+    // 4. If current line is an ordered list, turn it into a normal line;
+    // 5. Insert an ordered list treating the front spaces as indentation.
+    Q_UNUSED(p_data);
+
+    p_cursor.setPosition(p_block.position());
+
+    const auto text = p_block.text();
+
+    // Check todo list.
+    {
+        QRegularExpression reg(c_todoListRegExp);
+        auto match = reg.match(text);
+        if (match.hasMatch()) {
+            TextEditUtils::selectBlockUnderCursor(p_cursor);
+            p_cursor.insertText(match.captured(1) + QString("1. %1").arg(match.captured(4)));
+            return true;
+        }
+    }
+
+    // Check unordered list.
+    {
+        QRegularExpression reg(c_unorderedListRegExp);
+        auto match = reg.match(text);
+        if (match.hasMatch()) {
+            TextEditUtils::selectBlockUnderCursor(p_cursor);
+            p_cursor.insertText(match.captured(1) + QString("1. %1").arg(match.captured(3)));
+            return true;
+        }
+    }
+
+    // Check ordered list.
+    {
+        QRegularExpression reg(c_orderedListRegExp);
+        auto match = reg.match(text);
+        if (match.hasMatch()) {
+            TextEditUtils::selectBlockUnderCursor(p_cursor);
+            p_cursor.insertText(QString("%1%2").arg(match.captured(1),
+                                                    match.captured(3)));
+            return true;
+        }
+    }
+
+    // Insert ordered list.
+    {
+        int indentation = TextUtils::fetchIndentation(text);
+        p_cursor.movePosition(QTextCursor::NextCharacter, QTextCursor::MoveAnchor, indentation);
+        p_cursor.insertText(QStringLiteral("1. "));
+        p_cursor.movePosition(QTextCursor::EndOfBlock);
+        return true;
+    }
+}
+
+void MarkdownUtils::typeTodoList(QTextEdit *p_edit, bool p_checked)
+{
+    doOnSelectedLinesOrCurrentLine(p_edit, &MarkdownUtils::insertTodoList, &p_checked);
+}
+
+bool MarkdownUtils::insertTodoList(QTextCursor &p_cursor,
+                                   const QTextBlock &p_block,
+                                   void *p_checked)
+{
+    // For unchecked list:
+    // 1. If we have selection, we process each line one by one;
+    // 2. If current line is a checked todo list, uncheck it;
+    // 3. If current line is an unchecked todo list, turn it into a normal line;
+    // 4. If current line is an unordered list, turn it into a todo list;
+    // 5. If current line is an ordered list, turn it into a todo list;
+    // 6. Insert a todo list treating the front spaces as indentation.
+    p_cursor.setPosition(p_block.position());
+
+    const auto text = p_block.text();
+    const bool checked = *static_cast<bool *>(p_checked);
+    const QString checkMark = checked ? QStringLiteral("[x]") : QStringLiteral("[ ]");
+
+    // Check todo list.
+    {
+        QRegularExpression reg(c_todoListRegExp);
+        auto match = reg.match(text);
+        if (match.hasMatch()) {
+            TextEditUtils::selectBlockUnderCursor(p_cursor);
+            bool currentChecked = match.captured(3) == QStringLiteral("x");
+            if (currentChecked == checked) {
+                // Turn it into normal line.
+                p_cursor.insertText(QString("%1%2").arg(match.captured(1), match.captured(4)));
+            } else {
+                // Uncheck/Check it.
+                p_cursor.insertText(QString("%1%2 %3 %4").arg(match.captured(1),
+                                                               match.captured(2),
+                                                               checkMark,
+                                                               match.captured(4)));
+            }
+            return true;
+        }
+    }
+
+    // Check unordered list.
+    {
+        QRegularExpression reg(c_unorderedListRegExp);
+        auto match = reg.match(text);
+        if (match.hasMatch()) {
+            TextEditUtils::selectBlockUnderCursor(p_cursor);
+            p_cursor.insertText(QString("%1%2 %3 %4").arg(match.captured(1),
+                                                          match.captured(2),
+                                                          checkMark,
+                                                          match.captured(3)));
+            return true;
+        }
+    }
+
+    // Check ordered list.
+    {
+        QRegularExpression reg(c_orderedListRegExp);
+        auto match = reg.match(text);
+        if (match.hasMatch()) {
+            TextEditUtils::selectBlockUnderCursor(p_cursor);
+            p_cursor.insertText(QString("%1* %2 %3").arg(match.captured(1),
+                                                         checkMark,
+                                                         match.captured(3)));
+            return true;
+        }
+    }
+
+    // Insert todo list.
+    {
+        int indentation = TextUtils::fetchIndentation(text);
+        p_cursor.movePosition(QTextCursor::NextCharacter, QTextCursor::MoveAnchor, indentation);
+        p_cursor.insertText(QString("* %1 ").arg(checkMark));
+        p_cursor.movePosition(QTextCursor::EndOfBlock);
+        return true;
+    }
+}
+
+void MarkdownUtils::typeCode(QTextEdit *p_edit)
+{
+    typeMarker(p_edit, QStringLiteral("`"), QStringLiteral("`"), true);
+}
+
+void MarkdownUtils::typeCodeBlock(QTextEdit *p_edit)
+{
+    typeBlockMarker(p_edit, QStringLiteral("```"), QStringLiteral("```"), CursorPosition::StartMarker);
+}
+
+void MarkdownUtils::typeBlockMarker(QTextEdit *p_edit,
+                                    const QString &p_startMarker,
+                                    const QString &p_endMarker,
+                                    CursorPosition p_cursorPosition)
+{
+    // 1. If we have selection, insert markers to wrap selected lines;
+    // 2. If we are inside empty block markers, delete these markers;
+    // 3. Insert markers respecting the indentation and insert one empty line.
+    auto cursor = p_edit->textCursor();
+
+    cursor.beginEditBlock();
+    if (cursor.hasSelection()) {
+        int start = cursor.selectionStart();
+        int end = cursor.selectionEnd();
+
+        cursor.clearSelection();
+        cursor.setPosition(start);
+        const QString indentSpaces = TextUtils::fetchIndentationSpaces(cursor.block().text());
+        cursor.setPosition(end);
+        TextEditUtils::insertBlock(cursor, false);
+        cursor.insertText(indentSpaces + p_endMarker);
+
+        QTextBlock endBlock = cursor.block();
+
+        cursor.setPosition(start);
+        TextEditUtils::insertBlock(cursor, true);
+        cursor.insertText(indentSpaces + p_startMarker);
+
+        if (p_cursorPosition != CursorPosition::StartMarker) {
+            cursor.setPosition(endBlock.position());
+        }
+        cursor.movePosition(QTextCursor::EndOfBlock);
+    } else {
+        // We allow chars after start marker.
+        QRegularExpression startReg(QString("^(\\s*)%1").arg(QRegularExpression::escape(p_startMarker)));
+        QRegularExpression endReg(QString("^(\\s*)%1$").arg(QRegularExpression::escape(p_endMarker)));
+
+        auto block = cursor.block();
+        const auto currentText = block.text();
+
+        bool done = false;
+
+        // Locate at start block.
+        {
+            QTextBlock endBlock;
+            auto match = startReg.match(currentText);
+            if (match.hasMatch()) {
+                // Check if it is an empty block marker.
+                auto nextBlock = block.next();
+                if (nextBlock.isValid()) {
+                    auto nextMatch = endReg.match(nextBlock.text());
+                    if (nextMatch.hasMatch()) {
+                        if (nextMatch.captured(1) == match.captured(1)) {
+                            endBlock = nextBlock;
+                        }
+                    } else {
+                        // Try one block further.
+                        nextBlock = nextBlock.next();
+                        if (nextBlock.isValid()) {
+                            nextMatch = endReg.match(nextBlock.text());
+                            if (nextMatch.hasMatch()
+                                && nextMatch.captured(1) == match.captured(1)) {
+                                endBlock = nextBlock;
+                            }
+                        }
+                    }
+                }
+
+                if (endBlock.isValid()) {
+                    // We found a block marker [block, endBlock]. Delete it.
+                    done = true;
+                    cursor.setPosition(block.position());
+                    cursor.setPosition(endBlock.position() + endBlock.length() - 1,
+                                       QTextCursor::KeepAnchor);
+                    cursor.deleteChar();
+                }
+            }
+        }
+
+        // Locate between start block and end block.
+        if (!done) {
+            auto previousBlock = block.previous();
+            if (previousBlock.isValid()) {
+                auto match = startReg.match(previousBlock.text());
+                if (match.hasMatch()) {
+                    auto nextBlock = block.next();
+                    if (nextBlock.isValid()) {
+                        auto nextMatch = endReg.match(nextBlock.text());
+                        if (nextMatch.hasMatch() && match.captured(1) == nextMatch.captured(1)) {
+                            done = true;
+                            cursor.setPosition(previousBlock.position());
+                            cursor.setPosition(nextBlock.position() + nextBlock.length() - 1,
+                                               QTextCursor::KeepAnchor);
+                            cursor.deleteChar();
+                        }
+                    }
+                }
+            }
+        }
+
+        // Locate at end block.
+        if (!done) {
+            QTextBlock startBlock;
+            auto match = endReg.match(currentText);
+            if (match.hasMatch()) {
+                // Check if it is an empty block marker.
+                auto previousBlock = block.previous();
+                if (previousBlock.isValid()) {
+                    auto nextMatch = startReg.match(previousBlock.text());
+                    if (nextMatch.hasMatch()) {
+                        if (nextMatch.captured(1) == match.captured(1)) {
+                            startBlock = previousBlock;
+                        }
+                    } else {
+                        // Try one block further.
+                        previousBlock = previousBlock.previous();
+                        if (previousBlock.isValid()) {
+                            nextMatch = startReg.match(previousBlock.text());
+                            if (nextMatch.hasMatch()
+                                && nextMatch.captured(1) == match.captured(1)) {
+                                startBlock = previousBlock;
+                            }
+                        }
+                    }
+                }
+
+                if (startBlock.isValid()) {
+                    // We found a block marker [startBlock, block]. Delete it.
+                    done = true;
+                    cursor.setPosition(startBlock.position());
+                    cursor.setPosition(block.position() + block.length() - 1,
+                                       QTextCursor::KeepAnchor);
+                    cursor.deleteChar();
+                }
+            }
+        }
+
+        // Insert new block marker.
+        if (!done) {
+            done = true;
+            // If current block is an empty block or containing only spaces, we insert
+            // insert start marker right now. Otherwise, we insert at next block.
+            auto indentationSpaces = TextUtils::fetchIndentationSpaces(currentText);
+            if (indentationSpaces.size() == currentText.size()) {
+                cursor.movePosition(QTextCursor::EndOfBlock);
+                cursor.insertText(p_startMarker);
+
+                TextEditUtils::insertBlock(cursor, false);
+                cursor.insertText(indentationSpaces + p_endMarker);
+            } else {
+                indentationSpaces.clear();
+                TextEditUtils::insertBlock(cursor, false);
+                cursor.insertText(p_startMarker);
+                TextEditUtils::insertBlock(cursor, false);
+                cursor.insertText(p_endMarker);
+            }
+
+            switch (p_cursorPosition) {
+            case CursorPosition::StartMarker:
+                cursor.movePosition(QTextCursor::PreviousBlock);
+                cursor.movePosition(QTextCursor::EndOfBlock);
+                break;
+
+            case CursorPosition::NewLinebetweenMarkers:
+                TextEditUtils::insertBlock(cursor, true);
+                if (!indentationSpaces.isEmpty()) {
+                    cursor.insertText(indentationSpaces);
+                }
+                break;
+
+            case CursorPosition::EndMarker:
+                break;
+            }
+        }
+    }
+
+    cursor.endEditBlock();
+    p_edit->setTextCursor(cursor);
+}
+
+void MarkdownUtils::typeMath(QTextEdit *p_edit)
+{
+    typeMarker(p_edit, QStringLiteral("$"), QStringLiteral("$"));
+}
+
+void MarkdownUtils::typeMathBlock(QTextEdit *p_edit)
+{
+    typeBlockMarker(p_edit, QStringLiteral("$$"), QStringLiteral("$$"), CursorPosition::NewLinebetweenMarkers);
+}
+
+void MarkdownUtils::typeQuote(QTextEdit *p_edit)
+{
+    QuoteData data;
+    doOnSelectedLinesOrCurrentLine(p_edit, &MarkdownUtils::insertQuote, &data);
+}
+
+bool MarkdownUtils::insertQuote(QTextCursor &p_cursor,
+                                const QTextBlock &p_block,
+                                void *p_data)
+{
+    auto &data = *static_cast<QuoteData *>(p_data);
+    p_cursor.setPosition(p_block.position());
+    const auto text = p_block.text();
+    if (data.m_isFirstLine) {
+        // First line.
+        data.m_isFirstLine = false;
+        QRegularExpression reg(c_quoteRegExp);
+        auto match = reg.match(text);
+        if (match.hasMatch()) {
+            // The first line is a quote already, so we need to un-quote them.
+            data.m_insertQuote = false;
+            TextEditUtils::selectBlockUnderCursor(p_cursor);
+            p_cursor.insertText(QString("%1%2").arg(match.captured(1), match.captured(2)));
+        } else {
+            // Quote them.
+            data.m_insertQuote = true;
+            int indentation = TextUtils::fetchIndentation(text);
+            data.m_indentation = indentation;
+            p_cursor.movePosition(QTextCursor::NextCharacter, QTextCursor::MoveAnchor, indentation);
+            p_cursor.insertText(QStringLiteral("> "));
+            p_cursor.movePosition(QTextCursor::EndOfBlock);
+        }
+    } else {
+        if (data.m_insertQuote) {
+            int indentation = TextUtils::fetchIndentation(text);
+            indentation = qMin(indentation, data.m_indentation);
+            p_cursor.movePosition(QTextCursor::NextCharacter, QTextCursor::MoveAnchor, indentation);
+            if (indentation < data.m_indentation) {
+                p_cursor.insertText(QString(' ', data.m_indentation - indentation));
+            }
+            p_cursor.insertText(QStringLiteral("> "));
+            p_cursor.movePosition(QTextCursor::EndOfBlock);
+        } else {
+            QRegularExpression reg(c_quoteRegExp);
+            auto match = reg.match(text);
+            if (match.hasMatch()) {
+                TextEditUtils::selectBlockUnderCursor(p_cursor);
+                p_cursor.insertText(QString("%1%2").arg(match.captured(1), match.captured(2)));
+            } else {
+                // Need to un-quote it but it is not quoted yet. Ignore it.
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+void MarkdownUtils::typeLink(QTextEdit *p_edit, const QString &p_linkText, const QString &p_linkUrl)
+{
+    p_edit->insertPlainText(QString("[%1](%2)").arg(p_linkText, p_linkUrl));
+}
+
+QString MarkdownUtils::generateImageLink(const QString &p_title,
+                                         const QString &p_url,
+                                         const QString &p_altText,
+                                         int p_width,
+                                         int p_height)
+{
+    QString scale;
+    if (p_width > 0) {
+        if (p_height > 0) {
+            scale = QString(QStringLiteral(" =%1x%2")).arg(p_width).arg(p_height);
+        } else {
+            scale = QString(QStringLiteral(" =%1x")).arg(p_width);
+        }
+    } else if (p_height > 0) {
+        scale = QString(QStringLiteral(" =x%1")).arg(p_height);
+    }
+
+    QString altText;
+    if (!p_altText.isEmpty()) {
+        altText = QString(QStringLiteral(" \"%1\"")).arg(p_altText);
+    }
+
+    return QString(QStringLiteral("![%1](%2%3%4)")).arg(p_title, p_url, altText, scale);
+}
+
+QVector<MarkdownLink> MarkdownUtils::fetchImagesFromMarkdownText(const QString &p_content,
+                                                                 const QString &p_contentBasePath,
+                                                                 MarkdownLink::TypeFlags p_flags)
+{
+    QVector<MarkdownLink> images;
+
+    // Used for de-duplication.
+    QSet<QString> fetchedUrls;
+
+    const auto regions = fetchImageRegionsViaParser(p_content);
+    QRegExp regExp(c_imageLinkRegExp);
+    for (const auto &reg : regions) {
+        QString linkText = p_content.mid(reg.m_startPos, reg.m_endPos - reg.m_startPos);
+        bool matched = regExp.exactMatch(linkText);
+        if (!matched) {
+            // Image links with reference format will not match.
+            continue;
+        }
+
+        MarkdownLink link;
+        link.m_urlInLink = regExp.cap(2).trimmed();;
+        link.m_urlInLinkPos = reg.m_startPos + linkText.indexOf(link.m_urlInLink, 4 + regExp.cap(1).size());
+
+        QFileInfo info(p_contentBasePath, TextUtils::purifyUrl(link.m_urlInLink));
+        if (info.exists()) {
+            if (info.isNativePath()) {
+                // Local file.
+                link.m_path = QDir::cleanPath(info.absoluteFilePath());
+
+                if (QDir::isRelativePath(link.m_urlInLink)) {
+                    if (pathContains(p_contentBasePath, link.m_path)) {
+                        link.m_type |= MarkdownLink::TypeFlag::LocalRelativeInternal;
+                    } else {
+                        link.m_type |= MarkdownLink::TypeFlag::LocalRelativeExternal;
+                    }
+                } else {
+                    link.m_type |= MarkdownLink::TypeFlag::LocalAbsolute;
+                }
+            } else {
+                link.m_type |= MarkdownLink::TypeFlag::QtResource;
+                link.m_path = link.m_urlInLink;
+            }
+        } else {
+            QUrl url(link.m_urlInLink);
+            link.m_path = url.toString();
+            link.m_type |= MarkdownLink::TypeFlag::Remote;
+        }
+
+        if (link.m_type & p_flags) {
+            if (!fetchedUrls.contains(link.m_urlInLink)) {
+                fetchedUrls.insert(link.m_urlInLink);
+                images.push_back(link);
+            }
+        }
+    }
+
+    return images;
+}
+
+QVector<peg::ElementRegion> MarkdownUtils::fetchImageRegionsViaParser(const QString &p_content)
+{
+    auto parserConfig = QSharedPointer<peg::PegParseConfig>::create();
+    parserConfig->m_data = p_content.toUtf8();
+    return peg::PegParser::parseImageRegions(parserConfig);
+}
+
+QString MarkdownUtils::relativePath(const QString &p_dir, const QString &p_path)
+{
+    QDir dir(p_dir);
+    return QDir::cleanPath(dir.relativeFilePath(p_path));
+}
+
+bool MarkdownUtils::pathContains(const QString &p_dir, const QString &p_path)
+{
+    auto rel = relativePath(p_dir, p_path);
+    if (rel.startsWith(QStringLiteral("../")) || rel == QStringLiteral("..")) {
+        return false;
+    }
+
+    if (QFileInfo(rel).isAbsolute()) {
+        return false;
+    }
+
+    return true;
+}

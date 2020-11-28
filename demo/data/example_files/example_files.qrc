@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/demo/data/example_files">
+        <file>example.cpp</file>
+        <file>example.md</file>
+        <file>jiafei.png</file>
+    </qresource>
+</RCC>
