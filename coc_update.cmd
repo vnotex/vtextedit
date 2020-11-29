@@ -12,7 +12,7 @@ set qt_inc=%qt_inc:\=\\%
 (
     echo clang
     echo -fcxx-exceptions
-    echo -std=c++11
+    echo -std=c++14
     echo -Isrc\\editor
     echo -Isrc\\editor\\include
     echo -Isrc\\editor\\textedit
