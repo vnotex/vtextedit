@@ -3,7 +3,7 @@ QT += core gui widgets network svg
 TARGET = VTextEdit
 TEMPLATE = lib
 CONFIG += lib_bundle
-CONFIG += shared
+CONFIG += shared dll
 
 CONFIG += file_copies
 
@@ -41,3 +41,14 @@ vtextedit_include_files.path = $$OUT_PWD/include/vtextedit
 COPIES += include_files
 include_files.files = $$files($$PWD/include/*.h)
 include_files.path = $$OUT_PWD/include
+
+## INSTALLS
+unix:!macx {
+    isEmpty(PREFIX): PREFIX = /usr
+    LIBDIR = $${PREFIX}/lib
+
+    # qmake will automatically do symlinks
+    target.path = $${LIBDIR}
+
+    INSTALLS += target
+}
