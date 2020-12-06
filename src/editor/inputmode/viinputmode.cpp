@@ -282,7 +282,6 @@ bool ViInputMode::needToStartEditSession(const QKeyEvent *p_event) const
     case Qt::Key_Meta:
         Q_FALLTHROUGH();
     case Qt::Key_Alt:
-        Q_FALLTHROUGH();
         return false;
 
     default:
