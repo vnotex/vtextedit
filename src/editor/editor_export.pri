@@ -1,13 +1,17 @@
-INCLUDEPATH *= $$PWD/include
-
 OUT_FOLDER = $$absolute_path($$relative_path($$PWD, $$_PRO_FILE_PWD_), $$OUT_PWD)
-win32:CONFIG(release, debug|release) {
-    LIBS += -L$$OUT_FOLDER/release -lvtextedit
-} else:win32:CONFIG(debug, debug|release) {
-    LIBS += -L$$OUT_FOLDER/debug -lvtextedit
-} else:unix {
-    LIBS += -L$$OUT_FOLDER -lVTextEdit
-}
+lib_name = VTextEdit
+macx {
+    lib_framework_name = $${lib_name}.framework
 
-LIBS_FOLDER = $$PWD/../libs
-include($$LIBS_FOLDER/syntax-highlighting/syntax-highlighting_export.pri)
+    INCLUDEPATH += $${OUT_FOLDER}/$${lib_framework_name}/Headers
+    LIBS += -F$${OUT_FOLDER} -framework $${lib_name}
+} else {
+    INCLUDEPATH *= $$PWD/include
+    win32:CONFIG(release, debug|release) {
+        LIBS += -L$$OUT_FOLDER/release -l$${lib_name}
+    } else:win32:CONFIG(debug, debug|release) {
+        LIBS += -L$$OUT_FOLDER/debug -l$${lib_name}
+    } else:unix {
+        LIBS += -L$$OUT_FOLDER -l$${lib_name}
+    }
+}
