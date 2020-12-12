@@ -25,12 +25,44 @@
 #include <QHash>
 #include <QPair>
 #include <QDebug>
+#include <QRegularExpression>
 
 using namespace vte;
 
 int VTextEditor::s_instanceCount = 0;
 
 Completer *VTextEditor::s_completer = nullptr;
+
+void VTextEditor::FindResultCache::clear()
+{
+    m_start = -1;
+    m_end = -1;
+
+    m_text.clear();
+    m_flags = FindFlag::None;
+    m_result.clear();
+}
+
+bool VTextEditor::FindResultCache::matched(const QString &p_text, FindFlags p_flags, int p_start, int p_end) const
+{
+    return (m_flags & ~FindFlag::FindBackward) == (p_flags & ~FindFlag::FindBackward)
+           && m_start == p_start
+           && m_end == p_end
+           && m_text == p_text;
+}
+
+void VTextEditor::FindResultCache::update(const QString &p_text,
+                                          FindFlags p_flags,
+                                          int p_start,
+                                          int p_end,
+                                          const QList<QTextCursor> &p_result)
+{
+    m_text = p_text;
+    m_flags = p_flags;
+    m_start = p_start;
+    m_end = p_end;
+    m_result = p_result;
+}
 
 VTextEditor::VTextEditor(const QSharedPointer<TextEditorConfig> &p_config,
                          QWidget *p_parent)
@@ -48,6 +80,9 @@ VTextEditor::VTextEditor(const QSharedPointer<TextEditorConfig> &p_config,
     setupExtraSelection();
 
     setupCompleter();
+
+    connect(m_textEdit, &VTextEdit::contentsChanged,
+            this, &VTextEditor::clearFindResultCache);
 
     // Status widget.
     connect(m_textEdit, &QTextEdit::cursorPositionChanged,
@@ -172,6 +207,15 @@ void VTextEditor::setupExtraSelection()
 
     Q_ASSERT(m_folding);
     m_folding->setExtraSelectionMgr(m_extraSelectionMgr);
+
+    m_incrementalSearchExtraSelection = m_extraSelectionMgr->registerExtraSelection();
+    m_extraSelectionMgr->setExtraSelectionEnabled(m_incrementalSearchExtraSelection, true);
+
+    m_searchExtraSelection = m_extraSelectionMgr->registerExtraSelection();
+    m_extraSelectionMgr->setExtraSelectionEnabled(m_searchExtraSelection, true);
+
+    m_searchUnderCursorExtraSelection = m_extraSelectionMgr->registerExtraSelection();
+    m_extraSelectionMgr->setExtraSelectionEnabled(m_searchUnderCursorExtraSelection, true);
 }
 
 void VTextEditor::setupCompleter()
@@ -334,6 +378,27 @@ void VTextEditor::updateExtraSelectionMgrFromConfig()
     {
         const auto &fmt = theme->editorStyle(Theme::SelectedText);
         m_extraSelectionMgr->setExtraSelectionFormat(ExtraSelectionMgr::SelectedText,
+                                                     fmt.textColor(),
+                                                     fmt.backgroundColor(),
+                                                     false);
+    }
+    {
+        const auto &fmt = theme->editorStyle(Theme::IncrementalSearch);
+        m_extraSelectionMgr->setExtraSelectionFormat(m_incrementalSearchExtraSelection,
+                                                     fmt.textColor(),
+                                                     fmt.backgroundColor(),
+                                                     false);
+    }
+    {
+        const auto &fmt = theme->editorStyle(Theme::Search);
+        m_extraSelectionMgr->setExtraSelectionFormat(m_searchExtraSelection,
+                                                     fmt.textColor(),
+                                                     fmt.backgroundColor(),
+                                                     false);
+    }
+    {
+        const auto &fmt = theme->editorStyle(Theme::SearchUnderCursor);
+        m_extraSelectionMgr->setExtraSelectionFormat(m_searchUnderCursorExtraSelection,
                                                      fmt.textColor(),
                                                      fmt.backgroundColor(),
                                                      false);
@@ -799,4 +864,278 @@ void VTextEditor::setFontAndPaletteByStyleSheet(const QFont &p_font, const QPale
                           .arg(p_palette.color(QPalette::Highlight).name()));
 
     setStyleSheet(styles);
+}
+
+void VTextEditor::peekText(const QString &p_text, FindFlags p_flags)
+{
+    if (p_text.isEmpty()) {
+        clearIncrementalSearchHighlight();
+        return;
+    }
+    int start = m_textEdit->textCursor().position();
+    int skipPosition = start;
+
+    while (true) {
+        auto cursor = m_textEdit->findText(p_text, p_flags, start);
+        if (cursor.isNull()) {
+            break;
+        }
+
+        if (!(p_flags & FindFlag::FindBackward) && cursor.selectionStart() == skipPosition) {
+            // Skip the first match.
+            skipPosition = -1;
+            start = cursor.selectionEnd();
+            continue;
+        }
+
+        TextEditUtils::ensureBlockVisible(m_textEdit, document()->findBlock(cursor.selectionStart()).blockNumber());
+        QList<QTextCursor> selections;
+        selections.append(cursor);
+        m_extraSelectionMgr->setSelections(m_incrementalSearchExtraSelection, selections);
+        return;
+    }
+
+    clearIncrementalSearchHighlight();
+}
+
+VTextEditor::FindResult VTextEditor::findText(const QString &p_text,
+                                              FindFlags p_flags,
+                                              int p_start,
+                                              int p_end)
+{
+    QTextCursor cursor;
+    auto result = findTextHelper(p_text, p_flags, p_start, p_end, true, cursor);
+    if (!cursor.isNull()) {
+        cursor.setPosition(cursor.selectionStart());
+        m_textEdit->setTextCursor(cursor);
+    }
+    return result;
+}
+
+VTextEditor::FindResult VTextEditor::findTextHelper(const QString &p_text,
+                                                  FindFlags p_flags,
+                                                  int p_start,
+                                                  int p_end,
+                                                  bool p_skipCurrent,
+                                                  QTextCursor &p_currentMatch)
+{
+    clearIncrementalSearchHighlight();
+
+    FindResult result;
+    if (p_text.isEmpty() || (p_start >= p_end && p_end >= 0)) {
+        clearSearchHighlight();
+        p_currentMatch = QTextCursor();
+        return result;
+    }
+
+    const auto &allResults = findAllText(p_text, p_flags, p_start, p_end);
+    if (!allResults.isEmpty()) {
+        // Locate to the right match and update current cursor.
+        auto cursor = m_textEdit->textCursor();
+        bool wrapped = false;
+        int idx = selectCursor(allResults,
+                               cursor.position(),
+                               p_skipCurrent,
+                               !(p_flags & FindFlag::FindBackward),
+                               wrapped);
+        Q_ASSERT(idx != -1);
+        p_currentMatch = allResults[idx];
+
+        // Highlight.
+        highlightSearch(allResults, idx);
+
+        result.m_totalMatches = allResults.size();
+        result.m_currentMatchIndex = idx;
+        result.m_wrapped = wrapped;
+    } else {
+        clearSearchHighlight();
+        p_currentMatch = QTextCursor();
+    }
+
+    return result;
+}
+
+VTextEditor::FindResult VTextEditor::replaceText(const QString &p_text,
+                                                 FindFlags p_flags,
+                                                 const QString &p_replaceText,
+                                                 int p_start,
+                                                 int p_end)
+{
+    QTextCursor cursor;
+    auto result = findTextHelper(p_text, p_flags, p_start, p_end, false, cursor);
+    if (result.m_totalMatches > 0) {
+        Q_ASSERT(!cursor.isNull());
+        result.m_totalMatches = 1;
+
+        QString newText(p_replaceText);
+        if (p_flags & FindFlag::RegularExpression) {
+            resolveBackReferenceInReplaceText(newText, TextEditUtils::getSelectedText(cursor), QRegularExpression(p_text));
+        }
+        cursor.insertText(newText);
+        m_textEdit->setTextCursor(cursor);
+    }
+    return result;
+}
+
+VTextEditor::FindResult VTextEditor::replaceAll(const QString &p_text,
+                                                FindFlags p_flags,
+                                                const QString &p_replaceText,
+                                                int p_start,
+                                                int p_end)
+{
+    clearIncrementalSearchHighlight();
+
+    FindResult result;
+    if (p_text.isEmpty() || (p_start >= p_end && p_end >= 0)) {
+        clearSearchHighlight();
+        return result;
+    }
+
+    const auto &allResults = findAllText(p_text, p_flags, p_start, p_end);
+    if (!allResults.isEmpty()) {
+        result.m_totalMatches = allResults.size();
+
+        // Replace all matches one by one.
+        auto cursor = m_textEdit->textCursor();
+        cursor.beginEditBlock();
+        QRegularExpression regExp(p_text);
+        for (const auto &result : allResults) {
+            cursor.setPosition(result.selectionStart());
+            cursor.setPosition(result.selectionEnd(), QTextCursor::KeepAnchor);
+
+            QString newText(p_replaceText);
+            if (p_flags & FindFlag::RegularExpression) {
+                resolveBackReferenceInReplaceText(newText, TextEditUtils::getSelectedText(cursor), regExp);
+            }
+            cursor.insertText(newText);
+        }
+        cursor.endEditBlock();
+        m_textEdit->setTextCursor(cursor);
+    }
+
+    clearSearchHighlight();
+    return result;
+}
+
+void VTextEditor::clearIncrementalSearchHighlight()
+{
+    m_extraSelectionMgr->setSelections(m_incrementalSearchExtraSelection, QList<QTextCursor>());
+}
+
+void VTextEditor::clearFindResultCache()
+{
+    m_findResultCache.clear();
+}
+
+void VTextEditor::clearSearchHighlight()
+{
+    m_extraSelectionMgr->setSelections(m_searchExtraSelection, QList<QTextCursor>());
+    m_extraSelectionMgr->setSelections(m_searchUnderCursorExtraSelection, QList<QTextCursor>());
+}
+
+const QList<QTextCursor> &VTextEditor::findAllText(const QString &p_text, FindFlags p_flags, int p_start, int p_end)
+{
+    if (p_text.isEmpty()) {
+        m_findResultCache.clear();
+        return m_findResultCache.m_result;
+    }
+
+    if (m_findResultCache.matched(p_text, p_flags, p_start, p_end)) {
+        return m_findResultCache.m_result;
+    }
+
+    m_findResultCache.update(p_text,
+                             p_flags,
+                             p_start,
+                             p_end,
+                             m_textEdit->findAllText(p_text, p_flags, p_start, p_end));
+
+    return m_findResultCache.m_result;
+}
+
+int VTextEditor::selectCursor(const QList<QTextCursor> &p_cursors,
+                              int p_pos,
+                              bool p_skipCurrent,
+                              bool p_forward,
+                              bool &p_isWrapped)
+{
+    Q_ASSERT(!p_cursors.isEmpty());
+
+    p_isWrapped = false;
+    int first = 0, last = p_cursors.size() - 1;
+    int lastMatch = -1;
+    while (first <= last) {
+        int mid = (first + last) / 2;
+        const QTextCursor &cur = p_cursors.at(mid);
+        if (p_forward) {
+            if (cur.selectionStart() < p_pos) {
+                first = mid + 1;
+            } else if (cur.selectionStart() == p_pos) {
+                if (!p_skipCurrent) {
+                    // Found it.
+                    lastMatch = mid;
+                } else if (mid < p_cursors.size() - 1) {
+                    // Next one is the right one.
+                    lastMatch = mid + 1;
+                } else {
+                    lastMatch = 0;
+                    p_isWrapped = true;
+                }
+                break;
+            } else {
+                // It is a match.
+                if (lastMatch == -1 || mid < lastMatch) {
+                    lastMatch = mid;
+                }
+
+                last = mid - 1;
+            }
+        } else {
+            if (cur.selectionStart() > p_pos) {
+                last = mid - 1;
+            } else if (cur.selectionStart() == p_pos) {
+                if (!p_skipCurrent) {
+                    // Found it.
+                    lastMatch = mid;
+                } else if (mid > 0) {
+                    // Previous one is the right one.
+                    lastMatch = mid - 1;
+                } else {
+                    lastMatch = p_cursors.size() - 1;
+                    p_isWrapped = true;
+                }
+                break;
+            } else {
+                // It is a match.
+                if (lastMatch == -1 || mid > lastMatch) {
+                    lastMatch = mid;
+                }
+
+                first = mid + 1;
+            }
+        }
+    }
+
+    if (lastMatch == -1) {
+        p_isWrapped = true;
+        lastMatch = p_forward ? 0 : (p_cursors.size() - 1);
+    }
+
+    return lastMatch;
+}
+
+void VTextEditor::highlightSearch(const QList<QTextCursor> &p_results, int p_currentIdx)
+{
+    Q_ASSERT(!p_results.isEmpty() && p_currentIdx >= 0);
+    m_extraSelectionMgr->setSelections(m_searchExtraSelection, p_results);
+    QList<QTextCursor> searchUnderCursor;
+    searchUnderCursor << p_results[p_currentIdx];
+    m_extraSelectionMgr->setSelections(m_searchUnderCursorExtraSelection, searchUnderCursor);
+}
+
+void VTextEditor::resolveBackReferenceInReplaceText(QString &p_replaceText,
+                                                    QString p_text,
+                                                    const QRegularExpression &p_regExp)
+{
+    p_replaceText = p_text.replace(p_regExp, p_replaceText);
 }

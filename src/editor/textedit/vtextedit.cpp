@@ -1,6 +1,5 @@
 #include <vtextedit/vtextedit.h>
 
-#include <QTextCursor>
 #include <QTextBlock>
 #include <QResizeEvent>
 #include <QWheelEvent>
@@ -141,19 +140,19 @@ void VTextEdit::mouseReleaseEvent(QMouseEvent *p_event)
     emit mouseReleased(p_event);
 }
 
-static QTextDocument::FindFlags findFlagsToDocumentFindFlags(VTextEdit::FindFlags p_flags)
+static QTextDocument::FindFlags findFlagsToDocumentFindFlags(FindFlags p_flags)
 {
     QTextDocument::FindFlags findFlags = 0;
 
-    if (p_flags & VTextEdit::FindFlag::FindBackward) {
+    if (p_flags & FindFlag::FindBackward) {
         findFlags |= QTextDocument::FindBackward;
     }
 
-    if (p_flags & VTextEdit::FindFlag::CaseSensitive) {
+    if (p_flags & FindFlag::CaseSensitive) {
         findFlags |= QTextDocument::FindCaseSensitively;
     }
 
-    if (p_flags & VTextEdit::FindFlag::WholeWordOnly) {
+    if (p_flags & FindFlag::WholeWordOnly) {
         findFlags |= QTextDocument::FindWholeWords;
     }
 
@@ -161,80 +160,44 @@ static QTextDocument::FindFlags findFlagsToDocumentFindFlags(VTextEdit::FindFlag
 }
 
 QList<QTextCursor> VTextEdit::findAllText(const QString &p_text,
-                                          VTextEdit::FindFlags p_flags,
+                                          FindFlags p_flags,
                                           int p_start,
                                           int p_end)
 {
-    QList<QTextCursor> results;
-    if (p_text.isEmpty()) {
-        return results;
+    if (p_text.isEmpty() || (p_start >= p_end && p_end >= 0)) {
+        return QList<QTextCursor>();
     }
 
     auto flags = findFlagsToDocumentFindFlags(p_flags);
     if (p_flags & FindFlag::RegularExpression) {
         QRegularExpression regex(p_text);
+        if (!regex.isValid()) {
+            return QList<QTextCursor>();
+        }
         return findAllTextInDocument(regex, flags, p_start, p_end);
     } else {
         return findAllTextInDocument(p_text, flags, p_start, p_end);
     }
 }
 
-QList<QTextCursor> VTextEdit::findAllTextInDocument(const QString &p_text,
-                                                    QTextDocument::FindFlags p_flags,
-                                                    int p_start,
-                                                    int p_end)
+QTextCursor VTextEdit::findText(const QString &p_text,
+                                FindFlags p_flags,
+                                int p_start)
 {
-    QList<QTextCursor> results;
     if (p_text.isEmpty()) {
-        return results;
+        return QTextCursor();
     }
 
-    auto doc = document();
-    int start = p_start;
-    int end = p_end == -1 ? doc->characterCount() + 1 : p_end;
-
-    while (start < end) {
-        QTextCursor cursor = doc->find(p_text, start, p_flags);
-        if (cursor.isNull()) {
-            break;
-        } else {
-            start = cursor.selectionEnd();
-            if (start <= end) {
-                results.append(cursor);
-            }
+    auto flags = findFlagsToDocumentFindFlags(p_flags);
+    if (p_flags & FindFlag::RegularExpression) {
+        QRegularExpression regex(p_text);
+        if (!regex.isValid()) {
+            return QTextCursor();
         }
+        return findTextInDocument(regex, flags, p_start);
+    } else {
+        return findTextInDocument(p_text, flags, p_start);
     }
-
-    return results;
-}
-
-QList<QTextCursor> VTextEdit::findAllTextInDocument(const QRegularExpression &p_regex,
-                                                    QTextDocument::FindFlags p_flags,
-                                                    int p_start,
-                                                    int p_end)
-{
-    QList<QTextCursor> results;
-    if (!p_regex.isValid()) {
-        return results;
-    }
-
-    auto doc = document();
-    int start = p_start;
-    int end = p_end == -1 ? doc->characterCount() + 1 : p_end;
-
-    while (start < end) {
-        QTextCursor cursor = doc->find(p_regex, start, p_flags);
-        if (cursor.isNull()) {
-            break;
-        } else {
-            start = cursor.selectionEnd();
-            if (start <= end) {
-                results.append(cursor);
-            }
-        }
-    }
-
-    return results;
 }
 
 void VTextEdit::setInputMode(const QSharedPointer<AbstractInputMode> &p_mode)

@@ -31,12 +31,12 @@ QList<QTextCursor> EditorExtraSelection::findAllText(const QString &p_text,
                                                      bool p_isRegularExpression,
                                                      bool p_caseSensitive)
 {
-    VTextEdit::FindFlags flags = 0;
+    FindFlags flags = 0;
     if (p_isRegularExpression) {
-        flags |= VTextEdit::FindFlag::RegularExpression;
+        flags |= FindFlag::RegularExpression;
     }
     if (p_caseSensitive) {
-        flags |= VTextEdit::FindFlag::CaseSensitive;
+        flags |= FindFlag::CaseSensitive;
     }
     return m_editor->m_textEdit->findAllText(p_text, flags);
 }

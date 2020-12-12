@@ -65,6 +65,8 @@ namespace vte
 
         static QString getSelectedText(const QTextCursor &p_cursor);
 
+        static void ensureBlockVisible(QTextEdit *p_edit, int p_blockNumber);
+
     private:
         static void indentBlocks(QTextEdit *p_edit,
                                  bool p_useTab,

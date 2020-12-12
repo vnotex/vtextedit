@@ -203,15 +203,13 @@ void ExtraSelectionMgr::applyExtraSelections()
 
     QList<QTextEdit::ExtraSelection> selections;
     const int nrExtra = m_extraSelections.size();
-    // First apply external extra selections.
-    for (int i = SelectionType::MaxBuiltInSelection; i < nrExtra; ++i) {
+    for (int i = 0; i < SelectionType::MaxBuiltInSelection; ++i) {
         if (m_extraSelections[i].m_enabled) {
             selections.append(m_extraSelections[i].m_selections);
         }
     }
 
-    // Then built-it ones.
-    for (int i = 0; i < SelectionType::MaxBuiltInSelection; ++i) {
+    for (int i = SelectionType::MaxBuiltInSelection; i < nrExtra; ++i) {
         if (m_extraSelections[i].m_enabled) {
             selections.append(m_extraSelections[i].m_selections);
         }

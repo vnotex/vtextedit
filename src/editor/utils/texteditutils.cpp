@@ -405,3 +405,8 @@ QString TextEditUtils::getSelectedText(const QTextCursor &p_cursor)
     text.replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
     return text;
 }
+
+void TextEditUtils::ensureBlockVisible(QTextEdit *p_edit, int p_blockNumber)
+{
+    scrollBlockInPage(p_edit, p_blockNumber, PagePosition::Center);
+}

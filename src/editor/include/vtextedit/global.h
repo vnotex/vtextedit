@@ -83,6 +83,18 @@ namespace vte
         WrapAnywhere,
         WordWrapOrAnywhere
     };
+
+    enum FindFlag
+    {
+        None = 0,
+        FindBackward = 0x1,
+        CaseSensitive = 0x2,
+        WholeWordOnly = 0x4,
+        RegularExpression = 0x8
+    };
+    Q_DECLARE_FLAGS(FindFlags, FindFlag);
 }
+
+Q_DECLARE_OPERATORS_FOR_FLAGS(vte::FindFlags)
 
 #endif // VTEXTEDIT_GLOBAL_H

@@ -107,6 +107,9 @@ namespace vte
             Folding,
             FoldedFolding,
             FoldingHighlight,
+            IncrementalSearch,
+            Search,
+            SearchUnderCursor,
             MaxEditorStyle
         };
         Q_ENUM(EditorStyle)
