@@ -14,6 +14,8 @@ RESOURCES += data/syntax/syntax.qrc \
 
 include($$PWD/../src/editor/editor_export.pri)
 
+include($$PWD/../src/libs/syntax-highlighting/syntax-highlighting_export.pri)
+
 macx {
     # Process VTextEdit framework
     vte_lib_name = VTextEdit
