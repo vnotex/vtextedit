@@ -23,6 +23,6 @@ macx {
     vte_lib_full_name = $${vte_lib_name}.framework/Versions/1/$${vte_lib_name}
     app_target = $${TARGET}.app/Contents/MacOS/$${TARGET}
     QMAKE_POST_LINK = \
-        install_name_tool -add_rpath $${vte_lib_dir}/ $${app_target} && \
+        install_name_tool -add_rpath $${vte_lib_dir} $${app_target} && \
         install_name_tool -change $${vte_lib_full_name} @rpath/$${vte_lib_full_name} $${app_target}
 }

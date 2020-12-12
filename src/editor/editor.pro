@@ -37,7 +37,7 @@ macx: {
     sh_lib_full_name = $${sh_lib_name}.framework/Versions/1/$${sh_lib_name}
     lib_target = $${TARGET}.framework/Versions/1/$${TARGET}
     QMAKE_POST_LINK = \
-        install_name_tool -add_rpath $${sh_lib_dir}/ $${lib_target} && \
+        install_name_tool -add_rpath $${sh_lib_dir} $${lib_target} && \
         install_name_tool -change $${sh_lib_full_name} @rpath/$${sh_lib_full_name} $${lib_target}
 }
 
