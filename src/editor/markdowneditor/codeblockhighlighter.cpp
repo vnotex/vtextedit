@@ -39,9 +39,6 @@ void CodeBlockHighlighter::finishHighlightOne(const HighlightResult &p_result)
 
 void CodeBlockHighlighter::addToCache(const HighlightResult &p_result)
 {
-    const int c_maxEntries = 100;
-    const TimeStamp c_maxTimeStampSpan = 3;
-
     m_cache.set(m_codeBlocks[p_result.m_index].m_text,
                 CacheEntry(p_result.m_timeStamp, p_result.m_highlights));
 }

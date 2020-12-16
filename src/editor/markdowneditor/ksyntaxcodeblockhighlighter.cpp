@@ -20,9 +20,9 @@ KSyntaxCodeBlockHighlighter::KSyntaxCodeBlockHighlighter(const QString &p_theme,
         applyFormat(p_offset, p_length, p_format);
     };
 
-    auto foldingFunctor = [this](int p_offset,
-                                 int p_length,
-                                 KSyntaxHighlighting::FoldingRegion p_region) {
+    auto foldingFunctor = [](int p_offset,
+                             int p_length,
+                             KSyntaxHighlighting::FoldingRegion p_region) {
         Q_UNUSED(p_offset);
         Q_UNUSED(p_length);
         Q_UNUSED(p_region);

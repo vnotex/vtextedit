@@ -155,7 +155,6 @@ bool VMarkdownEditor::eventFilter(QObject *p_obj, QEvent *p_event)
 bool VMarkdownEditor::handleKeyPressEvent(QKeyEvent *p_event)
 {
     const int key = p_event->key();
-    const int modifiers = p_event->modifiers();
     switch (key) {
     case Qt::Key_Return:
         return handleKeyReturn(p_event);

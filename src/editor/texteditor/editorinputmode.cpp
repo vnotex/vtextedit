@@ -573,7 +573,7 @@ void EditorInputMode::joinLines(uint p_first, uint p_last, bool p_trimSpace)
                 // Remove the indentation space.
                 int idx = TextUtils::firstNonSpace(blockText);
                 text += blockText.mid(idx);
-            } else if (block.blockNumber() == p_last) {
+            } else if (block.blockNumber() == static_cast<int>(p_last)) {
                 // If the last block is empty, we need to add additional space at the end.
                 if (!text.isEmpty() && !text.back().isSpace()) {
                     text += QLatin1Char(' ');

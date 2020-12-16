@@ -26,8 +26,8 @@ PegMarkdownHighlighter::PegMarkdownHighlighter(PegMarkdownHighlighterInterface *
                                                const QSharedPointer<peg::HighlighterConfig> &p_config)
     : QSyntaxHighlighter(p_doc),
       m_interface(p_interface),
-      m_codeBlockHighlighter(p_codeBlockHighlighter),
       m_config(p_config),
+      m_codeBlockHighlighter(p_codeBlockHighlighter),
       m_parserExts(pmh_EXT_NOTES
                    | pmh_EXT_STRIKE
                    | pmh_EXT_FRONTMATTER

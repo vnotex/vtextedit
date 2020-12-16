@@ -172,8 +172,8 @@ void InputModeManager::feedKeyPresses(const QString &keyPresses) const
     Qt::KeyboardModifiers mods;
     QString text;
 
-    for (const QChar c : keyPresses) {
-        QString decoded = KeyParser::self()->decodeKeySequence(QString(c));
+    for (const QChar &keyc : keyPresses) {
+        QString decoded = KeyParser::self()->decodeKeySequence(QString(keyc));
         key = -1;
         mods = Qt::NoModifier;
         text.clear();

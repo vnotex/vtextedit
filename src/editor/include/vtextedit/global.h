@@ -26,7 +26,7 @@ namespace vte
         ViModeReplace = 15
     };
 
-    static QString editorModeToString(EditorMode p_mode)
+    inline QString editorModeToString(EditorMode p_mode)
     {
         switch (p_mode) {
         case EditorMode::NormalModeInsert:

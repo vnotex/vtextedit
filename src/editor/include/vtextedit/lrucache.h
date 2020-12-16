@@ -43,7 +43,7 @@ namespace vte
                 return;
             }
 
-            if (m_capacity <= size()) {
+            if (static_cast<size_t>(m_capacity) <= size()) {
                 // Use the LRU node for the new value.
                 auto nodeIter = m_list.begin();
                 auto iter = m_hash.find(nodeIter->m_key);
