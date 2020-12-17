@@ -159,6 +159,10 @@ namespace vte
 
         void insertFromMimeDataOfBase(const QMimeData *p_source);
 
+        QVariant inputMethodQuery(Qt::InputMethodQuery p_query) const Q_DECL_OVERRIDE;
+
+        void setInputMethodEnabled(bool p_enabled);
+
     signals:
         void cursorLineChanged();
 
@@ -264,6 +268,9 @@ namespace vte
 
         // The document revision that has changes to the contents.
         int m_lastDocumentRevisionWithChanges = 0;
+
+        // Whether enable input method.
+        bool m_inputMethodEnabled = true;
     };
 
     template <typename T>

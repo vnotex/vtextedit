@@ -12,6 +12,7 @@
 #include <QScrollBar>
 #include <QGuiApplication>
 #include <QMenu>
+#include <QInputMethod>
 
 #include <inputmode/abstractinputmode.h>
 #include <vtextedit/texteditutils.h>
@@ -588,5 +589,26 @@ void VTextEdit::contextMenuEvent(QContextMenuEvent *p_event)
         }
     } else {
         QTextEdit::contextMenuEvent(p_event);
+    }
+}
+
+QVariant VTextEdit::inputMethodQuery(Qt::InputMethodQuery p_query) const
+{
+    if (p_query == Qt::ImEnabled) {
+        return m_inputMethodEnabled;
+    }
+
+    return QTextEdit::inputMethodQuery(p_query);
+}
+
+void VTextEdit::setInputMethodEnabled(bool p_enabled)
+{
+    if (m_inputMethodEnabled != p_enabled) {
+        m_inputMethodEnabled = p_enabled;
+
+        QInputMethod *im = QGuiApplication::inputMethod();
+        im->reset();
+        // Ask input method to query current state, which will call inputMethodQuery().
+        im->update(Qt::ImEnabled);
     }
 }

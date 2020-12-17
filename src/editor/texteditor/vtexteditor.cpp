@@ -92,6 +92,27 @@ VTextEditor::VTextEditor(const QSharedPointer<TextEditorConfig> &p_config,
     connect(this, &VTextEditor::modeChanged,
             this, &VTextEditor::updateModeOfStatusWidget);
 
+    // Input method.
+    connect(this, &VTextEditor::modeChanged,
+            this, [this]() {
+                auto mode = getEditorMode();
+                switch (mode) {
+                case ViModeNormal:
+                    Q_FALLTHROUGH();
+                case ViModeVisual:
+                    Q_FALLTHROUGH();
+                case ViModeVisualLine:
+                    Q_FALLTHROUGH();
+                case ViModeVisualBlock:
+                    m_textEdit->setInputMethodEnabled(false);
+                    break;
+
+                default:
+                    m_textEdit->setInputMethodEnabled(true);
+                    break;
+                }
+            });
+
     updateFromConfig();
 
     ++s_instanceCount;
