@@ -26,35 +26,40 @@ namespace vte
         ViModeReplace = 15
     };
 
+    class VTextEditTranslate : public QObject
+    {
+        Q_OBJECT
+    };
+
     inline QString editorModeToString(EditorMode p_mode)
     {
         switch (p_mode) {
         case EditorMode::NormalModeInsert:
-            return QObject::tr("Insert");
+            return VTextEditTranslate::tr("Insert");
 
         case EditorMode::NormalModeOverwrite:
-            return QObject::tr("Overwrite");
+            return VTextEditTranslate::tr("Overwrite");
 
         case EditorMode::ViModeNormal:
-            return QObject::tr("Normal");
+            return VTextEditTranslate::tr("Normal (Vi)");
 
         case EditorMode::ViModeInsert:
-            return QObject::tr("Insert");
+            return VTextEditTranslate::tr("Insert (Vi)");
 
         case EditorMode::ViModeVisual:
-            return QObject::tr("Visual");
+            return VTextEditTranslate::tr("Visual (Vi)");
 
         case EditorMode::ViModeVisualLine:
-            return QObject::tr("Visual Line");
+            return VTextEditTranslate::tr("Visual Line (Vi)");
 
         case EditorMode::ViModeVisualBlock:
-            return QObject::tr("Visual Block");
+            return VTextEditTranslate::tr("Visual Block (Vi)");
 
         case EditorMode::ViModeReplace:
-            return QObject::tr("Replace");
+            return VTextEditTranslate::tr("Replace (Vi)");
 
         default:
-            return QObject::tr("Error");
+            return VTextEditTranslate::tr("Unknown");
         }
     }
 

@@ -59,7 +59,7 @@ void StatusIndicator::setupUI()
 
 QString StatusIndicator::generateCursorLabelText(int p_lineCount, int p_line, int p_column)
 {
-    QString cursorText = tr("Line: %1 - %2(%3%)   Col: %4")
+    QString cursorText = tr("Line: %1 - %2 (%3%)   Col: %4")
                            .arg(p_line)
                            .arg(p_lineCount)
                            .arg((int)(p_line * 1.0 / p_lineCount * 100), 2)

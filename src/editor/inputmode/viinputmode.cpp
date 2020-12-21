@@ -321,7 +321,7 @@ void ViInputMode::updateKeyStroke()
         if (!keyStroke.isEmpty()) {
             keyStroke += QLatin1Char(' ');
         }
-        keyStroke = QLatin1Char('(') + QObject::tr("Recording", "KateVi") + QLatin1Char(')');
+        keyStroke = QLatin1Char('(') + VTextEditTranslate::tr("Recording", "KateVi") + QLatin1Char(')');
     }
 
     m_viStatusBar->setKeyStroke(keyStroke);

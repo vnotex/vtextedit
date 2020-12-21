@@ -4,6 +4,8 @@ TARGET = VTextEdit
 TEMPLATE = lib
 CONFIG += shared dll
 
+TRANSLATIONS += data/translations/vtextedit_zh_CN.ts
+
 macx: {
     CONFIG += lib_bundle
     FRAMEWORK_HEADERS.version = Versions

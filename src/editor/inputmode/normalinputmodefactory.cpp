@@ -1,8 +1,7 @@
 #include "normalinputmodefactory.h"
 
-#include <QObject>
-
 #include "normalinputmode.h"
+#include <vtextedit/global.h>
 
 using namespace vte;
 
@@ -22,5 +21,5 @@ QString NormalInputModeFactory::name() const
 
 QString NormalInputModeFactory::description() const
 {
-    return QObject::tr("Normal input mode");
+    return VTextEditTranslate::tr("Normal input mode");
 }

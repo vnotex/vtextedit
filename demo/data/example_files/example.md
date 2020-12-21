@@ -1,15 +1,15 @@
-# Markdown Test Page
+# VTextEdit: core editor component of VNote
 **Test Page** with *all elements*, such as `inline code`, ~~strike~~, $a * b = c$, and so on.
 
-A tab:
+![Image](./vnote.png)
 
-	Tab before.
-
-![Image](./jiafei.png)
+Thanks to [VNote](https://github.com/vnotex/vnote)!
 
 Inline image ![Image Inline](./jiafei.png) is supported.
 
-![Network Image](https://tamlok.gitee.io/vnote/zh_cn/css/vnote_white.svg)
+![Network Image Need OpenSSL](https://github.com/vnotex/vnote/raw/master/pics/vnote.png)
+
+	Tab and trailing spaces highlight  
 
 ```cpp
 #include <iostream>

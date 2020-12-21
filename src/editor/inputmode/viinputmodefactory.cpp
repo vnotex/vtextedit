@@ -1,11 +1,10 @@
 #include "viinputmodefactory.h"
 
-#include <QObject>
-
 #include "viinputmode.h"
 
 #include <katevi/globalstate.h>
 #include <katevi/interface/kateviconfig.h>
+#include <vtextedit/global.h>
 
 using namespace vte;
 
@@ -33,5 +32,5 @@ QString ViInputModeFactory::name() const
 
 QString ViInputModeFactory::description() const
 {
-    return QObject::tr("Vi input mode");
+    return VTextEditTranslate::tr("Vi input mode");
 }
