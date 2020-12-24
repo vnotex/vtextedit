@@ -144,6 +144,11 @@ namespace vte
         // 4. Unused;
         static const QString c_headerRegExp;
 
+        // Regular expression for header block.
+        // Captured texts:
+        // 1. prefix till the real header title content;
+        static const QString c_headerPrefixRegExp;
+
     private:
         enum CursorPosition
         {
@@ -203,11 +208,6 @@ namespace vte
 
         // Whether @p_dir contains @p_path.
         static bool pathContains(const QString &p_dir, const QString &p_path);
-
-        // Regular expression for header block.
-        // Captured texts:
-        // 1. prefix till the real header title content;
-        static const QString c_headerPrefixRegExp;
 
         // Regular expression for todo list.
         // Captured texts:
