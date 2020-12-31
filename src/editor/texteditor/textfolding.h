@@ -68,6 +68,8 @@ namespace vte
 
         void setEnabled(bool p_enable);
 
+        void setFoldedFoldingRangeLineBackgroundColor(const QColor &p_color);
+
     public slots:
         void clear();
 

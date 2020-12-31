@@ -784,3 +784,12 @@ void TextFolding::setEnabled(bool p_enable)
         clear();
     }
 }
+
+void TextFolding::setFoldedFoldingRangeLineBackgroundColor(const QColor &p_color)
+{
+    m_foldedFoldingRangeLineBackground = p_color;
+    m_extraSelectionMgr->setExtraSelectionFormat(m_extraSelectionType,
+                                                 QColor(),
+                                                 m_foldedFoldingRangeLineBackground,
+                                                 true);
+}

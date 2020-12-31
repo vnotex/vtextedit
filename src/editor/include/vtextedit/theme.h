@@ -107,6 +107,7 @@ namespace vte
             Folding,
             FoldedFolding,
             FoldingHighlight,
+            FoldedFoldingRangeLine,
             IncrementalSearch,
             Search,
             SearchUnderCursor,

@@ -8,6 +8,8 @@
 #include <QSharedPointer>
 #include <QScopedPointer>
 #include <QTextCursor>
+#include <QPalette>
+#include <QFont>
 
 class QTextDocument;
 
@@ -310,6 +312,11 @@ namespace vte
         int m_zoomDelta = 0;
 
         FindResultCache m_findResultCache;
+
+        // When using style sheet, m_textEdit->font() and palette() won't return the actual ones.
+        // We store them on our own.
+        QFont m_themeFont;
+        QPalette m_themePalette;
 
         static int s_instanceCount;
 

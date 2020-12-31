@@ -247,31 +247,60 @@ void VTextEditor::setupCompleter()
 void VTextEditor::updateFromConfig()
 {
     Q_ASSERT(m_config);
+    // QTextEdit::font() will reflect the real font point size (after zoom). So we need
+    // to remember the original font point size.
+    static const int baseFontPointSize = m_textEdit->font().pointSize();
 
     auto &theme = m_config->m_theme;
     if (!theme) {
         theme = TextEditorConfig::defaultTheme();
     }
 
-    // Editor font.
+    // Editor font and palette.
     {
-        auto font = m_textEdit->font();
-        bool needUpdate = false;
+        m_themeFont = m_textEdit->font();
+        m_themePalette = m_textEdit->palette();
+
         const auto &fmt = theme->editorStyle(Theme::EditorStyle::Text);
+
         if (!fmt.m_fontFamily.isEmpty()) {
-            font.setFamily(fmt.m_fontFamily);
-            needUpdate = true;
+            m_themeFont.setFamily(fmt.m_fontFamily);
         }
+
         if (fmt.m_fontPointSize > 0) {
-            font.setPointSize(fmt.m_fontPointSize);
-            needUpdate = true;
+            m_themeFont.setPointSize(fmt.m_fontPointSize);
+        } else {
+            m_themeFont.setPointSize(baseFontPointSize);
         }
-        if (needUpdate) {
-            m_textEdit->setFont(font);
+
+        auto textColor = fmt.textColor();
+        if (textColor.isValid()) {
+            m_themePalette.setColor(QPalette::Text, textColor);
         }
+
+        auto bgColor = fmt.backgroundColor();
+        if (bgColor.isValid()) {
+            m_themePalette.setColor(QPalette::Base, bgColor);
+        }
+
+        auto selectionColor = fmt.selectedTextColor();
+        if (selectionColor.isValid()) {
+            m_themePalette.setColor(QPalette::HighlightedText, selectionColor);
+        }
+
+        auto selectionBgColor = fmt.selectedBackgroundColor();
+        if (selectionBgColor.isValid()) {
+            m_themePalette.setColor(QPalette::Highlight, selectionBgColor);
+        }
+
+        setFontAndPaletteByStyleSheet(m_themeFont, m_themePalette);
     }
 
-    m_folding->setEnabled(m_config->m_textFoldingEnabled);
+    {
+        m_folding->setEnabled(m_config->m_textFoldingEnabled);
+        const auto &fmt = theme->editorStyle(Theme::FoldedFoldingRangeLine);
+        m_folding->setFoldedFoldingRangeLineBackgroundColor(fmt.backgroundColor());
+    }
 
     updateExtraSelectionMgrFromConfig();
 
@@ -836,12 +865,12 @@ void VTextEditor::zoom(int p_delta)
 
     const int minSize = 2;
     int step = p_delta - m_zoomDelta;
-    auto editFont = m_textEdit->font();
-    if (editFont.pointSize() <= minSize && step < 0) {
+    auto editFontPtSz = m_textEdit->font().pointSize();
+    if (editFontPtSz <= minSize && step < 0) {
         return;
     }
 
-    int ptSz = editFont.pointSize() + step;
+    int ptSz = editFontPtSz + step;
     ptSz = qMax(ptSz, minSize);
     setFontPointSizeByStyleSheet(ptSz);
 
@@ -859,12 +888,11 @@ void VTextEditor::zoom(int p_delta)
 
 void VTextEditor::setFontPointSizeByStyleSheet(int p_ptSize)
 {
-    QFont ft = m_textEdit->font();
+    QFont ft = m_themeFont;
     ft.setPointSize(p_ptSize);
+    setFontAndPaletteByStyleSheet(ft, m_themePalette);
 
-    const QPalette &palette = m_textEdit->palette();
-    setFontAndPaletteByStyleSheet(ft, palette);
-
+    // To make sure the font().pointSize() is updated in case of continuous zoom.
     ensurePolished();
 }
 
@@ -883,7 +911,6 @@ void VTextEditor::setFontAndPaletteByStyleSheet(const QFont &p_font, const QPale
                           .arg(p_palette.color(QPalette::Base).name())
                           .arg(p_palette.color(QPalette::HighlightedText).name())
                           .arg(p_palette.color(QPalette::Highlight).name()));
-
     setStyleSheet(styles);
 }
 
