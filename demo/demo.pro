@@ -24,5 +24,13 @@ macx {
     app_target = $${TARGET}.app/Contents/MacOS/$${TARGET}
     QMAKE_POST_LINK = \
         install_name_tool -add_rpath $${vte_lib_dir} $${app_target} && \
-        install_name_tool -change $${vte_lib_full_name} @rpath/$${vte_lib_full_name} $${app_target}
+        install_name_tool -change $${vte_lib_full_name} @rpath/$${vte_lib_full_name} $${app_target} &&
+
+    # Process VSyntaxHighlighting framework
+    sh_lib_name = VSyntaxHighlighting
+    sh_lib_dir = $${OUT_PWD}/../src/libs/syntax-highlighting
+    sh_lib_full_name = $${sh_lib_name}.framework/Versions/1/$${sh_lib_name}
+    QMAKE_POST_LINK += \
+        install_name_tool -add_rpath $${sh_lib_dir} $${app_target} && \
+        install_name_tool -change $${sh_lib_full_name} @rpath/$${sh_lib_full_name} $${app_target}
 }
