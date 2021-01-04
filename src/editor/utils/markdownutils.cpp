@@ -32,9 +32,10 @@ const QString MarkdownUtils::c_imageLinkRegExp = QString("\\!\\[([^\\[\\]]*)\\]"
                                                          "(\\s*=(\\d*)x(\\d*))?"
                                                          "\\s*\\)");
 
-const QString MarkdownUtils::c_headerRegExp = QString("^(#{1,6})\\s+((\\d+(\\.\\d+)*\\.?(?=\\s))?\\s*(\\S.*)?)$");
+// Constrain the main section number digits within 3 chars to avoid treating a date like 20210101 as a section number.
+const QString MarkdownUtils::c_headerRegExp = QString("^(#{1,6})\\s+((\\d{1,3}(?:\\.\\d+)*\\.?(?=\\s))?\\s*(\\S.*)?)$");
 
-const QString MarkdownUtils::c_headerPrefixRegExp = QString("^(#{1,6}\\s+(\\d+(\\.\\d+)*\\.?(?=\\s))?\\s*)($|(\\S.*)?$)");
+const QString MarkdownUtils::c_headerPrefixRegExp = QString("^(#{1,6}\\s+(\\d{1,3}(?:\\.\\d+)*\\.?(?=\\s))?\\s*)($|(\\S.*)?$)");
 
 const QString MarkdownUtils::c_todoListRegExp = QString("^(\\s*)([\\*-])\\s+\\[([ x])\\]\\s*(.*)$");
 
