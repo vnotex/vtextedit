@@ -15,10 +15,13 @@
 
 #include "documentresourcemgr.h"
 
-#define MARKER_THICKNESS        2
-#define MAX_INLINE_IMAGE_HEIGHT 400
-
 using namespace vte;
+
+const int TextDocumentLayout::c_markerThickness = 2;
+
+const int TextDocumentLayout::c_maxInlineImageHeight = 400;
+
+const int TextDocumentLayout::c_imagePadding = 2;
 
 static bool realEqual(qreal p_a, qreal p_b)
 {
@@ -654,7 +657,7 @@ qreal TextDocumentLayout::layoutLines(const QTextBlock &p_block,
             }
 
             if (!images.isEmpty()) {
-                p_height += imgHeight + MARKER_THICKNESS + MARKER_THICKNESS;
+                p_height += imgHeight + c_markerThickness * 2 + c_imagePadding * 2;
             }
         }
 
@@ -676,7 +679,7 @@ void TextDocumentLayout::layoutInlineImage(const PreviewImageData *p_data,
                                            QVector<ImagePaintData> &p_images)
 {
     Marker mk;
-    qreal mky = p_imageSpaceHeight + p_heightInBlock + MARKER_THICKNESS;
+    qreal mky = p_imageSpaceHeight + p_heightInBlock + c_imagePadding * 2 + c_markerThickness;
     mk.m_start = QPointF(p_xStart, mky);
     mk.m_end = QPointF(p_xEnd, mky);
     p_markers.append(mk);
@@ -688,7 +691,7 @@ void TextDocumentLayout::layoutInlineImage(const PreviewImageData *p_data,
         ImagePaintData ipd;
         ipd.m_name = p_data->m_imageName;
         ipd.m_rect = QRectF(QPointF(p_xStart,
-                                    p_heightInBlock + p_imageSpaceHeight - size.height()),
+                                    p_heightInBlock + c_imagePadding + p_imageSpaceHeight - size.height()),
                             size);
         if (p_data->m_backgroundColor != 0) {
             ipd.m_backgroundColor = QColor(p_data->m_backgroundColor);
@@ -804,7 +807,7 @@ QRectF TextDocumentLayout::blockRectFromTextLayout(const QTextBlock &p_block,
                 if (p_image) {
                     p_image->m_name = img->m_imageName;
                     p_image->m_rect = QRectF(padding + m_margin,
-                                             br.height() + m_leadingSpaceOfLine,
+                                             br.height() + m_leadingSpaceOfLine + c_imagePadding,
                                              size.width(),
                                              size.height());
                     if (img->m_backgroundColor != 0) {
@@ -813,7 +816,7 @@ QRectF TextDocumentLayout::blockRectFromTextLayout(const QTextBlock &p_block,
                 }
 
                 int dw = padding + size.width() + m_margin - br.width();
-                int dh = size.height() + m_leadingSpaceOfLine;
+                int dh = size.height() + m_leadingSpaceOfLine + c_imagePadding * 2;
                 br.adjust(0, 0, dw > 0 ? dw : 0, dh);
             }
         }
@@ -911,7 +914,7 @@ void TextDocumentLayout::drawPreviewMarker(QPainter *p_painter,
     }
 
     QPen oldPen = p_painter->pen();
-    QPen newPen(m_previewMarkerForeground, MARKER_THICKNESS, Qt::DashLine);
+    QPen newPen(m_previewMarkerForeground, c_markerThickness, Qt::DashLine);
     p_painter->setPen(newPen);
 
     for (auto const & mk : markers) {
@@ -1006,7 +1009,7 @@ qreal TextDocumentLayout::fetchInlineImagesForOneLine(const QVector<PreviewData 
                 p_imageRange.append(QPair<qreal, qreal>(startX, endX));
 
                 QSize size = img->m_imageSize;
-                scaleSize(size, endX - startX, MAX_INLINE_IMAGE_HEIGHT);
+                scaleSize(size, endX - startX, c_maxInlineImageHeight);
                 if (size.height() > maxHeight) {
                     maxHeight = size.height();
                 }
@@ -1022,7 +1025,7 @@ qreal TextDocumentLayout::fetchInlineImagesForOneLine(const QVector<PreviewData 
                     p_imageRange.append(QPair<qreal, qreal>(startX, endX));
 
                     QSize size = img->m_imageSize;
-                    scaleSize(size, endX - startX, MAX_INLINE_IMAGE_HEIGHT);
+                    scaleSize(size, endX - startX, c_maxInlineImageHeight);
                     if (size.height() > maxHeight) {
                         maxHeight = size.height();
                     }
@@ -1047,7 +1050,7 @@ qreal TextDocumentLayout::fetchInlineImagesForOneLine(const QVector<PreviewData 
                 p_imageRange.append(QPair<qreal, qreal>(startX, endX));
 
                 QSize size = img->m_imageSize;
-                scaleSize(size, endX - startX, MAX_INLINE_IMAGE_HEIGHT);
+                scaleSize(size, endX - startX, c_maxInlineImageHeight);
                 if (size.height() > maxHeight) {
                     maxHeight = size.height();
                 }

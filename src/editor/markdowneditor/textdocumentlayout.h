@@ -200,6 +200,13 @@ namespace vte
         bool m_constrainPreviewWidthEnabled = false;
 
         QColor m_previewMarkerForeground = {"#9575CD"};
+
+        static const int c_markerThickness;
+
+        static const int c_maxInlineImageHeight;
+
+        // Padding of image preview for top and bottom.
+        static const int c_imagePadding;
     };
 
 }
