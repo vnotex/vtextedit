@@ -13,6 +13,7 @@
 #include <vtextedit/textblockdata.h>
 #include <vtextedit/previewdata.h>
 
+#include "peghighlightblockdata.h"
 #include "documentresourcemgr.h"
 
 using namespace vte;
@@ -514,7 +515,7 @@ void TextDocumentLayout::layoutBlock(const QTextBlock &p_block)
     }
 
     qreal availableWidth = doc->pageSize().width();
-    if (availableWidth <= 0) {
+    if (availableWidth <= 0 || !shouldBlockWrapLine(p_block)) {
         availableWidth = qreal(INT_MAX);
     }
 
@@ -822,7 +823,8 @@ QRectF TextDocumentLayout::blockRectFromTextLayout(const QTextBlock &p_block,
         }
     }
 
-    br.adjust(0, 0, m_margin + m_cursorWidth, 0);
+    // Add margins to both sides.
+    br.adjust(0, 0, m_margin * 2 + m_cursorWidth, 0);
 
     // Add bottom margin.
     if (!p_block.next().isValid()) {
@@ -1163,4 +1165,9 @@ void TextDocumentLayout::setLeadingSpaceOfLine(qreal p_leading)
     if (p_leading >= 0) {
         m_leadingSpaceOfLine = p_leading;
     }
+}
+
+bool TextDocumentLayout::shouldBlockWrapLine(const QTextBlock &p_block) const
+{
+    return PegHighlightBlockData::get(p_block)->getWrapLineEnabled();
 }

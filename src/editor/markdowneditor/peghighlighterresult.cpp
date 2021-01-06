@@ -33,7 +33,9 @@ PegHighlighterResult::PegHighlighterResult(const PegMarkdownHighlighter *p_peg,
 
     parseMathBlock(p_peg, p_result);
 
-    parseHRuleBlocks(p_peg, p_result);
+    // ATTENTION: if we want to handle HRule blocks specificly, uncomment this line to fill
+    // the m_hruleBlocks.
+    // parseHRuleBlocks(p_peg, p_result);
 
     parseTableBlocks(p_result);
 }

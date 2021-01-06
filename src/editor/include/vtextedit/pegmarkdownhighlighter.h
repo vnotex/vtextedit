@@ -137,7 +137,7 @@ namespace peg
         void clearBlockUserData(const QSharedPointer<PegHighlighterResult> &p_result,
                                 QTextBlock &p_block);
 
-        void updateAllBlocksUserState(const QSharedPointer<PegHighlighterResult> &p_result);
+        void updateAllBlocksUserDataAndState(const QSharedPointer<PegHighlighterResult> &p_result);
 
         void updateCodeBlocks(const QSharedPointer<PegHighlighterResult> &p_result);
 

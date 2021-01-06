@@ -167,6 +167,8 @@ namespace vte
         // @p_pos: position within the layout.
         int getTextWidthWithinTextLine(const QTextLayout *p_layout, int p_pos, int p_length);
 
+        bool shouldBlockWrapLine(const QTextBlock &p_block) const;
+
         // Document margin on left/right/bottom.
         qreal m_margin = 0;
 

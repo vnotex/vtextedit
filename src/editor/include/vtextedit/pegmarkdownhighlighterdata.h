@@ -22,14 +22,13 @@ namespace peg
 
     enum HighlightBlockState
     {
+        // QTextBlock::userState() will return -1 if not defined.
         Normal = -1,
 
         // A fenced code block.
         CodeBlockStart,
         CodeBlock,
         CodeBlockEnd,
-
-        HRule
     };
 
     // One continuous region for a certain markdown highlight style

@@ -107,6 +107,23 @@ namespace vte
             m_codeBlockIndentation = p_indentation;
         }
 
+        bool getWrapLineEnabled() const
+        {
+            return m_wrapLineEnabled;
+        }
+
+        void setWrapLineEnabled(bool p_enabled)
+        {
+            m_wrapLineEnabled = p_enabled;
+        }
+
+        // Clear user data on parse result ready.
+        void clearOnResultReady()
+        {
+            m_codeBlockIndentation = -1;
+            m_wrapLineEnabled = true;
+        }
+
         static QSharedPointer<PegHighlightBlockData> get(const QTextBlock &p_block)
         {
             auto blockData = TextBlockData::get(p_block);
@@ -131,6 +148,9 @@ namespace vte
 
         // Indentation of the this code block if this block is a fenced code block.
         int m_codeBlockIndentation = -1;
+
+        // Whether wrap this block to the width of editor.
+        bool m_wrapLineEnabled = true;
     };
 }
 

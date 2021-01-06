@@ -400,7 +400,7 @@ void PegMarkdownHighlighter::handleParseResult(const QSharedPointer<peg::PegPars
     if (matched) {
         clearAllBlocksUserDataAndState(m_result);
 
-        updateAllBlocksUserState(m_result);
+        updateAllBlocksUserDataAndState(m_result);
 
         updateCodeBlocks(m_result);
     }
@@ -463,7 +463,7 @@ void PegMarkdownHighlighter::clearBlockUserData(const QSharedPointer<PegHighligh
         return;
     }
 
-    PegHighlightBlockData::get(p_block)->setCodeBlockIndentation(-1);
+    PegHighlightBlockData::get(p_block)->clearOnResultReady();
 
     if (BlockPreviewData::get(p_block)->getPreviewData().isEmpty()) {
         m_possiblePreviewBlocks.remove(blockNum);
@@ -472,9 +472,10 @@ void PegMarkdownHighlighter::clearBlockUserData(const QSharedPointer<PegHighligh
     }
 }
 
-void PegMarkdownHighlighter::updateAllBlocksUserState(const QSharedPointer<PegHighlighterResult> &p_result)
+void PegMarkdownHighlighter::updateAllBlocksUserDataAndState(const QSharedPointer<PegHighlighterResult> &p_result)
 {
     auto doc = document();
+
     // Code blocks.
     const QHash<int, peg::HighlightBlockState> &cbStates = p_result->m_codeBlocksState;
     for (auto it = cbStates.begin(); it != cbStates.end(); ++it) {
@@ -485,11 +486,16 @@ void PegMarkdownHighlighter::updateAllBlocksUserState(const QSharedPointer<PegHi
         block.setUserState(it.value());
     }
 
-    // HRule blocks.
-    foreach (int blk, p_result->m_hruleBlocks) {
-        QTextBlock block = doc->findBlockByNumber(blk);
-        if (block.isValid()) {
-            block.setUserState(peg::HighlightBlockState::HRule);
+    // Table blocks.
+    for (const auto &tbb : p_result->m_tableBlocks) {
+        auto block = doc->findBlock(tbb.m_startPos);
+        if (!block.isValid()) {
+            continue;
+        }
+
+        while (block.isValid() && block.position() < tbb.m_endPos) {
+            PegHighlightBlockData::get(block)->setWrapLineEnabled(false);
+            block = block.next();
         }
     }
 }
