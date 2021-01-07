@@ -113,6 +113,23 @@ namespace vte
         // Use PegParser to parse @p_content and return the image regions.
         static QVector<peg::ElementRegion> fetchImageRegionsViaParser(const QString &p_content);
 
+        struct HeaderMatch
+        {
+            bool m_matched = false;
+
+            int m_level = -1;
+
+            int m_spacesAfterMarker = 0;
+
+            // The whole header including sequence.
+            QString m_header;
+
+            QString m_sequence;
+
+            int m_spacesAfterSequence = 0;
+        };
+        static HeaderMatch matchHeader(const QString &p_text);
+
         static const QString c_fencedCodeBlockStartRegExp;
 
         static const QString c_fencedCodeBlockEndRegExp;
@@ -135,19 +152,6 @@ namespace vte
 
         // Regular expression for image alt text.
         static const QString c_imageAltRegExp;
-
-        // Regular expression for header block.
-        // Captured texts:
-        // 1. Header marker (##);
-        // 2. Header Title (need to be trimmed);
-        // 3. Header Sequence (1.1., 1.2., optional);
-        // 4. Unused;
-        static const QString c_headerRegExp;
-
-        // Regular expression for header block.
-        // Captured texts:
-        // 1. prefix till the real header title content;
-        static const QString c_headerPrefixRegExp;
 
     private:
         enum CursorPosition
@@ -236,6 +240,15 @@ namespace vte
         // 1. Indentation;
         // 2. Quote content;
         static const QString c_quoteRegExp;
+
+        // Regular expression for header block.
+        // Captured texts:
+        // 1. Header marker (##);
+        // 2. Spaces after marker;
+        // 3. Header Title (need to be trimmed, all text after marker and spaces);
+        // 4. Header Sequence (1.1., 1.2., optional);
+        // 5. Spaces after header sequence;
+        static const QString c_headerRegExp;
     };
 }
 

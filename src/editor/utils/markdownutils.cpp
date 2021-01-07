@@ -33,9 +33,7 @@ const QString MarkdownUtils::c_imageLinkRegExp = QString("\\!\\[([^\\[\\]]*)\\]"
                                                          "\\s*\\)");
 
 // Constrain the main section number digits within 3 chars to avoid treating a date like 20210101 as a section number.
-const QString MarkdownUtils::c_headerRegExp = QString("^(#{1,6})\\s+((\\d{1,3}(?:\\.\\d+)*\\.?(?=\\s))?\\s*(\\S.*)?)$");
-
-const QString MarkdownUtils::c_headerPrefixRegExp = QString("^(#{1,6}\\s+(\\d{1,3}(?:\\.\\d+)*\\.?(?=\\s))?\\s*)($|(\\S.*)?$)");
+const QString MarkdownUtils::c_headerRegExp = QString("^(#{1,6})(\\s+)((\\d{1,3}(?:\\.\\d+)*\\.?(?=\\s))?(\\s*)(?:\\S.*)?)$");
 
 const QString MarkdownUtils::c_todoListRegExp = QString("^(\\s*)([\\*-])\\s+\\[([ x])\\]\\s*(.*)$");
 
@@ -192,11 +190,11 @@ bool MarkdownUtils::insertHeading(QTextCursor &p_cursor, const QTextBlock &p_blo
     p_cursor.setPosition(p_block.position());
 
     // Test if this block contains title marks.
-    QRegExp headerReg(c_headerRegExp);
     QString text = p_block.text();
     bool textChanged = false;
-    if (headerReg.exactMatch(text)) {
-        const int level = headerReg.cap(1).length();
+    auto match = matchHeader(text);
+    if (match.m_matched) {
+        const int level = match.m_level;
         if (level == targetLevel) {
             return false;
         } else {
@@ -204,11 +202,7 @@ bool MarkdownUtils::insertHeading(QTextCursor &p_cursor, const QTextBlock &p_blo
             int length = level;
             if (targetLevel == 0) {
                 // Remove the whole prefix till the heading content.
-                QRegExp prefixReg(c_headerPrefixRegExp);
-                const bool preMatched = prefixReg.exactMatch(text);
-                Q_UNUSED(preMatched);
-                Q_ASSERT(preMatched);
-                length = prefixReg.cap(1).length();
+                length = match.m_level + match.m_spacesAfterMarker;
             }
 
             p_cursor.movePosition(QTextCursor::NextCharacter,
@@ -1033,4 +1027,22 @@ bool MarkdownUtils::pathContains(const QString &p_dir, const QString &p_path)
     }
 
     return true;
+}
+
+MarkdownUtils::HeaderMatch MarkdownUtils::matchHeader(const QString &p_text)
+{
+    QRegExp regExp(c_headerRegExp);
+    bool matched = regExp.exactMatch(p_text);
+    if (!matched) {
+        return HeaderMatch();
+    } else {
+        HeaderMatch match;
+        match.m_matched = true;
+        match.m_level = regExp.cap(1).length();
+        match.m_spacesAfterMarker = regExp.cap(2).length();
+        match.m_header = regExp.cap(3).trimmed();
+        match.m_sequence = regExp.cap(4);
+        match.m_spacesAfterSequence = regExp.cap(5).length();
+        return match;
+    }
 }
