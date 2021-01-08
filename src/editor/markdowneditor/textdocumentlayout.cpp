@@ -297,7 +297,11 @@ QVector<QTextLayout::FormatRange> TextDocumentLayout::formatRangeFromSelection(c
             // a position to specify the line. that's more convenience in usage.
             QTextLayout::FormatRange o;
             QTextLine l = p_block.layout()->lineForTextPosition(range.cursor.position() - blpos);
-            Q_ASSERT(l.isValid());
+            if (!l.isValid()) {
+                qWarning() << "invalid layout lineForTextPosition" << p_block.blockNumber() << range.cursor.position() << blpos;
+                Q_ASSERT(false);
+                continue;
+            }
             o.start = l.textStart();
             o.length = l.textLength();
             if (o.start + o.length == bllen - 1) {

@@ -44,6 +44,8 @@ namespace vte
 
         static int fetchIndentation(const QTextBlock &p_block);
 
+        static QString fetchIndentationSpaces(const QTextBlock &p_block);
+
         // Calculate the block margin (prefix spaces) in pixels.
         static int calculateBlockMargin(const QTextBlock &p_block, int p_tabStopDistance);
 

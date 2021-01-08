@@ -415,6 +415,11 @@ void MarkdownUtils::typeStrikethrough(QTextEdit *p_edit)
     typeMarker(p_edit, QStringLiteral("~~"), QStringLiteral("~~"));
 }
 
+void MarkdownUtils::typeMark(QTextEdit *p_edit)
+{
+    typeMarker(p_edit, QStringLiteral("<mark>"), QStringLiteral("</mark>"));
+}
+
 void MarkdownUtils::typeUnorderedList(QTextEdit *p_edit)
 {
     doOnSelectedLinesOrCurrentLine(p_edit, &MarkdownUtils::insertUnorderedList, nullptr);

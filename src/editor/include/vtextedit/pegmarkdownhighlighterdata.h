@@ -235,7 +235,7 @@ namespace peg
         QString m_text;
     };
 
-    struct TableBlock
+    struct VTEXTEDIT_EXPORT TableBlock
     {
         bool isValid() const
         {

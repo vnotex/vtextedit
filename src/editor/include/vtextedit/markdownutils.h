@@ -77,6 +77,8 @@ namespace vte
 
         static void typeStrikethrough(QTextEdit *p_edit);
 
+        static void typeMark(QTextEdit *p_edit);
+
         static void typeUnorderedList(QTextEdit *p_edit);
 
         static void typeOrderedList(QTextEdit *p_edit);

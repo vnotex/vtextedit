@@ -205,6 +205,11 @@ int TextEditUtils::fetchIndentation(const QTextBlock &p_block)
     return TextUtils::fetchIndentation(p_block.text());
 }
 
+QString TextEditUtils::fetchIndentationSpaces(const QTextBlock &p_block)
+{
+    return TextUtils::fetchIndentationSpaces(p_block.text());
+}
+
 int TextEditUtils::calculateBlockMargin(const QTextBlock &p_block, int p_tabStopDistance)
 {
     // Font name -> space width.
