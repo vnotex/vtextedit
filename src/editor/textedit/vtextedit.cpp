@@ -264,6 +264,18 @@ void VTextEdit::handleDefaultKeyPress(QKeyEvent *p_event)
         break;
     }
 
+    // Qt's bug: Ctrl+V won't call canInsertFromMimeData().
+    // https://bugreports.qt.io/browse/QTBUG-89752
+    // Solution is to call canPaste() before the default behavior.
+#ifndef QT_NO_CLIPBOARD
+    if (p_event == QKeySequence::Paste) {
+        if (!canPaste()) {
+            // No need to call the default behavior to paste contents.
+            isHandled = true;
+        }
+    }
+#endif
+
     if (!isHandled) {
         QTextEdit::keyPressEvent(p_event);
     }
