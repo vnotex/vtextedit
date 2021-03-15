@@ -52,13 +52,16 @@ using namespace KateVi;
 
 void ModeBase::yankToClipBoard(QChar chosen_register, QString text)
 {
-    //only yank to the clipboard if no register was specified,
-    // textlength > 1 and there is something else then whitespace
+    // For VNote: do not yank to system clipboard by default.
+    Q_UNUSED(chosen_register);
+    Q_UNUSED(text);
+#if 0
     if ((chosen_register == QLatin1Char('0') || chosen_register == QLatin1Char('-'))
         && text.length() > 1 && !text.trimmed().isEmpty())
     {
         m_interface->copyToClipboard(text);
     }
+#endif
 }
 
 bool ModeBase::deleteRange(Range &r, OperationMode mode, bool addToRegister)
