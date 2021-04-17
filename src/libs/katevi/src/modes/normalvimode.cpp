@@ -115,9 +115,10 @@ bool NormalViMode::handleKeyPress(const QKeyEvent *e)
     clearYankHighlight();
 
     auto adapter = m_viInputModeManager->inputAdapter();
+    // Back normal mode, distinguish between OS CTRL.
     if (keyCode == Qt::Key_Escape
-        || (keyCode == Qt::Key_C && modifiers == Qt::ControlModifier)
-        || (keyCode == Qt::Key_BracketLeft && modifiers == Qt::ControlModifier)) {
+        || (keyCode == Qt::Key_C && ViUtils::isControlModifier(modifiers))
+        || (keyCode == Qt::Key_BracketLeft && ViUtils::isControlModifier(modifiers))) {
         adapter->setCaretStyle(KateViI::Block);
         m_pendingResetIsDueToExit = true;
         // Vim in weird as if we e.g. i<ctrl-o><ctrl-c> it claims (in the status bar) to

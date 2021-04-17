@@ -23,6 +23,7 @@
 #include <katevi/inputmodemanager.h>
 #include <katevi/interface/katevieditorinterface.h>
 #include <katevi/interface/kateviconfig.h>
+#include <viutils.h>
 #include <marks.h>
 
 using namespace KateVi;
@@ -99,7 +100,7 @@ bool ReplaceViMode::commandMoveOneWordRight()
 bool ReplaceViMode::handleKeyPress(const QKeyEvent *e)
 {
     // backspace should work even if the shift key is down
-    if (e->modifiers() != Qt::ControlModifier && e->key() == Qt::Key_Backspace) {
+    if (ViUtils::isControlModifier(e->modifiers()) && e->key() == Qt::Key_Backspace) {
         backspace();
         return true;
     }
@@ -143,7 +144,7 @@ bool ReplaceViMode::handleKeyPress(const QKeyEvent *e)
         default:
             return false;
         }
-    } else if (e->modifiers() == Qt::ControlModifier) {
+    } else if (ViUtils::isControlModifier(e->modifiers())) {
         switch (e->key()) {
         case Qt::Key_BracketLeft:
         case Qt::Key_C:

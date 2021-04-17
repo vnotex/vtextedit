@@ -28,6 +28,11 @@ using namespace KateVi;
 Command::Command(NormalViMode *parent, QString pattern,
                  bool(NormalViMode::*commandMethod)(), unsigned int flags)
 {
+    //Judge the OS CTRL, CTRL replaced with META because QT.
+#if defined(Q_OS_MACOS) || defined(Q_OS_MAC)
+    pattern.replace(QLatin1String("c-"), "m-");
+#endif
+
     m_parent = parent;
     m_pattern = KeyParser::self()->encodeKeySequence(pattern);
     m_flags = flags;
