@@ -14,7 +14,7 @@ namespace KateVi
 
         static bool isRegister(QChar p_char);
 
-        // Judge the OS CTRL
+        // Judge the OS CTRL.
         static bool isControlModifier(int p_modifiers);
     };
 }

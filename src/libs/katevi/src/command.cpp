@@ -30,7 +30,7 @@ Command::Command(NormalViMode *parent, QString pattern,
 {
     //Judge the OS CTRL, CTRL replaced with META because QT.
 #if defined(Q_OS_MACOS) || defined(Q_OS_MAC)
-    pattern.replace(QLatin1String("c-"), "m-");
+    pattern.replace(QLatin1String("c-"), QLatin1String("m-"));
 #endif
 
     m_parent = parent;
