@@ -22,3 +22,13 @@ bool ViUtils::isRegister(QChar p_char)
            || p_char == QLatin1Char('#')
            || p_char == QLatin1Char('^');
 }
+
+// Just judge MacOS for now, everything else is considered to be same.
+bool ViUtils::isControlModifier(int p_modifiers)
+{
+#if defined(Q_OS_MACOS) || defined(Q_OS_MAC)
+    return p_modifiers == Qt::MetaModifier;
+#else
+    return p_modifiers == Qt::ControlModifier;
+#endif
+}
