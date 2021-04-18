@@ -1,3 +1,9 @@
 [submodule "src/libs/syntax-highlighting"]
 	path = src/libs/syntax-highlighting
 	url = https://github.com/vnotex/syntax-highlighting.git
+[submodule "src/libs/hunspell"]
+	path = src/libs/hunspell
+	url = https://github.com/vnotex/hunspell.git
+[submodule "src/libs/sonnet"]
+	path = src/libs/sonnet
+	url = https://github.com/vnotex/sonnet.git

@@ -68,6 +68,9 @@ LIBS_FOLDER = $$PWD/../libs
 include($$LIBS_FOLDER/syntax-highlighting/syntax-highlighting_export.pri)
 include($$LIBS_FOLDER/katevi/katevi_export.pri)
 include($$LIBS_FOLDER/peg-markdown-highlight/peg-markdown-highlight_export.pri)
+include($$LIBS_FOLDER/hunspell/hunspell_export.pri)
+include($$LIBS_FOLDER/sonnet/src/core/sonnet_export.pri)
+include($$LIBS_FOLDER/sonnet/src/plugins/hunspell/hunspell_export.pri)
 
 ## INSTALLS
 unix:!macx {
