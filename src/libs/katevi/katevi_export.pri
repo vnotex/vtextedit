@@ -18,3 +18,5 @@ win32:CONFIG(release, debug|release) {
     LIBS += $$OUT_FOLDER/libKateVi.a
     PRE_TARGETDEPS += $$OUT_FOLDER/libKateVi.a
 }
+
+DEFINES += KATEVI_STATIC_DEFINE
