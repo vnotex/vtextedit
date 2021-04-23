@@ -22,6 +22,8 @@ namespace vte
                           const QString &p_theme,
                           const QString &p_syntax);
 
+        void setSpellCheckEnabled(bool p_enabled);
+
         static bool isValidSyntax(const QString &p_syntax);
 
     protected:
@@ -38,6 +40,8 @@ namespace vte
     private:
         // Will be set and cleared within highlightBlock().
         QHash<int, int> m_pendingFoldingStart;
+
+        bool m_spellCheckEnabled = false;
     };
 }
 

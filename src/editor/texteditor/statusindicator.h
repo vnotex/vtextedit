@@ -7,6 +7,7 @@
 #include <vtextedit/global.h>
 
 class QLabel;
+class QToolButton;
 
 namespace vte
 {
@@ -28,6 +29,11 @@ namespace vte
 
         void updateInputModeStatusWidget(const QSharedPointer<InputModeStatusWidget> &p_statusWidget);
 
+        void updateSpellCheck(bool p_spellCheckEnabled,
+                              bool p_autoDetectLanguageEnabled,
+                              const QString &p_currentLanguage,
+                              const QMap<QString, QString>& p_dictionaries);
+
         const QSharedPointer<InputModeStatusWidget> &getInputModeStatusWidget() const;
 
     signals:
@@ -42,6 +48,8 @@ namespace vte
         void setupUI();
 
         static QString generateCursorLabelText(int p_lineCount, int p_line, int p_column);
+
+        QToolButton *m_spellCheckBtn = nullptr;
 
         QLabel *m_cursorLabel = nullptr;
 

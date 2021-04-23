@@ -1,6 +1,8 @@
 #ifndef UTILS_H
 #define UTILS_H
 
+class QToolButton;
+
 namespace vte
 {
     class Utils
@@ -9,6 +11,8 @@ namespace vte
         Utils() = delete;
 
         static void sleepWait(int p_milliseconds);
+
+        static void removeMenuIndicator(QToolButton *p_btn);
     };
 }
 

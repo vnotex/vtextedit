@@ -12,9 +12,7 @@ namespace vte
     class VTEXTEDIT_EXPORT TextEditorConfig
     {
     public:
-        TextEditorConfig()
-        {
-        }
+        TextEditorConfig() = default;
 
         static QSharedPointer<Theme> defaultTheme();
 

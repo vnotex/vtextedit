@@ -14,6 +14,7 @@ namespace vte
     class PegHighlightBlockData;
     struct BlockLayoutData;
     class BlockPreviewData;
+    struct BlockSpellCheckData;
 
     class VTEXTEDIT_EXPORT TextBlockData : public QTextBlockUserData
     {
@@ -68,6 +69,9 @@ namespace vte
         const QSharedPointer<BlockPreviewData> &getBlockPreviewData() const;
         void setBlockPreviewData(const QSharedPointer<BlockPreviewData> &p_data);
 
+        const QSharedPointer<BlockSpellCheckData> &getBlockSpellCheckData() const;
+        void setBlockSpellCheckData(const QSharedPointer<BlockSpellCheckData> &p_data);
+
         // Get or create a TextBlockData for @p_block.
         static TextBlockData *get(const QTextBlock &p_block);
 
@@ -102,6 +106,9 @@ namespace vte
 
         // Preview data of this block.
         QSharedPointer<BlockPreviewData> m_blockPreviewData;
+
+        // Misspelling words of this block.
+        QSharedPointer<BlockSpellCheckData> m_blockSpellCheckData;
     };
 }
 

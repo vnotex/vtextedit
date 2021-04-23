@@ -3,8 +3,13 @@
 #include <QLabel>
 #include <QHBoxLayout>
 #include <QVariant>
+#include <QMenu>
+#include <QToolButton>
+#include <QAction>
+#include <QDebug>
 
 #include "inputmodestatuswidget.h"
+#include <utils/utils.h>
 
 using namespace vte;
 
@@ -37,14 +42,28 @@ void StatusIndicator::setupUI()
     margins.setBottom(0);
     mainLayout->setContentsMargins(margins);
 
-    // Add a stretch.
-    mainLayout->addStretch();
-
     // Cursor label.
     m_cursorLabel = new QLabel(this);
     m_cursorLabel->setProperty(c_cursorLabelProperty, true);
     m_cursorLabel->setText(generateCursorLabelText(1, 1, 0));
     mainLayout->addWidget(m_cursorLabel);
+
+    // Add a stretch.
+    mainLayout->addStretch();
+
+    // Spell check button.
+    {
+        m_spellCheckBtn = new QToolButton(this);
+        m_spellCheckBtn->setPopupMode(QToolButton::InstantPopup);
+        Utils::removeMenuIndicator(m_spellCheckBtn);
+        mainLayout->addWidget(m_spellCheckBtn);
+
+        auto act = new QAction(tr("Spelling"), m_spellCheckBtn);
+        m_spellCheckBtn->setDefaultAction(act);
+
+        auto menu = new QMenu(m_spellCheckBtn);
+        m_spellCheckBtn->setMenu(menu);
+    }
 
     // Syntax label.
     m_syntaxLabel = new QLabel(this);
@@ -120,4 +139,50 @@ void StatusIndicator::hideInputModeStatusWidget()
 const QSharedPointer<InputModeStatusWidget> &StatusIndicator::getInputModeStatusWidget() const
 {
     return m_inputModeWidget;
+}
+
+void StatusIndicator::updateSpellCheck(bool p_spellCheckEnabled,
+                                       bool p_autoDetectLanguageEnabled,
+                                       const QString &p_currentLanguage,
+                                       const QMap<QString, QString>& p_dictionaries)
+{
+    auto menu = m_spellCheckBtn->menu();
+    if (!menu->isEmpty())
+    {
+        qWarning() << "updateSpellCheck() is called twice";
+        return;
+    }
+
+    {
+        auto act = menu->addAction(tr("Enable Spell Check"));
+        act->setCheckable(true);
+        act->setChecked(p_spellCheckEnabled);
+        connect(act, &QAction::triggered,
+                this, [this](bool p_checked) {
+
+                });
+    }
+
+    {
+        auto act = menu->addAction(tr("Auto Detect Language"));
+        act->setCheckable(true);
+        act->setChecked(p_autoDetectLanguageEnabled);
+        connect(act, &QAction::triggered,
+                this, [this](bool p_checked) {
+
+                });
+    }
+
+    menu->addSeparator();
+
+    if (p_dictionaries.isEmpty()) {
+        auto act = menu->addAction(tr("No Dictionary Found"));
+        act->setEnabled(false);
+    }
+
+    for (auto it = p_dictionaries.begin(); it != p_dictionaries.end(); ++it) {
+        auto act = menu->addAction(it.key());
+        act->setData(it.value());
+        qDebug() << it.value();
+    }
 }

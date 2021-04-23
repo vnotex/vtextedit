@@ -140,3 +140,13 @@ void TextBlockData::setBlockPreviewData(const QSharedPointer<BlockPreviewData> &
 {
     m_blockPreviewData = p_data;
 }
+
+const QSharedPointer<BlockSpellCheckData> &TextBlockData::getBlockSpellCheckData() const
+{
+    return m_blockSpellCheckData;
+}
+
+void TextBlockData::setBlockSpellCheckData(const QSharedPointer<BlockSpellCheckData> &p_data)
+{
+    m_blockSpellCheckData = p_data;
+}

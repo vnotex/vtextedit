@@ -12,6 +12,7 @@
 #include <vtextedit/textblockdata.h>
 
 #include <utils/textutils.h>
+#include <spellcheck/spellcheckhighlighthelper.h>
 
 using namespace vte;
 
@@ -74,6 +75,14 @@ void SyntaxHighlighter::highlightBlock(const QString &p_text)
         m_pendingFoldingStart.clear();
     }
 
+    // Do spell check.
+    if (!p_text.isEmpty() && m_spellCheckEnabled) {
+        bool ret = SpellCheckHighlightHelper::checkBlock(block, p_text);
+        if (ret) {
+            // Further check and highlight.
+        }
+    }
+
     // Store the state.
     const auto nextBlock = block.next();
     if (nextBlock.isValid()) {
@@ -130,4 +139,9 @@ bool SyntaxHighlighter::isValidSyntax(const QString &p_syntax)
 {
     auto def = KSyntaxHighlighterWrapper::definitionForSyntax(p_syntax);
     return def.isValid();
+}
+
+void SyntaxHighlighter::setSpellCheckEnabled(bool p_enabled)
+{
+    m_spellCheckEnabled = p_enabled;
 }
