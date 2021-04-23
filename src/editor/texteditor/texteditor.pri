@@ -15,6 +15,7 @@ SOURCES += \
 
 HEADERS += \
     $$PWD/completer.h \
+    $$PWD/blockspellcheckdata.h \
     $$PWD/editorcompleter.h \
     $$PWD/editorindicatorsborder.h \
     $$PWD/editorinputmode.h \

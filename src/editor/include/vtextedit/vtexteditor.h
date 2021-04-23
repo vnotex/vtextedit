@@ -153,6 +153,10 @@ namespace vte
 
         void clearSearchHighlight();
 
+        void setSpellCheckEnabled(bool p_enabled);
+
+        void setDefaultSpellCheckLanguage(const QString &p_lang);
+
         // Custom search paths for KSyntaxHighlighting Definition files.
         // Will search ./syntax and ./themes folder.
         static void addSyntaxCustomSearchPaths(const QStringList &p_paths);
@@ -317,6 +321,10 @@ namespace vte
         // We store them on our own.
         QFont m_themeFont;
         QPalette m_themePalette;
+
+        bool m_spellCheckEnabled = false;
+
+        QString m_defaultSpellCheckLanguage = QStringLiteral("en_US");
 
         static int s_instanceCount;
 

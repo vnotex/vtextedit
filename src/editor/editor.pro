@@ -9,27 +9,7 @@ TRANSLATIONS += data/translations/vtextedit_zh_CN.ts
 macx: {
     CONFIG += lib_bundle
     FRAMEWORK_HEADERS.version = Versions
-    FRAMEWORK_HEADERS.files = \
-        include/vtextedit/codeblockhighlighter.h \
-        include/vtextedit/global.h \
-        include/vtextedit/lrucache.h \
-        include/vtextedit/markdowneditorconfig.h \
-        include/vtextedit/markdownutils.h \
-        include/vtextedit/networkutils.h \
-        include/vtextedit/orderedintset.h \
-        include/vtextedit/pegmarkdownhighlighter.h \
-        include/vtextedit/pegmarkdownhighlighterdata.h \
-        include/vtextedit/previewdata.h \
-        include/vtextedit/previewmgr.h \
-        include/vtextedit/textblockdata.h \
-        include/vtextedit/texteditorconfig.h \
-        include/vtextedit/texteditutils.h \
-        include/vtextedit/textrange.h \
-        include/vtextedit/theme.h \
-        include/vtextedit/vmarkdowneditor.h \
-        include/vtextedit/vtextedit.h \
-        include/vtextedit/vtextedit_export.h \
-        include/vtextedit/vtexteditor.h
+    FRAMEWORK_HEADERS.files = $$files(include/vtextedit/*.h)
     FRAMEWORK_HEADERS.path = Headers/vtextedit
     QMAKE_BUNDLE_DATA += FRAMEWORK_HEADERS
 
@@ -56,6 +36,8 @@ include($$PWD/texteditor/texteditor.pri)
 include($$PWD/markdowneditor/markdowneditor.pri)
 
 include($$PWD/inputmode/inputmode.pri)
+
+include($$PWD/spellcheck/spellcheck.pri)
 
 
 RESOURCES += $$PWD/data/themes/theme.qrc

@@ -19,6 +19,7 @@
 #include "statusindicator.h"
 
 #include <vtextedit/texteditutils.h>
+#include <vtextedit/spellchecker.h>
 
 #include <QHBoxLayout>
 #include <QScrollBar>
@@ -389,6 +390,7 @@ void VTextEditor::setSyntax(const QString &p_syntax)
 
     if (!m_syntax.isEmpty() && SyntaxHighlighter::isValidSyntax(m_syntax)) {
         m_highlighter = new SyntaxHighlighter(document(), m_config->m_syntaxTheme, m_syntax);
+        m_highlighter->setSpellCheckEnabled(m_spellCheckEnabled);
     } else {
         m_syntax = QStringLiteral("plaintext");
     }
@@ -709,6 +711,8 @@ StatusIndicator *VTextEditor::createStatusWidget() const
             this, [this]() {
                 m_textEdit->setFocus();
             });
+
+    widget->updateSpellCheck(true, true, "en_US", SpellChecker::getInst().availableDictionaries());
     return widget;
 }
 
@@ -1186,4 +1190,17 @@ void VTextEditor::resolveBackReferenceInReplaceText(QString &p_replaceText,
                                                     const QRegularExpression &p_regExp)
 {
     p_replaceText = p_text.replace(p_regExp, p_replaceText);
+}
+
+void VTextEditor::setSpellCheckEnabled(bool p_enabled)
+{
+    m_spellCheckEnabled = p_enabled;
+    if (m_highlighter) {
+        m_highlighter->setSpellCheckEnabled(p_enabled);
+    }
+}
+
+void VTextEditor::setDefaultSpellCheckLanguage(const QString &p_lang)
+{
+    m_defaultSpellCheckLanguage = p_lang;
 }
