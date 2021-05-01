@@ -29,8 +29,7 @@ static VTextEditor *setupTextEditor(QWidget *p_parent)
 
     auto editor = new VTextEditor(editorConfig, p_parent);
     editor->setBasePath(":/demo/data/example_files");
-    // editor->setText(Helper::getCppText());
-    editor->setText("exampla\n");
+    editor->setText(Helper::getCppText());
     editor->setSyntax("cpp");
     editor->setSpellCheckEnabled(true);
     return editor;
@@ -52,6 +51,7 @@ int main(int p_argc, char *p_argv[])
     QApplication app(p_argc, p_argv);
 
     QLoggingCategory::setFilterRules("kf.sonnet.clients.hunspell.debug=true");
+    // QLoggingCategory::setFilterRules("kf.sonnet.core.debug=true");
 
     qInfo() << "OpenSSL build version:" << QSslSocket::sslLibraryBuildVersionString()
             << "link version:" << QSslSocket::sslLibraryVersionNumber();

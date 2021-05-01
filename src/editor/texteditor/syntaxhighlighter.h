@@ -6,11 +6,14 @@
 #include <AbstractHighlighter>
 #include <Definition>
 #include <QHash>
+#include <QSharedPointer>
 
 class QTextDocument;
 
 namespace vte
 {
+    struct BlockSpellCheckData;
+
     class SyntaxHighlighter : public QSyntaxHighlighter,
                               public KSyntaxHighlighting::AbstractHighlighter
     {
@@ -38,6 +41,8 @@ namespace vte
                           KSyntaxHighlighting::FoldingRegion p_region) Q_DECL_OVERRIDE;
 
     private:
+        void highlightMisspell(const QSharedPointer<BlockSpellCheckData> &p_data);
+
         // Will be set and cleared within highlightBlock().
         QHash<int, int> m_pendingFoldingStart;
 
