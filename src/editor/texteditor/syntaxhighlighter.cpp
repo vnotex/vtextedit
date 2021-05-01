@@ -13,6 +13,7 @@
 
 #include <utils/textutils.h>
 #include <spellcheck/spellcheckhighlighthelper.h>
+#include "blockspellcheckdata.h"
 
 using namespace vte;
 
@@ -80,6 +81,10 @@ void SyntaxHighlighter::highlightBlock(const QString &p_text)
         bool ret = SpellCheckHighlightHelper::checkBlock(block, p_text);
         if (ret) {
             // Further check and highlight.
+            auto spellData = data->getBlockSpellCheckData();
+            if (spellData && spellData->isValid(block.revision()) && !spellData->isEmpty()) {
+                highlightMisspell(spellData);
+            }
         }
     }
 
@@ -144,4 +149,15 @@ bool SyntaxHighlighter::isValidSyntax(const QString &p_syntax)
 void SyntaxHighlighter::setSpellCheckEnabled(bool p_enabled)
 {
     m_spellCheckEnabled = p_enabled;
+}
+
+void SyntaxHighlighter::highlightMisspell(const QSharedPointer<BlockSpellCheckData> &p_data)
+{
+    for (const auto &seg : p_data->m_misspellings) {
+        auto format = QSyntaxHighlighter::format(seg.m_offset);
+        format.setFontUnderline(true);
+        format.setUnderlineStyle(QTextCharFormat::SpellCheckUnderline);
+        format.setUnderlineColor(Qt::red);
+        setFormat(seg.m_offset, seg.m_length, format);
+    }
 }
