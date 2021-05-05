@@ -43,6 +43,17 @@ namespace vte
         // How many spaces with a Tab be translated into.
         int m_tabStopWidth = 4;
     };
+
+
+    // Set only on construction.
+    struct VTEXTEDIT_EXPORT TextEditorParameters
+    {
+        bool m_spellCheckEnabled = false;
+
+        bool m_autoDetectLanguageEnabled = false;
+
+        QString m_defaultSpellCheckLanguage = QStringLiteral("en_US");
+    };
 }
 
 #endif

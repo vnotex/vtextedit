@@ -41,11 +41,15 @@ namespace vte
 
         void focusOut();
 
+        void spellCheckChanged(bool p_enabled, bool p_autoDetect, const QString &p_currentLang);
+
     private slots:
         void hideInputModeStatusWidget();
 
     private:
         void setupUI();
+
+        void signalSpellCheckChanged();
 
         static QString generateCursorLabelText(int p_lineCount, int p_line, int p_column);
 
@@ -58,6 +62,12 @@ namespace vte
         QLabel *m_modeLabel = nullptr;
 
         QSharedPointer<InputModeStatusWidget> m_inputModeWidget;
+
+        bool m_spellCheckEnabled = false;
+
+        bool m_autoDetectLanguageEnabled = false;
+
+        QString m_defaultSpellCheckLanguage;
 
         static const char *c_cursorLabelProperty;
 

@@ -16,13 +16,14 @@ class QTextDocument;
 namespace vte
 {
     class TextEditorConfig;
+    struct TextEditorParameters;
     class VTextEdit;
     class IndicatorsBorder;
     class EditorIndicatorsBorder;
     class TextFolding;
     class ExtraSelectionMgr;
     class EditorExtraSelection;
-    class SyntaxHighlighter;
+    class VSyntaxHighlighter;
     class Theme;
     class TextBlockRange;
     class EditorInputMode;
@@ -58,6 +59,7 @@ namespace vte
         };
 
         VTextEditor(const QSharedPointer<TextEditorConfig> &p_config,
+                    const QSharedPointer<TextEditorParameters> &p_paras,
                     QWidget *p_parent = nullptr);
 
         virtual ~VTextEditor();
@@ -153,10 +155,6 @@ namespace vte
 
         void clearSearchHighlight();
 
-        void setSpellCheckEnabled(bool p_enabled);
-
-        void setDefaultSpellCheckLanguage(const QString &p_lang);
-
         // Custom search paths for KSyntaxHighlighting Definition files.
         // Will search ./syntax and ./themes folder.
         static void addSyntaxCustomSearchPaths(const QStringList &p_paths);
@@ -209,7 +207,7 @@ namespace vte
 
         Completer *completer() const;
 
-        StatusIndicator *createStatusWidget() const;
+        StatusIndicator *createStatusWidget();
 
         void updateStatusWidget();
 
@@ -230,6 +228,8 @@ namespace vte
                                                int p_end,
                                                bool p_skipCurrent,
                                                QTextCursor &p_currentMatch);
+
+        void updateSpellCheck();
 
         static void resolveBackReferenceInReplaceText(QString &p_replaceText,
                                                       QString p_text,
@@ -276,6 +276,8 @@ namespace vte
 
         QSharedPointer<TextEditorConfig> m_config;
 
+        QSharedPointer<TextEditorParameters> m_parameters;
+
         // Managed by QObject.
         IndicatorsBorder *m_indicatorsBorder = nullptr;
 
@@ -299,7 +301,7 @@ namespace vte
         TextFolding *m_folding = nullptr;
 
         // Managed by QObject.
-        SyntaxHighlighter *m_highlighter = nullptr;
+        VSyntaxHighlighter *m_highlighter = nullptr;
 
         // Syntax for highlighter.
         QString m_syntax;
@@ -321,10 +323,6 @@ namespace vte
         // We store them on our own.
         QFont m_themeFont;
         QPalette m_themePalette;
-
-        bool m_spellCheckEnabled = false;
-
-        QString m_defaultSpellCheckLanguage = QStringLiteral("en_US");
 
         static int s_instanceCount;
 

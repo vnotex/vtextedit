@@ -19,8 +19,9 @@
 using namespace vte;
 
 VMarkdownEditor::VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_config,
+                                 const QSharedPointer<TextEditorParameters> &p_paras,
                                  QWidget *p_parent)
-    : VTextEditor(p_config->m_textEditorConfig, p_parent),
+    : VTextEditor(p_config->m_textEditorConfig, p_paras, p_parent),
       m_config(p_config)
 {
     setupDocumentLayout();

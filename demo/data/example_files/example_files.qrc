@@ -2,6 +2,7 @@
     <qresource prefix="/demo/data/example_files">
         <file>example.cpp</file>
         <file>example.md</file>
+        <file>example.txt</file>
         <file>jiafei.png</file>
         <file>vnote.png</file>
     </qresource>

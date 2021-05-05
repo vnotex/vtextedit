@@ -10,7 +10,7 @@
 
 using namespace vte;
 
-bool SpellCheckHighlightHelper::checkBlock(const QTextBlock &p_block, const QString &p_text)
+bool SpellCheckHighlightHelper::checkBlock(const QTextBlock &p_block, const QString &p_text, bool p_autoDetectEnabled)
 {
     if (p_text.length() < 2) {
         return false;
@@ -20,7 +20,7 @@ bool SpellCheckHighlightHelper::checkBlock(const QTextBlock &p_block, const QStr
     auto data = TextBlockData::get(p_block);
     auto spellData = data->getBlockSpellCheckData();
     if (spellData && spellData->isValid(p_block.revision())) {
-        return false;
+        return true;
     }
 
     auto& speller = SpellChecker::getInst();
@@ -36,7 +36,6 @@ bool SpellCheckHighlightHelper::checkBlock(const QTextBlock &p_block, const QStr
     }
     spellData->m_revision = p_block.revision();
 
-    const bool autoDetectEnabled = speller.isAutoDetectLanguageEnabled();
     auto filter = speller.languageFilter();
     filter->setBuffer(p_text);
     while (filter->hasNext()) {
@@ -45,7 +44,7 @@ bool SpellCheckHighlightHelper::checkBlock(const QTextBlock &p_block, const QStr
         }
 
         const auto sentence = filter->next();
-        if (autoDetectEnabled) {
+        if (p_autoDetectEnabled) {
             const auto lang = filter->language();
             if (lang.isEmpty()) {
                 continue;

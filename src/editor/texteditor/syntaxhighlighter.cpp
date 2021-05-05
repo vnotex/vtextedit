@@ -28,7 +28,7 @@ static KSyntaxHighlighting::Repository *repository()
 SyntaxHighlighter::SyntaxHighlighter(QTextDocument *p_doc,
                                      const QString &p_theme,
                                      const QString &p_syntax)
-    : QSyntaxHighlighter(p_doc)
+    : VSyntaxHighlighter(p_doc)
 {
     auto def = KSyntaxHighlighterWrapper::definitionForSyntax(p_syntax);
     if (def.isValid()) {
@@ -78,12 +78,12 @@ void SyntaxHighlighter::highlightBlock(const QString &p_text)
 
     // Do spell check.
     if (!p_text.isEmpty() && m_spellCheckEnabled) {
-        bool ret = SpellCheckHighlightHelper::checkBlock(block, p_text);
+        bool ret = SpellCheckHighlightHelper::checkBlock(block, p_text, m_autoDetectLanguageEnabled);
         if (ret) {
             // Further check and highlight.
             auto spellData = data->getBlockSpellCheckData();
             if (spellData && spellData->isValid(block.revision()) && !spellData->isEmpty()) {
-                highlightMisspell(spellData);
+                VSyntaxHighlighter::highlightMisspell(spellData);
             }
         }
     }
@@ -146,18 +146,7 @@ bool SyntaxHighlighter::isValidSyntax(const QString &p_syntax)
     return def.isValid();
 }
 
-void SyntaxHighlighter::setSpellCheckEnabled(bool p_enabled)
+bool SyntaxHighlighter::isSyntaxFoldingEnabled() const
 {
-    m_spellCheckEnabled = p_enabled;
-}
-
-void SyntaxHighlighter::highlightMisspell(const QSharedPointer<BlockSpellCheckData> &p_data)
-{
-    for (const auto &seg : p_data->m_misspellings) {
-        auto format = QSyntaxHighlighter::format(seg.m_offset);
-        format.setFontUnderline(true);
-        format.setUnderlineStyle(QTextCharFormat::SpellCheckUnderline);
-        format.setUnderlineColor(Qt::red);
-        setFormat(seg.m_offset, seg.m_length, format);
-    }
+    return true;
 }

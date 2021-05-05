@@ -21,6 +21,7 @@ namespace vte
 
     public:
         VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_config,
+                        const QSharedPointer<TextEditorParameters> &p_paras,
                         QWidget *p_parent = nullptr);
 
         virtual ~VMarkdownEditor();

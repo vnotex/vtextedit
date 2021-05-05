@@ -19,19 +19,18 @@ using namespace vte;
 static void setupSpellChecker()
 {
     SpellChecker::addDictionaryCustomSearchPaths(QStringList(QStringLiteral("D:/tmp/dicts")));
-    auto& spellChecker = SpellChecker::getInst();
-    spellChecker.setAutoDetectLanguageEnabled(false);
 }
 
 static VTextEditor *setupTextEditor(QWidget *p_parent)
 {
     auto editorConfig = QSharedPointer<TextEditorConfig>::create();
+    auto editorParas = QSharedPointer<TextEditorParameters>::create();
+    editorParas->m_spellCheckEnabled = true;
 
-    auto editor = new VTextEditor(editorConfig, p_parent);
+    auto editor = new VTextEditor(editorConfig, editorParas, p_parent);
     editor->setBasePath(":/demo/data/example_files");
-    editor->setText(Helper::getCppText());
-    editor->setSyntax("cpp");
-    editor->setSpellCheckEnabled(true);
+    editor->setText(Helper::getText());
+    editor->setSyntax("txt");
     return editor;
 }
 
@@ -39,8 +38,9 @@ static VMarkdownEditor *setupMarkdownEditor(QWidget *p_parent)
 {
     auto editorConfig = QSharedPointer<TextEditorConfig>::create();
     auto markdownEditorConfig = QSharedPointer<MarkdownEditorConfig>::create(editorConfig);
+    auto editorParas = QSharedPointer<TextEditorParameters>::create();
 
-    auto editor = new VMarkdownEditor(markdownEditorConfig, p_parent);
+    auto editor = new VMarkdownEditor(markdownEditorConfig, editorParas, p_parent);
     editor->setBasePath(":/demo/data/example_files");
     editor->setText(Helper::getMarkdownText());
     return editor;

@@ -24,9 +24,6 @@ namespace vte
 
         ~SpellChecker();
 
-        bool isAutoDetectLanguageEnabled() const;
-        void setAutoDetectLanguageEnabled(bool p_enabled);
-
         // Returns a map of all available dictionaies with language descriptions and
         // their codes. The key is the description, the code the value.
         const QMap<QString, QString> &availableDictionaries() const;
@@ -52,8 +49,6 @@ namespace vte
         QScopedPointer<Sonnet::LanguageFilter> m_languageFilter;
 
         QScopedPointer<Sonnet::WordTokenizer> m_wordTokenizer;
-
-        bool m_autoDetectLanguageEnabled = true;
 
         QMap<QString, QString> m_dictionaries;
     };

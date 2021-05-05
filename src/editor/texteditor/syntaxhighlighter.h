@@ -1,20 +1,18 @@
 #ifndef SYNTAXHIGHLIGHTER_H
 #define SYNTAXHIGHLIGHTER_H
 
-#include <QSyntaxHighlighter>
+#include "vsyntaxhighlighter.h"
 
 #include <AbstractHighlighter>
 #include <Definition>
 #include <QHash>
 #include <QSharedPointer>
 
-class QTextDocument;
-
 namespace vte
 {
     struct BlockSpellCheckData;
 
-    class SyntaxHighlighter : public QSyntaxHighlighter,
+    class SyntaxHighlighter : public VSyntaxHighlighter,
                               public KSyntaxHighlighting::AbstractHighlighter
     {
         Q_OBJECT
@@ -25,7 +23,7 @@ namespace vte
                           const QString &p_theme,
                           const QString &p_syntax);
 
-        void setSpellCheckEnabled(bool p_enabled);
+        bool isSyntaxFoldingEnabled() const Q_DECL_OVERRIDE;
 
         static bool isValidSyntax(const QString &p_syntax);
 
@@ -41,12 +39,8 @@ namespace vte
                           KSyntaxHighlighting::FoldingRegion p_region) Q_DECL_OVERRIDE;
 
     private:
-        void highlightMisspell(const QSharedPointer<BlockSpellCheckData> &p_data);
-
         // Will be set and cleared within highlightBlock().
         QHash<int, int> m_pendingFoldingStart;
-
-        bool m_spellCheckEnabled = false;
     };
 }
 

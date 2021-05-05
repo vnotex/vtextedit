@@ -17,6 +17,11 @@ public:
         return readFile(QStringLiteral(":/demo/data/example_files/example.md"));
     }
 
+    static QString getText()
+    {
+        return readFile(QStringLiteral(":/demo/data/example_files/example.txt"));
+    }
+
 private:
     static QString readFile(const QString &p_filePath)
     {
