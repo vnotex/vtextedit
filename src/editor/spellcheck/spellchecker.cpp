@@ -34,17 +34,6 @@ void SpellChecker::addDictionaryCustomSearchPaths(const QStringList &p_dirs)
     Sonnet::Speller::addDictionaryCustomSearchPaths(p_dirs);
 }
 
-bool SpellChecker::isAutoDetectLanguageEnabled() const
-{
-    return m_autoDetectLanguageEnabled;
-}
-
-void SpellChecker::setAutoDetectLanguageEnabled(bool p_enabled)
-{
-    m_autoDetectLanguageEnabled = p_enabled;
-    m_speller->setAttribute(Sonnet::Speller::AutoDetectLanguage, p_enabled);
-}
-
 const QMap<QString, QString> &SpellChecker::availableDictionaries() const
 {
     return m_dictionaries;
@@ -67,6 +56,10 @@ Sonnet::WordTokenizer *SpellChecker::wordTokenizer()
 
 void SpellChecker::setCurrentLanguage(const QString &p_lang)
 {
+    if (p_lang == currentLanguage()) {
+        return;
+    }
+
     m_speller->setLanguage(p_lang);
 }
 

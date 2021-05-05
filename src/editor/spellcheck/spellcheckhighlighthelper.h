@@ -11,8 +11,8 @@ namespace vte
         SpellCheckHighlightHelper() = delete;
 
         // Fill the BlockSpellCheckData of @p_block.
-        // Return true is spell check succeeded.
-        static bool checkBlock(const QTextBlock &p_block, const QString &p_text);
+        // Return true if spell check succeeded.
+        static bool checkBlock(const QTextBlock &p_block, const QString &p_text, bool p_autoDetectEnabled);
     };
 }
 

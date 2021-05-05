@@ -6,6 +6,7 @@
 #include <QMenu>
 #include <QToolButton>
 #include <QAction>
+#include <QActionGroup>
 #include <QDebug>
 
 #include "inputmodestatuswidget.h"
@@ -154,35 +155,56 @@ void StatusIndicator::updateSpellCheck(bool p_spellCheckEnabled,
     }
 
     {
+        m_spellCheckEnabled = p_spellCheckEnabled;
         auto act = menu->addAction(tr("Enable Spell Check"));
         act->setCheckable(true);
         act->setChecked(p_spellCheckEnabled);
         connect(act, &QAction::triggered,
                 this, [this](bool p_checked) {
-
+                    m_spellCheckEnabled = p_checked;
+                    signalSpellCheckChanged();
                 });
     }
 
     {
+        m_autoDetectLanguageEnabled = p_autoDetectLanguageEnabled;
         auto act = menu->addAction(tr("Auto Detect Language"));
         act->setCheckable(true);
         act->setChecked(p_autoDetectLanguageEnabled);
         connect(act, &QAction::triggered,
                 this, [this](bool p_checked) {
-
+                    m_autoDetectLanguageEnabled = p_checked;
+                    signalSpellCheckChanged();
                 });
     }
 
     menu->addSeparator();
 
+    m_defaultSpellCheckLanguage = p_currentLanguage;
     if (p_dictionaries.isEmpty()) {
         auto act = menu->addAction(tr("No Dictionary Found"));
         act->setEnabled(false);
-    }
+    } else {
+        auto ag = new QActionGroup(menu);
+        for (auto it = p_dictionaries.begin(); it != p_dictionaries.end(); ++it) {
+            auto act = menu->addAction(it.key());
+            act->setData(it.value());
+            act->setCheckable(true);
+            ag->addAction(act);
+            if (it.value() == p_currentLanguage) {
+                act->setChecked(true);
+            }
+        }
 
-    for (auto it = p_dictionaries.begin(); it != p_dictionaries.end(); ++it) {
-        auto act = menu->addAction(it.key());
-        act->setData(it.value());
-        qDebug() << it.value();
+        connect(ag, &QActionGroup::triggered,
+                this, [this](QAction *p_act) {
+                    m_defaultSpellCheckLanguage = p_act->data().toString();
+                    signalSpellCheckChanged();
+                });
     }
+}
+
+void StatusIndicator::signalSpellCheckChanged()
+{
+    emit spellCheckChanged(m_spellCheckEnabled, m_autoDetectLanguageEnabled, m_defaultSpellCheckLanguage);
 }

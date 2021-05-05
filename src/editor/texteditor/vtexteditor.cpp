@@ -17,6 +17,7 @@
 #include "editorinputmode.h"
 #include "editorcompleter.h"
 #include "statusindicator.h"
+#include "plaintexthighlighter.h"
 
 #include <vtextedit/texteditutils.h>
 #include <vtextedit/spellchecker.h>
@@ -66,12 +67,18 @@ void VTextEditor::FindResultCache::update(const QString &p_text,
 }
 
 VTextEditor::VTextEditor(const QSharedPointer<TextEditorConfig> &p_config,
+                         const QSharedPointer<TextEditorParameters> &p_paras,
                          QWidget *p_parent)
     : QWidget(p_parent),
-      m_config(p_config)
+      m_config(p_config),
+      m_parameters(p_paras)
 {
     if (!m_config) {
         m_config = QSharedPointer<TextEditorConfig>::create();
+    }
+
+    if (!m_parameters) {
+        m_parameters = QSharedPointer<TextEditorParameters>::create();
     }
 
     setupUI();
@@ -383,17 +390,16 @@ void VTextEditor::setSyntax(const QString &p_syntax)
     }
 
     m_syntax = p_syntax;
-    if (m_highlighter) {
-        delete m_highlighter;
-        m_highlighter = nullptr;
-    }
+    delete m_highlighter;
+    m_highlighter = nullptr;
 
     if (!m_syntax.isEmpty() && SyntaxHighlighter::isValidSyntax(m_syntax)) {
         m_highlighter = new SyntaxHighlighter(document(), m_config->m_syntaxTheme, m_syntax);
-        m_highlighter->setSpellCheckEnabled(m_spellCheckEnabled);
     } else {
         m_syntax = QStringLiteral("plaintext");
+        m_highlighter = new PlainTextHighlighter(document());
     }
+    updateSpellCheck();
 
     emit syntaxChanged();
 }
@@ -511,7 +517,7 @@ QSharedPointer<TextBlockRange> VTextEditor::fetchSyntaxFoldingRangeStartingOnBlo
         return nullptr;
     }
 
-    if (!m_highlighter) {
+    if (!m_highlighter || !m_highlighter->isSyntaxFoldingEnabled()) {
         return nullptr;
     }
 
@@ -622,6 +628,10 @@ void VTextEditor::focusInEvent(QFocusEvent *p_event)
         inputMode->focusIn();
     }
 
+    if (m_parameters->m_spellCheckEnabled) {
+        SpellChecker::getInst().setCurrentLanguage(m_parameters->m_defaultSpellCheckLanguage);
+    }
+
     emit focusIn();
 }
 
@@ -704,15 +714,27 @@ void VTextEditor::updateStatusWidget()
     updateInputModeStatusWidget();
 }
 
-StatusIndicator *VTextEditor::createStatusWidget() const
+StatusIndicator *VTextEditor::createStatusWidget()
 {
     auto widget = new StatusIndicator();
+    widget->updateSpellCheck(m_parameters->m_spellCheckEnabled,
+                             m_parameters->m_autoDetectLanguageEnabled,
+                             m_parameters->m_defaultSpellCheckLanguage,
+                             SpellChecker::getInst().availableDictionaries());
     connect(widget, &StatusIndicator::focusOut,
             this, [this]() {
                 m_textEdit->setFocus();
             });
-
-    widget->updateSpellCheck(true, true, "en_US", SpellChecker::getInst().availableDictionaries());
+    connect(widget, &StatusIndicator::spellCheckChanged,
+            this, [this](bool p_enabled, bool p_autoDetect, const QString &p_currentLang) {
+                if (!m_highlighter) {
+                    setSyntax(QStringLiteral("plaintext"));
+                }
+                m_parameters->m_spellCheckEnabled = p_enabled;
+                m_parameters->m_autoDetectLanguageEnabled = p_autoDetect;
+                m_parameters->m_defaultSpellCheckLanguage = p_currentLang;
+                updateSpellCheck();
+            });
     return widget;
 }
 
@@ -1192,15 +1214,11 @@ void VTextEditor::resolveBackReferenceInReplaceText(QString &p_replaceText,
     p_replaceText = p_text.replace(p_regExp, p_replaceText);
 }
 
-void VTextEditor::setSpellCheckEnabled(bool p_enabled)
+void VTextEditor::updateSpellCheck()
 {
-    m_spellCheckEnabled = p_enabled;
-    if (m_highlighter) {
-        m_highlighter->setSpellCheckEnabled(p_enabled);
+    if (m_parameters->m_spellCheckEnabled) {
+        SpellChecker::getInst().setCurrentLanguage(m_parameters->m_defaultSpellCheckLanguage);
     }
-}
-
-void VTextEditor::setDefaultSpellCheckLanguage(const QString &p_lang)
-{
-    m_defaultSpellCheckLanguage = p_lang;
+    m_highlighter->setSpellCheckEnabled(m_parameters->m_spellCheckEnabled);
+    m_highlighter->setAutoDetectLanguageEnabled(m_parameters->m_autoDetectLanguageEnabled);
 }
