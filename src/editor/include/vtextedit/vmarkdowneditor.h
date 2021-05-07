@@ -58,9 +58,6 @@ namespace vte
 
         bool handleKeyReturn(QKeyEvent *p_event);
 
-        // Managed by QObject.
-        PegMarkdownHighlighter *m_highlighter = nullptr;
-
         QScopedPointer<EditorPegMarkdownHighlighter> m_highlighterInterface;
 
         QScopedPointer<DocumentResourceMgr> m_resourceMgr;

@@ -43,17 +43,17 @@ qreal EditorPreviewMgr::scaleFactor() const
 
 void EditorPreviewMgr::addPossiblePreviewBlock(int p_blockNumber)
 {
-    m_editor->m_highlighter->addPossiblePreviewBlock(p_blockNumber);
+    m_editor->getHighlighter()->addPossiblePreviewBlock(p_blockNumber);
 }
 
 const QSet<int> &EditorPreviewMgr::getPossiblePreviewBlocks() const
 {
-    return m_editor->m_highlighter->getPossiblePreviewBlocks();
+    return m_editor->getHighlighter()->getPossiblePreviewBlocks();
 }
 
 void EditorPreviewMgr::clearPossiblePreviewBlocks(const QVector<int> &p_blocksToClear)
 {
-    m_editor->m_highlighter->clearPossiblePreviewBlocks(p_blocksToClear);
+    m_editor->getHighlighter()->clearPossiblePreviewBlocks(p_blocksToClear);
 }
 
 void EditorPreviewMgr::relayout(const OrderedIntSet &p_blocks)

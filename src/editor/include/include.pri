@@ -21,3 +21,4 @@ HEADERS += \
     $$PWD/vtextedit/markdownutils.h \
     $$PWD/vtextedit/texteditutils.h \
     $$PWD/vtextedit/networkutils.h \
+    $$PWD/vtextedit/vsyntaxhighlighter.h

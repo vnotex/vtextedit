@@ -182,6 +182,8 @@ namespace vte
 
         bool appendSpellCheckMenu(QContextMenuEvent *p_event, QMenu *p_menu);
 
+        void updateSpellCheck();
+
     private slots:
         void updateCursorOfStatusWidget();
 
@@ -236,8 +238,6 @@ namespace vte
                                                bool p_skipCurrent,
                                                QTextCursor &p_currentMatch);
 
-        void updateSpellCheck();
-
         static void resolveBackReferenceInReplaceText(QString &p_replaceText,
                                                       QString p_text,
                                                       const QRegularExpression &p_regExp);
@@ -256,6 +256,9 @@ namespace vte
     protected:
         // Managed by QObject.
         VTextEdit *m_textEdit = nullptr;
+
+        // Managed by QObject.
+        VSyntaxHighlighter *m_highlighter = nullptr;
 
     private:
         struct FindResultCache
@@ -306,9 +309,6 @@ namespace vte
 
         // Managed by QObject.
         TextFolding *m_folding = nullptr;
-
-        // Managed by QObject.
-        VSyntaxHighlighter *m_highlighter = nullptr;
 
         // Syntax for highlighter.
         QString m_syntax;
