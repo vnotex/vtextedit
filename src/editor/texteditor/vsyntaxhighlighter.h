@@ -22,6 +22,10 @@ namespace vte
 
         virtual bool isSyntaxFoldingEnabled() const = 0;
 
+        void refreshSpellCheck();
+
+        void refreshBlockSpellCheck(const QTextBlock &p_block);
+
     protected:
         void highlightMisspell(const QSharedPointer<BlockSpellCheckData> &p_data);
 

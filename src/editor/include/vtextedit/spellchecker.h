@@ -28,6 +28,7 @@ namespace vte
         // their codes. The key is the description, the code the value.
         const QMap<QString, QString> &availableDictionaries() const;
 
+        // Return false when there is no dictionary available.
         bool isValid() const;
 
         Sonnet::LanguageFilter *languageFilter();
@@ -39,10 +40,19 @@ namespace vte
 
         bool isMisspelled(const QString &p_word) const;
 
+        // Ignore @p_word in this session.
+        void ignoreWord(const QString &p_word);
+
+        void addToDictionary(const QString &p_word);
+
+        QStringList suggest(const QString &p_word, bool p_autoDetectEnabled);
+
         static void addDictionaryCustomSearchPaths(const QStringList &p_dirs);
 
     private:
         SpellChecker();
+
+        QString detectLanguage(const QString &p_word);
 
         QScopedPointer<Sonnet::Speller> m_speller;
 

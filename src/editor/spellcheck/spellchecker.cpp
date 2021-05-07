@@ -72,3 +72,36 @@ bool SpellChecker::isMisspelled(const QString &p_word) const
 {
     return m_speller->isMisspelled(p_word);
 }
+
+void SpellChecker::ignoreWord(const QString &p_word)
+{
+    m_speller->addToSession(p_word);
+}
+
+void SpellChecker::addToDictionary(const QString &p_word)
+{
+    m_speller->addToPersonal(p_word);
+}
+
+QStringList SpellChecker::suggest(const QString &p_word, bool p_autoDetectEnabled)
+{
+    if (p_autoDetectEnabled) {
+        auto lang = detectLanguage(p_word);
+        if (!lang.isEmpty()) {
+            m_speller->setLanguage(lang);
+        }
+    }
+
+    return m_speller->suggest(p_word);
+}
+
+QString SpellChecker::detectLanguage(const QString &p_word)
+{
+    m_languageFilter->setBuffer(p_word);
+    if (m_languageFilter->hasNext() && m_languageFilter->isSpellcheckable()) {
+        m_languageFilter->next();
+        return m_languageFilter->language();
+    }
+
+    return QString();
+}

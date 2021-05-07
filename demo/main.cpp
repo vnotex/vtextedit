@@ -28,6 +28,7 @@ static VTextEditor *setupTextEditor(QWidget *p_parent)
     editorParas->m_spellCheckEnabled = true;
 
     auto editor = new VTextEditor(editorConfig, editorParas, p_parent);
+    editor->enableInternalContextMenu();
     editor->setBasePath(":/demo/data/example_files");
     editor->setText(Helper::getText());
     editor->setSyntax("txt");
