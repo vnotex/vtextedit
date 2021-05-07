@@ -27,8 +27,3 @@ void PlainTextHighlighter::highlightBlock(const QString &p_text)
         }
     }
 }
-
-bool PlainTextHighlighter::isSyntaxFoldingEnabled() const
-{
-    return false;
-}

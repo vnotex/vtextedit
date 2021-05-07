@@ -1,4 +1,4 @@
-#include "vsyntaxhighlighter.h"
+#include <vtextedit/vsyntaxhighlighter.h>
 
 #include <QTextDocument>
 
@@ -67,4 +67,9 @@ void VSyntaxHighlighter::refreshBlockSpellCheck(const QTextBlock &p_block)
     }
 
     rehighlightBlock(p_block);
+}
+
+bool VSyntaxHighlighter::isSyntaxFoldingEnabled() const
+{
+    return false;
 }

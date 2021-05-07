@@ -1,7 +1,7 @@
 #ifndef PLAINTEXTHIGHLIGHTER_H
 #define PLAINTEXTHIGHLIGHTER_H
 
-#include "vsyntaxhighlighter.h"
+#include <vtextedit/vsyntaxhighlighter.h>
 
 namespace vte
 {
@@ -12,8 +12,6 @@ namespace vte
         Q_OBJECT
     public:
         explicit PlainTextHighlighter(QTextDocument *p_doc);
-
-        bool isSyntaxFoldingEnabled() const Q_DECL_OVERRIDE;
 
     protected:
         void highlightBlock(const QString &p_text) Q_DECL_OVERRIDE;

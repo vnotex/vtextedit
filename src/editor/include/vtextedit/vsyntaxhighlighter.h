@@ -20,7 +20,7 @@ namespace vte
 
         void setAutoDetectLanguageEnabled(bool p_enabled);
 
-        virtual bool isSyntaxFoldingEnabled() const = 0;
+        virtual bool isSyntaxFoldingEnabled() const;
 
         void refreshSpellCheck();
 

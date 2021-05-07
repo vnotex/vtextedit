@@ -30,8 +30,8 @@ static VTextEditor *setupTextEditor(QWidget *p_parent)
     auto editor = new VTextEditor(editorConfig, editorParas, p_parent);
     editor->enableInternalContextMenu();
     editor->setBasePath(":/demo/data/example_files");
-    editor->setText(Helper::getText());
-    editor->setSyntax("txt");
+    editor->setText(Helper::getCppText());
+    editor->setSyntax("cpp");
     return editor;
 }
 
@@ -40,8 +40,10 @@ static VMarkdownEditor *setupMarkdownEditor(QWidget *p_parent)
     auto editorConfig = QSharedPointer<TextEditorConfig>::create();
     auto markdownEditorConfig = QSharedPointer<MarkdownEditorConfig>::create(editorConfig);
     auto editorParas = QSharedPointer<TextEditorParameters>::create();
+    editorParas->m_spellCheckEnabled = true;
 
     auto editor = new VMarkdownEditor(markdownEditorConfig, editorParas, p_parent);
+    editor->enableInternalContextMenu();
     editor->setBasePath(":/demo/data/example_files");
     editor->setText(Helper::getMarkdownText());
     return editor;
@@ -65,7 +67,7 @@ int main(int p_argc, char *p_argv[])
 
     VTextEditor::addSyntaxCustomSearchPaths(QStringList(QStringLiteral(":/demo/data")));
 
-    auto editor = setupTextEditor(&win);
+    auto editor = setupMarkdownEditor(&win);
 
     win.setCentralWidget(editor);
 

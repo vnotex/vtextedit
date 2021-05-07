@@ -1,7 +1,7 @@
 #ifndef SYNTAXHIGHLIGHTER_H
 #define SYNTAXHIGHLIGHTER_H
 
-#include "vsyntaxhighlighter.h"
+#include <vtextedit/vsyntaxhighlighter.h>
 
 #include <AbstractHighlighter>
 #include <Definition>

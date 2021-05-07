@@ -10,6 +10,8 @@
 #include <vtextedit/previewdata.h>
 #include <vtextedit/texteditutils.h>
 #include <utils/textutils.h>
+#include <spellcheck/spellcheckhighlighthelper.h>
+#include <texteditor/blockspellcheckdata.h>
 
 #include "pegparser.h"
 #include "peghighlighterresult.h"
@@ -24,7 +26,7 @@ PegMarkdownHighlighter::PegMarkdownHighlighter(PegMarkdownHighlighterInterface *
                                                const QSharedPointer<Theme> &p_theme,
                                                CodeBlockHighlighter *p_codeBlockHighlighter,
                                                const QSharedPointer<peg::HighlighterConfig> &p_config)
-    : QSyntaxHighlighter(p_doc),
+    : VSyntaxHighlighter(p_doc),
       m_interface(p_interface),
       m_config(p_config),
       m_codeBlockHighlighter(p_codeBlockHighlighter),
@@ -98,7 +100,8 @@ void PegMarkdownHighlighter::highlightBlock(const QString &p_text)
     QTextBlock block = currentBlock();
     int blockNum = block.blockNumber();
 
-    bool isCodeBlock = currentBlockState() == peg::HighlightBlockState::CodeBlock;
+    const auto cstate = currentBlockState();
+    bool isCodeBlock = cstate == peg::HighlightBlockState::CodeBlock;
     bool isNewBlock = block.userData() == NULL;
     auto highlightData = PegHighlightBlockData::get(block);
 
@@ -173,6 +176,22 @@ void PegMarkdownHighlighter::highlightBlock(const QString &p_text)
             highlightData->clearCodeBlockHighlight();
             highlightCodeBlock(result, blockNum, highlightData->getCodeBlockHighlight());
             highlightData->setCodeBlockHighlightTimeStamp(result->m_codeBlockTimeStamp);
+        }
+    }
+
+    // Do spell check.
+    const bool needSpellCheck = cstate != peg::HighlightBlockState::CodeBlockStart
+                                && cstate != peg::HighlightBlockState::CodeBlock
+                                && cstate != peg::HighlightBlockState::CodeBlockEnd;
+    if (needSpellCheck && !p_text.isEmpty() && m_spellCheckEnabled) {
+        auto data = TextBlockData::get(block);
+        bool ret = SpellCheckHighlightHelper::checkBlock(block, p_text, m_autoDetectLanguageEnabled);
+        if (ret) {
+            // Further check and highlight.
+            auto spellData = data->getBlockSpellCheckData();
+            if (spellData && spellData->isValid(block.revision()) && !spellData->isEmpty()) {
+                VSyntaxHighlighter::highlightMisspell(spellData);
+            }
         }
     }
 }

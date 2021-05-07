@@ -65,7 +65,8 @@ void VMarkdownEditor::setupSyntaxHighlighter()
                                                theme(),
                                                codeBlockHighlighter,
                                                highlighterConfig);
-    connect(m_highlighter, &PegMarkdownHighlighter::highlightCompleted,
+    updateSpellCheck();
+    connect(getHighlighter(), &PegMarkdownHighlighter::highlightCompleted,
             this, [this]() {
                 m_textEdit->updateCursorWidth();
                 m_textEdit->ensureCursorVisible();
@@ -98,10 +99,10 @@ void VMarkdownEditor::setupPreviewMgr()
     m_previewMgrInterface.reset(new EditorPreviewMgr(this));
     m_previewMgr = new PreviewMgr(m_previewMgrInterface.data(), this);
     m_previewMgr->setPreviewEnabled(true);
-    connect(m_highlighter, &PegMarkdownHighlighter::imageLinksUpdated,
+    connect(getHighlighter(), &PegMarkdownHighlighter::imageLinksUpdated,
             m_previewMgr, &PreviewMgr::updateImageLinks);
     connect(m_previewMgr, &PreviewMgr::requestUpdateImageLinks,
-            m_highlighter, &PegMarkdownHighlighter::updateHighlight);
+            getHighlighter(), &PegMarkdownHighlighter::updateHighlight);
 }
 
 DocumentResourceMgr *VMarkdownEditor::getDocumentResourceMgr() const
@@ -111,7 +112,7 @@ DocumentResourceMgr *VMarkdownEditor::getDocumentResourceMgr() const
 
 PegMarkdownHighlighter *VMarkdownEditor::getHighlighter() const
 {
-    return m_highlighter;
+    return static_cast<PegMarkdownHighlighter *>(m_highlighter);
 }
 
 PreviewMgr *VMarkdownEditor::getPreviewMgr() const
@@ -188,5 +189,5 @@ void VMarkdownEditor::zoom(int p_delta)
         return;
     }
 
-    m_highlighter->updateStylesFontSize(postFontSize - preFontSize);
+    getHighlighter()->updateStylesFontSize(postFontSize - preFontSize);
 }

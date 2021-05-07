@@ -1,12 +1,12 @@
 #ifndef PEGMARKDOWNHIGHLIGHTER_H
 #define PEGMARKDOWNHIGHLIGHTER_H
 
-#include <QSyntaxHighlighter>
 #include <QTextCharFormat>
 #include <QTime>
 
 #include <vtextedit/pegmarkdownhighlighterdata.h>
 #include <vtextedit/codeblockhighlighter.h>
+#include <vtextedit/vsyntaxhighlighter.h>
 
 class QScrollBar;
 
@@ -40,7 +40,7 @@ namespace peg
     };
 
     // Markdown syntax highlighter via Peg-Markdown-Highlight.
-    class VTEXTEDIT_EXPORT PegMarkdownHighlighter : public QSyntaxHighlighter
+    class VTEXTEDIT_EXPORT PegMarkdownHighlighter : public VSyntaxHighlighter
     {
         Q_OBJECT
     public:

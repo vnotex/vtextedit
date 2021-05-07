@@ -29,5 +29,4 @@ HEADERS += \
     $$PWD/statusindicator.h \
     $$PWD/syntaxhighlighter.h \
     $$PWD/textfolding.h \
-    $$PWD/editorextraselection.h \
-    $$PWD/vsyntaxhighlighter.h
+    $$PWD/editorextraselection.h

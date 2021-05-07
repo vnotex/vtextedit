@@ -728,9 +728,6 @@ StatusIndicator *VTextEditor::createStatusWidget()
             });
     connect(widget, &StatusIndicator::spellCheckChanged,
             this, [this](bool p_enabled, bool p_autoDetect, const QString &p_currentLang) {
-                if (!m_highlighter) {
-                    setSyntax(QStringLiteral("plaintext"));
-                }
                 m_parameters->m_spellCheckEnabled = p_enabled;
                 m_parameters->m_autoDetectLanguageEnabled = p_autoDetect;
                 m_parameters->m_defaultSpellCheckLanguage = p_currentLang;
@@ -1220,13 +1217,15 @@ void VTextEditor::updateSpellCheck()
     if (m_parameters->m_spellCheckEnabled) {
         SpellChecker::getInst().setCurrentLanguage(m_parameters->m_defaultSpellCheckLanguage);
     }
-    m_highlighter->setSpellCheckEnabled(m_parameters->m_spellCheckEnabled);
-    m_highlighter->setAutoDetectLanguageEnabled(m_parameters->m_autoDetectLanguageEnabled);
+    if (m_highlighter) {
+        m_highlighter->setSpellCheckEnabled(m_parameters->m_spellCheckEnabled);
+        m_highlighter->setAutoDetectLanguageEnabled(m_parameters->m_autoDetectLanguageEnabled);
+    }
 }
 
 bool VTextEditor::appendSpellCheckMenu(QContextMenuEvent *p_event, QMenu *p_menu)
 {
-    if (!m_parameters->m_spellCheckEnabled) {
+    if (!m_highlighter || !m_parameters->m_spellCheckEnabled) {
         return false;
     }
 
