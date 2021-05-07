@@ -28,6 +28,7 @@
 #include <QPair>
 #include <QDebug>
 #include <QRegularExpression>
+#include <QMenu>
 
 using namespace vte;
 
@@ -1221,4 +1222,93 @@ void VTextEditor::updateSpellCheck()
     }
     m_highlighter->setSpellCheckEnabled(m_parameters->m_spellCheckEnabled);
     m_highlighter->setAutoDetectLanguageEnabled(m_parameters->m_autoDetectLanguageEnabled);
+}
+
+bool VTextEditor::appendSpellCheckMenu(QContextMenuEvent *p_event, QMenu *p_menu)
+{
+    if (!m_parameters->m_spellCheckEnabled) {
+        return false;
+    }
+
+    auto &spellChecker = SpellChecker::getInst();
+    if (!spellChecker.isValid()) {
+        return false;
+    }
+
+    auto mouseCursor = m_textEdit->cursorForPosition(p_event->pos());
+    const int mouseCursorPos = mouseCursor.position();
+    mouseCursor.select(QTextCursor::WordUnderCursor);
+    if (mouseCursor.selectionStart() > mouseCursorPos || mouseCursor.selectionEnd() <= mouseCursorPos) {
+        return false;
+    }
+
+    const auto selectedWord = mouseCursor.selectedText();
+    if (selectedWord.isEmpty()) {
+        return false;
+    }
+
+    if (!spellChecker.isMisspelled(selectedWord)) {
+        return false;
+    }
+
+    p_menu->addSeparator();
+    auto subMenu = p_menu->addMenu(tr("Spelling \"%1\"").arg(selectedWord));
+
+    subMenu->addAction(tr("Ignore Word"),
+                       this,
+                       [this, selectedWord, mouseCursorPos]() {
+                           SpellChecker::getInst().ignoreWord(selectedWord);
+                           auto block = document()->findBlock(mouseCursorPos);
+                           m_highlighter->refreshBlockSpellCheck(block);
+                       });
+
+    subMenu->addAction(tr("Add To Dictionary"),
+                       this,
+                       [this, selectedWord, mouseCursorPos]() {
+                           SpellChecker::getInst().addToDictionary(selectedWord);
+                           auto block = document()->findBlock(mouseCursorPos);
+                           m_highlighter->refreshBlockSpellCheck(block);
+                       });
+
+    subMenu->addSeparator();
+
+    const auto suggestions = spellChecker.suggest(selectedWord, m_parameters->m_autoDetectLanguageEnabled);
+    if (suggestions.isEmpty()) {
+        auto act = subMenu->addAction(tr("No Suggestions"));
+        act->setEnabled(false);
+    } else {
+        const int magic = 0x133;
+        const int maxSuggestions = 8;
+        for (int i = 0; i < maxSuggestions && i < suggestions.size(); ++i) {
+            if (suggestions[i].isEmpty()) {
+                --i;
+                continue;
+            }
+            auto act = subMenu->addAction(suggestions[i]);
+            act->setData(magic);
+        }
+
+        connect(p_menu, &QMenu::triggered,
+                this, [this, mouseCursor, magic](QAction *p_act) {
+                    if (p_act->data().toInt() == magic) {
+                        Q_ASSERT(mouseCursor.hasSelection());
+                        // @mouseCursor is const.
+                        auto cursor = mouseCursor;
+                        cursor.insertText(p_act->text());
+                        m_textEdit->setTextCursor(cursor);
+                    }
+                });
+    }
+
+    return true;
+}
+
+void VTextEditor::enableInternalContextMenu()
+{
+    connect(m_textEdit, &vte::VTextEdit::contextMenuEventRequested,
+            this, [this](QContextMenuEvent *p_event, bool *p_handled, QScopedPointer<QMenu> *p_menu) {
+                *p_handled = true;
+                p_menu->reset(m_textEdit->createStandardContextMenu(p_event->pos()));
+                appendSpellCheckMenu(p_event, p_menu->data());
+            });
 }

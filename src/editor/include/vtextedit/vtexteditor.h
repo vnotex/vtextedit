@@ -12,6 +12,7 @@
 #include <QFont>
 
 class QTextDocument;
+class QMenu;
 
 namespace vte
 {
@@ -155,6 +156,10 @@ namespace vte
 
         void clearSearchHighlight();
 
+        // Enable internal context menu.
+        // Used if you are not going to customize the context menu in a subclass.
+        void enableInternalContextMenu();
+
         // Custom search paths for KSyntaxHighlighting Definition files.
         // Will search ./syntax and ./themes folder.
         static void addSyntaxCustomSearchPaths(const QStringList &p_paths);
@@ -174,6 +179,8 @@ namespace vte
         void focusOutEvent(QFocusEvent *p_event) Q_DECL_OVERRIDE;
 
         bool eventFilter(QObject *p_obj, QEvent *p_event) Q_DECL_OVERRIDE;
+
+        bool appendSpellCheckMenu(QContextMenuEvent *p_event, QMenu *p_menu);
 
     private slots:
         void updateCursorOfStatusWidget();
