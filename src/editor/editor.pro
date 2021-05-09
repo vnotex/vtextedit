@@ -4,7 +4,7 @@ TARGET = VTextEdit
 TEMPLATE = lib
 CONFIG += shared dll
 
-TRANSLATIONS += data/translations/vtextedit_zh_CN.ts
+TRANSLATIONS += data/translations/vtextedit_zh_CN.ts data/translations/vtextedit_ja.ts
 
 macx: {
     CONFIG += lib_bundle
