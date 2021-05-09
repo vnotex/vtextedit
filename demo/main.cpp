@@ -21,6 +21,7 @@ static void setupSpellChecker()
     SpellChecker::addDictionaryCustomSearchPaths(QStringList(QStringLiteral("D:/tmp/dicts")));
 }
 
+/*
 static VTextEditor *setupTextEditor(QWidget *p_parent)
 {
     auto editorConfig = QSharedPointer<TextEditorConfig>::create();
@@ -34,6 +35,7 @@ static VTextEditor *setupTextEditor(QWidget *p_parent)
     editor->setSyntax("cpp");
     return editor;
 }
+*/
 
 static VMarkdownEditor *setupMarkdownEditor(QWidget *p_parent)
 {

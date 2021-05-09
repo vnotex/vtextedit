@@ -3,6 +3,6 @@
 
 #define KATEVI_NIY do { qDebug() << __func__ << ": not implemented yet"; } while(0)
 
-static const char *c_kateViTranslationContext = "KateVi";
+extern const char *c_kateViTranslationContext;
 
 #endif
