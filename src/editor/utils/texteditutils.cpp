@@ -263,7 +263,7 @@ void TextEditUtils::indentBlocks(QTextEdit *p_edit, bool p_useTab, int p_spaces,
 {
     QTextBlock startBlock;
     int count = getSelectedBlockRange(p_edit, startBlock);
-    indentBlocks(p_edit, p_useTab, p_spaces, startBlock, count == 0 ? 1 : count, p_indent);
+    indentBlocks(p_useTab, p_spaces, startBlock, count == 0 ? 1 : count, p_indent);
 }
 
 int TextEditUtils::getSelectedBlockRange(QTextEdit *p_edit, QTextBlock &p_start)
@@ -281,8 +281,7 @@ int TextEditUtils::getSelectedBlockRange(QTextEdit *p_edit, QTextBlock &p_start)
     }
 }
 
-void TextEditUtils::indentBlocks(QTextEdit *p_edit,
-                                 bool p_useTab,
+void TextEditUtils::indentBlocks(bool p_useTab,
                                  int p_spaces,
                                  QTextBlock p_start,
                                  int p_count,

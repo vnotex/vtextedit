@@ -4,6 +4,8 @@
 
 using namespace KateVi;
 
+const char *c_kateViTranslationContext = "KateVi";
+
 bool ViUtils::isModifier(int p_keyCode)
 {
     return p_keyCode == Qt::Key_Shift

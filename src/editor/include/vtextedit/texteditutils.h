@@ -70,8 +70,7 @@ namespace vte
         static void ensureBlockVisible(QTextEdit *p_edit, int p_blockNumber);
 
     private:
-        static void indentBlocks(QTextEdit *p_edit,
-                                 bool p_useTab,
+        static void indentBlocks(bool p_useTab,
                                  int p_spaces,
                                  QTextBlock p_start,
                                  int p_count,
