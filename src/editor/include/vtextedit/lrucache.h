@@ -79,6 +79,12 @@ namespace vte
             shrink();
         }
 
+        void clear()
+        {
+            m_hash.clear();
+            m_list.clear();
+        }
+
     private:
         struct Node
         {

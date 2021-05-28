@@ -111,6 +111,7 @@ namespace vte
             IncrementalSearch,
             Search,
             SearchUnderCursor,
+            Preview,
             MaxEditorStyle
         };
         Q_ENUM(EditorStyle)
