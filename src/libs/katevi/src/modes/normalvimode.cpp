@@ -37,6 +37,7 @@
 #include <history.h>
 #include <katevi/interface/kateviinputmode.h>
 #include <katevi/interface/katevieditorinterface.h>
+#include <katevi/interface/kateviconfig.h>
 #include <registers.h>
 #include <marks.h>
 #include <searcher.h>
@@ -112,10 +113,14 @@ bool NormalViMode::handleKeyPress(const QKeyEvent *e)
         return false;
     }
 
+    // Ignore skipped keys.
+    if (m_viInputModeManager->kateViConfig()->shouldSkipKey(keyCode, modifiers)) {
+        return false;
+    }
+
     clearYankHighlight();
 
     auto adapter = m_viInputModeManager->inputAdapter();
-    // Back normal mode, distinguish between OS CTRL.
     if (keyCode == Qt::Key_Escape
         || (keyCode == Qt::Key_C && ViUtils::isControlModifier(modifiers))
         || (keyCode == Qt::Key_BracketLeft && ViUtils::isControlModifier(modifiers))) {
