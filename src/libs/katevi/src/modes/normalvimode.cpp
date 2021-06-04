@@ -320,6 +320,10 @@ void NormalViMode::beginMonitoringDocumentChanges()
 
 void NormalViMode::executeCommand(const Command *cmd)
 {
+    if (m_interface->isReadOnly()) {
+        return;
+    }
+
     const ViMode originalViMode = m_viInputModeManager->getCurrentViMode();
 
     cmd->execute();

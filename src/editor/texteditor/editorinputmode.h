@@ -172,6 +172,8 @@ namespace vte
 
         QString wordAt(const KateViI::Cursor &cursor) const Q_DECL_OVERRIDE;
 
+        bool isReadOnly() const Q_DECL_OVERRIDE;
+
         void connectMouseReleased(std::function<void(QMouseEvent *)> p_slot) Q_DECL_OVERRIDE;
 
     public:

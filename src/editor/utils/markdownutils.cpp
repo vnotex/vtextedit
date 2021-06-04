@@ -5,7 +5,6 @@
 #include <QFileInfo>
 #include <QDir>
 #include <QUrl>
-#include <QTextEdit>
 #include <QTextDocument>
 #include <QTextBlock>
 #include <QRegularExpression>
@@ -13,6 +12,7 @@
 
 #include "textutils.h"
 #include <vtextedit/texteditutils.h>
+#include <vtextedit/vtextedit.h>
 #include <markdowneditor/pegparser.h>
 
 using namespace vte;
@@ -173,7 +173,7 @@ QPixmap MarkdownUtils::scaleImage(const QPixmap &p_img,
     }
 }
 
-void MarkdownUtils::typeHeading(QTextEdit *p_edit, int p_level)
+void MarkdownUtils::typeHeading(VTextEdit *p_edit, int p_level)
 {
     doOnSelectedLinesOrCurrentLine(p_edit, &MarkdownUtils::insertHeading, &p_level);
 }
@@ -234,7 +234,7 @@ bool MarkdownUtils::insertHeading(QTextCursor &p_cursor, const QTextBlock &p_blo
 }
 
 // TODO: get more information from highlighter result.
-void MarkdownUtils::typeMarker(QTextEdit *p_edit,
+void MarkdownUtils::typeMarker(VTextEdit *p_edit,
                                const QString &p_startMarker,
                                const QString &p_endMarker,
                                bool p_allowSpacesAtTwoEnds)
@@ -242,10 +242,11 @@ void MarkdownUtils::typeMarker(QTextEdit *p_edit,
     const int totalMarkersSize = p_startMarker.size() + p_endMarker.size();
     auto cursor = p_edit->textCursor();
     cursor.beginEditBlock();
-    if (cursor.hasSelection()) {
+    if (p_edit->hasSelection()) {
         bool done = false;
-        int start = cursor.selectionStart();
-        int end = cursor.selectionEnd();
+        const auto &selection = p_edit->getSelection();
+        int start = selection.start();
+        int end = selection.end();
         if (TextEditUtils::crossBlocks(p_edit, start, end)) {
             // Do not support markers corssing blocks.
             done = true;
@@ -400,27 +401,27 @@ void MarkdownUtils::typeMarker(QTextEdit *p_edit,
     p_edit->setTextCursor(cursor);
 }
 
-void MarkdownUtils::typeBold(QTextEdit *p_edit)
+void MarkdownUtils::typeBold(VTextEdit *p_edit)
 {
     typeMarker(p_edit, QStringLiteral("**"), QStringLiteral("**"));
 }
 
-void MarkdownUtils::typeItalic(QTextEdit *p_edit)
+void MarkdownUtils::typeItalic(VTextEdit *p_edit)
 {
     typeMarker(p_edit, QStringLiteral("*"), QStringLiteral("*"));
 }
 
-void MarkdownUtils::typeStrikethrough(QTextEdit *p_edit)
+void MarkdownUtils::typeStrikethrough(VTextEdit *p_edit)
 {
     typeMarker(p_edit, QStringLiteral("~~"), QStringLiteral("~~"));
 }
 
-void MarkdownUtils::typeMark(QTextEdit *p_edit)
+void MarkdownUtils::typeMark(VTextEdit *p_edit)
 {
     typeMarker(p_edit, QStringLiteral("<mark>"), QStringLiteral("</mark>"));
 }
 
-void MarkdownUtils::typeUnorderedList(QTextEdit *p_edit)
+void MarkdownUtils::typeUnorderedList(VTextEdit *p_edit)
 {
     doOnSelectedLinesOrCurrentLine(p_edit, &MarkdownUtils::insertUnorderedList, nullptr);
 }
@@ -486,7 +487,7 @@ bool MarkdownUtils::insertUnorderedList(QTextCursor &p_cursor,
     }
 }
 
-void MarkdownUtils::doOnSelectedLinesOrCurrentLine(QTextEdit *p_edit,
+void MarkdownUtils::doOnSelectedLinesOrCurrentLine(VTextEdit *p_edit,
     const std::function<bool(QTextCursor &, const QTextBlock &, void *)> &p_func,
     void *p_data)
 {
@@ -495,9 +496,10 @@ void MarkdownUtils::doOnSelectedLinesOrCurrentLine(QTextEdit *p_edit,
     auto firstBlock = cursor.block();
     auto lastBlock = firstBlock;
 
-    if (cursor.hasSelection()) {
-        firstBlock = doc->findBlock(cursor.selectionStart());
-        lastBlock = doc->findBlock(cursor.selectionEnd());
+    if (p_edit->hasSelection()) {
+        const auto &selection = p_edit->getSelection();
+        firstBlock = doc->findBlock(selection.start());
+        lastBlock = doc->findBlock(selection.end());
     }
 
     bool changed = false;
@@ -518,7 +520,7 @@ void MarkdownUtils::doOnSelectedLinesOrCurrentLine(QTextEdit *p_edit,
     }
 }
 
-void MarkdownUtils::typeOrderedList(QTextEdit *p_edit)
+void MarkdownUtils::typeOrderedList(VTextEdit *p_edit)
 {
     doOnSelectedLinesOrCurrentLine(p_edit, &MarkdownUtils::insertOrderedList, nullptr);
 }
@@ -581,7 +583,7 @@ bool MarkdownUtils::insertOrderedList(QTextCursor &p_cursor,
     }
 }
 
-void MarkdownUtils::typeTodoList(QTextEdit *p_edit, bool p_checked)
+void MarkdownUtils::typeTodoList(VTextEdit *p_edit, bool p_checked)
 {
     doOnSelectedLinesOrCurrentLine(p_edit, &MarkdownUtils::insertTodoList, &p_checked);
 }
@@ -661,17 +663,17 @@ bool MarkdownUtils::insertTodoList(QTextCursor &p_cursor,
     }
 }
 
-void MarkdownUtils::typeCode(QTextEdit *p_edit)
+void MarkdownUtils::typeCode(VTextEdit *p_edit)
 {
     typeMarker(p_edit, QStringLiteral("`"), QStringLiteral("`"), true);
 }
 
-void MarkdownUtils::typeCodeBlock(QTextEdit *p_edit)
+void MarkdownUtils::typeCodeBlock(VTextEdit *p_edit)
 {
     typeBlockMarker(p_edit, QStringLiteral("```"), QStringLiteral("```"), CursorPosition::StartMarker);
 }
 
-void MarkdownUtils::typeBlockMarker(QTextEdit *p_edit,
+void MarkdownUtils::typeBlockMarker(VTextEdit *p_edit,
                                     const QString &p_startMarker,
                                     const QString &p_endMarker,
                                     CursorPosition p_cursorPosition)
@@ -682,9 +684,10 @@ void MarkdownUtils::typeBlockMarker(QTextEdit *p_edit,
     auto cursor = p_edit->textCursor();
 
     cursor.beginEditBlock();
-    if (cursor.hasSelection()) {
-        int start = cursor.selectionStart();
-        int end = cursor.selectionEnd();
+    if (p_edit->hasSelection()) {
+        const auto &selection = p_edit->getSelection();
+        int start = selection.start();
+        int end = selection.end();
 
         cursor.clearSelection();
         cursor.setPosition(start);
@@ -851,17 +854,17 @@ void MarkdownUtils::typeBlockMarker(QTextEdit *p_edit,
     p_edit->setTextCursor(cursor);
 }
 
-void MarkdownUtils::typeMath(QTextEdit *p_edit)
+void MarkdownUtils::typeMath(VTextEdit *p_edit)
 {
     typeMarker(p_edit, QStringLiteral("$"), QStringLiteral("$"));
 }
 
-void MarkdownUtils::typeMathBlock(QTextEdit *p_edit)
+void MarkdownUtils::typeMathBlock(VTextEdit *p_edit)
 {
     typeBlockMarker(p_edit, QStringLiteral("$$"), QStringLiteral("$$"), CursorPosition::NewLinebetweenMarkers);
 }
 
-void MarkdownUtils::typeQuote(QTextEdit *p_edit)
+void MarkdownUtils::typeQuote(VTextEdit *p_edit)
 {
     QuoteData data;
     doOnSelectedLinesOrCurrentLine(p_edit, &MarkdownUtils::insertQuote, &data);
@@ -918,7 +921,7 @@ bool MarkdownUtils::insertQuote(QTextCursor &p_cursor,
     return true;
 }
 
-void MarkdownUtils::typeLink(QTextEdit *p_edit, const QString &p_linkText, const QString &p_linkUrl)
+void MarkdownUtils::typeLink(VTextEdit *p_edit, const QString &p_linkText, const QString &p_linkUrl)
 {
     p_edit->insertPlainText(QString("[%1](%2)").arg(p_linkText, p_linkUrl));
 }
