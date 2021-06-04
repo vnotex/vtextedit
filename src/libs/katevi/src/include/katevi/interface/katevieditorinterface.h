@@ -213,6 +213,8 @@ namespace KateViI
         // Get the word at the text position \p cursor.
         virtual QString wordAt(const KateViI::Cursor &cursor) const = 0;
 
+        virtual bool isReadOnly() const = 0;
+
         // Completion related interfaces.
     public:
         virtual bool isCompletionActive() const = 0;

@@ -31,3 +31,14 @@ void MarkdownEditorConfig::overrideTextStyle()
         theme->editorStyle(it.key()) = it.value();
     }
 }
+
+void MarkdownEditorConfig::overrideTextFontFamily(const QString &p_fontFamily)
+{
+    if (p_fontFamily.isEmpty()) {
+        return;
+    }
+
+    auto &theme = m_textEditorConfig->m_theme;
+    Q_ASSERT(theme);
+    theme->editorStyle(Theme::EditorStyle::Text).m_fontFamily = p_fontFamily;
+}

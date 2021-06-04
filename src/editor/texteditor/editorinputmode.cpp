@@ -759,6 +759,10 @@ void EditorInputMode::clearOverriddenSelection()
 
 void EditorInputMode::backspace()
 {
+    // Let Qt handle the Key_Backspace event (for auto bracket).
+    // We don't see the need to handle it by ourselves.
+    Q_ASSERT(false);
+
     editStart();
 
     auto cursor = textCursor();
@@ -875,6 +879,11 @@ QString EditorInputMode::wordAt(const KateViI::Cursor &cursor) const
     EDITOR_NIY;
     // TODO: Refer completer.cpp.
     return QString();
+}
+
+bool EditorInputMode::isReadOnly() const
+{
+    return m_editor->isReadOnly();
 }
 
 void EditorInputMode::connectMouseReleased(std::function<void(QMouseEvent *)> p_slot)

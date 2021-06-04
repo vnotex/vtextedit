@@ -294,12 +294,6 @@ bool InsertViMode::commandSwitchToNormalModeForJustOneCommand()
  */
 bool InsertViMode::handleKeyPress(const QKeyEvent *e)
 {
-    // backspace should work even if the shift key is down
-    if (!ViUtils::isControlModifier(e->modifiers()) && e->key() == Qt::Key_Backspace) {
-        m_interface->backspace();
-        return true;
-    }
-
     if (m_keys.isEmpty() && !m_waitingRegister) {
         if (e->modifiers() == Qt::NoModifier) {
             switch (e->key()) {

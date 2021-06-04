@@ -61,6 +61,7 @@ VTextEdit::VTextEdit(QWidget *p_parent)
                 } else {
                     m_selections.m_selection.clear();
                 }
+                m_selections.m_overriddenSelection.clear();
             });
 
     m_updateCursorWidthTimer = new QTimer(this);
@@ -248,7 +249,7 @@ void VTextEdit::handleDefaultKeyPress(QKeyEvent *p_event)
         break;
 
     case Qt::Key_Backtab:
-        isHandled = handleKeyBackTab(p_event);
+        isHandled = handleKeyBacktab(p_event);
         break;
 
     case Qt::Key_Return:
@@ -258,6 +259,48 @@ void VTextEdit::handleDefaultKeyPress(QKeyEvent *p_event)
             p_event->accept();
             isHandled = true;
         }
+        break;
+
+    case Qt::Key_ParenLeft:
+        isHandled = handleOpeningBracket(QLatin1Char('('), QLatin1Char(')'));
+        break;
+
+    case Qt::Key_ParenRight:
+        isHandled = handleClosingBracket(QLatin1Char('('), QLatin1Char(')'));
+        break;
+
+    case Qt::Key_BracketLeft:
+        isHandled = handleOpeningBracket(QLatin1Char('['), QLatin1Char(']'));
+        break;
+
+    case Qt::Key_BracketRight:
+        isHandled = handleClosingBracket(QLatin1Char('['), QLatin1Char(']'));
+        break;
+
+    case Qt::Key_BraceLeft:
+        isHandled = handleOpeningBracket(QLatin1Char('{'), QLatin1Char('}'));
+        break;
+
+    case Qt::Key_BraceRight:
+        isHandled = handleClosingBracket(QLatin1Char('{'), QLatin1Char('}'));
+        break;
+
+    case Qt::Key_Apostrophe:
+        isHandled = handleClosingBracket(QLatin1Char('\''), QLatin1Char('\''));
+        if (!isHandled) {
+            isHandled = handleOpeningBracket(QLatin1Char('\''), QLatin1Char('\''));
+        }
+        break;
+
+    case Qt::Key_QuoteDbl:
+        isHandled = handleClosingBracket(QLatin1Char('"'), QLatin1Char('"'));
+        if (!isHandled) {
+            isHandled = handleOpeningBracket(QLatin1Char('"'), QLatin1Char('"'));
+        }
+        break;
+
+    case Qt::Key_Backspace:
+        isHandled = handleBracketRemoval();
         break;
 
     default:
@@ -521,6 +564,10 @@ void VTextEdit::setTabStopWidthInSpaces(int p_spaces)
 
 bool VTextEdit::handleKeyTab(QKeyEvent *p_event)
 {
+    if (isReadOnly()) {
+        return false;
+    }
+
     if (p_event->modifiers() == Qt::NoModifier) {
         bool shouldIndentBlock = false;
         auto cursor = textCursor();
@@ -544,6 +591,7 @@ bool VTextEdit::handleKeyTab(QKeyEvent *p_event)
             } else {
                 cursor.insertText(QStringLiteral("\t"));
             }
+            setTextCursor(cursor);
         }
 
         return true;
@@ -552,8 +600,12 @@ bool VTextEdit::handleKeyTab(QKeyEvent *p_event)
     return false;
 }
 
-bool VTextEdit::handleKeyBackTab(QKeyEvent *p_event)
+bool VTextEdit::handleKeyBacktab(QKeyEvent *p_event)
 {
+    if (isReadOnly()) {
+        return false;
+    }
+
     if (p_event->modifiers() == Qt::ShiftModifier) {
         TextEditUtils::indentBlocks(this, !m_expandTab, m_tabStopWidthInSpaces, false);
         return true;
@@ -623,4 +675,144 @@ void VTextEdit::setInputMethodEnabled(bool p_enabled)
         // Ask input method to query current state, which will call inputMethodQuery().
         im->update(Qt::ImEnabled);
     }
+}
+
+bool VTextEdit::handleOpeningBracket(const QChar &p_open, const QChar &p_close)
+{
+    if (isReadOnly() || !m_autoBracketsEnabled) {
+        return false;
+    }
+
+    auto cursor = textCursor();
+
+    // Wrap the selected text. 'text' -> '(text)'.
+    const auto selText = cursor.selectedText();
+    if (!selText.isEmpty()) {
+        const auto newText = p_open + selText + p_close;
+        cursor.insertText(newText);
+        setTextCursor(cursor);
+        return true;
+    }
+
+    if (p_open == QLatin1Char('\'') || p_open == QLatin1Char('"')) {
+        if (isEscaped(cursor.block().text(), cursor.positionInBlock())) {
+            return false;
+        }
+    }
+
+    cursor.beginEditBlock();
+    cursor.insertText(p_open);
+    cursor.insertText(p_close);
+    cursor.movePosition(QTextCursor::PreviousCharacter);
+    cursor.endEditBlock();
+    setTextCursor(cursor);
+    return true;
+}
+
+bool VTextEdit::handleClosingBracket(const QChar &p_open, const QChar &p_close)
+{
+    if (isReadOnly() || !m_autoBracketsEnabled) {
+        return false;
+    }
+
+    auto cursor = textCursor();
+    if (cursor.hasSelection()) {
+        return false;
+    }
+
+    const int pib = cursor.positionInBlock();
+    const auto text = cursor.block().text();
+
+    if (pib >= text.length()) {
+        return false;
+    }
+
+    const auto curChar = text.at(pib);
+    if (curChar != p_close) {
+        return false;
+    }
+
+    if (p_open == QLatin1Char('\'') || p_open == QLatin1Char('"')) {
+        if (isEscaped(text, pib)) {
+            return false;
+        }
+    }
+
+    // Move cursor and no enter.
+    cursor.movePosition(QTextCursor::NextCharacter);
+    setTextCursor(cursor);
+    return true;
+}
+
+bool VTextEdit::isEscaped(const QString &p_text, int p_pib)
+{
+    int slashCnt = 0;
+    for (int i = p_pib - 1; i >= 0; --i) {
+        if (p_text[i] == QLatin1Char('\\')) {
+            ++slashCnt;
+        } else {
+            break;
+        }
+    }
+
+    return (slashCnt % 2) == 1;
+}
+
+bool VTextEdit::handleBracketRemoval()
+{
+    if (isReadOnly() || !m_autoBracketsEnabled) {
+        return false;
+    }
+
+    auto cursor = textCursor();
+    if (cursor.hasSelection()) {
+        return false;
+    }
+
+    const int pib = cursor.positionInBlock();
+    const auto text = cursor.block().text();
+
+    if (pib == 0 || pib >= text.length()) {
+        return false;
+    }
+
+    const auto opening = text[pib - 1];
+    if (matchingClosingBracket(opening) != text[pib]) {
+        return false;
+    }
+
+    // Check if the opening bracket is escaped.
+    if (opening == QLatin1Char('\'') || opening == QLatin1Char('"')) {
+        if (isEscaped(text, pib - 1)) {
+            return false;
+        }
+    }
+
+    cursor.beginEditBlock();
+    cursor.deletePreviousChar();
+    cursor.deleteChar();
+    cursor.endEditBlock();
+
+    return true;
+}
+
+QChar VTextEdit::matchingClosingBracket(const QChar &p_open)
+{
+    if (p_open == QLatin1Char('(')) {
+        return QLatin1Char(')');
+    }
+    else if (p_open == QLatin1Char('[')) {
+        return QLatin1Char(']');
+    }
+    else if (p_open == QLatin1Char('{')) {
+        return QLatin1Char('}');
+    }
+    else if (p_open == QLatin1Char('\'')) {
+        return QLatin1Char('\'');
+    }
+    else if (p_open == QLatin1Char('"')) {
+        return QLatin1Char('"');
+    }
+
+    return QChar();
 }

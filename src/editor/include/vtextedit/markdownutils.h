@@ -8,12 +8,13 @@
 
 #include <functional>
 
-class QTextEdit;
 class QTextCursor;
 class QTextBlock;
 
 namespace vte
 {
+    class VTextEdit;
+
     namespace peg
     {
         struct ElementRegion;
@@ -69,33 +70,33 @@ namespace vte
 
         // Insert or make selection heading at @p_level.
         // @p_level: 0 for none, and 1-6 for headings.
-        static void typeHeading(QTextEdit *p_edit, int p_level);
+        static void typeHeading(VTextEdit *p_edit, int p_level);
 
-        static void typeBold(QTextEdit *p_edit);
+        static void typeBold(VTextEdit *p_edit);
 
-        static void typeItalic(QTextEdit *p_edit);
+        static void typeItalic(VTextEdit *p_edit);
 
-        static void typeStrikethrough(QTextEdit *p_edit);
+        static void typeStrikethrough(VTextEdit *p_edit);
 
-        static void typeMark(QTextEdit *p_edit);
+        static void typeMark(VTextEdit *p_edit);
 
-        static void typeUnorderedList(QTextEdit *p_edit);
+        static void typeUnorderedList(VTextEdit *p_edit);
 
-        static void typeOrderedList(QTextEdit *p_edit);
+        static void typeOrderedList(VTextEdit *p_edit);
 
-        static void typeTodoList(QTextEdit *p_edit, bool p_checked);
+        static void typeTodoList(VTextEdit *p_edit, bool p_checked);
 
-        static void typeCode(QTextEdit *p_edit);
+        static void typeCode(VTextEdit *p_edit);
 
-        static void typeCodeBlock(QTextEdit *p_edit);
+        static void typeCodeBlock(VTextEdit *p_edit);
 
-        static void typeMath(QTextEdit *p_edit);
+        static void typeMath(VTextEdit *p_edit);
 
-        static void typeMathBlock(QTextEdit *p_edit);
+        static void typeMathBlock(VTextEdit *p_edit);
 
-        static void typeQuote(QTextEdit *p_edit);
+        static void typeQuote(VTextEdit *p_edit);
 
-        static void typeLink(QTextEdit *p_edit, const QString &p_linkText, const QString &p_linkUrl);
+        static void typeLink(VTextEdit *p_edit, const QString &p_linkText, const QString &p_linkUrl);
 
         // @p_width/@p_height: 0 for no override.
         static QString generateImageLink(const QString &p_title,
@@ -176,19 +177,19 @@ namespace vte
                                   const QTextBlock &p_block,
                                   void *p_level);
 
-        static void typeMarker(QTextEdit *p_edit,
+        static void typeMarker(VTextEdit *p_edit,
                                const QString &p_startMarker,
                                const QString &p_endMarker,
                                bool p_allowSpacesAtTwoEnds = false);
 
-        static void typeBlockMarker(QTextEdit *p_edit,
+        static void typeBlockMarker(VTextEdit *p_edit,
                                     const QString &p_startMarker,
                                     const QString &p_endMarker,
                                     CursorPosition p_cursorPosition);
 
         // Helper function to iterate all selected lines one by one or just current line.
         // @p_func: return true if there is change.
-        static void doOnSelectedLinesOrCurrentLine(QTextEdit *p_edit,
+        static void doOnSelectedLinesOrCurrentLine(VTextEdit *p_edit,
             const std::function<bool(QTextCursor &, const QTextBlock &, void *)> &p_func,
             void *p_data = nullptr);
 

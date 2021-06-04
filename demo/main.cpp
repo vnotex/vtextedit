@@ -40,9 +40,10 @@ static VTextEditor *setupTextEditor(QWidget *p_parent)
 static VMarkdownEditor *setupMarkdownEditor(QWidget *p_parent)
 {
     auto editorConfig = QSharedPointer<TextEditorConfig>::create();
+    editorConfig->m_inputMode = InputMode::ViMode;
     auto markdownEditorConfig = QSharedPointer<MarkdownEditorConfig>::create(editorConfig);
     auto editorParas = QSharedPointer<TextEditorParameters>::create();
-    editorParas->m_spellCheckEnabled = true;
+    editorParas->m_spellCheckEnabled = false;
 
     auto editor = new VMarkdownEditor(markdownEditorConfig, editorParas, p_parent);
     editor->enableInternalContextMenu();

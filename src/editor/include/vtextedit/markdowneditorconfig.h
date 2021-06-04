@@ -13,6 +13,9 @@ namespace vte
 
         void fillDefaultTheme();
 
+        // Override the font family of Text style.
+        void overrideTextFontFamily(const QString &p_fontFamily);
+
         QSharedPointer<TextEditorConfig> m_textEditorConfig;
 
         // Whether constrain the width of in-place preview.

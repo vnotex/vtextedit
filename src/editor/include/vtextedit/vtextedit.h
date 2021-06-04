@@ -234,7 +234,20 @@ namespace vte
         bool handleKeyTab(QKeyEvent *p_event);
 
         // Return true if the event is handled.
-        bool handleKeyBackTab(QKeyEvent *p_event);
+        bool handleKeyBacktab(QKeyEvent *p_event);
+
+        // Insert a closing bracket after an opening bracket if needed.
+        bool handleOpeningBracket(const QChar &p_open, const QChar &p_close);
+
+        // Skip a closing bracket if needed.
+        bool handleClosingBracket(const QChar &p_open, const QChar &p_close);
+
+        bool handleBracketRemoval();
+
+        // Whether the char at @p_pib is escpaed.
+        static bool isEscaped(const QString &p_text, int p_pib);
+
+        static QChar matchingClosingBracket(const QChar &p_open);
 
         int m_cursorLine = -1;
 
@@ -271,6 +284,8 @@ namespace vte
 
         // Whether enable input method.
         bool m_inputMethodEnabled = true;
+
+        bool m_autoBracketsEnabled = true;
     };
 
     template <typename T>

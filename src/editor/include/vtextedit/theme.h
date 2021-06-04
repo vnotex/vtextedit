@@ -69,7 +69,8 @@ namespace vte
 
         QStringList m_fontFamilies;
 
-        // The first available font family form m_fontFamilies.
+        // Usually this is the first available font family form m_fontFamilies.
+        // The actual font family to use.
         QString m_fontFamily;
 
         int m_fontPointSize = 0;
