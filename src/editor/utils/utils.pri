@@ -6,5 +6,5 @@ SOURCES += \
     $$PWD/utils.cpp
 
 HEADERS += \
-    $$PWD/textutils.h \
-    $$PWD/utils.h
+    $$PWD/utils.h \
+    $$PWD/noncopyable.h

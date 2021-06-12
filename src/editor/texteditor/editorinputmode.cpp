@@ -10,10 +10,11 @@
 #include <vtextedit/vtexteditor.h>
 #include <vtextedit/vtextedit.h>
 #include <vtextedit/texteditutils.h>
-#include <utils/textutils.h>
+#include <vtextedit/textutils.h>
 #include <inputmode/abstractinputmode.h>
 
 #include "textfolding.h"
+#include <textedit/autoindenthelper.h>
 
 #define EDITOR_NIY do { qDebug() << __func__ << ": not implemented yet"; } while(0)
 
@@ -786,6 +787,9 @@ void EditorInputMode::newLine(KateViI::NewLineIndent p_indent)
     auto cursor = textCursor();
     cursor.movePosition(QTextCursor::EndOfBlock);
     cursor.insertBlock();
+    if (p_indent == KateViI::NewLineIndent::Indent) {
+        AutoIndentHelper::autoIndent(cursor, !m_textEdit->isTabExpanded(), m_textEdit->getTabStopWidthInSpaces());
+    }
     m_textEdit->setTextCursor(cursor);
 
     editEnd();

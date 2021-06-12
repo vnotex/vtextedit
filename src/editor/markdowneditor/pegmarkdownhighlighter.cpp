@@ -9,7 +9,7 @@
 #include <vtextedit/theme.h>
 #include <vtextedit/previewdata.h>
 #include <vtextedit/texteditutils.h>
-#include <utils/textutils.h>
+#include <vtextedit/textutils.h>
 #include <spellcheck/spellcheckhighlighthelper.h>
 #include <texteditor/blockspellcheckdata.h>
 

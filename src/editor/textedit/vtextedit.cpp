@@ -18,6 +18,7 @@
 #include <vtextedit/texteditutils.h>
 
 #include "scrollbar.h"
+#include "autoindenthelper.h"
 
 using namespace vte;
 
@@ -256,9 +257,11 @@ void VTextEdit::handleDefaultKeyPress(QKeyEvent *p_event)
         if (modifiers == Qt::ShiftModifier) {
             // Shift+Return by default will insert a soft line within a block.
             // It will complicate things. Disable it by default.
-            p_event->accept();
             isHandled = true;
         }
+        Q_FALLTHROUGH();
+    case Qt::Key_Enter:
+        isHandled = handleKeyReturn(p_event);
         break;
 
     case Qt::Key_ParenLeft:
@@ -555,11 +558,21 @@ void VTextEdit::setExpandTab(bool p_enable)
     m_expandTab = p_enable;
 }
 
+bool VTextEdit::isTabExpanded() const
+{
+    return m_expandTab;
+}
+
 void VTextEdit::setTabStopWidthInSpaces(int p_spaces)
 {
     Q_ASSERT(p_spaces > 0);
     m_tabStopWidthInSpaces = p_spaces;
     setTabStopDistance(QFontMetrics(font()).width(QLatin1Char(' ')) * m_tabStopWidthInSpaces);
+}
+
+int VTextEdit::getTabStopWidthInSpaces() const
+{
+    return m_tabStopWidthInSpaces;
 }
 
 bool VTextEdit::handleKeyTab(QKeyEvent *p_event)
@@ -792,6 +805,7 @@ bool VTextEdit::handleBracketRemoval()
     cursor.deletePreviousChar();
     cursor.deleteChar();
     cursor.endEditBlock();
+    setTextCursor(cursor);
 
     return true;
 }
@@ -815,4 +829,23 @@ QChar VTextEdit::matchingClosingBracket(const QChar &p_open)
     }
 
     return QChar();
+}
+
+bool VTextEdit::handleKeyReturn(QKeyEvent *p_event)
+{
+    if (isReadOnly()) {
+        return false;
+    }
+
+    if (p_event->modifiers() != Qt::NoModifier) {
+        return false;
+    }
+
+    auto cursor = textCursor();
+    cursor.beginEditBlock();
+    cursor.insertBlock();
+    AutoIndentHelper::autoIndent(cursor, !m_expandTab, m_tabStopWidthInSpaces);
+    cursor.endEditBlock();
+    setTextCursor(cursor);
+    return true;
 }

@@ -19,6 +19,7 @@ HEADERS += \
     $$PWD/vtextedit/previewmgr.h \
     $$PWD/vtextedit/previewdata.h \
     $$PWD/vtextedit/markdownutils.h \
+    $$PWD/vtextedit/textutils.h \
     $$PWD/vtextedit/texteditutils.h \
     $$PWD/vtextedit/networkutils.h \
     $$PWD/vtextedit/vsyntaxhighlighter.h

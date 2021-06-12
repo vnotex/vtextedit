@@ -1,4 +1,4 @@
-#include "textutils.h"
+#include <vtextedit/textutils.h>
 
 #include <QHash>
 
@@ -95,4 +95,60 @@ void TextUtils::decodeUrl(QString &p_url)
     for (auto it = maps.begin(); it != maps.end(); ++it) {
         p_url.replace(it.key(), it.value());
     }
+}
+
+QString TextUtils::removeCodeBlockFence(const QString &p_text)
+{
+    auto text = unindentTextMultiLines(p_text);
+    Q_ASSERT(text.startsWith(QStringLiteral("```")) || text.startsWith(QStringLiteral("~~~")));
+    int idx = text.indexOf(QLatin1Char('\n')) + 1;
+    int lidx = text.size() - 1;
+    // Trim spaces at the end.
+    while (lidx >= 0 && text[lidx].isSpace()) {
+        --lidx;
+    }
+
+    Q_ASSERT(text[lidx] == QLatin1Char('`') || text[lidx] == QLatin1Char('~'));
+    return text.mid(idx, lidx + 1 - idx - 3);
+}
+
+QString TextUtils::unindentTextMultiLines(const QString &p_text)
+{
+    if (p_text.isEmpty()) {
+        return p_text;
+    }
+
+    auto lines = p_text.split(QLatin1Char('\n'));
+    Q_ASSERT(lines.size() > 0);
+
+    const int indentation = fetchIndentation(lines[0]);
+    if (indentation == 0) {
+        return p_text;
+    }
+
+    QString res = lines[0].right(lines[0].size() - indentation);
+    for (int i = 1; i < lines.size(); ++i) {
+        const auto &line = lines[i];
+        int idx = 0;
+        while (idx < indentation && idx < line.size() && line[idx].isSpace()) {
+            ++idx;
+        }
+        res = res + QLatin1Char('\n') + line.right(line.size() - idx);
+    }
+
+    return res;
+}
+
+bool TextUtils::isClosingBracket(const QChar &p_char)
+{
+    return p_char == QLatin1Char(')')
+           || p_char == QLatin1Char(']')
+           || p_char == QLatin1Char('}');
+}
+
+bool TextUtils::matchBracket(const QChar &p_open, const QChar &p_close)
+{
+    return (p_open == QLatin1Char('(') && p_close == QLatin1Char(')'))
+           || (p_open == QLatin1Char('[') && p_close == QLatin1Char(']'))
+           || (p_open == QLatin1Char('{') && p_close == QLatin1Char('}'));
 }

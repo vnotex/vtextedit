@@ -7,7 +7,7 @@
 #include <QScrollBar>
 #include <QHash>
 
-#include "textutils.h"
+#include <vtextedit/textutils.h>
 
 using namespace vte;
 

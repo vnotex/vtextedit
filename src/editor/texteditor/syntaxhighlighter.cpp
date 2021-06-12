@@ -11,7 +11,6 @@
 #include "ksyntaxhighlighterwrapper.h"
 #include <vtextedit/textblockdata.h>
 
-#include <utils/textutils.h>
 #include <spellcheck/spellcheckhighlighthelper.h>
 #include "blockspellcheckdata.h"
 

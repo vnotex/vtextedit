@@ -155,7 +155,11 @@ namespace vte
 
         void setExpandTab(bool p_enable);
 
+        bool isTabExpanded() const;
+
         void setTabStopWidthInSpaces(int p_spaces);
+
+        int getTabStopWidthInSpaces() const;
 
         void insertFromMimeDataOfBase(const QMimeData *p_source);
 
@@ -243,6 +247,8 @@ namespace vte
         bool handleClosingBracket(const QChar &p_open, const QChar &p_close);
 
         bool handleBracketRemoval();
+
+        bool handleKeyReturn(QKeyEvent *p_event);
 
         // Whether the char at @p_pib is escpaed.
         static bool isEscaped(const QString &p_text, int p_pib);
