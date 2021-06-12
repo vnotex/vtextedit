@@ -1,11 +1,13 @@
 #ifndef TEXTUTILS_H
 #define TEXTUTILS_H
 
+#include "vtextedit_export.h"
+
 #include <QString>
 
 namespace vte
 {
-    class TextUtils
+    class VTEXTEDIT_EXPORT TextUtils
     {
     public:
         TextUtils() = delete;
@@ -30,6 +32,15 @@ namespace vte
 
         // Decode URL by simply replacing meta-characters.
         static void decodeUrl(QString &p_url);
+
+        static QString removeCodeBlockFence(const QString &p_text);
+
+        // Unindent multi-lines text according to the indentation of the first line.
+        static QString unindentTextMultiLines(const QString &p_text);
+
+        static bool isClosingBracket(const QChar &p_char);
+
+        static bool matchBracket(const QChar &p_open, const QChar &p_close);
     };
 }
 

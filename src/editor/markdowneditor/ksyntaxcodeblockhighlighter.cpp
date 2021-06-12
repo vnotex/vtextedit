@@ -5,7 +5,7 @@
 #include <Format>
 #include <State>
 
-#include <utils/textutils.h>
+#include <vtextedit/textutils.h>
 #include <vtextedit/markdownutils.h>
 #include <texteditor/ksyntaxhighlighterwrapper.h>
 

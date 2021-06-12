@@ -10,7 +10,7 @@
 #include <QRegularExpression>
 #include <QSet>
 
-#include "textutils.h"
+#include <vtextedit/textutils.h>
 #include <vtextedit/texteditutils.h>
 #include <vtextedit/vtextedit.h>
 #include <markdowneditor/pegparser.h>

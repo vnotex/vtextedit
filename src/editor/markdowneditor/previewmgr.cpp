@@ -7,7 +7,7 @@
 #include <QTextLayout>
 #include <QDebug>
 
-#include <utils/textutils.h>
+#include <vtextedit/textutils.h>
 #include <vtextedit/markdownutils.h>
 #include <vtextedit/texteditutils.h>
 #include <vtextedit/networkutils.h>
