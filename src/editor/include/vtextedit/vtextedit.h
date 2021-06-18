@@ -192,6 +192,14 @@ namespace vte
         // @p_menu: the menu to show if handled.
         void contextMenuEventRequested(QContextMenuEvent *p_event, bool *p_handled, QScopedPointer<QMenu> *p_menu);
 
+        void preKeyReturn(int p_modifiers, bool *p_changed, bool *p_handled);
+
+        void postKeyReturn(int p_modifiers);
+
+        void preKeyTab(int p_modifiers, bool *p_handled);
+
+        void preKeyBacktab(int p_modifiers, bool *p_handled);
+
     protected:
         void resizeEvent(QResizeEvent *p_event) Q_DECL_OVERRIDE;
 

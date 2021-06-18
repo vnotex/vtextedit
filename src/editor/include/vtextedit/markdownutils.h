@@ -133,6 +133,14 @@ namespace vte
         };
         static HeaderMatch matchHeader(const QString &p_text);
 
+        static bool isTodoList(const QString &p_text, QChar &p_listMark, bool &p_empty);
+
+        static bool isUnorderedList(const QString &p_text, QChar &p_listMark, bool &p_empty);
+
+        static bool isOrderedList(const QString &p_text, QString &p_listNumber, bool &p_empty);
+
+        static QString setOrderedListNumber(QString p_text, int p_number);
+
         static const QString c_fencedCodeBlockStartRegExp;
 
         static const QString c_fencedCodeBlockEndRegExp;
@@ -219,7 +227,7 @@ namespace vte
         // Regular expression for todo list.
         // Captured texts:
         // 1. Indentation;
-        // 2. List mark (- or *);
+        // 2. List mark (- or * or +);
         // 3. Checked mark (x or space);
         // 4. List content;
         static const QString c_todoListRegExp;
@@ -234,7 +242,7 @@ namespace vte
         // Regular expression for unordered list.
         // Captured texts:
         // 1. Indentation;
-        // 2. List mark (- or *);
+        // 2. List mark (- or * or +);
         // 3. List content;
         static const QString c_unorderedListRegExp;
 

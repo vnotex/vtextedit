@@ -56,7 +56,13 @@ namespace vte
         // Return true if @p_event is handled.
         bool handleKeyPressEvent(QKeyEvent *p_event);
 
-        bool handleKeyReturn(QKeyEvent *p_event);
+        void preKeyReturn(int p_modifiers, bool *p_changed, bool *p_handled);
+
+        void postKeyReturn(int p_modifiers);
+
+        void preKeyTab(int p_modifiers, bool *p_handled);
+
+        void preKeyBacktab(int p_modifiers, bool *p_handled);
 
         QScopedPointer<EditorPegMarkdownHighlighter> m_highlighterInterface;
 

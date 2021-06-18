@@ -5,6 +5,9 @@
 #include <vtextedit/textblockdata.h>
 #include <vtextedit/vtextedit.h>
 #include <vtextedit/pegmarkdownhighlighter.h>
+#include <vtextedit/markdownutils.h>
+#include <vtextedit/textutils.h>
+#include <vtextedit/texteditutils.h>
 #include <inputmode/inputmodemgr.h>
 #include <inputmode/abstractinputmode.h>
 
@@ -30,7 +33,18 @@ VMarkdownEditor::VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_c
 
     setupPreviewMgr();
 
-    m_textEdit->installEventFilter(this);
+    // Unnecessary for now.
+    // m_textEdit->installEventFilter(this);
+
+    // Hook keys.
+    connect(m_textEdit, &VTextEdit::preKeyReturn,
+            this, &VMarkdownEditor::preKeyReturn);
+    connect(m_textEdit, &VTextEdit::postKeyReturn,
+            this, &VMarkdownEditor::postKeyReturn);
+    connect(m_textEdit, &VTextEdit::preKeyTab,
+            this, &VMarkdownEditor::preKeyTab);
+    connect(m_textEdit, &VTextEdit::preKeyBacktab,
+            this, &VMarkdownEditor::preKeyBacktab);
 
     updateFromConfig();
 
@@ -156,26 +170,7 @@ bool VMarkdownEditor::eventFilter(QObject *p_obj, QEvent *p_event)
 
 bool VMarkdownEditor::handleKeyPressEvent(QKeyEvent *p_event)
 {
-    const int key = p_event->key();
-    switch (key) {
-    case Qt::Key_Return:
-        return handleKeyReturn(p_event);
-
-    default:
-        break;
-    }
-    return false;
-}
-
-bool VMarkdownEditor::handleKeyReturn(QKeyEvent *p_event)
-{
-    if (p_event->modifiers() == Qt::ShiftModifier) {
-        // Shift+Return: insert two spaces and then insert a new line.
-        insertText(QStringLiteral("  \n"));
-        p_event->accept();
-        return true;
-    }
-
+    Q_UNUSED(p_event);
     return false;
 }
 
@@ -190,4 +185,209 @@ void VMarkdownEditor::zoom(int p_delta)
     }
 
     getHighlighter()->updateStylesFontSize(postFontSize - preFontSize);
+}
+
+void VMarkdownEditor::preKeyReturn(int p_modifiers, bool *p_changed, bool *p_handled)
+{
+    Q_ASSERT(!m_textEdit->isReadOnly());
+
+    if (p_modifiers == Qt::ShiftModifier) {
+        *p_changed = true;
+        auto cursor = m_textEdit->textCursor();
+        cursor.beginEditBlock();
+        cursor.insertText(QStringLiteral("  "));
+        cursor.endEditBlock();
+        m_textEdit->setTextCursor(cursor);
+    } else if (p_modifiers == Qt::NoModifier) {
+        auto cursor = m_textEdit->textCursor();
+        const auto block = cursor.block();
+        const auto text = block.text().left(cursor.positionInBlock());
+
+        QChar listMark;
+        QString listNumber;
+        bool isEmpty = false;
+        if ((MarkdownUtils::isTodoList(text, listMark, isEmpty)
+             || MarkdownUtils::isUnorderedList(text, listMark, isEmpty)
+             || MarkdownUtils::isOrderedList(text, listNumber, isEmpty))
+            && isEmpty) {
+            int indentation = TextUtils::fetchIndentation(text);
+            cursor.beginEditBlock();
+            cursor.removeSelectedText();
+            cursor.setPosition(block.position() + indentation, QTextCursor::KeepAnchor);
+            cursor.removeSelectedText();
+            cursor.endEditBlock();
+            m_textEdit->setTextCursor(cursor);
+
+            *p_changed = true;
+            *p_handled = true;
+        }
+    }
+}
+
+void VMarkdownEditor::postKeyReturn(int p_modifiers)
+{
+    Q_ASSERT(!m_textEdit->isReadOnly());
+    if (p_modifiers == Qt::NoModifier) {
+        auto cursor = m_textEdit->textCursor();
+
+        const auto block = cursor.block();
+        auto preBlock = block.previous();
+        Q_ASSERT(preBlock.isValid());
+        const auto preText = preBlock.text();
+
+        if (preText.isEmpty()) {
+            return;
+        }
+
+        // Already indented by VTextEdit.
+
+        bool changed = false;
+        QChar listMark;
+        QString listNumber;
+        bool isEmpty = false;
+        if (MarkdownUtils::isTodoList(preText, listMark, isEmpty)) {
+            // Insert a todo list mark.
+            Q_ASSERT(!isEmpty);
+            changed = true;
+            cursor.joinPreviousEditBlock();
+            cursor.insertText(QString("%1 [ ] ").arg(listMark));
+        } else if (MarkdownUtils::isUnorderedList(preText, listMark, isEmpty)) {
+            // Insert an unordered list mark.
+            Q_ASSERT(!isEmpty);
+            changed = true;
+            cursor.joinPreviousEditBlock();
+            cursor.insertText(QString("%1 ").arg(listMark));
+        } else if (MarkdownUtils::isOrderedList(preText, listNumber, isEmpty)) {
+            // Insert an ordered list mark.
+            Q_ASSERT(!isEmpty);
+            changed = true;
+            cursor.joinPreviousEditBlock();
+            cursor.insertText(QString("%1. ").arg(listNumber.toInt() + 1));
+        }
+
+        if (changed) {
+            cursor.endEditBlock();
+            m_textEdit->setTextCursor(cursor);
+        }
+    }
+}
+
+void VMarkdownEditor::preKeyTab(int p_modifiers, bool *p_handled)
+{
+    Q_ASSERT(!m_textEdit->isReadOnly());
+    if (p_modifiers == Qt::NoModifier) {
+        auto cursor = m_textEdit->textCursor();
+        if (cursor.hasSelection()) {
+            return;
+        }
+
+        const auto block = cursor.block();
+        const auto text = block.text().left(cursor.positionInBlock());
+        if (text.isEmpty()) {
+            return;
+        }
+
+        QChar listMark;
+        bool isEmpty = false;
+        if (MarkdownUtils::isTodoList(text, listMark, isEmpty)
+            || MarkdownUtils::isUnorderedList(text, listMark, isEmpty)) {
+            // Indent the empty todo/unordered list.
+            if (isEmpty) {
+                *p_handled = true;
+                TextEditUtils::indentBlock(cursor,
+                                           !m_textEdit->isTabExpanded(),
+                                           m_textEdit->getTabStopWidthInSpaces(),
+                                           false);
+                m_textEdit->setTextCursor(cursor);
+            }
+            return;
+        }
+
+        QString listNumber;
+        if (MarkdownUtils::isOrderedList(text, listNumber, isEmpty) && isEmpty) {
+            *p_handled = true;
+            // Reset the list number and indent the empty ordered list.
+            auto afterText = MarkdownUtils::setOrderedListNumber(text, 1);
+            cursor.beginEditBlock();
+            if (afterText != text) {
+                cursor.movePosition(QTextCursor::StartOfBlock, QTextCursor::KeepAnchor);
+                cursor.insertText(afterText);
+            }
+            TextEditUtils::indentBlock(cursor,
+                                       !m_textEdit->isTabExpanded(),
+                                       m_textEdit->getTabStopWidthInSpaces(),
+                                       false);
+            cursor.endEditBlock();
+            m_textEdit->setTextCursor(cursor);
+            return;
+        }
+    }
+}
+
+void VMarkdownEditor::preKeyBacktab(int p_modifiers, bool *p_handled)
+{
+    Q_ASSERT(!m_textEdit->isReadOnly());
+    if (p_modifiers == Qt::ShiftModifier) {
+        auto cursor = m_textEdit->textCursor();
+        if (cursor.hasSelection()) {
+            return;
+        }
+
+        const auto block = cursor.block();
+        const auto text = block.text().left(cursor.positionInBlock());
+        if (text.isEmpty()) {
+            return;
+        }
+
+        QChar listMark;
+        bool isEmpty = false;
+        if (MarkdownUtils::isTodoList(text, listMark, isEmpty)
+            || MarkdownUtils::isUnorderedList(text, listMark, isEmpty)) {
+            // Unindent the empty todo/unordered list.
+            if (isEmpty) {
+                *p_handled = true;
+                TextEditUtils::unindentBlock(cursor, m_textEdit->getTabStopWidthInSpaces());
+                m_textEdit->setTextCursor(cursor);
+            }
+            return;
+        }
+
+        QString listNumber;
+        if (MarkdownUtils::isOrderedList(text, listNumber, isEmpty) && isEmpty) {
+            *p_handled = true;
+
+            cursor.beginEditBlock();
+
+            // Unindent the empty ordered list.
+            TextEditUtils::unindentBlock(cursor, m_textEdit->getTabStopWidthInSpaces());
+
+            const auto newText = block.text().left(cursor.positionInBlock());
+            Q_ASSERT(MarkdownUtils::isOrderedList(newText, listNumber, isEmpty));
+
+            // Try to correct the list number.
+            int newNumber = 1;
+            {
+                const auto preBlock = block.previous();
+                if (preBlock.isValid()) {
+                    const auto preText = preBlock.text();
+                    if (TextUtils::fetchIndentation(preText) == TextUtils::fetchIndentation(newText)) {
+                        QString preListNumber;
+                        bool preIsEmpty = false;
+                        if (MarkdownUtils::isOrderedList(preText, preListNumber, preIsEmpty)) {
+                            newNumber = preListNumber.toInt() + 1;
+                        }
+                    }
+                }
+            }
+
+            auto afterText = MarkdownUtils::setOrderedListNumber(newText, newNumber);
+            if (afterText != newText) {
+                cursor.movePosition(QTextCursor::StartOfBlock, QTextCursor::KeepAnchor);
+                cursor.insertText(afterText);
+            }
+            cursor.endEditBlock();
+            m_textEdit->setTextCursor(cursor);
+            return;
+        }
+    }
 }
