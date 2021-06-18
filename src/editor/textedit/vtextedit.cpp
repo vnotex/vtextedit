@@ -254,11 +254,6 @@ void VTextEdit::handleDefaultKeyPress(QKeyEvent *p_event)
         break;
 
     case Qt::Key_Return:
-        if (modifiers == Qt::ShiftModifier) {
-            // Shift+Return by default will insert a soft line within a block.
-            // It will complicate things. Disable it by default.
-            isHandled = true;
-        }
         Q_FALLTHROUGH();
     case Qt::Key_Enter:
         isHandled = handleKeyReturn(p_event);
@@ -581,7 +576,16 @@ bool VTextEdit::handleKeyTab(QKeyEvent *p_event)
         return false;
     }
 
-    if (p_event->modifiers() == Qt::NoModifier) {
+    const int modifiers = p_event->modifiers();
+    bool handled = false;
+
+    emit preKeyTab(modifiers, &handled);
+
+    if (handled) {
+        return true;
+    }
+
+    if (modifiers == Qt::NoModifier) {
         bool shouldIndentBlock = false;
         auto cursor = textCursor();
         if (cursor.hasSelection()) {
@@ -619,7 +623,16 @@ bool VTextEdit::handleKeyBacktab(QKeyEvent *p_event)
         return false;
     }
 
-    if (p_event->modifiers() == Qt::ShiftModifier) {
+    const int modifiers = p_event->modifiers();
+    bool handled = false;
+
+    emit preKeyBacktab(modifiers, &handled);
+
+    if (handled) {
+        return true;
+    }
+
+    if (modifiers == Qt::ShiftModifier) {
         TextEditUtils::indentBlocks(this, !m_expandTab, m_tabStopWidthInSpaces, false);
         return true;
     }
@@ -837,15 +850,37 @@ bool VTextEdit::handleKeyReturn(QKeyEvent *p_event)
         return false;
     }
 
-    if (p_event->modifiers() != Qt::NoModifier) {
-        return false;
+    const int modifiers = p_event->modifiers();
+    bool changed = false;
+    bool handled = false;
+
+    emit preKeyReturn(modifiers, &changed, &handled);
+
+    if (handled) {
+        return true;
+    }
+
+    if (!changed && p_event->modifiers() != Qt::NoModifier) {
+        // Shift+Return by default will insert a soft line within a block.
+        // It will complicate things. Disable it by default.
+        // Ctrl+Return by default will do nothing.
+        return true;
     }
 
     auto cursor = textCursor();
-    cursor.beginEditBlock();
+    if (changed) {
+        cursor.joinPreviousEditBlock();
+    } else {
+        cursor.beginEditBlock();
+    }
+
     cursor.insertBlock();
     AutoIndentHelper::autoIndent(cursor, !m_expandTab, m_tabStopWidthInSpaces);
+
     cursor.endEditBlock();
     setTextCursor(cursor);
+
+    emit postKeyReturn(modifiers);
+
     return true;
 }

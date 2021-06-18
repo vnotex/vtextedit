@@ -309,11 +309,15 @@ void TextEditUtils::indentBlock(QTextCursor &p_cursor, bool p_useTab, int p_spac
     auto block = p_cursor.block();
     if (block.length() > 1 || !p_skipEmptyBlock) {
         int indentation = fetchIndentation(block);
+        int pib = p_cursor.positionInBlock();
         p_cursor.movePosition(QTextCursor::StartOfBlock);
         p_cursor.movePosition(QTextCursor::NextCharacter, QTextCursor::MoveAnchor, indentation);
         if (p_useTab) {
             // Insert Tab to indent.
             p_cursor.insertText(QStringLiteral("\t"));
+            if (pib >= indentation) {
+                ++pib;
+            }
         } else {
             // Insert spaces to indent.
             int indentationSpaces = 0;
@@ -328,7 +332,13 @@ void TextEditUtils::indentBlock(QTextCursor &p_cursor, bool p_useTab, int p_spac
 
             int spaces = p_spaces - (indentationSpaces % p_spaces);
             p_cursor.insertText(QString(spaces, QLatin1Char(' ')));
+            if (pib >= indentation) {
+                pib += spaces;
+            }
         }
+
+        // Restore cursor position.
+        p_cursor.setPosition(block.position() + pib);
     }
 }
 
@@ -340,13 +350,16 @@ void TextEditUtils::unindentBlock(QTextCursor &p_cursor, int p_spaces)
         return;
     }
 
-    int indentation = fetchIndentation(block);
+    const int indentation = fetchIndentation(block);
+    int pib = p_cursor.positionInBlock();
     p_cursor.movePosition(QTextCursor::StartOfBlock);
     p_cursor.movePosition(QTextCursor::NextCharacter, QTextCursor::MoveAnchor, indentation);
+    int deletedChars = 0;
     if (indentation == 0) {
         return;
     } else if (text[indentation - 1] == QLatin1Char('\t')) {
         p_cursor.deletePreviousChar();
+        ++deletedChars;
     } else if (text[indentation - 1].isSpace()) {
         int indentationSpaces = 0;
         for (int i = indentation - 1; i >= 0; --i) {
@@ -363,11 +376,21 @@ void TextEditUtils::unindentBlock(QTextCursor &p_cursor, int p_spaces)
         for (int i = 0; i < spaces; ++i) {
             if (text[indentation - i - 1] == QLatin1Char(' ')) {
                 p_cursor.deletePreviousChar();
+                ++deletedChars;
             } else {
                 break;
             }
         }
     }
+
+    if (pib > indentation - deletedChars) {
+        if (pib > indentation) {
+            pib -= deletedChars;
+        } else {
+            pib = indentation;
+        }
+    }
+    p_cursor.setPosition(block.position() + pib);
 }
 
 bool TextEditUtils::crossBlocks(QTextEdit *p_edit, int p_start, int p_end)

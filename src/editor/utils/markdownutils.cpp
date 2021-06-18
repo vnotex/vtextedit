@@ -35,11 +35,11 @@ const QString MarkdownUtils::c_imageLinkRegExp = QString("\\!\\[([^\\[\\]]*)\\]"
 // Constrain the main section number digits within 3 chars to avoid treating a date like 20210101 as a section number.
 const QString MarkdownUtils::c_headerRegExp = QString("^(#{1,6})(\\s+)((\\d{1,3}(?:\\.\\d+)*\\.?(?=\\s))?(\\s*)(?:\\S.*)?)$");
 
-const QString MarkdownUtils::c_todoListRegExp = QString("^(\\s*)([\\*-])\\s+\\[([ x])\\]\\s*(.*)$");
+const QString MarkdownUtils::c_todoListRegExp = QString("^(\\s*)([\\*-\\+])\\s+\\[([ x])\\]\\s*(.*)$");
 
 const QString MarkdownUtils::c_orderedListRegExp = QString("^(\\s*)(\\d+)\\.\\s+(.*)$");
 
-const QString MarkdownUtils::c_unorderedListRegExp = QString("^(\\s*)([\\*-])\\s+(.*)$");
+const QString MarkdownUtils::c_unorderedListRegExp = QString("^(\\s*)([\\*-\\+])\\s+(.*)$");
 
 const QString MarkdownUtils::c_quoteRegExp = QString("^(\\s*)>\\s+(.*)$");
 
@@ -1053,4 +1053,70 @@ MarkdownUtils::HeaderMatch MarkdownUtils::matchHeader(const QString &p_text)
         match.m_spacesAfterSequence = regExp.cap(5).length();
         return match;
     }
+}
+
+bool MarkdownUtils::isTodoList(const QString &p_text, QChar &p_listMark, bool &p_empty)
+{
+    if (p_text.isEmpty()) {
+        return false;
+    }
+
+    QRegularExpression reg(c_todoListRegExp);
+    auto match = reg.match(p_text);
+    if (match.hasMatch()) {
+        p_listMark = match.captured(2)[0];
+        p_empty = match.captured(4).isEmpty();
+        return true;
+    }
+
+    return false;
+}
+
+bool MarkdownUtils::isUnorderedList(const QString &p_text, QChar &p_listMark, bool &p_empty)
+{
+    if (p_text.isEmpty()) {
+        return false;
+    }
+
+    QRegularExpression reg(c_unorderedListRegExp);
+    auto match = reg.match(p_text);
+    if (match.hasMatch()) {
+        p_listMark = match.captured(2)[0];
+        p_empty = match.captured(3).isEmpty();
+        return true;
+    }
+
+    return false;
+}
+
+bool MarkdownUtils::isOrderedList(const QString &p_text, QString &p_listNumber, bool &p_empty)
+{
+    if (p_text.isEmpty()) {
+        return false;
+    }
+
+    QRegularExpression reg(c_orderedListRegExp);
+    auto match = reg.match(p_text);
+    if (match.hasMatch()) {
+        p_listNumber = match.captured(2);
+        p_empty = match.captured(3).isEmpty();
+        return true;
+    }
+
+    return false;
+}
+
+QString MarkdownUtils::setOrderedListNumber(QString p_text, int p_number)
+{
+    Q_ASSERT(p_number > 0);
+    QRegularExpression reg(c_orderedListRegExp);
+    auto match = reg.match(p_text);
+    if (match.hasMatch()) {
+        const auto number = match.captured(2);
+        if (number.toInt() == p_number) {
+            return p_text;
+        }
+        p_text.replace(match.captured(1).size(), number.size(), QString::number(p_number));
+    }
+    return p_text;
 }

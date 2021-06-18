@@ -103,24 +103,7 @@ VTextEditor::VTextEditor(const QSharedPointer<TextEditorConfig> &p_config,
 
     // Input method.
     connect(this, &VTextEditor::modeChanged,
-            this, [this]() {
-                auto mode = getEditorMode();
-                switch (mode) {
-                case ViModeNormal:
-                    Q_FALLTHROUGH();
-                case ViModeVisual:
-                    Q_FALLTHROUGH();
-                case ViModeVisualLine:
-                    Q_FALLTHROUGH();
-                case ViModeVisualBlock:
-                    m_textEdit->setInputMethodEnabled(false);
-                    break;
-
-                default:
-                    m_textEdit->setInputMethodEnabled(true);
-                    break;
-                }
-            });
+            this, &VTextEditor::updateInputMethodEnabled);
 
     updateFromConfig();
 
@@ -371,6 +354,8 @@ void VTextEditor::setInputMode(InputMode p_mode)
     m_inputModeInterface.swap(newInputMode);
 
     updateStatusWidget();
+
+    emit modeChanged();
 }
 
 QSharedPointer<AbstractInputMode> VTextEditor::getInputMode() const
@@ -1310,4 +1295,24 @@ void VTextEditor::enableInternalContextMenu()
                 p_menu->reset(m_textEdit->createStandardContextMenu(p_event->pos()));
                 appendSpellCheckMenu(p_event, p_menu->data());
             });
+}
+
+void VTextEditor::updateInputMethodEnabled()
+{
+    const auto mode = getEditorMode();
+    switch (mode) {
+    case ViModeNormal:
+        Q_FALLTHROUGH();
+    case ViModeVisual:
+        Q_FALLTHROUGH();
+    case ViModeVisualLine:
+        Q_FALLTHROUGH();
+    case ViModeVisualBlock:
+        m_textEdit->setInputMethodEnabled(false);
+        break;
+
+    default:
+        m_textEdit->setInputMethodEnabled(true);
+        break;
+    }
 }

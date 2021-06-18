@@ -238,6 +238,8 @@ namespace vte
                                                bool p_skipCurrent,
                                                QTextCursor &p_currentMatch);
 
+        void updateInputMethodEnabled();
+
         static void resolveBackReferenceInReplaceText(QString &p_replaceText,
                                                       QString p_text,
                                                       const QRegularExpression &p_regExp);
