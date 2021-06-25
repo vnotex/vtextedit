@@ -246,8 +246,17 @@ QString PreviewMgr::imageResourceName(const ImageLink &p_link)
     QString imgPath = p_link.m_linkUrl;
     if (QFileInfo::exists(imgPath)) {
         // Local file.
-        image = QPixmap(imgPath);
+        // Sometimes the suffix of the image may mislead the codec. Directly load from the data
+        // and then load from file path.
+        QFile file(imgPath);
+        if (file.open(QIODevice::ReadOnly)) {
+            image.loadFromData(file.readAll());
+        }
         if (image.isNull()) {
+            image = QPixmap(imgPath);
+        }
+        if (image.isNull()) {
+            qWarning() << "failed to load local image for preview" << imgPath;
             return QString();
         }
     } else {
