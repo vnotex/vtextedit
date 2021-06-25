@@ -139,12 +139,6 @@ void TextEditUtils::removeBlock(QTextBlock &p_block)
             cursor.deleteChar();
         }
     }
-
-    if (cursor.block().blockNumber() < blockNum) {
-        cursor.movePosition(QTextCursor::NextBlock);
-    }
-
-    cursor.movePosition(QTextCursor::StartOfBlock);
 }
 
 void TextEditUtils::scrollBlockInPage(QTextEdit *p_edit,

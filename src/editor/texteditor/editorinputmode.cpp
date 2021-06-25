@@ -101,6 +101,14 @@ bool EditorInputMode::removeLine(int p_line)
     auto block = document()->findBlockByNumber(p_line);
     if (block.isValid()) {
         TextEditUtils::removeBlock(block);
+
+        // Move it to the right block after removal.
+        auto cursor = textCursor();
+        // Will be one line above.
+        if (cursor.blockNumber() < p_line) {
+            cursor.movePosition(QTextCursor::NextBlock);
+            m_textEdit->setTextCursor(cursor);
+        }
         return true;
     }
 

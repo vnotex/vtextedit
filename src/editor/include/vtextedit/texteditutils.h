@@ -32,6 +32,7 @@ namespace vte
 
         static int contentOffsetAtTop(QTextEdit *p_edit);
 
+        // Usually the cursor will be placed at the previous block which may be not expected.
         static void removeBlock(QTextBlock &p_block);
 
         // Will not change current cursor.
