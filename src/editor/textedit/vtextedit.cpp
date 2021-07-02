@@ -454,6 +454,20 @@ QString VTextEdit::selectedText() const
     return getSelectedText(selection);
 }
 
+void VTextEdit::removeSelectedText()
+{
+    const auto &selection = m_selections.getSelection();
+    if (!selection.isValid()) {
+        return;
+    }
+
+    auto cursor = textCursor();
+    cursor.setPosition(selection.start());
+    cursor.setPosition(selection.end(), QTextCursor::KeepAnchor);
+    cursor.removeSelectedText();
+    setTextCursor(cursor);
+}
+
 QString VTextEdit::getSelectedText(const Selection &p_selection) const
 {
     if (!p_selection.isValid()) {

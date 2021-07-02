@@ -22,6 +22,10 @@ namespace vte
 
         static QString fetchIndentationSpaces(const QString &p_text);
 
+        // @p_text may have multiline.
+        // Fetch the indentation of the line located by @p_pos.
+        static QString fetchIndentationSpacesInMultiLines(const QString &p_text, int p_pos);
+
         static QString unindentText(const QString &p_text, int p_spaces);
 
         // Check is all characters of p_text[p_start, p_end) are spaces.
