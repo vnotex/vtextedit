@@ -137,6 +137,8 @@ namespace vte
         // Get selected text by main selection.
         QString selectedText() const;
 
+        void removeSelectedText();
+
         void setOverriddenSelection(int p_start, int p_end);
 
         void clearOverriddenSelection();

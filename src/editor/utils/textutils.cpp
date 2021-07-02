@@ -50,6 +50,27 @@ QString TextUtils::fetchIndentationSpaces(const QString &p_text)
     return p_text.left(indentation);
 }
 
+QString TextUtils::fetchIndentationSpacesInMultiLines(const QString &p_text, int p_pos)
+{
+    int start = 0;
+    if (p_pos != 0) {
+        start = p_text.lastIndexOf(QLatin1Char('\n'), p_pos - 1);
+        if (start == -1) {
+            start = 0;
+        } else {
+            ++start;
+        }
+    }
+
+    for (int i = start; i < p_pos; ++i) {
+        if (!p_text.at(i).isSpace()) {
+            return p_text.mid(start, i - start);
+        }
+    }
+
+    return QString();
+}
+
 QString TextUtils::unindentText(const QString &p_text, int p_spaces)
 {
     if (p_spaces == 0) {

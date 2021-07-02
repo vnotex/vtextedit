@@ -255,7 +255,7 @@ void MarkdownUtils::typeMarker(VTextEdit *p_edit,
         }
 
         if (end - start >= totalMarkersSize) {
-            const auto text = cursor.selectedText();
+            const auto text = p_edit->selectedText();
             if (text.startsWith(p_startMarker) && text.endsWith(p_endMarker)) {
                 // Remove the marker.
                 done = true;
