@@ -4,7 +4,6 @@
 #include <QResizeEvent>
 #include <QWheelEvent>
 #include <QRegularExpression>
-#include <QDebug>
 #include <QKeyEvent>
 #include <QTextLayout>
 #include <QTimer>
@@ -56,6 +55,11 @@ VTextEdit::VTextEdit(QWidget *p_parent)
     // all other slots connected to selectionChanged.
     connect(this, &QTextEdit::selectionChanged,
             this, [this]() {
+                if (m_selectionChangedByOverride) {
+                    m_selectionChangedByOverride = false;
+                    return;
+                }
+
                 auto cursor = textCursor();
                 if (cursor.hasSelection()) {
                     m_selections.m_selection = Selection(cursor.position(), cursor.anchor());
@@ -488,6 +492,7 @@ void VTextEdit::setOverriddenSelection(int p_start, int p_end)
     }
 
     m_selections.m_overriddenSelection = newSelection;
+    m_selectionChangedByOverride = true;
     emit selectionChanged();
 }
 

@@ -302,6 +302,8 @@ namespace vte
         bool m_inputMethodEnabled = true;
 
         bool m_autoBracketsEnabled = true;
+
+        bool m_selectionChangedByOverride = false;
     };
 
     template <typename T>
