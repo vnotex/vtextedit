@@ -287,6 +287,8 @@ void VTextEdit::handleDefaultKeyPress(QKeyEvent *p_event)
         isHandled = handleClosingBracket(QLatin1Char('{'), QLatin1Char('}'));
         break;
 
+// It is boring to auto complete ' and ". Disable it for now.
+#if 0
     case Qt::Key_Apostrophe:
         isHandled = handleClosingBracket(QLatin1Char('\''), QLatin1Char('\''));
         if (!isHandled) {
@@ -300,6 +302,7 @@ void VTextEdit::handleDefaultKeyPress(QKeyEvent *p_event)
             isHandled = handleOpeningBracket(QLatin1Char('"'), QLatin1Char('"'));
         }
         break;
+#endif
 
     case Qt::Key_Backspace:
         isHandled = handleBracketRemoval();
@@ -739,11 +742,13 @@ bool VTextEdit::handleOpeningBracket(const QChar &p_open, const QChar &p_close)
         return true;
     }
 
+#if 0
     if (p_open == QLatin1Char('\'') || p_open == QLatin1Char('"')) {
         if (isEscaped(cursor.block().text(), cursor.positionInBlock())) {
             return false;
         }
     }
+#endif
 
     cursor.beginEditBlock();
     cursor.insertText(p_open);
@@ -777,11 +782,13 @@ bool VTextEdit::handleClosingBracket(const QChar &p_open, const QChar &p_close)
         return false;
     }
 
+#if 0
     if (p_open == QLatin1Char('\'') || p_open == QLatin1Char('"')) {
         if (isEscaped(text, pib)) {
             return false;
         }
     }
+#endif
 
     // Move cursor and no enter.
     cursor.movePosition(QTextCursor::NextCharacter);
@@ -826,12 +833,14 @@ bool VTextEdit::handleBracketRemoval()
         return false;
     }
 
+#if 0
     // Check if the opening bracket is escaped.
     if (opening == QLatin1Char('\'') || opening == QLatin1Char('"')) {
         if (isEscaped(text, pib - 1)) {
             return false;
         }
     }
+#endif
 
     cursor.beginEditBlock();
     cursor.deletePreviousChar();
@@ -853,12 +862,14 @@ QChar VTextEdit::matchingClosingBracket(const QChar &p_open)
     else if (p_open == QLatin1Char('{')) {
         return QLatin1Char('}');
     }
+#if 0
     else if (p_open == QLatin1Char('\'')) {
         return QLatin1Char('\'');
     }
     else if (p_open == QLatin1Char('"')) {
         return QLatin1Char('"');
     }
+#endif
 
     return QChar();
 }
