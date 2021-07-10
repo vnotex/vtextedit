@@ -176,9 +176,9 @@ bool VMarkdownEditor::handleKeyPressEvent(QKeyEvent *p_event)
 
 void VMarkdownEditor::zoom(int p_delta)
 {
-    int preFontSize = m_textEdit->font().pointSize();
+    const int preFontSize = editorFontPointSize();
     VTextEditor::zoom(p_delta);
-    int postFontSize = m_textEdit->font().pointSize();
+    const int postFontSize = editorFontPointSize();
 
     if (preFontSize == postFontSize) {
         return;
