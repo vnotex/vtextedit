@@ -130,6 +130,8 @@ namespace vte
 
         int zoomDelta() const;
 
+        int editorFontPointSize() const;
+
         // @p_delta: font point size added to the base font size.
         virtual void zoom(int p_delta);
 
@@ -325,6 +327,9 @@ namespace vte
         QString m_basePath;
 
         int m_zoomDelta = 0;
+
+        // Used to indicate current font point size of editor.
+        int m_editorFontPointSize = 0;
 
         FindResultCache m_findResultCache;
 

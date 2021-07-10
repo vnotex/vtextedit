@@ -285,6 +285,7 @@ void VTextEditor::updateFromConfig()
             m_themePalette.setColor(QPalette::Highlight, selectionBgColor);
         }
 
+        m_editorFontPointSize = m_themeFont.pointSize();
         setFontAndPaletteByStyleSheet(m_themeFont, m_themePalette);
     }
 
@@ -865,6 +866,11 @@ int VTextEditor::zoomDelta() const
     return m_zoomDelta;
 }
 
+int VTextEditor::editorFontPointSize() const
+{
+    return m_editorFontPointSize;
+}
+
 // zoomIn() and zoomOut() does not work if we set stylesheet of editor.
 void VTextEditor::zoom(int p_delta)
 {
@@ -874,13 +880,17 @@ void VTextEditor::zoom(int p_delta)
 
     const int minSize = 2;
     int step = p_delta - m_zoomDelta;
-    auto editFontPtSz = m_textEdit->font().pointSize();
-    if (editFontPtSz <= minSize && step < 0) {
+    if (m_editorFontPointSize <= minSize && step < 0) {
         return;
     }
 
-    int ptSz = editFontPtSz + step;
+    int ptSz = m_editorFontPointSize + step;
     ptSz = qMax(ptSz, minSize);
+
+    m_zoomDelta = p_delta;
+    m_editorFontPointSize = ptSz;
+
+    // Make not take effect directly.
     setFontPointSizeByStyleSheet(ptSz);
 
     // Indicator border.
@@ -891,8 +901,6 @@ void VTextEditor::zoom(int p_delta)
         font.setPointSize(ptSz);
         m_indicatorsBorder->setFont(font);
     }
-
-    m_zoomDelta = p_delta;
 }
 
 void VTextEditor::setFontPointSizeByStyleSheet(int p_ptSize)
