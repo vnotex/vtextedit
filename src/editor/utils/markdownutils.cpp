@@ -951,6 +951,11 @@ QString MarkdownUtils::generateImageLink(const QString &p_title,
     return QString(QStringLiteral("![%1](%2%3%4)")).arg(p_title, p_url, altText, scale);
 }
 
+static bool markdownLinkCmp(const MarkdownLink &p_a, const MarkdownLink &p_b)
+{
+    return p_a.m_urlInLinkPos > p_b.m_urlInLinkPos;
+}
+
 QVector<MarkdownLink> MarkdownUtils::fetchImagesFromMarkdownText(const QString &p_content,
                                                                  const QString &p_contentBasePath,
                                                                  MarkdownLink::TypeFlags p_flags)
@@ -1006,6 +1011,8 @@ QVector<MarkdownLink> MarkdownUtils::fetchImagesFromMarkdownText(const QString &
             }
         }
     }
+
+    std::sort(images.begin(), images.end(), markdownLinkCmp);
 
     return images;
 }
