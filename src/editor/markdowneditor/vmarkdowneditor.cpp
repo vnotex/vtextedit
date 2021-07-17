@@ -148,7 +148,22 @@ void VMarkdownEditor::updateFromConfig()
 {
     Q_ASSERT(m_config);
 
-    documentLayout()->setConstrainPreviewWidthEnabled(m_config->m_constrainInPlacePreviewWidthEnabled);
+    documentLayout()->setConstrainPreviewWidthEnabled(m_config->m_constrainInplacePreviewWidthEnabled);
+
+    if (m_config->m_inplacePreviewSources == (MarkdownEditorConfig::ImageLink | MarkdownEditorConfig::CodeBlock | MarkdownEditorConfig::Math)) {
+        m_previewMgr->setPreviewEnabled(true);
+    } else {
+        m_previewMgr->setPreviewEnabled(false);
+        if (m_config->m_inplacePreviewSources & MarkdownEditorConfig::ImageLink) {
+            m_previewMgr->setPreviewEnabled(PreviewData::Source::ImageLink, true);
+        }
+        if (m_config->m_inplacePreviewSources & MarkdownEditorConfig::CodeBlock) {
+            m_previewMgr->setPreviewEnabled(PreviewData::Source::CodeBlock, true);
+        }
+        if (m_config->m_inplacePreviewSources & MarkdownEditorConfig::Math) {
+            m_previewMgr->setPreviewEnabled(PreviewData::Source::MathBlock, true);
+        }
+    }
 }
 
 bool VMarkdownEditor::eventFilter(QObject *p_obj, QEvent *p_event)
