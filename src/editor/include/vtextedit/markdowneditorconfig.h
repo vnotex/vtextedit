@@ -9,6 +9,15 @@ namespace vte
     class VTEXTEDIT_EXPORT MarkdownEditorConfig
     {
     public:
+        enum InplacePreviewSource
+        {
+            NoInplacePreview = 0,
+            ImageLink = 0x1,
+            CodeBlock = 0x2,
+            Math = 0x4
+        };
+        Q_DECLARE_FLAGS(InplacePreviewSources, InplacePreviewSource);
+
         MarkdownEditorConfig(const QSharedPointer<TextEditorConfig> &p_textEditorConfig);
 
         void fillDefaultTheme();
@@ -19,11 +28,17 @@ namespace vte
         QSharedPointer<TextEditorConfig> m_textEditorConfig;
 
         // Whether constrain the width of in-place preview.
-        bool m_constrainInPlacePreviewWidthEnabled = false;
+        bool m_constrainInplacePreviewWidthEnabled = false;
+
+        InplacePreviewSources m_inplacePreviewSources = InplacePreviewSource::ImageLink
+                                                        | InplacePreviewSource::CodeBlock
+                                                        | InplacePreviewSource::Math;
 
     private:
         void overrideTextStyle();
     };
 }
+
+Q_DECLARE_OPERATORS_FOR_FLAGS(vte::MarkdownEditorConfig::InplacePreviewSources)
 
 #endif // MARKDOWNEDITORCONFIG_H
