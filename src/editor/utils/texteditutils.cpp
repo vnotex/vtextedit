@@ -257,7 +257,7 @@ void TextEditUtils::indentBlocks(QTextEdit *p_edit, bool p_useTab, int p_spaces,
 {
     QTextBlock startBlock;
     int count = getSelectedBlockRange(p_edit, startBlock);
-    indentBlocks(p_useTab, p_spaces, startBlock, count == 0 ? 1 : count, p_indent);
+    indentBlocks(p_useTab, p_spaces, startBlock, count == 0 ? 1 : count, p_indent, 1);
 }
 
 int TextEditUtils::getSelectedBlockRange(QTextEdit *p_edit, QTextBlock &p_start)
@@ -278,16 +278,19 @@ int TextEditUtils::getSelectedBlockRange(QTextEdit *p_edit, QTextBlock &p_start)
 void TextEditUtils::indentBlocks(bool p_useTab,
                                  int p_spaces,
                                  QTextBlock p_start,
-                                 int p_count,
-                                 bool p_indent)
+                                 int p_blockCount,
+                                 bool p_indent,
+                                 int p_indentCount)
 {
     QTextCursor cursor(p_start);
     cursor.beginEditBlock();
-    for (int i = 0; i < p_count; ++i) {
-        if (p_indent) {
-            indentBlock(cursor, p_useTab, p_spaces, true);
-        } else {
-            unindentBlock(cursor, p_spaces);
+    for (int i = 0; i < p_blockCount; ++i) {
+        for (int j = 0; j < p_indentCount; ++j) {
+            if (p_indent) {
+                indentBlock(cursor, p_useTab, p_spaces, true);
+            } else {
+                unindentBlock(cursor, p_spaces);
+            }
         }
         cursor.movePosition(QTextCursor::NextBlock);
     }
@@ -430,4 +433,41 @@ QString TextEditUtils::getSelectedText(const QTextCursor &p_cursor)
 void TextEditUtils::ensureBlockVisible(QTextEdit *p_edit, int p_blockNumber)
 {
     scrollBlockInPage(p_edit, p_blockNumber, PagePosition::Center);
+}
+
+void TextEditUtils::align(QTextBlock p_start, int p_cnt)
+{
+    if (!p_start.isValid()) {
+        return;
+    }
+
+    bool alignFirstBlock = false;
+    QString indentationSpaces;
+    auto preBlock = p_start.previous();
+    if (preBlock.isValid()) {
+        alignFirstBlock = true;
+        indentationSpaces = fetchIndentationSpaces(preBlock);
+    } else {
+        indentationSpaces = fetchIndentationSpaces(p_start);
+    }
+
+    QTextCursor cursor(p_start);
+    cursor.beginEditBlock();
+
+    if (!alignFirstBlock) {
+        cursor.movePosition(QTextCursor::NextBlock);
+    }
+
+    for (int i = alignFirstBlock ? 0 : 1; i < p_cnt; ++i) {
+        auto curBlock = cursor.block();
+        int oldIndentation = fetchIndentation(curBlock);
+        if (oldIndentation > 0) {
+            cursor.movePosition(QTextCursor::StartOfBlock);
+            cursor.setPosition(curBlock.position() + oldIndentation, QTextCursor::KeepAnchor);
+        }
+        cursor.insertText(indentationSpaces);
+        cursor.movePosition(QTextCursor::NextBlock);
+    }
+
+    cursor.endEditBlock();
 }

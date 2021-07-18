@@ -127,7 +127,7 @@ namespace vte
 
         bool insertText(const KateViI::Cursor &p_position, const QString &p_text, bool p_blockWise) Q_DECL_OVERRIDE;
 
-        void indent(KateViI::Range range, int change) Q_DECL_OVERRIDE;
+        void indent(const KateViI::Range &p_range, int p_changes) Q_DECL_OVERRIDE;
 
         void pageDown(bool p_half) Q_DECL_OVERRIDE;
 

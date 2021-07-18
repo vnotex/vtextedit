@@ -53,6 +53,16 @@ namespace vte
         // If has selection, indent selected blocks; otherwise, indent the cursor block only.
         static void indentBlocks(QTextEdit *p_edit, bool p_useTab, int p_spaces, bool p_indent);
 
+        // Indent @p_count blocks from @p_start block.
+        static void indentBlocks(bool p_useTab,
+                                 int p_spaces,
+                                 QTextBlock p_start,
+                                 int p_blockCount,
+                                 bool p_indent,
+                                 int p_indentCount);
+
+        static void align(QTextBlock p_start, int p_cnt);
+
         // Return number of selected blocks.
         static int getSelectedBlockRange(QTextEdit *p_edit, QTextBlock &p_start);
 
@@ -69,13 +79,6 @@ namespace vte
         static QString getSelectedText(const QTextCursor &p_cursor);
 
         static void ensureBlockVisible(QTextEdit *p_edit, int p_blockNumber);
-
-    private:
-        static void indentBlocks(bool p_useTab,
-                                 int p_spaces,
-                                 QTextBlock p_start,
-                                 int p_count,
-                                 bool p_indent);
     };
 }
 

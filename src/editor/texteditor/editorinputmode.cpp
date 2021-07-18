@@ -292,7 +292,9 @@ void EditorInputMode::updateCursor(int p_line, int p_column)
     auto block = document()->findBlockByNumber(p_line);
     Q_ASSERT(block.isValid() && block.isVisible());
     if (block.isValid()) {
-        Q_ASSERT(p_column < block.length());
+        if (p_column >= block.length()) {
+            p_column = block.length() - 1;
+        }
         auto cursor = m_textEdit->textCursor();
         cursor.setPosition(block.position() + p_column);
         m_textEdit->setTextCursor(cursor);
@@ -690,9 +692,25 @@ void EditorInputMode::removeMark(int line, uint markType)
     EDITOR_NIY;
 }
 
-void EditorInputMode::indent(KateViI::Range range, int change)
+void EditorInputMode::indent(const KateViI::Range &p_range, int p_changes)
 {
-    EDITOR_NIY;
+    bool isIndent = p_changes > 0;
+    if (!isIndent) {
+        p_changes = -p_changes;
+    }
+
+    // Check if we need to indent the end line by column.
+    int lineCnt = p_range.end().line() - p_range.start().line();
+    if (p_range.end().column() > 0) {
+        ++lineCnt;
+    }
+    auto startBlock = document()->findBlockByNumber(p_range.start().line());
+    TextEditUtils::indentBlocks(!m_textEdit->isTabExpanded(),
+                                m_textEdit->getTabStopWidthInSpaces(),
+                                startBlock,
+                                lineCnt,
+                                isIndent,
+                                p_changes);
 }
 
 void EditorInputMode::pageDown(bool p_half)
@@ -747,7 +765,9 @@ void EditorInputMode::scrollInPage(const KateViI::Cursor &p_pos, KateViI::PagePo
 
 void EditorInputMode::align(const KateViI::Range &p_range)
 {
-    EDITOR_NIY;
+    auto startBlock = document()->findBlockByNumber(p_range.start().line());
+    int lineCnt = p_range.end().line() - p_range.start().line() + 1;
+    TextEditUtils::align(startBlock, lineCnt);
 }
 
 void EditorInputMode::align()

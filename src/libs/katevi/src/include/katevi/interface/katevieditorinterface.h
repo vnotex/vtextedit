@@ -181,7 +181,7 @@ namespace KateViI
 
         virtual bool insertText(const KateViI::Cursor &p_position, const QString &p_text, bool p_blockWise = false) = 0;
 
-        virtual void indent(KateViI::Range range, int change) = 0;
+        virtual void indent(const KateViI::Range &range, int p_changes) = 0;
 
         virtual void pageDown(bool p_half = false) = 0;
 

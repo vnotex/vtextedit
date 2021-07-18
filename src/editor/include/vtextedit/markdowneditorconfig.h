@@ -30,9 +30,7 @@ namespace vte
         // Whether constrain the width of in-place preview.
         bool m_constrainInplacePreviewWidthEnabled = false;
 
-        InplacePreviewSources m_inplacePreviewSources = InplacePreviewSource::ImageLink
-                                                        | InplacePreviewSource::CodeBlock
-                                                        | InplacePreviewSource::Math;
+        InplacePreviewSources m_inplacePreviewSources;
 
     private:
         void overrideTextStyle();

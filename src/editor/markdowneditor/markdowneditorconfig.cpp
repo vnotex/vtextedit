@@ -3,7 +3,10 @@
 using namespace vte;
 
 MarkdownEditorConfig::MarkdownEditorConfig(const QSharedPointer<TextEditorConfig> &p_textEditorConfig)
-    : m_textEditorConfig(p_textEditorConfig)
+    : m_textEditorConfig(p_textEditorConfig),
+      m_inplacePreviewSources(InplacePreviewSource::ImageLink
+                              | InplacePreviewSource::CodeBlock
+                              | InplacePreviewSource::Math)
 {
     Q_ASSERT(p_textEditorConfig);
     fillDefaultTheme();
