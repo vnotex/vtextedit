@@ -1371,8 +1371,8 @@ bool NormalViMode::commandIndentLines()
 
     int line1 = m_commandRange.startLine;
     int line2 = m_commandRange.endLine;
-    int col = getLine(line2).length();
-    m_interface->indent(KateViI::Range(line1, 0, line2, col), getCount());
+    int cnt = m_viInputModeManager->getCurrentViMode() == ViMode::NormalMode ? 1 : getCount();
+    m_interface->indent(KateViI::Range(line1, 0, line2, m_interface->lineLength(line2)), cnt);
 
     if (downwards) {
         updateCursor(KateViI::Cursor(m_commandRange.startLine, m_commandRange.startColumn));
@@ -1390,8 +1390,8 @@ bool NormalViMode::commandUnindentLines()
 
     int line1 = m_commandRange.startLine;
     int line2 = m_commandRange.endLine;
-
-    m_interface->indent(KateViI::Range(line1, 0, line2, m_interface->lineLength(line2)), -getCount());
+    int cnt = m_viInputModeManager->getCurrentViMode() == ViMode::NormalMode ? 1 : getCount();
+    m_interface->indent(KateViI::Range(line1, 0, line2, m_interface->lineLength(line2)), -cnt);
 
     if (downwards) {
         updateCursor(KateViI::Cursor(m_commandRange.startLine, m_commandRange.startColumn));
