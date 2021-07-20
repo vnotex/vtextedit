@@ -39,6 +39,13 @@ namespace peg
         virtual QScrollBar *verticalScrollBar() const = 0;
     };
 
+    struct ContentsChange
+    {
+        int m_position = 0;
+        int m_charsRemoved = 0;
+        int m_charsAdded = 0;
+    };
+
     // Markdown syntax highlighter via Peg-Markdown-Highlight.
     class VTEXTEDIT_EXPORT PegMarkdownHighlighter : public VSyntaxHighlighter
     {
@@ -105,13 +112,6 @@ namespace peg
         void handleCodeBlockHighlightResult(const CodeBlockHighlighter::HighlightResult &p_result);
 
     private:
-        struct FastParseInfo
-        {
-            int m_position = 0;
-            int m_charsRemoved = 0;
-            int m_charsAdded = 0;
-        } m_fastParseInfo;
-
         // To avoid line height jitter and code block mess.
         bool preHighlightSingleFormatBlock(const QVector<QVector<peg::HLUnit>> &p_highlights,
                                            int p_blockNum,
@@ -192,14 +192,14 @@ namespace peg
         int m_parserExts = 0;
 
         // Timer interval to trigger a new parse.
-        int m_parseInterval = 50;
+        int m_parseInterval = 150;
 
         // Timer to trigger a new parse.
         // Managed by QObject.
         QTimer *m_parseTimer = nullptr;
 
         // Timer interval to trigger a new fast parse.
-        int m_fastParseInterval = 30;
+        int m_fastParseInterval = 50;
 
         // Managed by QObject.
         QTimer *m_fastParseTimer = nullptr;
@@ -236,6 +236,8 @@ namespace peg
 
         // Block number of those blocks which possible contains previewed image.
         QSet<int> m_possiblePreviewBlocks;
+
+        ContentsChange m_lastContentsChange;
     };
 }
 

@@ -14,6 +14,7 @@ class QTextDocument;
 namespace vte
 {
     class PegMarkdownHighlighter;
+    struct ContentsChange;
 
     class PegHighlighterFastResult
     {
@@ -44,9 +45,11 @@ namespace vte
     public:
         PegHighlighterResult() = default;
 
-        // TODO: handle p_result->m_offset.
+        // TODO: handle p_result->m_offset which is 0 for now.
         PegHighlighterResult(const PegMarkdownHighlighter *p_peg,
-                             const QSharedPointer<peg::PegParseResult> &p_result);
+                             const QSharedPointer<peg::PegParseResult> &p_result,
+                             TimeStamp p_curTimeStamp,
+                             const ContentsChange &p_lastContentsChange);
 
         bool matched(TimeStamp p_timeStamp) const
         {
