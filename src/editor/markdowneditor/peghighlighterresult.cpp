@@ -19,10 +19,17 @@ PegHighlighterFastResult::PegHighlighterFastResult(const PegMarkdownHighlighter 
 
 
 PegHighlighterResult::PegHighlighterResult(const PegMarkdownHighlighter *p_peg,
-                                           const QSharedPointer<peg::PegParseResult> &p_result)
+                                           const QSharedPointer<peg::PegParseResult> &p_result,
+                                           TimeStamp p_curTimeStamp,
+                                           const ContentsChange &p_lastContentsChange)
     : m_timeStamp(p_result->m_timeStamp),
       m_numOfBlocks(p_result->m_numOfBlocks)
 {
+    // TODO: use @p_curTimeStamp and @p_lastContentsChange to fix the position of results.
+    // Now we will ignore unmatched results in PegMarkdownHighlighter to avoid blinking.
+    Q_UNUSED(p_curTimeStamp);
+    Q_UNUSED(p_lastContentsChange);
+
     parseBlocksHighlights(m_blocksHighlights, p_peg, p_result);
 
     // Implicit sharing.

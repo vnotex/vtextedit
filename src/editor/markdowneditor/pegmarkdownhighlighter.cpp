@@ -60,9 +60,9 @@ PegMarkdownHighlighter::PegMarkdownHighlighter(PegMarkdownHighlighterInterface *
     m_fastParseTimer->setInterval(m_fastParseInterval);
     connect(m_fastParseTimer, &QTimer::timeout,
             this, [this]() {
-                startFastParse(m_fastParseInfo.m_position,
-                               m_fastParseInfo.m_charsRemoved,
-                               m_fastParseInfo.m_charsAdded);
+                startFastParse(m_lastContentsChange.m_position,
+                               m_lastContentsChange.m_charsRemoved,
+                               m_lastContentsChange.m_charsAdded);
             });
 
     m_rehighlightTimer = new QTimer(this);
@@ -302,9 +302,9 @@ void PegMarkdownHighlighter::handleContentsChange(int p_position,
     m_parseTimer->stop();
 
     if (m_timeStamp > 2) {
-        m_fastParseInfo.m_position = p_position;
-        m_fastParseInfo.m_charsRemoved = p_charsRemoved;
-        m_fastParseInfo.m_charsAdded = p_charsAdded;
+        m_lastContentsChange.m_position = p_position;
+        m_lastContentsChange.m_charsRemoved = p_charsRemoved;
+        m_lastContentsChange.m_charsAdded = p_charsAdded;
         m_fastParseTimer->start(interval < KEY_PRESS_INTERVAL ? 100 : m_fastParseInterval);
     }
 
@@ -402,13 +402,14 @@ void PegMarkdownHighlighter::updateHighlight()
 void PegMarkdownHighlighter::handleParseResult(const QSharedPointer<peg::PegParseResult> &p_result)
 {
     if (!m_result.isNull()
-        && m_result->m_timeStamp > p_result->m_timeStamp) {
+        && p_result->m_timeStamp != m_timeStamp) {
+        // Directly skip non-matched results to avoid highlight noise.
         return;
     }
 
     clearFastParseResult();
 
-    m_result.reset(new PegHighlighterResult(this, p_result));
+    m_result.reset(new PegHighlighterResult(this, p_result, m_timeStamp, m_lastContentsChange));
 
     m_result->m_codeBlockTimeStamp = nextCodeBlockTimeStamp();
 
