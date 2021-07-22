@@ -880,7 +880,9 @@ bool VTextEdit::handleKeyReturn(QKeyEvent *p_event)
         return false;
     }
 
-    const int modifiers = p_event->modifiers();
+    auto modifiers = p_event->modifiers();
+    // Remove KeypadModifier for Key_Enter.
+    modifiers &= ~Qt::KeypadModifier;
     bool changed = false;
     bool handled = false;
 
@@ -890,7 +892,7 @@ bool VTextEdit::handleKeyReturn(QKeyEvent *p_event)
         return true;
     }
 
-    if (!changed && p_event->modifiers() != Qt::NoModifier) {
+    if (!changed && modifiers != Qt::NoModifier) {
         // Shift+Return by default will insert a soft line within a block.
         // It will complicate things. Disable it by default.
         // Ctrl+Return by default will do nothing.
