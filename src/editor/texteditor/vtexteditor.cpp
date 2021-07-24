@@ -1324,3 +1324,8 @@ void VTextEditor::updateInputMethodEnabled()
         break;
     }
 }
+
+void VTextEditor::updateIndicatorsBorder()
+{
+    m_indicatorsBorder->updateBorder();
+}
