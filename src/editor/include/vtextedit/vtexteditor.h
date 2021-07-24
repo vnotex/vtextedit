@@ -162,6 +162,8 @@ namespace vte
         // Used if you are not going to customize the context menu in a subclass.
         void enableInternalContextMenu();
 
+        void updateIndicatorsBorder();
+
         // Custom search paths for KSyntaxHighlighting Definition files.
         // Will search ./syntax and ./themes folder.
         static void addSyntaxCustomSearchPaths(const QStringList &p_paths);

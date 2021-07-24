@@ -59,6 +59,7 @@ void EditorPreviewMgr::clearPossiblePreviewBlocks(const QVector<int> &p_blocksTo
 void EditorPreviewMgr::relayout(const OrderedIntSet &p_blocks)
 {
     m_editor->documentLayout()->relayout(p_blocks);
+    m_editor->updateIndicatorsBorder();
 }
 
 void EditorPreviewMgr::ensureCursorVisible()

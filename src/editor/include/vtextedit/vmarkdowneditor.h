@@ -41,6 +41,9 @@ namespace vte
 
         void zoom(int p_delta) Q_DECL_OVERRIDE;
 
+        // Temporarily enable/disable in-place preview without affecting the preview sources.
+        void setInplacePreviewEnabled(bool p_enabled);
+
     protected:
         bool eventFilter(QObject *p_obj, QEvent *p_event) Q_DECL_OVERRIDE;
 
@@ -64,6 +67,8 @@ namespace vte
 
         void preKeyBacktab(int p_modifiers, bool *p_handled);
 
+        void updateInplacePreviewSources();
+
         QScopedPointer<EditorPegMarkdownHighlighter> m_highlighterInterface;
 
         QScopedPointer<DocumentResourceMgr> m_resourceMgr;
@@ -74,6 +79,8 @@ namespace vte
         PreviewMgr *m_previewMgr = nullptr;
 
         QSharedPointer<MarkdownEditorConfig> m_config;
+
+        bool m_inplacePreviewEnabled = true;
     };
 }
 

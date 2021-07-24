@@ -150,6 +150,26 @@ void VMarkdownEditor::updateFromConfig()
 
     documentLayout()->setConstrainPreviewWidthEnabled(m_config->m_constrainInplacePreviewWidthEnabled);
 
+    updateInplacePreviewSources();
+}
+
+void VMarkdownEditor::setInplacePreviewEnabled(bool p_enabled)
+{
+    if (m_inplacePreviewEnabled == p_enabled) {
+        return;
+    }
+
+    m_inplacePreviewEnabled = p_enabled;
+    updateInplacePreviewSources();
+}
+
+void VMarkdownEditor::updateInplacePreviewSources()
+{
+    if (!m_inplacePreviewEnabled) {
+        m_previewMgr->setPreviewEnabled(false);
+        return;
+    }
+
     if (m_config->m_inplacePreviewSources == (MarkdownEditorConfig::ImageLink | MarkdownEditorConfig::CodeBlock | MarkdownEditorConfig::Math)) {
         m_previewMgr->setPreviewEnabled(true);
     } else {
