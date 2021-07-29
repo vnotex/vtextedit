@@ -287,22 +287,13 @@ void VTextEdit::handleDefaultKeyPress(QKeyEvent *p_event)
         isHandled = handleClosingBracket(QLatin1Char('{'), QLatin1Char('}'));
         break;
 
-// It is boring to auto complete ' and ". Disable it for now.
-#if 0
     case Qt::Key_Apostrophe:
-        isHandled = handleClosingBracket(QLatin1Char('\''), QLatin1Char('\''));
-        if (!isHandled) {
-            isHandled = handleOpeningBracket(QLatin1Char('\''), QLatin1Char('\''));
-        }
+        isHandled = handleOpeningBracket(QLatin1Char('\''), QLatin1Char('\''));
         break;
 
     case Qt::Key_QuoteDbl:
-        isHandled = handleClosingBracket(QLatin1Char('"'), QLatin1Char('"'));
-        if (!isHandled) {
-            isHandled = handleOpeningBracket(QLatin1Char('"'), QLatin1Char('"'));
-        }
+        isHandled = handleOpeningBracket(QLatin1Char('"'), QLatin1Char('"'));
         break;
-#endif
 
     case Qt::Key_Backspace:
         isHandled = handleBracketRemoval();
@@ -742,13 +733,10 @@ bool VTextEdit::handleOpeningBracket(const QChar &p_open, const QChar &p_close)
         return true;
     }
 
-#if 0
     if (p_open == QLatin1Char('\'') || p_open == QLatin1Char('"')) {
-        if (isEscaped(cursor.block().text(), cursor.positionInBlock())) {
-            return false;
-        }
+        // For ' and ", we only handle selection text.
+        return false;
     }
-#endif
 
     cursor.beginEditBlock();
     cursor.insertText(p_open);
