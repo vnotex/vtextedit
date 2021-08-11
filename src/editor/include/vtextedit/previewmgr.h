@@ -20,7 +20,8 @@ class QTextDocument;
 
 namespace vte
 {
-    class Downloader;
+    class NetworkAccess;
+    struct NetworkReply;
     class DocumentResourceMgr;
 
     struct VTEXTEDIT_EXPORT PreviewItem
@@ -129,7 +130,7 @@ namespace vte
 
     private slots:
         // Non-local image downloaded for preview.
-        void imageDownloaded(const QByteArray &p_data, const QString &p_url);
+        void imageDownloaded(const NetworkReply &p_data, const QString &p_url);
 
     private:
         // Data of one single preview source.
@@ -251,7 +252,7 @@ namespace vte
 
         void relayout(const OrderedIntSet &p_blocks);
 
-        Downloader *downloader();
+        NetworkAccess *downloader();
 
         bool isAnyPreviewEnabled() const;
 
@@ -263,7 +264,7 @@ namespace vte
         QVector<PreviewSourceData> m_previewData;
 
         // Managed by QObject.
-        Downloader *m_downloader = nullptr;
+        NetworkAccess *m_downloader = nullptr;
 
         // Map from URL to name in the resource manager.
         // Used for downloading images.

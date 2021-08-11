@@ -1,22 +1,12 @@
 #include <vtextedit/networkutils.h>
 
+#include <QMetaEnum>
+
 #include "utils.h"
 
 using namespace vte;
 
-Downloader::Downloader(QObject *p_parent)
-    : QObject(p_parent)
-{
-    connect(&m_netAccessMgr, &QNetworkAccessManager::finished,
-            this, [this](QNetworkReply *p_reply) {
-                QByteArray data;
-                Downloader::handleReply(p_reply, data);
-                // The url() of the reply may be redirected and different from that of the request.
-                emit downloadFinished(data, p_reply->request().url().toString());
-            });
-}
-
-static QNetworkRequest networkRequest(const QUrl &p_url)
+QNetworkRequest NetworkUtils::networkRequest(const QUrl &p_url)
 {
     QNetworkRequest request(p_url);
     /*
@@ -30,45 +20,134 @@ static QNetworkRequest networkRequest(const QUrl &p_url)
     return request;
 }
 
-void Downloader::downloadAsync(const QUrl &p_url)
+QString NetworkReply::errorStr() const
+{
+    static const auto indexOfEnum = QNetworkReply::staticMetaObject.indexOfEnumerator("NetworkError");
+    const auto metaEnum = QNetworkReply::staticMetaObject.enumerator(indexOfEnum);
+    return metaEnum.key(m_error);
+}
+
+NetworkAccess::NetworkAccess(QObject *p_parent)
+    : QObject(p_parent)
+{
+    connect(&m_netAccessMgr, &QNetworkAccessManager::finished,
+            this, [this](QNetworkReply *p_reply) {
+                NetworkReply reply;
+                NetworkAccess::handleReply(p_reply, reply);
+                // The url() of the reply may be redirected and different from that of the request.
+                emit requestFinished(reply, p_reply->request().url().toString());
+            });
+}
+
+void NetworkAccess::requestAsync(const QUrl &p_url)
 {
     if (!p_url.isValid()) {
         return;
     }
 
-    m_netAccessMgr.get(networkRequest(p_url));
+    m_netAccessMgr.get(NetworkUtils::networkRequest(p_url));
 }
 
-QByteArray Downloader::download(const QUrl &p_url)
+NetworkReply NetworkAccess::request(const QUrl &p_url)
 {
-    QByteArray data;
+    return request(p_url, RawHeaderPairs());
+}
+
+NetworkReply NetworkAccess::request(const QUrl &p_url, const RawHeaderPairs &p_rawHeader)
+{
+    NetworkReply reply;
     if (!p_url.isValid()) {
-        return data;
+        return reply;
     }
 
     bool finished = false;
     QNetworkAccessManager netAccessMgr;
     connect(&netAccessMgr, &QNetworkAccessManager::finished,
-            [&data, &finished](QNetworkReply *p_reply) {
-                Downloader::handleReply(p_reply, data);
+            [&reply, &finished](QNetworkReply *p_reply) {
+                NetworkAccess::handleReply(p_reply, reply);
                 finished = true;
             });
 
-    netAccessMgr.get(networkRequest(p_url));
+    auto nq(NetworkUtils::networkRequest(p_url));
+    for (const auto &header : p_rawHeader) {
+        nq.setRawHeader(header.first, header.second);
+    }
+
+    netAccessMgr.get(nq);
 
     while (!finished) {
         Utils::sleepWait(100);
     }
 
-    return data;
+    return reply;
 }
 
-void Downloader::handleReply(QNetworkReply *p_reply, QByteArray &p_data)
+NetworkReply NetworkAccess::put(const QUrl &p_url, const RawHeaderPairs &p_rawHeader, const QByteArray &p_data)
 {
-    if (p_reply->error() != QNetworkReply::NoError) {
-        qWarning() << "download reply error" << p_reply->error() << p_reply->request().url();
+    NetworkReply reply;
+    if (!p_url.isValid()) {
+        return reply;
     }
 
-    p_data = p_reply->readAll();
+    bool finished = false;
+    QNetworkAccessManager netAccessMgr;
+    connect(&netAccessMgr, &QNetworkAccessManager::finished,
+            [&reply, &finished](QNetworkReply *p_reply) {
+                NetworkAccess::handleReply(p_reply, reply);
+                finished = true;
+            });
+
+    auto nq(NetworkUtils::networkRequest(p_url));
+    for (const auto &header : p_rawHeader) {
+        nq.setRawHeader(header.first, header.second);
+    }
+
+    netAccessMgr.put(nq, p_data);
+
+    while (!finished) {
+        Utils::sleepWait(100);
+    }
+
+    return reply;
+}
+
+NetworkReply NetworkAccess::deleteResource(const QUrl &p_url, const RawHeaderPairs &p_rawHeader, const QByteArray &p_data)
+{
+    NetworkReply reply;
+    if (!p_url.isValid()) {
+        return reply;
+    }
+
+    bool finished = false;
+    QNetworkAccessManager netAccessMgr;
+    connect(&netAccessMgr, &QNetworkAccessManager::finished,
+            [&reply, &finished](QNetworkReply *p_reply) {
+                NetworkAccess::handleReply(p_reply, reply);
+                finished = true;
+            });
+
+    auto nq(NetworkUtils::networkRequest(p_url));
+    for (const auto &header : p_rawHeader) {
+        nq.setRawHeader(header.first, header.second);
+    }
+
+    netAccessMgr.sendCustomRequest(nq, "DELETE", p_data);
+
+    while (!finished) {
+        Utils::sleepWait(100);
+    }
+
+    return reply;
+}
+
+void NetworkAccess::handleReply(QNetworkReply *p_reply, NetworkReply &p_myReply)
+{
+    p_myReply.m_error = p_reply->error();
+    p_myReply.m_data = p_reply->readAll();
+
+    if (p_myReply.m_error != QNetworkReply::NoError) {
+        qWarning() << "request reply error" << p_myReply.m_error << p_reply->request().url();
+    }
+
     p_reply->deleteLater();
 }

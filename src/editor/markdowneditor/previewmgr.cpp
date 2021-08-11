@@ -262,7 +262,7 @@ QString PreviewMgr::imageResourceName(const ImageLink &p_link)
     } else {
         // URL. Try to download it.
         // qrc:// files will touch this path.
-        downloader()->downloadAsync(imgPath);
+        downloader()->requestAsync(imgPath);
 
         QSharedPointer<UrlImageData> urlData(new UrlImageData(name,
                                                               p_link.m_width,
@@ -350,18 +350,18 @@ void PreviewMgr::relayout(const OrderedIntSet &p_blocks)
     m_interface->ensureCursorVisible();
 }
 
-Downloader *PreviewMgr::downloader()
+NetworkAccess *PreviewMgr::downloader()
 {
     if (!m_downloader) {
-        m_downloader = new Downloader(this);
-        connect(m_downloader, &Downloader::downloadFinished,
+        m_downloader = new NetworkAccess(this);
+        connect(m_downloader, &NetworkAccess::requestFinished,
                 this, &PreviewMgr::imageDownloaded);
     }
 
     return m_downloader;
 }
 
-void PreviewMgr::imageDownloaded(const QByteArray &p_data, const QString &p_url)
+void PreviewMgr::imageDownloaded(const NetworkReply &p_data, const QString &p_url)
 {
     // Mainly used for image link preview.
     if (!m_previewData[Source::ImageLink].m_enabled) {
@@ -382,7 +382,7 @@ void PreviewMgr::imageDownloaded(const QByteArray &p_data, const QString &p_url)
     }
 
     QPixmap image;
-    image.loadFromData(p_data);
+    image.loadFromData(p_data.m_data);
     if (!image.isNull()) {
         resourceMgr->addImage(data->m_name,
                               MarkdownUtils::scaleImage(image,
