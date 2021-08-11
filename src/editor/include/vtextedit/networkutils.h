@@ -9,31 +9,52 @@
 #include <QNetworkAccessManager>
 #include <QNetworkRequest>
 #include <QNetworkReply>
+#include <QVector>
+#include <QPair>
 
 namespace vte
 {
-    class NetworkUtils
+    class VTEXTEDIT_EXPORT NetworkUtils
     {
     public:
         NetworkUtils() = delete;
+
+        static QNetworkRequest networkRequest(const QUrl &p_url);
     };
 
-    class VTEXTEDIT_EXPORT Downloader : public QObject
+    struct VTEXTEDIT_EXPORT NetworkReply
+    {
+        QString errorStr() const;
+
+        QNetworkReply::NetworkError m_error = QNetworkReply::HostNotFoundError;
+
+        QByteArray m_data;
+    };
+
+    class VTEXTEDIT_EXPORT NetworkAccess : public QObject
     {
         Q_OBJECT
     public:
-        explicit Downloader(QObject *p_parent = nullptr);
+        typedef QVector<QPair<QByteArray, QByteArray>> RawHeaderPairs;
 
-        void downloadAsync(const QUrl &p_url);
+        explicit NetworkAccess(QObject *p_parent = nullptr);
 
-        static QByteArray download(const QUrl &p_url);
+        void requestAsync(const QUrl &p_url);
+
+        static NetworkReply request(const QUrl &p_url);
+
+        static NetworkReply request(const QUrl &p_url, const RawHeaderPairs &p_rawHeader);
+
+        static NetworkReply put(const QUrl &p_url, const RawHeaderPairs &p_rawHeader, const QByteArray &p_data);
+
+        static NetworkReply deleteResource(const QUrl &p_url, const RawHeaderPairs &p_rawHeader, const QByteArray &p_data);
 
     signals:
         // Url is the original url of the request.
-        void downloadFinished(const QByteArray &p_data, const QString &p_url);
+        void requestFinished(const NetworkReply &p_reply, const QString &p_url);
 
     private:
-        static void handleReply(QNetworkReply *p_reply, QByteArray &p_data);
+        static void handleReply(QNetworkReply *p_reply, NetworkReply &p_myReply);
 
         QNetworkAccessManager m_netAccessMgr;
     };
