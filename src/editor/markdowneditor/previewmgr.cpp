@@ -169,6 +169,14 @@ QTextDocument *PreviewMgr::document() const
 void PreviewMgr::fetchImageLink(const QString &p_text, ImageLink &p_info)
 {
     QString shortUrl = MarkdownUtils::fetchImageLinkUrl(p_text, p_info.m_width, p_info.m_height);
+
+    // If it is using `\` instead of `/`, skip it to align with read mode.
+    if (shortUrl.contains(QLatin1Char('\\'))) {
+        qWarning() << "skipped local image with `\\` in path (use `/` instead)" << shortUrl;
+        p_info.m_linkShortUrl = p_info.m_linkUrl = QString();
+        return;
+    }
+
     p_info.m_linkShortUrl = shortUrl;
     if (shortUrl.isEmpty()) {
         p_info.m_linkUrl = shortUrl;

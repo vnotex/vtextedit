@@ -55,63 +55,28 @@ NetworkReply NetworkAccess::request(const QUrl &p_url)
 
 NetworkReply NetworkAccess::request(const QUrl &p_url, const RawHeaderPairs &p_rawHeader)
 {
-    NetworkReply reply;
-    if (!p_url.isValid()) {
-        return reply;
-    }
-
-    bool finished = false;
-    QNetworkAccessManager netAccessMgr;
-    connect(&netAccessMgr, &QNetworkAccessManager::finished,
-            [&reply, &finished](QNetworkReply *p_reply) {
-                NetworkAccess::handleReply(p_reply, reply);
-                finished = true;
-            });
-
-    auto nq(NetworkUtils::networkRequest(p_url));
-    for (const auto &header : p_rawHeader) {
-        nq.setRawHeader(header.first, header.second);
-    }
-
-    netAccessMgr.get(nq);
-
-    while (!finished) {
-        Utils::sleepWait(100);
-    }
-
-    return reply;
+    return sendRequest(p_url, p_rawHeader, "GET", QByteArray());
 }
 
 NetworkReply NetworkAccess::put(const QUrl &p_url, const RawHeaderPairs &p_rawHeader, const QByteArray &p_data)
 {
-    NetworkReply reply;
-    if (!p_url.isValid()) {
-        return reply;
-    }
+    return sendRequest(p_url, p_rawHeader, "PUT", p_data);
+}
 
-    bool finished = false;
-    QNetworkAccessManager netAccessMgr;
-    connect(&netAccessMgr, &QNetworkAccessManager::finished,
-            [&reply, &finished](QNetworkReply *p_reply) {
-                NetworkAccess::handleReply(p_reply, reply);
-                finished = true;
-            });
-
-    auto nq(NetworkUtils::networkRequest(p_url));
-    for (const auto &header : p_rawHeader) {
-        nq.setRawHeader(header.first, header.second);
-    }
-
-    netAccessMgr.put(nq, p_data);
-
-    while (!finished) {
-        Utils::sleepWait(100);
-    }
-
-    return reply;
+NetworkReply NetworkAccess::post(const QUrl &p_url, const RawHeaderPairs &p_rawHeader, const QByteArray &p_data)
+{
+    return sendRequest(p_url, p_rawHeader, "POST", p_data);
 }
 
 NetworkReply NetworkAccess::deleteResource(const QUrl &p_url, const RawHeaderPairs &p_rawHeader, const QByteArray &p_data)
+{
+    return sendRequest(p_url, p_rawHeader, "DELETE", p_data);
+}
+
+NetworkReply NetworkAccess::sendRequest(const QUrl &p_url,
+                                        const RawHeaderPairs &p_rawHeader,
+                                        const QByteArray &p_action,
+                                        const QByteArray &p_data)
 {
     NetworkReply reply;
     if (!p_url.isValid()) {
@@ -131,7 +96,7 @@ NetworkReply NetworkAccess::deleteResource(const QUrl &p_url, const RawHeaderPai
         nq.setRawHeader(header.first, header.second);
     }
 
-    netAccessMgr.sendCustomRequest(nq, "DELETE", p_data);
+    netAccessMgr.sendCustomRequest(nq, p_action, p_data);
 
     while (!finished) {
         Utils::sleepWait(100);

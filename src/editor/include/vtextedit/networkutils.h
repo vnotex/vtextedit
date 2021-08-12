@@ -47,6 +47,8 @@ namespace vte
 
         static NetworkReply put(const QUrl &p_url, const RawHeaderPairs &p_rawHeader, const QByteArray &p_data);
 
+        static NetworkReply post(const QUrl &p_url, const RawHeaderPairs &p_rawHeader, const QByteArray &p_data);
+
         static NetworkReply deleteResource(const QUrl &p_url, const RawHeaderPairs &p_rawHeader, const QByteArray &p_data);
 
     signals:
@@ -55,6 +57,8 @@ namespace vte
 
     private:
         static void handleReply(QNetworkReply *p_reply, NetworkReply &p_myReply);
+
+        static NetworkReply sendRequest(const QUrl &p_url, const RawHeaderPairs &p_rawHeader, const QByteArray &p_action, const QByteArray &p_data);
 
         QNetworkAccessManager m_netAccessMgr;
     };
