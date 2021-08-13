@@ -2,6 +2,7 @@
 #define VTEXTEDIT_TEXTEDITORCONFIG_H
 
 #include <QStringList>
+#include <QSharedPointer>
 
 #include "vtexteditor.h"
 #include "theme.h"
@@ -9,6 +10,8 @@
 
 namespace vte
 {
+    class ViConfig;
+
     class VTEXTEDIT_EXPORT TextEditorConfig
     {
     public:
@@ -42,6 +45,8 @@ namespace vte
 
         // How many spaces with a Tab be translated into.
         int m_tabStopWidth = 4;
+
+        QSharedPointer<ViConfig> m_viConfig;
     };
 
 

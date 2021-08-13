@@ -3,6 +3,8 @@
 
 #include "abstractinputmodefactory.h"
 
+#include <QSharedPointer>
+
 namespace KateVi
 {
     class GlobalState;
@@ -28,10 +30,14 @@ namespace vte
 
         QString description() const Q_DECL_OVERRIDE;
 
-    private:
-        KateVi::GlobalState *m_viGlobal = nullptr;
+        void updateViConfig(const QSharedPointer<KateViI::KateViConfig> &p_config);
 
-        KateViI::KateViConfig *m_viConfig = nullptr;
+    private:
+        // All Vi instances share the same global state and config.
+        // Should only update the contents of them.
+        const QSharedPointer<KateVi::GlobalState> m_viGlobal;
+
+        const QSharedPointer<KateViI::KateViConfig> m_viConfig;
     };
 }
 

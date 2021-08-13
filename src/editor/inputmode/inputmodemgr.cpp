@@ -8,12 +8,6 @@ using namespace vte;
 InputModeMgr::InputModeMgr()
 {
     m_factories.resize(InputMode::MaxInputMode);
-
-    // Normal mode.
-    m_factories[InputMode::NormalMode] = QSharedPointer<NormalInputModeFactory>::create();
-
-    // Vi mode.
-    m_factories[InputMode::ViMode] = QSharedPointer<ViInputModeFactory>::create();
 }
 
 InputModeMgr &InputModeMgr::getInst()
@@ -22,16 +16,29 @@ InputModeMgr &InputModeMgr::getInst()
     return mgr;
 }
 
-const QVector<QSharedPointer<AbstractInputModeFactory>> &InputModeMgr::getInputModeFactories() const
+const QSharedPointer<AbstractInputModeFactory> &InputModeMgr::getFactory(InputMode p_mode)
 {
-    return m_factories;
-}
-
-const QSharedPointer<AbstractInputModeFactory> &InputModeMgr::getInputModeFactory(InputMode p_mode) const
-{
-    if (p_mode >= InputMode::MaxInputMode) {
-        p_mode = InputMode::NormalMode;
+    Q_ASSERT(p_mode < InputMode::MaxInputMode);
+    if (!m_factories[p_mode]) {
+        m_factories[p_mode] = createModeFactory(p_mode);
     }
 
     return m_factories[p_mode];
+}
+
+QSharedPointer<AbstractInputModeFactory> InputModeMgr::createModeFactory(InputMode p_mode)
+{
+    switch (p_mode) {
+    case InputMode::NormalMode:
+        return QSharedPointer<NormalInputModeFactory>::create();
+        break;
+
+    case InputMode::ViMode:
+        return QSharedPointer<ViInputModeFactory>::create();
+        break;
+
+    default:
+        Q_ASSERT(false);
+        return nullptr;
+    }
 }

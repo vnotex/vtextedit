@@ -16,6 +16,8 @@ namespace KateVi
 
         // Judge the OS CTRL.
         static bool isControlModifier(int p_modifiers);
+
+        static Qt::KeyboardModifier controlModifier();
     };
 }
 

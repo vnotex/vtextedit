@@ -28,9 +28,14 @@ bool ViUtils::isRegister(QChar p_char)
 // Just judge MacOS for now, everything else is considered to be same.
 bool ViUtils::isControlModifier(int p_modifiers)
 {
+    return p_modifiers == controlModifier();
+}
+
+Qt::KeyboardModifier ViUtils::controlModifier()
+{
 #if defined(Q_OS_MACOS) || defined(Q_OS_MAC)
-    return p_modifiers == Qt::MetaModifier;
+    return Qt::MetaModifier;
 #else
-    return p_modifiers == Qt::ControlModifier;
+    return Qt::ControlModifier;
 #endif
 }

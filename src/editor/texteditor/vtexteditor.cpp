@@ -1,12 +1,15 @@
 #include <vtextedit/vtexteditor.h>
 
 #include <vtextedit/texteditorconfig.h>
+#include <vtextedit/viconfig.h>
 #include <vtextedit/vtextedit.h>
 #include <vtextedit/theme.h>
 #include <vtextedit/textblockdata.h>
 #include <inputmode/inputmodemgr.h>
 #include <inputmode/abstractinputmode.h>
 #include <inputmode/viinputmode.h>
+#include <inputmode/viinputmodefactory.h>
+#include <katevi/interface/kateviconfig.h>
 
 #include "indicatorsborder.h"
 #include "editorindicatorsborder.h"
@@ -299,7 +302,17 @@ void VTextEditor::updateFromConfig()
 
     updateIndicatorsBorderFromConfig();
 
-    setInputMode(m_config->m_inputMode);
+    {
+        setInputMode(m_config->m_inputMode);
+
+        if (m_config->m_inputMode == InputMode::ViMode && m_config->m_viConfig) {
+            auto kateViConfig = m_config->m_viConfig->toKateViConfig();
+            // Align the KateViConfig configs with TextEditorConfig.
+            kateViConfig->setTabWidth(m_config->m_tabStopWidth);
+            auto viFactory = InputModeMgr::getInst().getFactory(InputMode::ViMode);
+            static_cast<ViInputModeFactory *>(viFactory.data())->updateViConfig(kateViConfig);
+        }
+    }
 
     m_textEdit->setCenterCursor(m_config->m_centerCursor);
 
@@ -347,7 +360,7 @@ void VTextEditor::setInputMode(InputMode p_mode)
 
     QScopedPointer<EditorInputMode> newInputMode(new EditorInputMode(this));
 
-    auto modeFactory = InputModeMgr::getInst().getInputModeFactory(p_mode);
+    auto modeFactory = InputModeMgr::getInst().getFactory(p_mode);
     Q_ASSERT(modeFactory);
     auto mode = modeFactory->createInputMode(newInputMode.data());
     m_textEdit->setInputMode(mode);

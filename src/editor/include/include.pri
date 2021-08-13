@@ -8,6 +8,7 @@ HEADERS += \
     $$PWD/vtextedit/vtextedit.h \
     $$PWD/vtextedit/vtexteditor.h \
     $$PWD/vtextedit/texteditorconfig.h \
+    $$PWD/vtextedit/viconfig.h \
     $$PWD/vtextedit/textblockdata.h \
     $$PWD/vtextedit/textrange.h \
     $$PWD/vtextedit/theme.h \

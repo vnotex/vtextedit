@@ -13,6 +13,7 @@ SOURCES += \
     $$PWD/vsyntaxhighlighter.cpp \
     $$PWD/vtexteditor.cpp \
     $$PWD/texteditorconfig.cpp \
+    $$PWD/viconfig.cpp \
     $$PWD/editorextraselection.cpp
 
 HEADERS += \
