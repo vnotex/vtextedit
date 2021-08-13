@@ -51,8 +51,8 @@ namespace vte
     {
     public:
         explicit ViInputMode(InputModeEditorInterface *p_interface,
-                             KateVi::GlobalState *p_viGlobal,
-                             KateViI::KateViConfig *p_viConfig);
+                             const QSharedPointer<KateVi::GlobalState> &p_viGlobal,
+                             const QSharedPointer<KateViI::KateViConfig> &p_viConfig);
 
         ~ViInputMode();
 
@@ -120,9 +120,9 @@ namespace vte
 
         static CaretStyle kateViCaretStyleToEditorCaretStyle(KateViI::CaretStyle p_style);
 
-        KateVi::GlobalState *m_viGlobal = nullptr;
+        QSharedPointer<KateVi::GlobalState> m_viGlobal;
 
-        KateViI::KateViConfig *m_viConfig = nullptr;
+        QSharedPointer<KateViI::KateViConfig> m_viConfig;
 
         QScopedPointer<KateVi::InputModeManager> m_viModeManager;
 

@@ -60,8 +60,8 @@ QSharedPointer<QWidget> ViStatusWidget::widget()
 }
 
 ViInputMode::ViInputMode(InputModeEditorInterface *p_interface,
-                         KateVi::GlobalState *p_viGlobal,
-                         KateViI::KateViConfig *p_viConfig)
+                         const QSharedPointer<KateVi::GlobalState> &p_viGlobal,
+                         const QSharedPointer<KateViI::KateViConfig> &p_viConfig)
     : AbstractInputMode(p_interface),
       m_viGlobal(p_viGlobal),
       m_viConfig(p_viConfig),
@@ -172,12 +172,12 @@ bool ViInputMode::isActive() const
 
 KateVi::GlobalState *ViInputMode::globalState() const
 {
-    return m_viGlobal;
+    return m_viGlobal.data();
 }
 
 KateViI::KateViConfig *ViInputMode::kateViConfig() const
 {
-    return m_viConfig;
+    return m_viConfig.data();
 }
 
 void ViInputMode::updateCursor(const KateViI::Cursor &p_cursor)

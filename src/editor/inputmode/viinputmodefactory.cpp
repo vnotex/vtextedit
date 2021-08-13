@@ -16,8 +16,6 @@ ViInputModeFactory::ViInputModeFactory()
 
 ViInputModeFactory::~ViInputModeFactory()
 {
-    delete m_viGlobal;
-    delete m_viConfig;
 }
 
 QSharedPointer<AbstractInputMode> ViInputModeFactory::createInputMode(InputModeEditorInterface *p_interface)
@@ -33,4 +31,13 @@ QString ViInputModeFactory::name() const
 QString ViInputModeFactory::description() const
 {
     return VTextEditTranslate::tr("Vi input mode");
+}
+
+void ViInputModeFactory::updateViConfig(const QSharedPointer<KateViI::KateViConfig> &p_config)
+{
+    // Only update the contents.
+    if (!p_config) {
+        return;
+    }
+    *m_viConfig = *p_config;
 }

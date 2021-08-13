@@ -25,6 +25,7 @@ SOURCES += \
     $$PWD/macrorecorder.cpp \
     $$PWD/completionrecorder.cpp \
     $$PWD/completionreplayer.cpp \
+    $$PWD/kateviconfig.cpp \
 # $$PWD/cmds.cpp
 
 HEADERS += \
