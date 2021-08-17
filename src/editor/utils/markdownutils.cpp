@@ -716,7 +716,7 @@ void MarkdownUtils::typeBlockMarker(VTextEdit *p_edit,
 
         bool done = false;
 
-        // Locate at start block.
+        // Locate at start block and try to delete empty block.
         {
             QTextBlock endBlock;
             auto match = startReg.match(currentText);
@@ -727,10 +727,11 @@ void MarkdownUtils::typeBlockMarker(VTextEdit *p_edit,
                     auto nextMatch = endReg.match(nextBlock.text());
                     if (nextMatch.hasMatch()) {
                         if (nextMatch.captured(1) == match.captured(1)) {
+                            // It is an empty marker block. Just delete it.
                             endBlock = nextBlock;
                         }
-                    } else {
-                        // Try one block further.
+                    } else if (nextBlock.text().isEmpty()) {
+                        // Try one block further only when current next block is empty.
                         nextBlock = nextBlock.next();
                         if (nextBlock.isValid()) {
                             nextMatch = endReg.match(nextBlock.text());
@@ -753,10 +754,11 @@ void MarkdownUtils::typeBlockMarker(VTextEdit *p_edit,
             }
         }
 
-        // Locate between start block and end block.
+        // Locate between start block and end block and try to delete empty block.
         if (!done) {
             auto previousBlock = block.previous();
-            if (previousBlock.isValid()) {
+            // Only delete empty marker block.
+            if (previousBlock.isValid() && currentText.isEmpty()) {
                 auto match = startReg.match(previousBlock.text());
                 if (match.hasMatch()) {
                     auto nextBlock = block.next();
@@ -774,7 +776,7 @@ void MarkdownUtils::typeBlockMarker(VTextEdit *p_edit,
             }
         }
 
-        // Locate at end block.
+        // Locate at end block and try to delete empty block.
         if (!done) {
             QTextBlock startBlock;
             auto match = endReg.match(currentText);
@@ -788,7 +790,7 @@ void MarkdownUtils::typeBlockMarker(VTextEdit *p_edit,
                             startBlock = previousBlock;
                         }
                     } else {
-                        // Try one block further.
+                        // Try one block further only when current previous block is empty.
                         previousBlock = previousBlock.previous();
                         if (previousBlock.isValid()) {
                             nextMatch = startReg.match(previousBlock.text());
@@ -807,6 +809,22 @@ void MarkdownUtils::typeBlockMarker(VTextEdit *p_edit,
                     cursor.setPosition(block.position() + block.length() - 1,
                                        QTextCursor::KeepAnchor);
                     cursor.deleteChar();
+                }
+            }
+        }
+
+        if (!done) {
+            // Try to skip the end block marker if locate at one block before the end block.
+            auto nextBlock = block.next();
+            if (nextBlock.isValid()) {
+                auto match = endReg.match(nextBlock.text());
+                if (match.hasMatch()) {
+                    done = true;
+                    cursor.setPosition(nextBlock.position());
+                    if (nextBlock.next().isValid()) {
+                        cursor.movePosition(QTextCursor::NextBlock);
+                    }
+                    cursor.movePosition(QTextCursor::EndOfBlock);
                 }
             }
         }
