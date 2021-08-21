@@ -20,11 +20,16 @@ QNetworkRequest NetworkUtils::networkRequest(const QUrl &p_url)
     return request;
 }
 
-QString NetworkReply::errorStr() const
+QString NetworkUtils::networkErrorStr(QNetworkReply::NetworkError p_err)
 {
     static const auto indexOfEnum = QNetworkReply::staticMetaObject.indexOfEnumerator("NetworkError");
     const auto metaEnum = QNetworkReply::staticMetaObject.enumerator(indexOfEnum);
-    return metaEnum.key(m_error);
+    return metaEnum.key(p_err);
+}
+
+QString NetworkReply::errorStr() const
+{
+    return NetworkUtils::networkErrorStr(m_error);
 }
 
 NetworkAccess::NetworkAccess(QObject *p_parent)
