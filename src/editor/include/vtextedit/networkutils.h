@@ -20,6 +20,8 @@ namespace vte
         NetworkUtils() = delete;
 
         static QNetworkRequest networkRequest(const QUrl &p_url);
+
+        static QString networkErrorStr(QNetworkReply::NetworkError p_err);
     };
 
     struct VTEXTEDIT_EXPORT NetworkReply
