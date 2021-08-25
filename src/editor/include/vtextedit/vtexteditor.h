@@ -137,10 +137,12 @@ namespace vte
 
         void peekText(const QString &p_text, FindFlags p_flags);
 
-        VTextEditor::FindResult findText(const QString &p_text,
+        // @p_currentMatchLine: whether constrain current match on a given line.
+        VTextEditor::FindResult findText(const QStringList &p_texts,
                                          FindFlags p_flags,
                                          int p_start = 0,
-                                         int p_end = -1);
+                                         int p_end = -1,
+                                         int p_currentMatchLine = -1);
 
         VTextEditor::FindResult replaceText(const QString &p_text,
                                             FindFlags p_flags,
@@ -230,17 +232,18 @@ namespace vte
 
         void setFontAndPaletteByStyleSheet(const QFont &p_font, const QPalette &p_palette);
 
-        const QList<QTextCursor> &findAllText(const QString &p_text, FindFlags p_flags, int p_start, int p_end);
+        const QList<QTextCursor> &findAllText(const QStringList &p_texts, FindFlags p_flags, int p_start, int p_end);
 
         void highlightSearch(const QList<QTextCursor> &p_results, int p_currentIdx);
 
         // @p_skipCurrent: if current cursor locates right at a match, whether skip it.
-        VTextEditor::FindResult findTextHelper(const QString &p_text,
+        // @p_cursor: pass in current cursor and get the cursor of current match.
+        VTextEditor::FindResult findTextHelper(const QStringList &p_texts,
                                                FindFlags p_flags,
                                                int p_start,
                                                int p_end,
                                                bool p_skipCurrent,
-                                               QTextCursor &p_currentMatch);
+                                               QTextCursor &p_cursor);
 
         void updateInputMethodEnabled();
 
@@ -271,9 +274,9 @@ namespace vte
         {
             void clear();
 
-            bool matched(const QString &p_text, FindFlags p_flags, int p_start, int p_end) const;
+            bool matched(const QStringList &p_texts, FindFlags p_flags, int p_start, int p_end) const;
 
-            void update(const QString &p_text,
+            void update(const QStringList &p_texts,
                         FindFlags p_flags,
                         int p_start,
                         int p_end,
@@ -283,7 +286,7 @@ namespace vte
             int m_start = -1;
             int m_end = -1;
 
-            QString m_text;
+            QStringList m_texts;
 
             FindFlags m_flags = FindFlag::None;
 

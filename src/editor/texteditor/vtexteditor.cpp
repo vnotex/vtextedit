@@ -44,26 +44,26 @@ void VTextEditor::FindResultCache::clear()
     m_start = -1;
     m_end = -1;
 
-    m_text.clear();
+    m_texts.clear();
     m_flags = FindFlag::None;
     m_result.clear();
 }
 
-bool VTextEditor::FindResultCache::matched(const QString &p_text, FindFlags p_flags, int p_start, int p_end) const
+bool VTextEditor::FindResultCache::matched(const QStringList &p_texts, FindFlags p_flags, int p_start, int p_end) const
 {
     return (m_flags & ~FindFlag::FindBackward) == (p_flags & ~FindFlag::FindBackward)
            && m_start == p_start
            && m_end == p_end
-           && m_text == p_text;
+           && m_texts == p_texts;
 }
 
-void VTextEditor::FindResultCache::update(const QString &p_text,
+void VTextEditor::FindResultCache::update(const QStringList &p_texts,
                                           FindFlags p_flags,
                                           int p_start,
                                           int p_end,
                                           const QList<QTextCursor> &p_result)
 {
-    m_text = p_text;
+    m_texts = p_texts;
     m_flags = p_flags;
     m_start = p_start;
     m_end = p_end;
@@ -976,13 +976,20 @@ void VTextEditor::peekText(const QString &p_text, FindFlags p_flags)
     clearIncrementalSearchHighlight();
 }
 
-VTextEditor::FindResult VTextEditor::findText(const QString &p_text,
+VTextEditor::FindResult VTextEditor::findText(const QStringList &p_texts,
                                               FindFlags p_flags,
                                               int p_start,
-                                              int p_end)
+                                              int p_end,
+                                              int p_currentMatchLine)
 {
-    QTextCursor cursor;
-    auto result = findTextHelper(p_text, p_flags, p_start, p_end, true, cursor);
+    auto cursor = m_textEdit->textCursor();
+    bool skipCurrent = true;
+    if (p_currentMatchLine > -1) {
+        int pos = document()->findBlockByNumber(p_currentMatchLine).position();
+        cursor.setPosition(pos);
+        skipCurrent = false;
+    }
+    auto result = findTextHelper(p_texts, p_flags, p_start, p_end, skipCurrent, cursor);
     if (!cursor.isNull()) {
         cursor.setPosition(cursor.selectionStart());
         m_textEdit->setTextCursor(cursor);
@@ -990,34 +997,35 @@ VTextEditor::FindResult VTextEditor::findText(const QString &p_text,
     return result;
 }
 
-VTextEditor::FindResult VTextEditor::findTextHelper(const QString &p_text,
-                                                  FindFlags p_flags,
-                                                  int p_start,
-                                                  int p_end,
-                                                  bool p_skipCurrent,
-                                                  QTextCursor &p_currentMatch)
+VTextEditor::FindResult VTextEditor::findTextHelper(const QStringList &p_texts,
+                                                    FindFlags p_flags,
+                                                    int p_start,
+                                                    int p_end,
+                                                    bool p_skipCurrent,
+                                                    QTextCursor &p_cursor)
 {
     clearIncrementalSearchHighlight();
 
     FindResult result;
-    if (p_text.isEmpty() || (p_start >= p_end && p_end >= 0)) {
+    if (p_texts.isEmpty()
+        || (p_texts.size() == 1 && p_texts[0].isEmpty())
+        || (p_start >= p_end && p_end >= 0)) {
         clearSearchHighlight();
-        p_currentMatch = QTextCursor();
+        p_cursor = QTextCursor();
         return result;
     }
 
-    const auto &allResults = findAllText(p_text, p_flags, p_start, p_end);
+    const auto &allResults = findAllText(p_texts, p_flags, p_start, p_end);
     if (!allResults.isEmpty()) {
         // Locate to the right match and update current cursor.
-        auto cursor = m_textEdit->textCursor();
         bool wrapped = false;
         int idx = selectCursor(allResults,
-                               cursor.position(),
+                               p_cursor.position(),
                                p_skipCurrent,
                                !(p_flags & FindFlag::FindBackward),
                                wrapped);
         Q_ASSERT(idx != -1);
-        p_currentMatch = allResults[idx];
+        p_cursor = allResults[idx];
 
         // Highlight.
         highlightSearch(allResults, idx);
@@ -1027,7 +1035,7 @@ VTextEditor::FindResult VTextEditor::findTextHelper(const QString &p_text,
         result.m_wrapped = wrapped;
     } else {
         clearSearchHighlight();
-        p_currentMatch = QTextCursor();
+        p_cursor = QTextCursor();
     }
 
     return result;
@@ -1039,8 +1047,8 @@ VTextEditor::FindResult VTextEditor::replaceText(const QString &p_text,
                                                  int p_start,
                                                  int p_end)
 {
-    QTextCursor cursor;
-    auto result = findTextHelper(p_text, p_flags, p_start, p_end, false, cursor);
+    auto cursor = m_textEdit->textCursor();
+    auto result = findTextHelper(QStringList(p_text), p_flags, p_start, p_end, false, cursor);
     if (result.m_totalMatches > 0) {
         Q_ASSERT(!cursor.isNull());
         result.m_totalMatches = 1;
@@ -1069,7 +1077,7 @@ VTextEditor::FindResult VTextEditor::replaceAll(const QString &p_text,
         return result;
     }
 
-    const auto &allResults = findAllText(p_text, p_flags, p_start, p_end);
+    const auto &allResults = findAllText(QStringList(p_text), p_flags, p_start, p_end);
     if (!allResults.isEmpty()) {
         result.m_totalMatches = allResults.size();
 
@@ -1111,22 +1119,34 @@ void VTextEditor::clearSearchHighlight()
     m_extraSelectionMgr->setSelections(m_searchUnderCursorExtraSelection, QList<QTextCursor>());
 }
 
-const QList<QTextCursor> &VTextEditor::findAllText(const QString &p_text, FindFlags p_flags, int p_start, int p_end)
+const QList<QTextCursor> &VTextEditor::findAllText(const QStringList &p_texts, FindFlags p_flags, int p_start, int p_end)
 {
-    if (p_text.isEmpty()) {
+    if (p_texts.isEmpty() || (p_texts.size() == 1 && p_texts[0].isEmpty())) {
         m_findResultCache.clear();
         return m_findResultCache.m_result;
     }
 
-    if (m_findResultCache.matched(p_text, p_flags, p_start, p_end)) {
+    if (m_findResultCache.matched(p_texts, p_flags, p_start, p_end)) {
         return m_findResultCache.m_result;
     }
 
-    m_findResultCache.update(p_text,
-                             p_flags,
-                             p_start,
-                             p_end,
-                             m_textEdit->findAllText(p_text, p_flags, p_start, p_end));
+    int cnt = 0;
+    QList<QTextCursor> results;
+    for (const auto &text : p_texts) {
+        if (text.isEmpty()) {
+            continue;
+        }
+
+        ++cnt;
+        results.append(m_textEdit->findAllText(text, p_flags, p_start, p_end));
+    }
+
+    if (cnt > 1) {
+        // Sort it.
+        std::sort(results.begin(), results.end());
+    }
+
+    m_findResultCache.update(p_texts, p_flags, p_start, p_end, results);
 
     return m_findResultCache.m_result;
 }
