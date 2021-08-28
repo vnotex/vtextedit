@@ -23,6 +23,7 @@
 #include "plaintexthighlighter.h"
 
 #include <vtextedit/texteditutils.h>
+#include <vtextedit/textutils.h>
 #include <vtextedit/spellchecker.h>
 
 #include <QHBoxLayout>
@@ -185,11 +186,39 @@ void VTextEditor::setupTextEdit()
 void VTextEditor::setText(const QString &p_text)
 {
     m_textEdit->setPlainText(p_text);
+    if (m_config->m_lineEndingPolicy == LineEndingPolicy::File) {
+        m_lineEnding = TextUtils::detectLineEnding(p_text);
+    }
 }
 
 QString VTextEditor::getText() const
 {
-    return m_textEdit->toPlainText();
+    auto text = m_textEdit->toPlainText();
+    LineEnding before = LineEnding::LF;
+    switch (m_config->m_lineEndingPolicy) {
+    case LineEndingPolicy::Platform:
+#if defined(Q_OS_WIN)
+        TextUtils::transformLineEnding(text, before, LineEnding::CRLF);
+#endif
+        break;
+
+    case LineEndingPolicy::File:
+        TextUtils::transformLineEnding(text, before, m_lineEnding);
+        break;
+
+    case LineEndingPolicy::LF:
+        break;
+
+    case LineEndingPolicy::CRLF:
+        TextUtils::transformLineEnding(text, before, LineEnding::CRLF);
+        break;
+
+    case LineEndingPolicy::CR:
+        TextUtils::transformLineEnding(text, before, LineEnding::CR);
+        break;
+    }
+
+    return text;
 }
 
 QTextDocument *VTextEditor::document() const

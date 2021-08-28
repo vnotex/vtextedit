@@ -173,3 +173,41 @@ bool TextUtils::matchBracket(const QChar &p_open, const QChar &p_close)
            || (p_open == QLatin1Char('[') && p_close == QLatin1Char(']'))
            || (p_open == QLatin1Char('{') && p_close == QLatin1Char('}'));
 }
+
+LineEnding TextUtils::detectLineEnding(const QString &p_text)
+{
+    if (p_text.contains(QStringLiteral("\r\n"))) {
+        return LineEnding::CRLF;
+    } else if (p_text.contains(QStringLiteral("\r"))) {
+        return LineEnding::CR;
+    }
+    return LineEnding::LF;
+}
+
+void TextUtils::transformLineEnding(QString &p_text, LineEnding p_before, LineEnding p_after)
+{
+    if (p_before == p_after) {
+        return;
+    }
+    QString before(lineEndingString(p_before));
+    QString after(lineEndingString(p_after));
+    p_text.replace(before, after);
+}
+
+QString TextUtils::lineEndingString(LineEnding p_lineEnding)
+{
+    switch (p_lineEnding) {
+    case LineEnding::LF:
+        return QStringLiteral("\n");
+
+    case LineEnding::CRLF:
+        return QStringLiteral("\r\n");
+
+    case LineEnding::CR:
+        return QStringLiteral("\r");
+
+    default:
+        Q_ASSERT(false);
+        return QStringLiteral("\n");
+    }
+}

@@ -5,6 +5,8 @@
 
 #include <QString>
 
+#include "global.h"
+
 namespace vte
 {
     class VTEXTEDIT_EXPORT TextUtils
@@ -45,6 +47,12 @@ namespace vte
         static bool isClosingBracket(const QChar &p_char);
 
         static bool matchBracket(const QChar &p_open, const QChar &p_close);
+
+        static LineEnding detectLineEnding(const QString &p_text);
+
+        static void transformLineEnding(QString &p_text, LineEnding p_before, LineEnding p_after);
+
+        static QString lineEndingString(LineEnding p_lineEnding);
     };
 }
 
