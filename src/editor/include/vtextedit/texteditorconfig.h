@@ -47,6 +47,8 @@ namespace vte
         int m_tabStopWidth = 4;
 
         QSharedPointer<ViConfig> m_viConfig;
+
+        LineEndingPolicy m_lineEndingPolicy = LineEndingPolicy::LF;
     };
 
 

@@ -98,6 +98,22 @@ namespace vte
         RegularExpression = 0x8
     };
     Q_DECLARE_FLAGS(FindFlags, FindFlag);
+
+    enum class LineEndingPolicy
+    {
+        Platform,
+        File,
+        LF,
+        CRLF,
+        CR
+    };
+
+    enum class LineEnding
+    {
+        LF,
+        CRLF,
+        CR
+    };
 }
 
 Q_DECLARE_OPERATORS_FOR_FLAGS(vte::FindFlags)

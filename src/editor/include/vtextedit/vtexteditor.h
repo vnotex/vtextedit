@@ -343,6 +343,8 @@ namespace vte
         QFont m_themeFont;
         QPalette m_themePalette;
 
+        LineEnding m_lineEnding = LineEnding::LF;
+
         static int s_instanceCount;
 
         // Completer shared among all instances.
