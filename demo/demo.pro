@@ -24,7 +24,7 @@ macx {
     app_target = $${TARGET}.app/Contents/MacOS/$${TARGET}
     QMAKE_POST_LINK = \
         install_name_tool -add_rpath $${vte_lib_dir} $${app_target} && \
-        install_name_tool -change $${vte_lib_full_name} @rpath/$${vte_lib_full_name} $${app_target} &&
+        install_name_tool -change $${vte_lib_full_name} @rpath/$${vte_lib_full_name} $${app_target} && \
 
     # Process VSyntaxHighlighting framework
     sh_lib_name = VSyntaxHighlighting
