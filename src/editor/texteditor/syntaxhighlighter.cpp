@@ -106,7 +106,15 @@ void SyntaxHighlighter::applyFormat(int p_offset,
         return;
     }
 
-    QTextCharFormat tf = KSyntaxHighlighterWrapper::toTextCharFormat(theme(), p_format);
+    QTextCharFormat tf;
+
+    if (m_formatCache.contains(p_format.id())) {
+        tf = m_formatCache.get(p_format.id());
+    } else {
+        tf = KSyntaxHighlighterWrapper::toTextCharFormat(theme(), p_format);
+        m_formatCache.insert(p_format.id(), tf);
+    }
+
     QSyntaxHighlighter::setFormat(p_offset, p_length, tf);
 }
 

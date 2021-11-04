@@ -17,17 +17,8 @@ namespace vte
 {
     struct VTEXTEDIT_EXPORT Format
     {
-        Format()
-            : m_bold(false),
-              m_italic(false),
-              m_underline(false),
-              m_strikeThrough(false),
-              m_hasBold(false),
-              m_hasItalic(false),
-              m_hasUnderline(false),
-              m_hasStrikeThrough(false)
-        {
-        }
+    public:
+        Format();
 
         QColor textColor() const
         {
@@ -67,6 +58,11 @@ namespace vte
 
         QTextCharFormat toTextCharFormat() const;
 
+        int id() const
+        {
+            return m_id;
+        }
+
         QStringList m_fontFamilies;
 
         // Usually this is the first available font family form m_fontFamilies.
@@ -90,6 +86,12 @@ namespace vte
         bool m_hasItalic :1;
         bool m_hasUnderline :1;
         bool m_hasStrikeThrough :1;
+
+    private:
+        // Used to identify a format for cache.
+        int m_id = -1;
+
+        static int s_nextId;
     };
 
     class VTEXTEDIT_EXPORT Theme

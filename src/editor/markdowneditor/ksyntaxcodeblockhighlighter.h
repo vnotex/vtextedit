@@ -2,6 +2,7 @@
 #define KSYNTAXCODEBLOCKHIGHLIGHTER_H
 
 #include <vtextedit/codeblockhighlighter.h>
+#include <texteditor/formatcache.h>
 
 namespace KSyntaxHighlighting
 {
@@ -74,6 +75,8 @@ namespace vte
         KSyntaxHighlighterWrapper *m_syntaxHighlighter = nullptr;
 
         HighlightInfo m_currentInfo;
+
+        FormatCache m_formatCache;
     };
 }
 

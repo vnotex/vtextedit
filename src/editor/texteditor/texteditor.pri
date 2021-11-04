@@ -4,6 +4,7 @@ SOURCES += \
     $$PWD/editorindicatorsborder.cpp \
     $$PWD/editorinputmode.cpp \
     $$PWD/extraselectionmgr.cpp \
+    $$PWD/formatcache.cpp \
     $$PWD/indicatorsborder.cpp \
     $$PWD/ksyntaxhighlighterwrapper.cpp \
     $$PWD/plaintexthighlighter.cpp \
@@ -23,6 +24,7 @@ HEADERS += \
     $$PWD/editorindicatorsborder.h \
     $$PWD/editorinputmode.h \
     $$PWD/extraselectionmgr.h \
+    $$PWD/formatcache.h \
     $$PWD/indicatorsborder.h \
     $$PWD/inputmodestatuswidget.h \
     $$PWD/ksyntaxhighlighterwrapper.h \

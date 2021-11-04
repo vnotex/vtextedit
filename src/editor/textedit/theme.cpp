@@ -12,6 +12,22 @@
 
 using namespace vte;
 
+int Format::s_nextId = 0;
+
+Format::Format()
+    : m_bold(false),
+      m_italic(false),
+      m_underline(false),
+      m_strikeThrough(false),
+      m_hasBold(false),
+      m_hasItalic(false),
+      m_hasUnderline(false),
+      m_hasStrikeThrough(false),
+      m_id(s_nextId++)
+{
+}
+
+
 QTextCharFormat Format::toTextCharFormat() const
 {
     QTextCharFormat tcf;

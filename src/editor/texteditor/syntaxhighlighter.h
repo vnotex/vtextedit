@@ -8,6 +8,8 @@
 #include <QHash>
 #include <QSharedPointer>
 
+#include "formatcache.h"
+
 namespace vte
 {
     struct BlockSpellCheckData;
@@ -41,6 +43,8 @@ namespace vte
     private:
         // Will be set and cleared within highlightBlock().
         QHash<int, int> m_pendingFoldingStart;
+
+        FormatCache m_formatCache;
     };
 }
 
