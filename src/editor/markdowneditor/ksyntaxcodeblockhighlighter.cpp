@@ -96,7 +96,12 @@ void KSyntaxCodeBlockHighlighter::applyFormat(int p_offset,
     peg::HLUnitStyle unit;
     unit.start = p_offset + m_currentInfo.m_indentation;
     unit.length = p_length;
-    unit.format = KSyntaxHighlighterWrapper::toTextCharFormat(m_syntaxHighlighter->theme(),
-                                                              p_format);
+    if (m_formatCache.contains(p_format.id())) {
+        unit.format = m_formatCache.get(p_format.id());
+    } else {
+        unit.format = KSyntaxHighlighterWrapper::toTextCharFormat(m_syntaxHighlighter->theme(), p_format);
+        m_formatCache.insert(p_format.id(), unit.format);
+    }
+
     m_currentInfo.addHighlightUnit(unit);
 }
