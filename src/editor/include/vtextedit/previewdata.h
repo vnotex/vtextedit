@@ -6,6 +6,7 @@
 #include <QVector>
 #include <QRgb>
 
+#include <vtextedit/vtextedit_export.h>
 #include <vtextedit/global.h>
 
 class QTextBlock;
@@ -13,7 +14,7 @@ class QTextBlock;
 namespace vte
 {
     // Preview image data.
-    struct PreviewImageData
+    struct VTEXTEDIT_EXPORT PreviewImageData
     {
         PreviewImageData() = default;
 
@@ -58,7 +59,7 @@ namespace vte
     };
 
 
-    class PreviewData
+    class VTEXTEDIT_EXPORT PreviewData
     {
     public:
         enum Source
@@ -100,7 +101,7 @@ namespace vte
         PreviewImageData *m_imageData = nullptr;
     };
 
-    class BlockPreviewData
+    class VTEXTEDIT_EXPORT BlockPreviewData
     {
     public:
         BlockPreviewData() = default;

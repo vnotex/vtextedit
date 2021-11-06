@@ -106,16 +106,18 @@ QString TextUtils::purifyUrl(const QString &p_url)
     return p_url;
 }
 
-void TextUtils::decodeUrl(QString &p_url)
+QString TextUtils::decodeUrl(const QString &p_url)
 {
-    static QHash<QString, QString> maps;
-    if (maps.isEmpty()) {
-        maps.insert("%20", " ");
-    }
+    QString path(p_url);
+    path.replace(QStringLiteral("%20"), QStringLiteral(" "));
+    return path;
+}
 
-    for (auto it = maps.begin(); it != maps.end(); ++it) {
-        p_url.replace(it.key(), it.value());
-    }
+QString TextUtils::encodeUrl(const QString &p_path)
+{
+    QString url(p_path);
+    url.replace(QStringLiteral(" "), QStringLiteral("%20"));
+    return url;
 }
 
 QString TextUtils::removeCodeBlockFence(const QString &p_text)

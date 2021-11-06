@@ -57,6 +57,8 @@ namespace vte
 
         static bool isFencedCodeBlockStartMark(const QString &p_text);
 
+        static bool hasImageLink(const QString &p_text);
+
         // Fetch the image link's URL if there is only one link.
         static QString fetchImageLinkUrl(const QString &p_text, int &p_width, int &p_height);
 
@@ -163,6 +165,16 @@ namespace vte
 
         // Regular expression for image alt text.
         static const QString c_imageAltRegExp;
+
+        // Regular expression for link.
+        // [link text]( http://github.com/tamlok "alt text")
+        // Captured texts (need to be trimmed):
+        // 1. Link Alt Text (Title);
+        // 2. Link URL;
+        // 3. Link Optional Title with double quotes or quotes;
+        // 4. Unused;
+        // 5. Unused;
+        static const QString c_linkRegExp;
 
     private:
         enum CursorPosition

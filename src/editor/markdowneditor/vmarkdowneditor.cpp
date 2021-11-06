@@ -124,6 +124,11 @@ DocumentResourceMgr *VMarkdownEditor::getDocumentResourceMgr() const
     return m_resourceMgr.data();
 }
 
+const QPixmap *VMarkdownEditor::findImageFromDocumentResourceMgr(const QString &p_name) const
+{
+    return m_resourceMgr->findImage(p_name);
+}
+
 PegMarkdownHighlighter *VMarkdownEditor::getHighlighter() const
 {
     return static_cast<PegMarkdownHighlighter *>(m_highlighter);
