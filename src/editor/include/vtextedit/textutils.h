@@ -37,7 +37,9 @@ namespace vte
         static QString purifyUrl(const QString &p_url);
 
         // Decode URL by simply replacing meta-characters.
-        static void decodeUrl(QString &p_url);
+        static QString decodeUrl(const QString &p_url);
+
+        static QString encodeUrl(const QString &p_path);
 
         static QString removeCodeBlockFence(const QString &p_text);
 

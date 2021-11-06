@@ -32,6 +32,12 @@ const QString MarkdownUtils::c_imageLinkRegExp = QString("\\!\\[([^\\[\\]]*)\\]"
                                                          "(\\s*=(\\d*)x(\\d*))?"
                                                          "\\s*\\)");
 
+const QString MarkdownUtils::c_linkRegExp = QString("\\[([^\\[\\]]*)\\]"
+                                                    "\\(\\s*"
+                                                    "([^\\)\"'\\s]+)"
+                                                    "(\\s*(\"[^\"\\)\\n\\r]*\")|('[^'\\)\\n\\r]*'))?"
+                                                    "\\s*\\)");
+
 // Constrain the main section number digits within 3 chars to avoid treating a date like 20210101 as a section number.
 const QString MarkdownUtils::c_headerRegExp = QString("^(#{1,6})(\\s+)((\\d{1,3}(?:\\.\\d+)*\\.?(?=\\s))?(\\s*)(?:\\S.*)?)$");
 
@@ -70,6 +76,13 @@ bool MarkdownUtils::isFencedCodeBlockStartMark(const QString &p_text)
 {
     auto text = p_text.trimmed();
     return text.startsWith(QStringLiteral("```")) || text.startsWith(QStringLiteral("~~~"));
+}
+
+bool MarkdownUtils::hasImageLink(const QString &p_text)
+{
+    QRegularExpression regExp(vte::MarkdownUtils::c_imageLinkRegExp);
+    auto match = regExp.match(p_text);
+    return match.hasMatch();
 }
 
 QString MarkdownUtils::fetchImageLinkUrl(const QString &p_text, int &p_width, int &p_height)
@@ -119,8 +132,7 @@ QString MarkdownUtils::linkUrlToPath(const QString &p_basePath, const QString &p
             fullPath = p_url;
         }
     } else {
-        QString decodedUrl(p_url);
-        TextUtils::decodeUrl(decodedUrl);
+        const auto decodedUrl = TextUtils::decodeUrl(p_url);
         QFileInfo dinfo(p_basePath, decodedUrl);
         if (dinfo.exists()) {
             if (dinfo.isNativePath() || isQrcPath(p_basePath)) {
@@ -997,7 +1009,7 @@ QVector<MarkdownLink> MarkdownUtils::fetchImagesFromMarkdownText(const QString &
         link.m_urlInLink = regExp.cap(2).trimmed();;
         link.m_urlInLinkPos = reg.m_startPos + linkText.indexOf(link.m_urlInLink, 4 + regExp.cap(1).size());
 
-        QFileInfo info(p_contentBasePath, TextUtils::purifyUrl(link.m_urlInLink));
+        QFileInfo info(linkUrlToPath(p_contentBasePath, link.m_urlInLink));
         if (info.exists()) {
             if (info.isNativePath()) {
                 // Local file.

@@ -31,6 +31,8 @@ namespace vte
 
         DocumentResourceMgr *getDocumentResourceMgr() const;
 
+        const QPixmap *findImageFromDocumentResourceMgr(const QString &p_name) const;
+
         TextDocumentLayout *documentLayout() const;
 
         PegMarkdownHighlighter *getHighlighter() const;
