@@ -49,6 +49,9 @@ namespace vte
         QSharedPointer<ViConfig> m_viConfig;
 
         LineEndingPolicy m_lineEndingPolicy = LineEndingPolicy::LF;
+
+        // Highlight trailing space and tab.
+        bool m_highlightWhitespace = true;
     };
 
 
