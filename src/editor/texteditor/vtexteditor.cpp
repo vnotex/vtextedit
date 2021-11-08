@@ -454,6 +454,7 @@ void VTextEditor::updateExtraSelectionMgrFromConfig()
                                                      fmt.textColor(),
                                                      fmt.backgroundColor(),
                                                      false);
+        m_extraSelectionMgr->setExtraSelectionEnabled(ExtraSelectionMgr::TrailingSpace, m_config->m_highlightWhitespace);
     }
     {
         const auto &fmt = theme->editorStyle(Theme::Tab);
@@ -461,6 +462,7 @@ void VTextEditor::updateExtraSelectionMgrFromConfig()
                                                      fmt.textColor(),
                                                      fmt.backgroundColor(),
                                                      false);
+        m_extraSelectionMgr->setExtraSelectionEnabled(ExtraSelectionMgr::Tab, m_config->m_highlightWhitespace);
     }
     {
         const auto &fmt = theme->editorStyle(Theme::SelectedText);
