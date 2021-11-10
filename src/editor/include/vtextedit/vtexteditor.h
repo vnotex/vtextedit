@@ -13,6 +13,7 @@
 
 class QTextDocument;
 class QMenu;
+class QTimer;
 
 namespace vte
 {
@@ -179,6 +180,8 @@ namespace vte
 
         void focusOut();
 
+        void topLineChanged();
+
     protected:
         void focusInEvent(QFocusEvent *p_event) Q_DECL_OVERRIDE;
 
@@ -344,6 +347,8 @@ namespace vte
         QPalette m_themePalette;
 
         LineEnding m_lineEnding = LineEnding::LF;
+
+        QTimer *m_topLineChangedTimer = nullptr;
 
         static int s_instanceCount;
 

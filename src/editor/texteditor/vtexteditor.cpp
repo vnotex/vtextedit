@@ -33,6 +33,7 @@
 #include <QDebug>
 #include <QRegularExpression>
 #include <QMenu>
+#include <QTimer>
 
 using namespace vte;
 
@@ -181,6 +182,17 @@ void VTextEditor::setupTextEdit()
     setFocusProxy(m_textEdit);
 
     m_textEdit->installEventFilter(this);
+
+    auto sb = m_textEdit->verticalScrollBar();
+    if (sb) {
+        m_topLineChangedTimer = new QTimer(this);
+        m_topLineChangedTimer->setSingleShot(true);
+        m_topLineChangedTimer->setInterval(300);
+        connect(m_topLineChangedTimer, &QTimer::timeout,
+                this, &VTextEditor::topLineChanged);
+        connect(sb, &QScrollBar::valueChanged,
+                m_topLineChangedTimer, QOverload<>::of(&QTimer::start));
+    }
 }
 
 void VTextEditor::setText(const QString &p_text)
