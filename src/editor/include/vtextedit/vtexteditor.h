@@ -250,6 +250,8 @@ namespace vte
 
         void updateInputMethodEnabled();
 
+        void updateSpaceWidth();
+
         static void resolveBackReferenceInReplaceText(QString &p_replaceText,
                                                       QString p_text,
                                                       const QRegularExpression &p_regExp);
