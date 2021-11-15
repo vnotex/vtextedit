@@ -575,12 +575,24 @@ void VTextEdit::setTabStopWidthInSpaces(int p_spaces)
 {
     Q_ASSERT(p_spaces > 0);
     m_tabStopWidthInSpaces = p_spaces;
-    setTabStopDistance(QFontMetrics(font()).width(QLatin1Char(' ')) * m_tabStopWidthInSpaces);
+
+    if (m_spaceWidth < 0.001) {
+        m_spaceWidth = QFontMetricsF(font()).horizontalAdvance(QLatin1Char(' '));
+    }
+
+    setTabStopDistance(m_spaceWidth * m_tabStopWidthInSpaces);
 }
 
 int VTextEdit::getTabStopWidthInSpaces() const
 {
     return m_tabStopWidthInSpaces;
+}
+
+void VTextEdit::setSpaceWidth(qreal p_width)
+{
+    m_spaceWidth = p_width;
+
+    setTabStopDistance(m_spaceWidth * m_tabStopWidthInSpaces);
 }
 
 bool VTextEdit::handleKeyTab(QKeyEvent *p_event)
@@ -749,6 +761,8 @@ bool VTextEdit::handleOpeningBracket(const QChar &p_open, const QChar &p_close)
 
 bool VTextEdit::handleClosingBracket(const QChar &p_open, const QChar &p_close)
 {
+    Q_UNUSED(p_open);
+
     if (isReadOnly() || !m_autoBracketsEnabled) {
         return false;
     }

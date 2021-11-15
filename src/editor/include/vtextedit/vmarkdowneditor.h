@@ -71,6 +71,8 @@ namespace vte
 
         void updateInplacePreviewSources();
 
+        void updateSpaceWidth();
+
         QScopedPointer<EditorPegMarkdownHighlighter> m_highlighterInterface;
 
         QScopedPointer<DocumentResourceMgr> m_resourceMgr;

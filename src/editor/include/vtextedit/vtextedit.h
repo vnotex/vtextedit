@@ -163,6 +163,8 @@ namespace vte
 
         int getTabStopWidthInSpaces() const;
 
+        void setSpaceWidth(qreal p_width);
+
         void insertFromMimeDataOfBase(const QMimeData *p_source);
 
         QVariant inputMethodQuery(Qt::InputMethodQuery p_query) const Q_DECL_OVERRIDE;
@@ -294,6 +296,9 @@ namespace vte
 
         // Translate Tab into spaces.
         int m_tabStopWidthInSpaces = 4;
+
+        // Font point size of the width of space char.
+        qreal m_spaceWidth = 0;
 
         // The document revision that has changes to the contents.
         int m_lastDocumentRevisionWithChanges = 0;

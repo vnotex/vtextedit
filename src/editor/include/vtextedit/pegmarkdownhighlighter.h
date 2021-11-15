@@ -73,6 +73,9 @@ namespace peg
 
         void updateStylesFontSize(int p_delta);
 
+        // Get code block style (may not contain the font size value).
+        const QTextCharFormat &codeBlockStyle() const;
+
     public slots:
         // Rehighlight sensitive blocks using current parse result, mainly
         // visible blocks.
@@ -167,9 +170,6 @@ namespace peg
                                 QVector<peg::HLUnitStyle> &p_cache);
 
         void highlightCodeBlock(const QVector<peg::HLUnitStyle> &p_units);
-
-        // Get code block style.
-        const QTextCharFormat &codeBlockStyle() const;
 
         void formatCodeBlockLeadingSpaces(const QString &p_text);
 

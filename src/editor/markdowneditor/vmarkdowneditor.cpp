@@ -156,6 +156,8 @@ void VMarkdownEditor::updateFromConfig()
     documentLayout()->setConstrainPreviewWidthEnabled(m_config->m_constrainInplacePreviewWidthEnabled);
 
     updateInplacePreviewSources();
+
+    updateSpaceWidth();
 }
 
 void VMarkdownEditor::setInplacePreviewEnabled(bool p_enabled)
@@ -225,6 +227,20 @@ void VMarkdownEditor::zoom(int p_delta)
     }
 
     getHighlighter()->updateStylesFontSize(postFontSize - preFontSize);
+
+    updateSpaceWidth();
+}
+
+void VMarkdownEditor::updateSpaceWidth()
+{
+    const auto &codeBlockFormat = getHighlighter()->codeBlockStyle();
+    auto font = codeBlockFormat.font();
+    if (codeBlockFormat.fontPointSize() < 0.001) {
+        font.setPointSize(editorFontPointSize());
+    }
+
+    QFontMetricsF fmf(font, m_textEdit);
+    m_textEdit->setSpaceWidth(fmf.horizontalAdvance(QLatin1Char(' ')));
 }
 
 void VMarkdownEditor::preKeyReturn(int p_modifiers, bool *p_changed, bool *p_handled)

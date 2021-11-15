@@ -383,6 +383,8 @@ void VTextEditor::updateFromConfig()
 
     // Tab stop width.
     {
+        updateSpaceWidth();
+
         m_textEdit->setExpandTab(m_config->m_expandTab);
 
         if (m_config->m_tabStopWidth < 1) {
@@ -390,6 +392,13 @@ void VTextEditor::updateFromConfig()
         }
         m_textEdit->setTabStopWidthInSpaces(m_config->m_tabStopWidth);
     }
+}
+
+void VTextEditor::updateSpaceWidth()
+{
+    QFont font(m_themeFont);
+    font.setPointSize(m_editorFontPointSize);
+    m_textEdit->setSpaceWidth(QFontMetrics(font).horizontalAdvance(QLatin1Char(' ')));
 }
 
 void VTextEditor::setInputMode(InputMode p_mode)
@@ -943,6 +952,10 @@ void VTextEditor::zoom(int p_delta)
     int ptSz = m_editorFontPointSize + step;
     ptSz = qMax(ptSz, minSize);
 
+    if (m_editorFontPointSize == ptSz) {
+        return;
+    }
+
     m_zoomDelta = p_delta;
     m_editorFontPointSize = ptSz;
 
@@ -957,6 +970,8 @@ void VTextEditor::zoom(int p_delta)
         font.setPointSize(ptSz);
         m_indicatorsBorder->setFont(font);
     }
+
+    updateSpaceWidth();
 }
 
 void VTextEditor::setFontPointSizeByStyleSheet(int p_ptSize)
