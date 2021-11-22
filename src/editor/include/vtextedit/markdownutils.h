@@ -110,7 +110,7 @@ namespace vte
         // @p_content: Markdwon text content.
         // @p_contentBasePath: base path used to resolve image link and check if it is internal image.
         // @p_flags: type of images want to fetch.
-        // @Return: descending ordered by m_urlInLinkPos.
+        // @Return: descending ordered by m_urlInLinkPos, without deduplication of image path.
         static QVector<MarkdownLink> fetchImagesFromMarkdownText(const QString &p_content,
                                                                  const QString &p_contentBasePath,
                                                                  MarkdownLink::TypeFlags p_flags);

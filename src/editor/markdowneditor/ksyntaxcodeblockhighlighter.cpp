@@ -11,9 +11,13 @@
 
 using namespace vte;
 
+QHash<QString, QString> KSyntaxCodeBlockHighlighter::s_extraLangMap;
+
 KSyntaxCodeBlockHighlighter::KSyntaxCodeBlockHighlighter(const QString &p_theme, QObject *p_parent)
     : CodeBlockHighlighter(p_parent)
 {
+    initExtraLangMap();
+
     auto formatFunctor = [this](int p_offset,
                                 int p_length,
                                 const KSyntaxHighlighting::Format &p_format) {
@@ -51,7 +55,13 @@ void KSyntaxCodeBlockHighlighter::highlightInternal(int p_idx)
     }
 
     // Detect whether the syntax is supported.
-    auto def = KSyntaxHighlighterWrapper::definitionForSyntax(block.m_lang);
+    auto lang = block.m_lang;
+    auto it = s_extraLangMap.find(lang);
+    if (it != s_extraLangMap.end()) {
+        lang = it.value();
+    }
+
+    auto def = KSyntaxHighlighterWrapper::definitionForSyntax(lang);
     if (!def.isValid()) {
         // Do not highlight this.
         finishHighlightOne(HighlightResult(m_timeStamp, p_idx));
@@ -104,4 +114,11 @@ void KSyntaxCodeBlockHighlighter::applyFormat(int p_offset,
     }
 
     m_currentInfo.addHighlightUnit(unit);
+}
+
+void KSyntaxCodeBlockHighlighter::initExtraLangMap()
+{
+    if (!s_extraLangMap.isEmpty()) {
+        return;
+    }
 }
