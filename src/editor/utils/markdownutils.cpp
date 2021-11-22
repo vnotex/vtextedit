@@ -992,9 +992,6 @@ QVector<MarkdownLink> MarkdownUtils::fetchImagesFromMarkdownText(const QString &
 {
     QVector<MarkdownLink> images;
 
-    // Used for de-duplication.
-    QSet<QString> fetchedUrls;
-
     const auto regions = fetchImageRegionsViaParser(p_content);
     QRegExp regExp(c_imageLinkRegExp);
     for (const auto &reg : regions) {
@@ -1035,10 +1032,7 @@ QVector<MarkdownLink> MarkdownUtils::fetchImagesFromMarkdownText(const QString &
         }
 
         if (link.m_type & p_flags) {
-            if (!fetchedUrls.contains(link.m_urlInLink)) {
-                fetchedUrls.insert(link.m_urlInLink);
-                images.push_back(link);
-            }
+            images.push_back(link);
         }
     }
 

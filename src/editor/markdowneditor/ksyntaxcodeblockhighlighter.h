@@ -65,6 +65,8 @@ namespace vte
             HighlightStyles m_highlights;
         };
 
+        void initExtraLangMap();
+
         void highlightInternal(int p_idx) Q_DECL_OVERRIDE;
 
         void applyFormat(int p_offset,
@@ -77,6 +79,9 @@ namespace vte
         HighlightInfo m_currentInfo;
 
         FormatCache m_formatCache;
+
+        // To minimize the gap between read mode and edit mode syntax highlighting.
+        static QHash<QString, QString> s_extraLangMap;
     };
 }
 
