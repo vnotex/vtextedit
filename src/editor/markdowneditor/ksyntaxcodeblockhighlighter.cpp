@@ -11,12 +11,14 @@
 
 using namespace vte;
 
-QHash<QString, QString> KSyntaxCodeBlockHighlighter::s_extraLangMap;
+QHash<QString, QString> KSyntaxCodeBlockHighlighter::s_extraLangs;
+
+QSet<QString> KSyntaxCodeBlockHighlighter::s_excludedLangs;
 
 KSyntaxCodeBlockHighlighter::KSyntaxCodeBlockHighlighter(const QString &p_theme, QObject *p_parent)
     : CodeBlockHighlighter(p_parent)
 {
-    initExtraLangMap();
+    initExtraAndExcludedLangs();
 
     auto formatFunctor = [this](int p_offset,
                                 int p_length,
@@ -56,9 +58,13 @@ void KSyntaxCodeBlockHighlighter::highlightInternal(int p_idx)
 
     // Detect whether the syntax is supported.
     auto lang = block.m_lang;
-    auto it = s_extraLangMap.find(lang);
-    if (it != s_extraLangMap.end()) {
-        lang = it.value();
+    if (s_excludedLangs.contains(lang)) {
+        lang.clear();
+    } else {
+        auto it = s_extraLangs.find(lang);
+        if (it != s_extraLangs.end()) {
+            lang = it.value();
+        }
     }
 
     auto def = KSyntaxHighlighterWrapper::definitionForSyntax(lang);
@@ -116,9 +122,15 @@ void KSyntaxCodeBlockHighlighter::applyFormat(int p_offset,
     m_currentInfo.addHighlightUnit(unit);
 }
 
-void KSyntaxCodeBlockHighlighter::initExtraLangMap()
+void KSyntaxCodeBlockHighlighter::initExtraAndExcludedLangs()
 {
-    if (!s_extraLangMap.isEmpty()) {
+    if (!s_extraLangs.isEmpty()) {
         return;
     }
+
+    s_extraLangs.insert(QStringLiteral("shell"), QStringLiteral("bash"));
+    s_excludedLangs.insert(QStringLiteral("sh"));
+
+    s_extraLangs.insert(QStringLiteral("powershell"), QStringLiteral("ps1"));
+    s_excludedLangs.insert(QStringLiteral("ps1"));
 }
