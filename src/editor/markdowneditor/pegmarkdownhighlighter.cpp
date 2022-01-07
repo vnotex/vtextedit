@@ -695,7 +695,6 @@ bool PegMarkdownHighlighter::rehighlightBlockRange(int p_first, int p_last)
         block = block.next();
     }
 
-    qDebug() << "rehighlightBlockRange" << p_first << p_last << nr;
     return highlighted;
 }
 

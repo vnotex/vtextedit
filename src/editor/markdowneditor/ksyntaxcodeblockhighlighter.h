@@ -21,6 +21,7 @@ namespace vte
     {
         Q_OBJECT
     public:
+        // @p_theme: a theme file path or a theme name.
         KSyntaxCodeBlockHighlighter(const QString &p_theme, QObject *p_parent);
 
     private:

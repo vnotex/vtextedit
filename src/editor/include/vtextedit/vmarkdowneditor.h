@@ -3,6 +3,8 @@
 
 #include <vtextedit/vtexteditor.h>
 
+#include <QHash>
+
 namespace vte
 {
     class PegMarkdownHighlighter;
@@ -12,6 +14,7 @@ namespace vte
     class EditorPreviewMgr;
     class PreviewMgr;
     class MarkdownEditorConfig;
+    class WebCodeBlockHighlighter;
 
     class VTEXTEDIT_EXPORT VMarkdownEditor : public VTextEditor
     {
@@ -20,6 +23,8 @@ namespace vte
         friend class EditorPreviewMgr;
 
     public:
+        typedef QHash<QString, QTextCharFormat> ExternalCodeBlockHighlightStyles;
+
         VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_config,
                         const QSharedPointer<TextEditorParameters> &p_paras,
                         QWidget *p_parent = nullptr);
@@ -45,6 +50,16 @@ namespace vte
 
         // Temporarily enable/disable in-place preview without affecting the preview sources.
         void setInplacePreviewEnabled(bool p_enabled);
+
+        static void setExternalCodeBlockHighlihgtStyles(const ExternalCodeBlockHighlightStyles &p_styles);
+
+    public slots:
+        // Used when using WebCodeBlockHighlighter.
+        void handleExternalCodeBlockHighlightData(int p_idx, TimeStamp p_timeStamp, const QString &p_html);
+
+    signals:
+        // Used when using WebCodeBlockHighlighter.
+        void externalCodeBlockHighlightRequested(int p_idx, TimeStamp p_timeStamp, const QString &p_text);
 
     protected:
         bool eventFilter(QObject *p_obj, QEvent *p_event) Q_DECL_OVERRIDE;
@@ -85,6 +100,9 @@ namespace vte
         QSharedPointer<MarkdownEditorConfig> m_config;
 
         bool m_inplacePreviewEnabled = true;
+
+        // Managed by QObject.
+        WebCodeBlockHighlighter *m_webCodeBlockHighlighter = nullptr;
     };
 }
 

@@ -36,7 +36,10 @@ namespace vte
             }
 
             TimeStamp m_timeStamp = 0;
+
             int m_index = 0;
+
+            // Highlight styles for each line within the code block (including the start and end mark) in order.
             HighlightStyles m_highlights;
         };
 

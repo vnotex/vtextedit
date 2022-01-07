@@ -14,6 +14,8 @@
 #include <spellcheck/spellcheckhighlighthelper.h>
 #include "blockspellcheckdata.h"
 
+#include <utils/utils.h>
+
 using namespace vte;
 
 using Definition = KSyntaxHighlighting::Definition;
@@ -38,7 +40,7 @@ SyntaxHighlighter::SyntaxHighlighter(QTextDocument *p_doc,
     KSyntaxHighlighting::Theme th;
     if (!p_theme.isEmpty()) {
         // Check if it is a file path.
-        if (p_theme.contains(QRegularExpression(QStringLiteral("[\\\\/]")))) {
+        if (Utils::isFilePath(p_theme)) {
             th = repository()->themeFromFile(p_theme);
         } else {
             th = repository()->theme(p_theme);

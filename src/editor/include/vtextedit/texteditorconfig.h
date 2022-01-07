@@ -51,7 +51,8 @@ namespace vte
         LineEndingPolicy m_lineEndingPolicy = LineEndingPolicy::LF;
 
         // Highlight trailing space and tab.
-        bool m_highlightWhitespace = true;
+        // TODO: for current implementation, this feature has perf issue.
+        bool m_highlightWhitespace = false;
     };
 
 
