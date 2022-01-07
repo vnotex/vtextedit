@@ -12,6 +12,7 @@ SOURCES += \
     $$PWD/textdocumentlayout.cpp \
     $$PWD/previewmgr.cpp \
     $$PWD/markdowneditorconfig.cpp \
+    $$PWD/webcodeblockhighlighter.cpp
 
 HEADERS += \
     $$PWD/editorpegmarkdownhighlighter.h \
@@ -23,3 +24,4 @@ HEADERS += \
     $$PWD/documentresourcemgr.h \
     $$PWD/textdocumentlayoutdata.h \
     $$PWD/textdocumentlayout.h \
+    $$PWD/webcodeblockhighlighter.h

@@ -194,6 +194,7 @@ namespace peg
         // Global position of the start.
         int m_startPos = 0;
 
+        // Including the fences.
         int m_startBlock = 0;
         int m_endBlock = 0;
 

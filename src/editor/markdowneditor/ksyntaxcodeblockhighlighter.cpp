@@ -8,6 +8,7 @@
 #include <vtextedit/textutils.h>
 #include <vtextedit/markdownutils.h>
 #include <texteditor/ksyntaxhighlighterwrapper.h>
+#include <utils/utils.h>
 
 using namespace vte;
 
@@ -40,7 +41,11 @@ KSyntaxCodeBlockHighlighter::KSyntaxCodeBlockHighlighter(const QString &p_theme,
 
     KSyntaxHighlighting::Theme th;
     if (!p_theme.isEmpty()) {
-        th = KSyntaxHighlighterWrapper::repository()->theme(p_theme);
+        if (Utils::isFilePath(p_theme)) {
+            th = KSyntaxHighlighterWrapper::repository()->themeFromFile(p_theme);
+        } else {
+            th = KSyntaxHighlighterWrapper::repository()->theme(p_theme);
+        }
     }
     if (!th.isValid()) {
         th = KSyntaxHighlighterWrapper::repository()->defaultTheme();

@@ -13,6 +13,7 @@
 
 #include "editorpegmarkdownhighlighter.h"
 #include "ksyntaxcodeblockhighlighter.h"
+#include "webcodeblockhighlighter.h"
 #include "documentresourcemgr.h"
 #include "textdocumentlayout.h"
 #include "editorpreviewmgr.h"
@@ -71,7 +72,16 @@ QString VMarkdownEditor::getSyntax() const
 void VMarkdownEditor::setupSyntaxHighlighter()
 {
     m_highlighterInterface.reset(new EditorPegMarkdownHighlighter(this));
-    auto codeBlockHighlighter = new KSyntaxCodeBlockHighlighter(m_config->m_textEditorConfig->m_syntaxTheme, this);
+    CodeBlockHighlighter *codeBlockHighlighter = nullptr;
+    if (m_config->m_webCodeBlockHighlighterEnabled) {
+        m_webCodeBlockHighlighter = new WebCodeBlockHighlighter(this);
+        connect(m_webCodeBlockHighlighter, &WebCodeBlockHighlighter::externalCodeBlockHighlightRequested,
+                this, &VMarkdownEditor::externalCodeBlockHighlightRequested);
+
+        codeBlockHighlighter = m_webCodeBlockHighlighter;
+    } else {
+        codeBlockHighlighter = new KSyntaxCodeBlockHighlighter(m_config->m_textEditorConfig->m_syntaxTheme, this);
+    }
     auto highlighterConfig = QSharedPointer<peg::HighlighterConfig>::create();
     highlighterConfig->m_mathExtEnabled = true;
     m_highlighter = new PegMarkdownHighlighter(m_highlighterInterface.data(),
@@ -446,4 +456,16 @@ void VMarkdownEditor::preKeyBacktab(int p_modifiers, bool *p_handled)
             return;
         }
     }
+}
+
+void VMarkdownEditor::handleExternalCodeBlockHighlightData(int p_idx, TimeStamp p_timeStamp, const QString &p_html)
+{
+    Q_ASSERT(m_webCodeBlockHighlighter);
+    m_webCodeBlockHighlighter->handleExternalCodeBlockHighlightData(p_idx, p_timeStamp, p_html);
+}
+
+
+void VMarkdownEditor::setExternalCodeBlockHighlihgtStyles(const ExternalCodeBlockHighlightStyles &p_styles)
+{
+    WebCodeBlockHighlighter::setExternalCodeBlockHighlihgtStyles(p_styles);
 }

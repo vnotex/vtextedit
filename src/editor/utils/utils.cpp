@@ -3,6 +3,7 @@
 #include <QElapsedTimer>
 #include <QCoreApplication>
 #include <QToolButton>
+#include <QRegularExpression>
 
 using namespace vte;
 
@@ -22,4 +23,9 @@ void Utils::sleepWait(int p_milliseconds)
 void Utils::removeMenuIndicator(QToolButton *p_btn)
 {
     p_btn->setStyleSheet("QToolButton::menu-indicator { image: none; }");
+}
+
+bool Utils::isFilePath(const QString &p_name)
+{
+    return p_name.contains(QRegularExpression(QStringLiteral("[\\\\/]")));
 }

@@ -32,6 +32,9 @@ namespace vte
 
         InplacePreviewSources m_inplacePreviewSources;
 
+        // Whether use WebCodeBlockHighlighter or KSyntaxCodeBlockHighlighter for code block syntax highlight.
+        bool m_webCodeBlockHighlighterEnabled = true;
+
     private:
         void overrideTextStyle();
     };
