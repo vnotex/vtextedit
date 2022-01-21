@@ -12,6 +12,7 @@
 #include <QGuiApplication>
 #include <QMenu>
 #include <QInputMethod>
+#include <QDebug>
 
 #include <inputmode/abstractinputmode.h>
 #include <vtextedit/texteditutils.h>
@@ -20,6 +21,24 @@
 #include "autoindenthelper.h"
 
 using namespace vte;
+
+int VTextEdit::Key::GetKeyReleaseCount() const
+{
+    int cnt = 0;
+    if (m_key > 0) {
+        ++cnt;
+    }
+    if (m_modifiers & Qt::ControlModifier) {
+        ++cnt;
+    }
+    if (m_modifiers & Qt::ShiftModifier) {
+        ++cnt;
+    }
+    if (m_modifiers & Qt::MetaModifier) {
+        ++cnt;
+    }
+    return cnt;
+}
 
 VTextEdit::VTextEdit(QWidget *p_parent)
     : QTextEdit(p_parent)
@@ -242,6 +261,18 @@ void VTextEdit::keyPressEvent(QKeyEvent *p_event)
     }
 }
 
+void VTextEdit::keyReleaseEvent(QKeyEvent *p_event)
+{
+    if (m_inputMethodDisabledAfterLeaderKey) {
+        if (--m_leaderKeyReleaseCount < 0) {
+            m_inputMethodDisabledAfterLeaderKey = false;
+            setInputMethodEnabled(true);
+        }
+    }
+
+    QTextEdit::keyReleaseEvent(p_event);
+}
+
 void VTextEdit::handleDefaultKeyPress(QKeyEvent *p_event)
 {
     const int key = p_event->key();
@@ -329,6 +360,13 @@ bool VTextEdit::eventFilter(QObject *p_obj, QEvent *p_event)
         // If the override event is accepted, the event is delivered
         // as a normal key press to the focus widget.
         QKeyEvent *ke = static_cast<QKeyEvent *>(p_event);
+        if (m_inputMethodEnabled && ke->key() == m_leaderKeyToSkip.m_key && ke->modifiers() == m_leaderKeyToSkip.m_modifiers) {
+            setInputMethodEnabled(false);
+            m_inputMethodDisabledAfterLeaderKey = true;
+            m_leaderKeyReleaseCount = m_leaderKeyToSkip.GetKeyReleaseCount();
+            break;
+        }
+
         if (m_inputMode && m_inputMode->stealShortcut(ke)) {
             ke->accept();
             return true;
@@ -720,6 +758,7 @@ void VTextEdit::setInputMethodEnabled(bool p_enabled)
 {
     if (m_inputMethodEnabled != p_enabled) {
         m_inputMethodEnabled = p_enabled;
+        m_inputMethodDisabledAfterLeaderKey = false;
 
         QInputMethod *im = QGuiApplication::inputMethod();
         im->reset();
@@ -917,4 +956,10 @@ bool VTextEdit::handleKeyReturn(QKeyEvent *p_event)
     emit postKeyReturn(modifiers);
 
     return true;
+}
+
+void VTextEdit::setLeaderKeyToSkip(int p_key, Qt::KeyboardModifiers p_modifiers)
+{
+    m_leaderKeyToSkip.m_key = p_key;
+    m_leaderKeyToSkip.m_modifiers = p_modifiers;
 }
