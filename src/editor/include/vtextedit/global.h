@@ -2,6 +2,7 @@
 #define VTEXTEDIT_GLOBAL_H
 
 #include <QObject>
+#include <QKeySequence>
 
 namespace vte
 {
@@ -113,6 +114,33 @@ namespace vte
         LF,
         CRLF,
         CR
+    };
+
+    struct Key
+    {
+        Key() = default;
+
+        Key(int p_key, Qt::KeyboardModifiers p_modifiers)
+            : m_key(p_key),
+              m_modifiers(p_modifiers)
+        {
+        }
+
+        Key(const QString &p_key)
+        {
+            QKeySequence seq(p_key);
+            if (seq.count() == 0) {
+                return;
+            }
+
+            const int keyMask = 0x01FFFFFF;
+            m_key = seq[0] & keyMask;
+            m_modifiers = static_cast<Qt::KeyboardModifiers>(seq[0] & (~keyMask));
+        }
+
+        int m_key = 0;
+
+        Qt::KeyboardModifiers m_modifiers = Qt::NoModifier;
     };
 }
 

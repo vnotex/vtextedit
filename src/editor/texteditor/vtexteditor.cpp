@@ -1420,3 +1420,8 @@ void VTextEditor::updateIndicatorsBorder()
 {
     m_indicatorsBorder->updateBorder();
 }
+
+void VTextEditor::setLeaderKeyToSkip(int p_key, Qt::KeyboardModifiers p_modifiers)
+{
+    m_textEdit->setLeaderKeyToSkip(p_key, p_modifiers);
+}

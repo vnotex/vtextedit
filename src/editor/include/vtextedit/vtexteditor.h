@@ -167,6 +167,8 @@ namespace vte
 
         void updateIndicatorsBorder();
 
+        void setLeaderKeyToSkip(int p_key, Qt::KeyboardModifiers p_modifiers);
+
         // Custom search paths for KSyntaxHighlighting Definition files.
         // Will search ./syntax and ./themes folder.
         static void addSyntaxCustomSearchPaths(const QStringList &p_paths);

@@ -171,6 +171,8 @@ namespace vte
 
         void setInputMethodEnabled(bool p_enabled);
 
+        void setLeaderKeyToSkip(int p_key, Qt::KeyboardModifiers p_modifiers);
+
     signals:
         void cursorLineChanged();
 
@@ -209,6 +211,8 @@ namespace vte
 
         void keyPressEvent(QKeyEvent *p_event) Q_DECL_OVERRIDE;
 
+        void keyReleaseEvent(QKeyEvent *p_event) Q_DECL_OVERRIDE;
+
         bool eventFilter(QObject *p_obj, QEvent *p_event) Q_DECL_OVERRIDE;
 
         bool canInsertFromMimeData(const QMimeData *p_source) const Q_DECL_OVERRIDE;
@@ -231,6 +235,16 @@ namespace vte
             None,
             Half,
             Full
+        };
+
+        struct Key
+        {
+            // keyReleaseEvent count for this key after pressed.
+            int GetKeyReleaseCount() const;
+
+            int m_key = 0;
+
+            Qt::KeyboardModifiers m_modifiers = Qt::NoModifier;
         };
 
         template <typename T>
@@ -309,6 +323,17 @@ namespace vte
         bool m_autoBracketsEnabled = true;
 
         bool m_selectionChangedByOverride = false;
+
+        // Leader key to skip input method.
+        // Like key sequence `Ctrl+G, E`, `Ctrl+G` will trigger ShortcutOverride event but `E` will be swallowed by input method,
+        // which stops the triggering of the whole key sequence.
+        // We will disable the input method after `Ctrl+G` is pressed to handle this case trickily.
+        Key m_leaderKeyToSkip;
+
+        bool m_inputMethodDisabledAfterLeaderKey = false;
+
+        // keyReleaseEvent count needed to release the leader key.
+        int m_leaderKeyReleaseCount = 0;
     };
 
     template <typename T>
