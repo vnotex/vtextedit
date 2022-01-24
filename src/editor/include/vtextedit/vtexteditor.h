@@ -254,9 +254,11 @@ namespace vte
 
         void updateSpaceWidth();
 
-        static void resolveBackReferenceInReplaceText(QString &p_replaceText,
-                                                      QString p_text,
-                                                      const QRegularExpression &p_regExp);
+        static bool hasBackReference(const QString &p_regExpText);
+
+        static QString resolveBackReferenceInReplaceText(const QString &p_replaceText,
+                                                         QString p_text,
+                                                         const QRegularExpression &p_regExp);
 
         // @p_cursors is in ascending order.
         // If @p_forward is true, find the smallest cursor whose selection start is greater
