@@ -276,9 +276,6 @@ namespace vte
 
         bool handleKeyReturn(QKeyEvent *p_event);
 
-        // Whether the char at @p_pib is escpaed.
-        static bool isEscaped(const QString &p_text, int p_pib);
-
         static QChar matchingClosingBracket(const QChar &p_open);
 
         int m_cursorLine = -1;
@@ -357,6 +354,11 @@ namespace vte
                 start = cursor.selectionEnd();
                 if (start <= end) {
                     results.append(cursor);
+                }
+
+                if (cursor.selectionStart() == cursor.selectionEnd()) {
+                    // Zero-length match, such as ^ and $.
+                    ++start;
                 }
             }
         }

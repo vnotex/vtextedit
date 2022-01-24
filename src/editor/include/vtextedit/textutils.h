@@ -55,6 +55,9 @@ namespace vte
         static void transformLineEnding(QString &p_text, LineEnding p_before, LineEnding p_after);
 
         static QString lineEndingString(LineEnding p_lineEnding);
+
+        // Whether the char at @p_offset is escpaed.
+        static bool isEscaped(const QString &p_text, int p_offset, const QChar &p_escapeChar = QLatin1Char('\\'));
     };
 }
 

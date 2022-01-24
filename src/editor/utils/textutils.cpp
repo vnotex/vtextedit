@@ -213,3 +213,17 @@ QString TextUtils::lineEndingString(LineEnding p_lineEnding)
         return QStringLiteral("\n");
     }
 }
+
+bool TextUtils::isEscaped(const QString &p_text, int p_offset, const QChar &p_escapeChar)
+{
+    int escapeCnt = 0;
+    for (int i = p_offset - 1; i >= 0; --i) {
+        if (p_text[i] == p_escapeChar) {
+            ++escapeCnt;
+        } else {
+            break;
+        }
+    }
+
+    return (escapeCnt % 2) == 1;
+}

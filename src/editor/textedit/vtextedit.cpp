@@ -16,6 +16,7 @@
 
 #include <inputmode/abstractinputmode.h>
 #include <vtextedit/texteditutils.h>
+#include <vtextedit/textutils.h>
 
 #include "scrollbar.h"
 #include "autoindenthelper.h"
@@ -168,6 +169,7 @@ void VTextEdit::mouseReleaseEvent(QMouseEvent *p_event)
 
 static QTextDocument::FindFlags findFlagsToDocumentFindFlags(FindFlags p_flags)
 {
+    // We do not handle FindFlags::RegularExpression here.
     QTextDocument::FindFlags findFlags = 0;
 
     if (p_flags & FindFlag::FindBackward) {
@@ -825,7 +827,7 @@ bool VTextEdit::handleClosingBracket(const QChar &p_open, const QChar &p_close)
 
 #if 0
     if (p_open == QLatin1Char('\'') || p_open == QLatin1Char('"')) {
-        if (isEscaped(text, pib)) {
+        if (TextUtils::isEscaped(text, pib)) {
             return false;
         }
     }
@@ -835,20 +837,6 @@ bool VTextEdit::handleClosingBracket(const QChar &p_open, const QChar &p_close)
     cursor.movePosition(QTextCursor::NextCharacter);
     setTextCursor(cursor);
     return true;
-}
-
-bool VTextEdit::isEscaped(const QString &p_text, int p_pib)
-{
-    int slashCnt = 0;
-    for (int i = p_pib - 1; i >= 0; --i) {
-        if (p_text[i] == QLatin1Char('\\')) {
-            ++slashCnt;
-        } else {
-            break;
-        }
-    }
-
-    return (slashCnt % 2) == 1;
 }
 
 bool VTextEdit::handleBracketRemoval()
@@ -877,7 +865,7 @@ bool VTextEdit::handleBracketRemoval()
 #if 0
     // Check if the opening bracket is escaped.
     if (opening == QLatin1Char('\'') || opening == QLatin1Char('"')) {
-        if (isEscaped(text, pib - 1)) {
+        if (TextUtils::isEscaped(text, pib - 1)) {
             return false;
         }
     }

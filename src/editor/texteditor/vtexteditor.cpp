@@ -34,6 +34,7 @@
 #include <QRegularExpression>
 #include <QMenu>
 #include <QTimer>
+#include <QToolTip>
 
 using namespace vte;
 
@@ -1111,11 +1112,14 @@ VTextEditor::FindResult VTextEditor::replaceText(const QString &p_text,
         Q_ASSERT(!cursor.isNull());
         result.m_totalMatches = 1;
 
-        QString newText(p_replaceText);
-        if (p_flags & FindFlag::RegularExpression) {
-            resolveBackReferenceInReplaceText(newText, TextEditUtils::getSelectedText(cursor), QRegularExpression(p_text));
+        if ((p_flags & FindFlag::RegularExpression) && hasBackReference(p_text)) {
+            auto newText = resolveBackReferenceInReplaceText(p_replaceText,
+                                                             TextEditUtils::getSelectedText(cursor),
+                                                             QRegularExpression(p_text));
+            cursor.insertText(newText);
+        } else {
+            cursor.insertText(p_replaceText);
         }
-        cursor.insertText(newText);
         m_textEdit->setTextCursor(cursor);
     }
     return result;
@@ -1142,16 +1146,20 @@ VTextEditor::FindResult VTextEditor::replaceAll(const QString &p_text,
         // Replace all matches one by one.
         auto cursor = m_textEdit->textCursor();
         cursor.beginEditBlock();
-        QRegularExpression regExp(p_text);
+        bool hasBackRef = (p_flags & FindFlag::RegularExpression) ? hasBackReference(p_text) : false;
+        QRegularExpression regExp(hasBackRef ? p_text : QString());
         for (const auto &result : allResults) {
             cursor.setPosition(result.selectionStart());
             cursor.setPosition(result.selectionEnd(), QTextCursor::KeepAnchor);
 
-            QString newText(p_replaceText);
-            if (p_flags & FindFlag::RegularExpression) {
-                resolveBackReferenceInReplaceText(newText, TextEditUtils::getSelectedText(cursor), regExp);
+            if (hasBackRef) {
+                auto newText = resolveBackReferenceInReplaceText(p_replaceText,
+                                                                 TextEditUtils::getSelectedText(cursor),
+                                                                 regExp);
+                cursor.insertText(newText);
+            } else {
+                cursor.insertText(p_replaceText);
             }
-            cursor.insertText(newText);
         }
         cursor.endEditBlock();
         m_textEdit->setTextCursor(cursor);
@@ -1284,16 +1292,45 @@ void VTextEditor::highlightSearch(const QList<QTextCursor> &p_results, int p_cur
 {
     Q_ASSERT(!p_results.isEmpty() && p_currentIdx >= 0);
     m_extraSelectionMgr->setSelections(m_searchExtraSelection, p_results);
+
     QList<QTextCursor> searchUnderCursor;
     searchUnderCursor << p_results[p_currentIdx];
     m_extraSelectionMgr->setSelections(m_searchUnderCursorExtraSelection, searchUnderCursor);
+
+    const int selStart = p_results[p_currentIdx].selectionStart();
+    if (selStart == p_results[p_currentIdx].selectionEnd()) {
+        // Zero-length match.
+        const auto rect = m_textEdit->cursorRect(p_results[p_currentIdx]);
+        QToolTip::hideText();
+        QToolTip::showText(m_textEdit->mapToGlobal(rect.topLeft()), tr("Zero-length match"), m_textEdit);
+    }
 }
 
-void VTextEditor::resolveBackReferenceInReplaceText(QString &p_replaceText,
-                                                    QString p_text,
-                                                    const QRegularExpression &p_regExp)
+bool VTextEditor::hasBackReference(const QString &p_regExpText)
 {
-    p_replaceText = p_text.replace(p_regExp, p_replaceText);
+    QRegularExpression regExp(R"(\\\d+)");
+    int pos = 0;
+    QRegularExpressionMatch match;
+    while (pos < p_regExpText.size()) {
+        int idx = p_regExpText.indexOf(regExp, pos, &match);
+        if (idx == -1) {
+            return false;
+        }
+        if (!TextUtils::isEscaped(p_regExpText, idx)) {
+            return true;
+        }
+        pos = idx + match.capturedLength();
+    }
+
+    return false;
+}
+
+QString VTextEditor::resolveBackReferenceInReplaceText(const QString &p_replaceText,
+                                                       QString p_text,
+                                                       const QRegularExpression &p_regExp)
+{
+    // TODO: Need to remove the look ahead/back component at the two ends of the regular expression.
+    return p_text.replace(p_regExp, p_replaceText);
 }
 
 void VTextEditor::updateSpellCheck()
