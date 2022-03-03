@@ -1112,7 +1112,7 @@ VTextEditor::FindResult VTextEditor::replaceText(const QString &p_text,
         Q_ASSERT(!cursor.isNull());
         result.m_totalMatches = 1;
 
-        if ((p_flags & FindFlag::RegularExpression) && hasBackReference(p_text)) {
+        if ((p_flags & FindFlag::RegularExpression) && hasBackReference(p_replaceText)) {
             auto newText = resolveBackReferenceInReplaceText(p_replaceText,
                                                              TextEditUtils::getSelectedText(cursor),
                                                              QRegularExpression(p_text));
