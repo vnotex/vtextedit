@@ -1,6 +1,7 @@
 #include <vtextedit/textutils.h>
 
 #include <QHash>
+#include <QUrl>
 
 using namespace vte;
 
@@ -108,9 +109,11 @@ QString TextUtils::purifyUrl(const QString &p_url)
 
 QString TextUtils::decodeUrl(const QString &p_url)
 {
-    QString path(p_url);
-    path.replace(QStringLiteral("%20"), QStringLiteral(" "));
-    return path;
+    QUrl url(p_url);
+    if (url.isValid()) {
+        return url.toString();
+    }
+    return p_url;
 }
 
 QString TextUtils::encodeUrl(const QString &p_path)
