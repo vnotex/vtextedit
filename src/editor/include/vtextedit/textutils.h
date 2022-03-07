@@ -39,6 +39,7 @@ namespace vte
         // Decode URL by simply replacing meta-characters.
         static QString decodeUrl(const QString &p_url);
 
+        // We only handle space here.
         static QString encodeUrl(const QString &p_path);
 
         static QString removeCodeBlockFence(const QString &p_text);
