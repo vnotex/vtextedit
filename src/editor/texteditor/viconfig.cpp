@@ -24,6 +24,7 @@ QSharedPointer<KateViI::KateViConfig> ViConfig::toKateViConfig() const
         // TODO: do it via key mappings should be better.
         // On macOS, it is Command+C to copy.
         kateConfig->skipKey(Qt::Key_C, Qt::ControlModifier);
+        kateConfig->skipKey(Qt::Key_X, Qt::ControlModifier);
     }
 
     return kateConfig;
