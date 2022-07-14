@@ -173,6 +173,8 @@ namespace vte
 
         void setLeaderKeyToSkip(int p_key, Qt::KeyboardModifiers p_modifiers);
 
+        static void forceInputMethodDisabled(bool p_force);
+
     signals:
         void cursorLineChanged();
 
@@ -276,6 +278,10 @@ namespace vte
 
         bool handleKeyReturn(QKeyEvent *p_event);
 
+        bool isInputMethodEnabled() const;
+
+        static void resetInputMethod();
+
         static QChar matchingClosingBracket(const QChar &p_open);
 
         int m_cursorLine = -1;
@@ -331,6 +337,8 @@ namespace vte
 
         // keyReleaseEvent count needed to release the leader key.
         int m_leaderKeyReleaseCount = 0;
+
+        static bool s_forceInputMethodDisabled;
     };
 
     template <typename T>

@@ -41,6 +41,8 @@ int VTextEdit::Key::GetKeyReleaseCount() const
     return cnt;
 }
 
+bool VTextEdit::s_forceInputMethodDisabled = false;
+
 VTextEdit::VTextEdit(QWidget *p_parent)
     : QTextEdit(p_parent)
 {
@@ -750,7 +752,7 @@ void VTextEdit::contextMenuEvent(QContextMenuEvent *p_event)
 QVariant VTextEdit::inputMethodQuery(Qt::InputMethodQuery p_query) const
 {
     if (p_query == Qt::ImEnabled) {
-        return m_inputMethodEnabled;
+        return isInputMethodEnabled();
     }
 
     return QTextEdit::inputMethodQuery(p_query);
@@ -762,11 +764,30 @@ void VTextEdit::setInputMethodEnabled(bool p_enabled)
         m_inputMethodEnabled = p_enabled;
         m_inputMethodDisabledAfterLeaderKey = false;
 
-        QInputMethod *im = QGuiApplication::inputMethod();
-        im->reset();
-        // Ask input method to query current state, which will call inputMethodQuery().
-        im->update(Qt::ImEnabled);
+        resetInputMethod();
     }
+}
+
+void VTextEdit::resetInputMethod()
+{
+    QInputMethod *im = QGuiApplication::inputMethod();
+    im->reset();
+    // Ask input method to query current state, which will call inputMethodQuery().
+    im->update(Qt::ImEnabled);
+}
+
+void VTextEdit::forceInputMethodDisabled(bool p_force)
+{
+    if (s_forceInputMethodDisabled != p_force) {
+        s_forceInputMethodDisabled = p_force;
+
+        resetInputMethod();
+    }
+}
+
+bool VTextEdit::isInputMethodEnabled() const
+{
+    return m_inputMethodEnabled && !s_forceInputMethodDisabled;
 }
 
 bool VTextEdit::handleOpeningBracket(const QChar &p_open, const QChar &p_close)
