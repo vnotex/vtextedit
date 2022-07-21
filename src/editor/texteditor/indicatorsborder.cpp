@@ -67,6 +67,10 @@ const QFont &IndicatorsBorder::getFont() const
 
 void IndicatorsBorder::setFont(const QFont &p_font)
 {
+    if (m_font == p_font && m_maxCharWidth > 0) {
+        return;
+    }
+
     m_font = p_font;
 
     const QFontMetricsF fm(m_font);
@@ -255,7 +259,7 @@ void IndicatorsBorder::paintBorder(const QRect &p_rect)
                              y,
                              newLineNumberWidth - m_maxCharWidth,
                              h,
-                             Qt::TextDontClip | Qt::AlignRight | Qt::AlignVCenter,
+                             Qt::TextDontClip | Qt::AlignRight | Qt::AlignTop,
                              QString::number(number));
 
             x += newLineNumberWidth + c_separatorWidth;
