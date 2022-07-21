@@ -30,7 +30,6 @@
 #include <QScrollBar>
 #include <QHash>
 #include <QPair>
-#include <QDebug>
 #include <QRegularExpression>
 #include <QMenu>
 #include <QTimer>
@@ -524,19 +523,14 @@ void VTextEditor::updateIndicatorsBorderFromConfig()
         m_indicatorsBorder->setForegroundColor(fmt.textColor());
         m_indicatorsBorder->setBackgroundColor(fmt.backgroundColor());
 
-        auto font = m_textEdit->font();
-        bool needUpdate = false;
+        auto font = m_themeFont;
         if (!fmt.m_fontFamily.isEmpty()) {
             font.setFamily(fmt.m_fontFamily);
-            needUpdate = true;
         }
         if (fmt.m_fontPointSize > 0) {
             font.setPointSize(fmt.m_fontPointSize);
-            needUpdate = true;
         }
-        if (needUpdate) {
-            m_indicatorsBorder->setFont(font);
-        }
+        m_indicatorsBorder->setFont(font);
     }
     {
         const auto &fmt = theme->editorStyle(Theme::CurrentLineNumber);
