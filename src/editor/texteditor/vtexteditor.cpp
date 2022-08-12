@@ -1140,7 +1140,7 @@ VTextEditor::FindResult VTextEditor::replaceAll(const QString &p_text,
         // Replace all matches one by one.
         auto cursor = m_textEdit->textCursor();
         cursor.beginEditBlock();
-        bool hasBackRef = (p_flags & FindFlag::RegularExpression) ? hasBackReference(p_text) : false;
+        bool hasBackRef = (p_flags & FindFlag::RegularExpression) ? hasBackReference(p_replaceText) : false;
         QRegularExpression regExp(hasBackRef ? p_text : QString());
         for (const auto &result : allResults) {
             cursor.setPosition(result.selectionStart());
