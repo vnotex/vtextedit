@@ -393,8 +393,8 @@ void TextEditUtils::unindentBlock(QTextCursor &p_cursor, int p_spaces)
 bool TextEditUtils::crossBlocks(QTextEdit *p_edit, int p_start, int p_end)
 {
     const auto doc = p_edit->document();
-    auto startBlock = doc->findBlockByNumber(p_start);
-    auto endBlock = doc->findBlockByNumber(p_end);
+    auto startBlock = doc->findBlock(p_start);
+    auto endBlock = doc->findBlock(p_end);
     return startBlock.blockNumber() != endBlock.blockNumber();
 }
 
