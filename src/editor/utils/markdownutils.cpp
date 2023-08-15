@@ -1,6 +1,6 @@
 #include <vtextedit/markdownutils.h>
 
-#include <QRegExp>
+#include <QRegularExpression>
 #include <QStringList>
 #include <QFileInfo>
 #include <QDir>
@@ -14,6 +14,7 @@
 #include <vtextedit/texteditutils.h>
 #include <vtextedit/vtextedit.h>
 #include <markdowneditor/pegparser.h>
+#include <QRegExp>
 
 using namespace vte;
 
@@ -305,31 +306,31 @@ void MarkdownUtils::typeMarker(VTextEdit *p_edit,
             QString regExp;
             if (p_allowSpacesAtTwoEnds) {
                 if (p_endMarker.size() == 1) {
-                    regExp = QString("%1[^%2]+%2").arg(QRegExp::escape(p_startMarker),
-                                                       QRegExp::escape(p_endMarker));
+                    regExp = QString("%1[^%2]+%2").arg(QRegularExpression::escape(p_startMarker),
+                                                       QRegularExpression::escape(p_endMarker));
                 } else {
-                    regExp = QString("%1(?:[^%2]|%2(?!%3))+%4").arg(QRegExp::escape(p_startMarker),
-                                                                    QRegExp::escape(p_endMarker[0]),
-                                                                    QRegExp::escape(p_endMarker.mid(1)),
-                                                                    QRegExp::escape(p_endMarker));
+                    regExp = QString("%1(?:[^%2]|%2(?!%3))+%4").arg(QRegularExpression::escape(p_startMarker),
+                                                                    QRegularExpression::escape(p_endMarker[0]),
+                                                                    QRegularExpression::escape(p_endMarker.mid(1)),
+                                                                    QRegularExpression::escape(p_endMarker));
                 }
             } else {
                 if (p_endMarker.size() == 1) {
-                    regExp = QString("%1[^%2\\s](?:\\s*[^%2\\s]*)*%2").arg(QRegExp::escape(p_startMarker),
-                                                                           QRegExp::escape(p_endMarker));
+                    regExp = QString("%1[^%2\\s](?:\\s*[^%2\\s]*)*%2").arg(QRegularExpression::escape(p_startMarker),
+                                                                           QRegularExpression::escape(p_endMarker));
                 } else {
                     regExp = QString("%1(?:[^%2\\s]|%2(?!%3))(?:\\s*(?:[^%2\\s]|%2(?!%3))*)*%4")
-                        .arg(QRegExp::escape(p_startMarker),
-                             QRegExp::escape(p_endMarker[0]),
-                             QRegExp::escape(p_endMarker.mid(1)),
-                             QRegExp::escape(p_endMarker));
+                        .arg(QRegularExpression::escape(p_startMarker),
+                             QRegularExpression::escape(p_endMarker[0]),
+                             QRegularExpression::escape(p_endMarker.mid(1)),
+                             QRegularExpression::escape(p_endMarker));
                 }
             }
 
             QRegExp reg(regExp);
             int pos = 0;
             while (pos < text.size()) {
-                int idx = text.indexOf(reg, pos);
+                int idx = reg.lastIndexIn(text, pos);
                 if (idx == -1 || idx > pib) {
                     break;
                 }
@@ -932,7 +933,7 @@ bool MarkdownUtils::insertQuote(QTextCursor &p_cursor,
             indentation = qMin(indentation, data.m_indentation);
             p_cursor.movePosition(QTextCursor::NextCharacter, QTextCursor::MoveAnchor, indentation);
             if (indentation < data.m_indentation) {
-                p_cursor.insertText(QString(' ', data.m_indentation - indentation));
+                p_cursor.insertText(QString("%1").arg(' ', data.m_indentation - indentation));
             }
             p_cursor.insertText(QStringLiteral("> "));
             p_cursor.movePosition(QTextCursor::EndOfBlock);

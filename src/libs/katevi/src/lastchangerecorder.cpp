@@ -26,16 +26,34 @@
 
 using namespace KateVi;
 
+void EventData::operator=(const QKeyEvent& e)
+{
+    key = e.key();
+    text = e.text();
+    modifiers = e.modifiers();
+    type = e.type();
+    toChar = KeyParser::self()->KeyEventToQChar(e);
+}
+void EventData::SetData(const QKeyEvent &e)
+{
+    key = e.key();
+    text = e.text();
+    modifiers = e.modifiers();
+    type = e.type();
+    toChar = KeyParser::self()->KeyEventToQChar(e);
+}
+
+
 bool KateVi::isRepeatOfLastShortcutOverrideAsKeyPress(const QKeyEvent& currentKeyPress,
-                                                      const QList<QKeyEvent>& keyEventLog)
+                                                      const QList<EventData>& keyEventLog)
 {
     if (keyEventLog.empty())
         return false;
-    const QKeyEvent& lastKeyPress = keyEventLog.last();
-    if (lastKeyPress.type() == QEvent::ShortcutOverride
+    const EventData& lastKeyPress = keyEventLog.last();
+    if (lastKeyPress.type == QEvent::ShortcutOverride
         && currentKeyPress.type() == QEvent::KeyPress
-        && lastKeyPress.key() == currentKeyPress.key()
-        && lastKeyPress.modifiers() == currentKeyPress.modifiers())
+        && lastKeyPress.key == currentKeyPress.key()
+        && lastKeyPress.modifiers == currentKeyPress.modifiers())
     {
         return true;
     }
@@ -57,7 +75,9 @@ void LastChangeRecorder::record(const QKeyEvent &e)
         return;
 
     if (!ViUtils::isModifier(e.key())) {
-        m_changeLog.append(e);
+        EventData e2;
+        e2.SetData(e);
+        m_changeLog.append(e2);
     }
 }
 
@@ -76,12 +96,12 @@ QString LastChangeRecorder::encodedChanges() const
 {
     QString result;
 
-    QList<QKeyEvent> keyLog = m_changeLog;
+    QList<EventData> keyLog = m_changeLog;
 
     for (int i = 0; i < keyLog.size(); i++) {
-        int keyCode = keyLog.at(i).key();
-        QString text = keyLog.at(i).text();
-        int mods = keyLog.at(i).modifiers();
+        int keyCode = keyLog.at(i).key;
+        QString text = keyLog.at(i).text;
+        int mods = keyLog.at(i).modifiers;
         QChar key;
 
         if (text.length() > 0) {
@@ -89,7 +109,7 @@ QString LastChangeRecorder::encodedChanges() const
         }
 
         if (text.isEmpty()
-            || (text.length() == 1 && text.at(0) < 0x20)
+            || (text.length() == 1 && text.at(0).row() < 0x20)
             || (mods != Qt::NoModifier && mods != Qt::ShiftModifier)) {
             QString keyPress;
 

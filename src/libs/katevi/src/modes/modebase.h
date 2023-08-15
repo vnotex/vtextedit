@@ -29,6 +29,7 @@
 
 #include <range.h>
 #include <katevi/definitions.h>
+#include <QObject>
 
 class QKeyEvent;
 class QString;

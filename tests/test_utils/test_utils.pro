@@ -1,6 +1,6 @@
 include($$PWD/../common.pri)
 
-QT += widgets
+QT += widgets core5compat
 
 TARGET = test_utils
 TEMPLATE = app

@@ -1,4 +1,4 @@
-QT += core gui widgets network svg
+QT += core gui widgets network svg core5compat
 
 TARGET = VTextEdit
 TEMPLATE = lib
