@@ -176,7 +176,7 @@ static QString chooseAvailableFont(const QStringList &p_families)
 
         for (int j = 0; j < dbFamilies.size(); ++j) {
             QString dbFamily = dbFamilies.at(j);
-            dbFamily.remove(QRegExp("\\[.*\\]"));
+            dbFamily.remove(QRegularExpression("\\[.*\\]"));
             dbFamily = dbFamily.trimmed();
             if (family == dbFamily
                 || family.toLower() == dbFamily.toLower()) {

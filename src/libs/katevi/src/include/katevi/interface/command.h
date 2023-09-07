@@ -8,7 +8,6 @@
 
 #include <QObject>
 
-class QStringList;
 
 namespace KateViI
 {

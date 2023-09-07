@@ -23,6 +23,7 @@
 #include <katevi/katevi_export.h>
 
 #include <QKeyEvent>
+#include "lastchangerecorder.h"
 
 namespace KateVi
 {
@@ -35,8 +36,7 @@ public:
 
     void writeConfig() const;
     void readConfig();
-
-    void store(const QChar &reg, const QList<QKeyEvent> &macroKeyEventLog, const CompletionList &completions);
+    void store(const QChar &reg, const QList<EventData> &macroKeyEventLog, const CompletionList &completions);
     void remove(const QChar &reg);
     void clear();
 

@@ -238,7 +238,7 @@ void EmulatedCommandBar::insertRegisterContents(const QKeyEvent *keyEvent)
 
         const int oldCursorPosition = m_edit->cursorPosition();
         QString textToInsert;
-        if (modifiers == Qt::ControlModifier && key == Qt::Key_W) {
+        if (modifiers == Qt::ControlModifier && key.row() == Qt::Key_W) {
             textToInsert = m_interface->wordAt(m_interface->cursorPosition());
         } else {
             textToInsert = m_viInputModeManager->globalState()->registers()->getContent(key);

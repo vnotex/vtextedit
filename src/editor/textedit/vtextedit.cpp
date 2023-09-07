@@ -172,7 +172,7 @@ void VTextEdit::mouseReleaseEvent(QMouseEvent *p_event)
 static QTextDocument::FindFlags findFlagsToDocumentFindFlags(FindFlags p_flags)
 {
     // We do not handle FindFlags::RegularExpression here.
-    QTextDocument::FindFlags findFlags = 0;
+    QTextDocument::FindFlags findFlags = QTextDocument::FindBackward;
 
     if (p_flags & FindFlag::FindBackward) {
         findFlags |= QTextDocument::FindBackward;

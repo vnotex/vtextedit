@@ -33,7 +33,8 @@
 #include <marks.h>
 #include <macrorecorder.h>
 #include <lastchangerecorder.h>
-
+  #include <QLatin1String>
+#include <QRegularExpression>
 using namespace KateVi;
 
 InsertViMode::InsertViMode(InputModeManager *viInputModeManager,
@@ -131,7 +132,7 @@ bool InsertViMode::commandDeleteLine()
          * Remove backwards until the first non-space character. If no
          * non-space was found, remove backwards to the first column.
          */
-        QRegExp nonSpace(QLatin1String("\\S"));
+        QRegularExpression nonSpace("\\S");
         r.startColumn = getLine().indexOf(nonSpace);
         if (r.startColumn == -1 || r.startColumn >= c.column()) {
             r.startColumn = 0;

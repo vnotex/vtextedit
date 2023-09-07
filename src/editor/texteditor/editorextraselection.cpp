@@ -31,7 +31,7 @@ QList<QTextCursor> EditorExtraSelection::findAllText(const QString &p_text,
                                                      bool p_isRegularExpression,
                                                      bool p_caseSensitive)
 {
-    FindFlags flags = 0;
+    FindFlags flags = None;
     if (p_isRegularExpression) {
         flags |= FindFlag::RegularExpression;
     }

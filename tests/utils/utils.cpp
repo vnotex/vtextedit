@@ -68,7 +68,7 @@ QString utils::getCppText()
            "    // Loop to determine the widest numeric character in the current font.\n"
            "    // 48 is ascii '0'.\n"
            "    for (int i = 48; i < 58; i++) {\n"
-           "        const qreal charWidth = ceil(fm.width(QChar(i)));\n"
+           "        const qreal charWidth = ceil(fm.horizontalAdvance(QChar(i)));\n"
            "        m_maxCharWidth = qMax(m_maxCharWidth, charWidth);\n"
            "    }\n"
            "\n"

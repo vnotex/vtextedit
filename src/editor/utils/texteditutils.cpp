@@ -245,7 +245,7 @@ int TextEditUtils::calculateBlockMargin(const QTextBlock &p_block, int p_tabStop
         if (it != spaceWidthOfFonts.end()) {
             spaceWidth = it.value();
         } else {
-            spaceWidth = QFontMetrics(font).width(' ');
+            spaceWidth = QFontMetrics(font).horizontalAdvance(' ');
             spaceWidthOfFonts.insert(fontName, spaceWidth);
         }
     }

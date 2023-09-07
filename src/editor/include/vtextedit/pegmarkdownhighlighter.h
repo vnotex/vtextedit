@@ -1,6 +1,7 @@
 #ifndef PEGMARKDOWNHIGHLIGHTER_H
 #define PEGMARKDOWNHIGHLIGHTER_H
 
+#include <QElapsedTimer>
 #include <QTextCharFormat>
 #include <QTime>
 
@@ -224,7 +225,7 @@ namespace peg
         QVector<QTextCharFormat> m_styles;
 
         // Time since last content change.
-        QTime m_contentChangeTime;
+        QElapsedTimer m_contentChangeTime;
 
         bool m_notifyHighlightComplete = false;
 
