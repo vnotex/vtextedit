@@ -321,7 +321,7 @@ void PegHighlighterResult::parseTableBlocks(const QSharedPointer<peg::PegParseRe
 
 static bool isDisplayFormulaRawEnd(const QString &p_text)
 {
-    static QRegExp regex("\\\\end\\{[^{}\\s\\r\\n]+\\}$");
+    static QRegularExpression regex("\\\\end\\{[^{}\\s\\r\\n]+\\}$");
     if (p_text.indexOf(regex) > -1) {
         return true;
     }

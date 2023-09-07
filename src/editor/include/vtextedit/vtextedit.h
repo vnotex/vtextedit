@@ -5,7 +5,7 @@
 
 #include <QTextEdit>
 #include <QVector>
-#include <QTime>
+#include <QElapsedTimer>
 #include <QScopedPointer>
 #include <QTextCursor>
 
@@ -302,7 +302,7 @@ namespace vte
         VTextEdit::Selections m_selections;
 
         // To calculate the interval after last cursor position change.
-        QTime m_cursorPositionChangeTime;
+        QElapsedTimer m_cursorPositionChangeTime;
 
         const int c_updateCursorWidthTimerInterval = 50;
 

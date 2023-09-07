@@ -51,7 +51,7 @@ namespace KateViI
         public:
             size_t operator()(const Key& p_key) const
             {
-                return p_key.m_key + p_key.m_modifiers;
+                return (p_key.m_key) + (int)(p_key.m_modifiers);
             }
         };
 

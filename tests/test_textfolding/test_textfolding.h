@@ -28,7 +28,7 @@ namespace tests
     private:
         qint64 insertNewFoldingRange(int p_first,
                                      int p_last,
-                                     vte::TextFolding::FoldingRangeFlags p_flags = 0);
+                                     vte::TextFolding::FoldingRangeFlags p_flags = vte::TextFolding::Default);
 
         QTextDocument *m_doc = nullptr;
 

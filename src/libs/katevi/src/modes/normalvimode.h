@@ -30,7 +30,7 @@
 #include <QVector>
 #include <QStack>
 #include <QHash>
-#include <QRegExp>
+#include <QRegularExpression>
 
 #include <katevi/interface/range.h>
 #include <katevi/katevi_export.h>
@@ -323,7 +323,7 @@ protected:
 
     void initializeCommands();
 
-    QRegExp generateMatchingItemRegex() const;
+    QRegularExpression generateMatchingItemRegex() const;
 
     void executeCommand(const Command *cmd);
 
@@ -427,7 +427,7 @@ protected:
 
     // item matching ('%' motion)
     QHash<QString, QString> m_matchingItems;
-    QRegExp m_matchItemRegex;
+    QRegularExpression m_matchItemRegex;
 
     KeyParser *m_keyParser = nullptr;
 

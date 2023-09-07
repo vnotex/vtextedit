@@ -53,7 +53,7 @@ void PegParseResult::parseHeaderRegions(QAtomicInt &p_stop)
                 continue;
             }
 
-            if (p_stop.load() == 1) {
+            if (p_stop.loadAcquire() == 1) {
                 return;
             }
 
@@ -62,7 +62,7 @@ void PegParseResult::parseHeaderRegions(QAtomicInt &p_stop)
         }
     }
 
-    if (p_stop.load() == 1) {
+    if (p_stop.loadAcquire() == 1) {
         return;
     }
 
@@ -83,7 +83,7 @@ void PegParseResult::parseFencedCodeBlockRegions(QAtomicInt &p_stop)
             continue;
         }
 
-        if (p_stop.load() == 1) {
+        if (p_stop.loadAcquire() == 1) {
             return;
         }
 
@@ -161,7 +161,7 @@ void PegParseResult::parseRegions(QAtomicInt &p_stop,
             continue;
         }
 
-        if (p_stop.load() == 1) {
+        if (p_stop.loadAcquire() == 1) {
             return;
         }
 
@@ -169,7 +169,7 @@ void PegParseResult::parseRegions(QAtomicInt &p_stop,
         elem = elem->next;
     }
 
-    if (p_sort && p_stop.load() != 1) {
+    if (p_sort && p_stop.loadAcquire() != 1) {
         std::sort(p_result.begin(), p_result.end());
     }
 }
@@ -192,13 +192,13 @@ void PegParserWorker::reset()
 {
     m_parseConfig.reset();
     m_parseResult.reset();
-    m_stop.store(0);
+    m_stop.storeRelaxed(0);
     m_state = WorkerState::Idle;
 }
 
 void PegParserWorker::stop()
 {
-    m_stop.store(1);
+    m_stop.storeRelaxed(1);
 }
 
 void PegParserWorker::run()
@@ -226,7 +226,7 @@ QSharedPointer<PegParseResult> PegParserWorker::parseMarkdown(const QSharedPoint
 
     result->m_pmhElements = PegParser::parseMarkdownToElements(p_config);
 
-    if (p_stop.load() == 1) {
+    if (p_stop.loadAcquire() == 1) {
         return result;
     }
 

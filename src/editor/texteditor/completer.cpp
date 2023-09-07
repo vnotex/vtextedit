@@ -67,9 +67,9 @@ QStringList Completer::generateCompletionCandidates(CompleterInterface *p_interf
                                                     bool p_reversed)
 {
     const QString contents = p_interface->contents();
-    QRegExp reg("\\W+");
-    QStringList above = contents.left(p_wordStart).split(reg, QString::SkipEmptyParts);
-    QStringList below = contents.mid(p_wordEnd).split(reg, QString::SkipEmptyParts);
+    QRegularExpression reg("\\W+");
+    QStringList above = contents.left(p_wordStart).split(reg, Qt::SkipEmptyParts);
+    QStringList below = contents.mid(p_wordEnd).split(reg, Qt::SkipEmptyParts);
 
     // It differs in order regarding duplicates.
     if (p_reversed) {

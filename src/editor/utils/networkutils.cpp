@@ -16,7 +16,7 @@ QNetworkRequest NetworkUtils::networkRequest(const QUrl &p_url)
     request.setSslConfiguration(config);
     */
 
-    request.setAttribute(QNetworkRequest::FollowRedirectsAttribute, true);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, true);
     return request;
 }
 

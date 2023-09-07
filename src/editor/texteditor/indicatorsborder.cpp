@@ -78,7 +78,7 @@ void IndicatorsBorder::setFont(const QFont &p_font)
     // Loop to determine the widest numeric character in the current font.
     // 48 is ascii '0'.
     for (int i = 48; i < 58; i++) {
-        const qreal charWidth = ceil(fm.width(QChar(i)));
+        const qreal charWidth = ceil(fm.horizontalAdvance(QChar(i)));
         m_maxCharWidth = qMax(m_maxCharWidth, charWidth);
     }
 
@@ -401,9 +401,9 @@ IndicatorsBorder::Indicators IndicatorsBorder::positionToIndicator(const QPoint 
 
 void IndicatorsBorder::wheelEvent(QWheelEvent *p_event)
 {
-    auto globalPos = p_event->globalPos();
+    auto globalPos = p_event->globalPosition();
     globalPos.rx() += borderWidth();
-    QWheelEvent forwardEvent(p_event->pos(),
+    QWheelEvent forwardEvent(p_event->position(),
                              globalPos,
                              p_event->pixelDelta(),
                              p_event->angleDelta(),

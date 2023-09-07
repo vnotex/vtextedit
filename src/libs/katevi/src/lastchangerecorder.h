@@ -36,8 +36,21 @@ class InputModeManager;
  * doesn't actually appear to be a ShortcutOverride) and then, whether the "ShortcutOverride" was accepted or not,
  * again as a KeyPress.  We don't want to store both, so this helper helps to decide what to do.
  */
+struct EventData
+{
+    int key;
+    QString text;
+    int modifiers;
+    QEvent::Type type;
+    QChar toChar;
+    void operator=(const QKeyEvent &e);
+    void SetData(const QKeyEvent &e);
+
+};
+
 bool isRepeatOfLastShortcutOverrideAsKeyPress(const QKeyEvent& currentKeyPress,
-                                              const QList<QKeyEvent>& keyEventLog);
+                                              const QList<EventData>& keyEventLog);
+
 
 class LastChangeRecorder
 {
@@ -57,7 +70,7 @@ public:
 private:
     InputModeManager *m_viInputModeManager = nullptr;
 
-    QList<QKeyEvent> m_changeLog;
+    QList<EventData> m_changeLog;
 
     bool m_isReplaying = false;
 };

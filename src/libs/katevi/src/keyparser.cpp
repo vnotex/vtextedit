@@ -22,6 +22,7 @@
 #include <QStringList>
 #include <QKeyEvent>
 #include "keyparser.h"
+#include <QStringRef>
 
 using namespace KateVi;
 
@@ -535,12 +536,12 @@ const QString KeyParser::encodeKeySequence(const QString &keys) const
                 continue;
             } else {
                 // contains modifiers
-                if (keys.midRef(i).indexOf(QLatin1Char('-')) != -1 && keys.midRef(i).indexOf(QLatin1Char('-')) < keys.midRef(i).indexOf(QLatin1Char('>'))) {
+                if (keys.mid(i).indexOf(QLatin1Char('-')) != -1 && keys.mid(i).indexOf(QLatin1Char('-')) < keys.mid(i).indexOf(QLatin1Char('>'))) {
                     // Perform something similar to a split on '-', except that we want to keep the occurrences of '-'
                     // e.g. <c-s-a> will equate to the list of tokens "c-", "s-", "a".
                     // A straight split on '-' would give us "c", "s", "a", in which case we lose the piece of information that
                     // 'a' is just the 'a' key, not the 'alt' modifier.
-                    const QString untilClosing = keys.mid(i, keys.midRef(i).indexOf(QLatin1Char('>'))).toLower();
+                    const QString untilClosing = keys.mid(i, keys.mid(i).indexOf(QLatin1Char('>'))).toLower();
                     QStringList tokens;
                     int currentPos = 0;
                     int nextHypen = -1;
@@ -572,7 +573,7 @@ const QString KeyParser::encodeKeySequence(const QString &keys) const
                                     endOfBlock = keys.length() - 1;
                                 }
                                 encodedSequence.clear();
-                                encodedSequence.append(m_nameToKeyCode.value(QStringLiteral("invalid")));
+                                encodedSequence.append(QString::number(m_nameToKeyCode.value(QStringLiteral("invalid"))));
                                 break;
                             }
                         }
@@ -595,13 +596,14 @@ const QString KeyParser::encodeKeySequence(const QString &keys) const
                     }
 
                 }
-                i += keys.midRef(i, keys.midRef(i).indexOf(QLatin1Char('>'))).length() - 1;
+                i += keys.mid(i, keys.mid(i).indexOf(QLatin1Char('>'))).length() - 1;
             }
         } else {
             if (c == QLatin1Char('<')) {
                 // If there's no closing '>', or if there is an opening '<' before the next '>', interpret as a literal '<'
                 // If we are <space>, encode as a literal " ".
-                const QStringRef rest = keys.midRef(i);
+                QString s = keys.mid(i);
+                const QStringRef rest = &s;
                 if (rest.indexOf(QLatin1Char('>'), 1) != -1 && rest.mid(1, rest.indexOf(QLatin1Char('>'), 1) - 1) == QLatin1String("space")) {
                     encodedSequence.append(QLatin1Char(' '));
                     i += rest.indexOf(QLatin1Char('>'), 1);
@@ -675,7 +677,7 @@ const QChar KeyParser::KeyEventToQChar(const QKeyEvent &keyEvent)
         return (!text.isEmpty()) ? text.at(0) : QChar();
     }
 
-    if (text.isEmpty() || (text.length() == 1 && text.at(0) < 0x20) || keyCode == Qt::Key_Delete
+    if (text.isEmpty() || (text.length() == 1 && text.at(0).row() < 0x20) || keyCode == Qt::Key_Delete
             || (mods != Qt::NoModifier && mods != Qt::ShiftModifier && mods != Qt::KeypadModifier)) {
         QString keyPress;
 

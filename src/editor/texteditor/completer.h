@@ -4,9 +4,9 @@
 #include <QCompleter>
 #include <QTextCursor>
 #include <QPair>
+#include <QStringList>
 
 class QStringListModel;
-class QStringList;
 class QRect;
 class QTextDocument;
 

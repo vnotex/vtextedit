@@ -233,7 +233,7 @@ CompletionStartParams Completer::activateWordFromDocumentCompletion()
     static const QRegularExpression wordRegEx(QStringLiteral("\\w{1,}"));
     QRegularExpressionMatch match;
 
-    QStringList foundWords;
+    QSet<QString> set;
     // Narrow the range of lines we search around the cursor so that we don't die on huge files.
     const int startLine = qMax(0, m_interface->cursorPosition().line() - 4096);
     const int endLine = qMin(m_interface->lines(), m_interface->cursorPosition().line() + 4096);
@@ -242,12 +242,12 @@ CompletionStartParams Completer::activateWordFromDocumentCompletion()
         int wordSearchBeginPos = 0;
         while ((match = wordRegEx.match(line, wordSearchBeginPos)).hasMatch()) {
             const QString foundWord = match.captured();
-            foundWords << foundWord;
+            set << foundWord;
             wordSearchBeginPos = match.capturedEnd();
         }
     }
 
-    foundWords = QSet<QString>::fromList(foundWords).toList();
+    QStringList foundWords(set.values());
     std::sort(foundWords.begin(), foundWords.end(), caseInsensitiveLessThan);
 
     CompletionStartParams completionStartParams;

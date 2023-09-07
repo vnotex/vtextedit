@@ -203,7 +203,7 @@ namespace peg
 
         bool isAskedToStop() const
         {
-            return m_stop.load() == 1;
+            return m_stop.loadAcquire() == 1;
         }
 
         QAtomicInt m_stop = 0;
