@@ -47,7 +47,7 @@
 #include <QApplication>
 #include <QList>
 #include <QDebug>
-#include <QRegExp>
+#include <QRegularExpression>
 
 using namespace KateVi;
 
@@ -197,7 +197,7 @@ bool NormalViMode::handleKeyPress(const QKeyEvent *e)
         rewriteKeysInCWCase();
     }
 
-    if (m_keys[0].row() == Qt::Key_QuoteDbl) {
+    if (m_keys[0].toLatin1() == Qt::Key_QuoteDbl) {
         return assignRegisterFromKeys();
     }
 
@@ -2460,7 +2460,7 @@ Range NormalViMode::motionToMatchingItem()
 
     QString item;
     QString matchingItem;
-    if (QRegExp(QLatin1String("[(){}\\[\\]]")).indexIn(l, n1) == n1) {
+    if (l.indexOf(QRegularExpression(QLatin1String("[(){}\\[\\]]")), n1) == n1) {
         // Brackets.
         item = l.mid(n1, 1);
         matchingItem = matchingBracketItem(item);

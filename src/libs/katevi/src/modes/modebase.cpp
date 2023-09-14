@@ -37,7 +37,6 @@
 
 #include <QString>
 #include <QRegExp>
-#include<QStringRef>
 
 using namespace KateVi;
 

@@ -27,8 +27,8 @@
 
 namespace KateVi
 {
-struct EventData;
 class InputModeManager;
+struct KeyEvent;
 
 class MacroRecorder
 {
@@ -52,7 +52,7 @@ private:
 
     bool m_isRecording = false;
     QChar m_register;
-    QList<EventData> m_eventsLog;
+    QList<KeyEvent> m_eventsLog;
 
     int m_macrosBeingReplayedCount = 0;
     QChar m_lastPlayedMacroRegister = QChar::Null;

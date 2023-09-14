@@ -24,12 +24,13 @@
 #ifndef KATEVI_MODE_BASE_H
 #define KATEVI_MODE_BASE_H
 
+#include <QObject>
+
 #include <katevi/interface/range.h>
 #include <katevi/katevi_export.h>
 
 #include <range.h>
 #include <katevi/definitions.h>
-#include <QObject>
 
 class QKeyEvent;
 class QString;

@@ -23,33 +23,16 @@
 #include <keyparser.h>
 #include <viutils.h>
 #include "completionreplayer.h"
+#include "macros.h"
 
 using namespace KateVi;
 
-void EventData::operator=(const QKeyEvent& e)
-{
-    key = e.key();
-    text = e.text();
-    modifiers = e.modifiers();
-    type = e.type();
-    toChar = KeyParser::self()->KeyEventToQChar(e);
-}
-void EventData::SetData(const QKeyEvent &e)
-{
-    key = e.key();
-    text = e.text();
-    modifiers = e.modifiers();
-    type = e.type();
-    toChar = KeyParser::self()->KeyEventToQChar(e);
-}
-
-
 bool KateVi::isRepeatOfLastShortcutOverrideAsKeyPress(const QKeyEvent& currentKeyPress,
-                                                      const QList<EventData>& keyEventLog)
+                                                      const QList<KeyEvent>& keyEventLog)
 {
     if (keyEventLog.empty())
         return false;
-    const EventData& lastKeyPress = keyEventLog.last();
+    const KeyEvent& lastKeyPress = keyEventLog.last();
     if (lastKeyPress.type == QEvent::ShortcutOverride
         && currentKeyPress.type() == QEvent::KeyPress
         && lastKeyPress.key == currentKeyPress.key()
@@ -75,9 +58,7 @@ void LastChangeRecorder::record(const QKeyEvent &e)
         return;
 
     if (!ViUtils::isModifier(e.key())) {
-        EventData e2;
-        e2.SetData(e);
-        m_changeLog.append(e2);
+        m_changeLog.emplace_back(e);
     }
 }
 
@@ -96,7 +77,7 @@ QString LastChangeRecorder::encodedChanges() const
 {
     QString result;
 
-    QList<EventData> keyLog = m_changeLog;
+    QList<KeyEvent> keyLog = m_changeLog;
 
     for (int i = 0; i < keyLog.size(); i++) {
         int keyCode = keyLog.at(i).key;
@@ -109,7 +90,7 @@ QString LastChangeRecorder::encodedChanges() const
         }
 
         if (text.isEmpty()
-            || (text.length() == 1 && text.at(0).row() < 0x20)
+            || (text.length() == 1 && text.at(0).toLatin1() < 0x20)
             || (mods != Qt::NoModifier && mods != Qt::ShiftModifier)) {
             QString keyPress;
 
