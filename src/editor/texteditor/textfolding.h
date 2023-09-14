@@ -30,7 +30,6 @@ namespace vte
 
         enum FoldingRangeFlag
         {
-            Default = 0x0,
             // Range is persistent.
             // Highlighting won't add folddings by default. It will create a
             // temporary folding once user click to fold it.
@@ -116,7 +115,7 @@ namespace vte
             // Sorted and non-overlapping.
             FoldingRange::Vector m_nestedRanges;
 
-            FoldingRangeFlags m_flags = Default;
+            FoldingRangeFlags m_flags;
 
             // Id of this range.
             qint64 m_id = InvalidRangeId;

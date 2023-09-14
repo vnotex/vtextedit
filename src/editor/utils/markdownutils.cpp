@@ -1,6 +1,5 @@
 #include <vtextedit/markdownutils.h>
 
-#include <QRegularExpression>
 #include <QStringList>
 #include <QFileInfo>
 #include <QDir>
@@ -14,7 +13,6 @@
 #include <vtextedit/texteditutils.h>
 #include <vtextedit/vtextedit.h>
 #include <markdowneditor/pegparser.h>
-#include <QRegExp>
 
 using namespace vte;
 
@@ -88,21 +86,22 @@ bool MarkdownUtils::hasImageLink(const QString &p_text)
 
 QString MarkdownUtils::fetchImageLinkUrl(const QString &p_text, int &p_width, int &p_height)
 {
-    QRegExp regExp(c_imageLinkRegExp);
+    QRegularExpression regExp(c_imageLinkRegExp);
 
     p_width = p_height = -1;
 
-    int index = regExp.indexIn(p_text);
+    int index = p_text.indexOf(regExp);
     if (index == -1) {
         return QString();
     }
 
-    int lastIndex = regExp.lastIndexIn(p_text);
+    QRegularExpressionMatch match;
+    int lastIndex = p_text.lastIndexOf(regExp, &match);
     if (lastIndex != index) {
         return QString();
     }
 
-    QString tmp(regExp.cap(7));
+    QString tmp(match.captured(7));
     if (!tmp.isEmpty()) {
         p_width = tmp.toInt();
         if (p_width <= 0) {
@@ -110,7 +109,7 @@ QString MarkdownUtils::fetchImageLinkUrl(const QString &p_text, int &p_width, in
         }
     }
 
-    tmp = regExp.cap(8);
+    tmp = match.captured(8);
     if (!tmp.isEmpty()) {
         p_height = tmp.toInt();
         if (p_height <= 0) {
@@ -118,7 +117,7 @@ QString MarkdownUtils::fetchImageLinkUrl(const QString &p_text, int &p_width, in
         }
     }
 
-    return regExp.cap(2).trimmed();
+    return match.captured(2).trimmed();
 }
 
 QString MarkdownUtils::linkUrlToPath(const QString &p_basePath, const QString &p_url)
@@ -327,14 +326,15 @@ void MarkdownUtils::typeMarker(VTextEdit *p_edit,
                 }
             }
 
-            QRegExp reg(regExp);
+            QRegularExpression reg(regExp);
             int pos = 0;
             while (pos < text.size()) {
-                int idx = reg.lastIndexIn(text, pos);
+                QRegularExpressionMatch match;
+                int idx = text.indexOf(reg, pos, &match);
                 if (idx == -1 || idx > pib) {
                     break;
                 }
-                pos = idx + reg.matchedLength();
+                pos = idx + match.capturedLength();
                 if (pib == pos - p_endMarker.size()) {
                     // Just skip the end marker.
                     done = true;
@@ -355,7 +355,7 @@ void MarkdownUtils::typeMarker(VTextEdit *p_edit,
 
                     cursor.movePosition(QTextCursor::NextCharacter,
                                         QTextCursor::MoveAnchor,
-                                        reg.matchedLength() - totalMarkersSize);
+                                        match.capturedLength() - totalMarkersSize);
                     cursor.movePosition(QTextCursor::NextCharacter,
                                         QTextCursor::KeepAnchor,
                                         p_endMarker.size());
@@ -933,7 +933,7 @@ bool MarkdownUtils::insertQuote(QTextCursor &p_cursor,
             indentation = qMin(indentation, data.m_indentation);
             p_cursor.movePosition(QTextCursor::NextCharacter, QTextCursor::MoveAnchor, indentation);
             if (indentation < data.m_indentation) {
-                p_cursor.insertText(QString("%1").arg(' ', data.m_indentation - indentation));
+                p_cursor.insertText(QString(data.m_indentation - indentation, ' '));
             }
             p_cursor.insertText(QStringLiteral("> "));
             p_cursor.movePosition(QTextCursor::EndOfBlock);
@@ -994,18 +994,18 @@ QVector<MarkdownLink> MarkdownUtils::fetchImagesFromMarkdownText(const QString &
     QVector<MarkdownLink> images;
 
     const auto regions = fetchImageRegionsViaParser(p_content);
-    QRegExp regExp(c_imageLinkRegExp);
+    QRegularExpression regExp(QRegularExpression::anchoredPattern(c_imageLinkRegExp));
     for (const auto &reg : regions) {
         QString linkText = p_content.mid(reg.m_startPos, reg.m_endPos - reg.m_startPos);
-        bool matched = regExp.exactMatch(linkText);
-        if (!matched) {
+        auto match = regExp.match(linkText);
+        if (!match.hasMatch()) {
             // Image links with reference format will not match.
             continue;
         }
 
         MarkdownLink link;
-        link.m_urlInLink = regExp.cap(2).trimmed();;
-        link.m_urlInLinkPos = reg.m_startPos + linkText.indexOf(link.m_urlInLink, 4 + regExp.cap(1).size());
+        link.m_urlInLink = match.captured(2).trimmed();;
+        link.m_urlInLinkPos = reg.m_startPos + linkText.indexOf(link.m_urlInLink, 4 + match.captured(1).size());
 
         QFileInfo info(linkUrlToPath(p_contentBasePath, link.m_urlInLink));
         if (info.exists()) {
@@ -1071,19 +1071,19 @@ bool MarkdownUtils::pathContains(const QString &p_dir, const QString &p_path)
 
 MarkdownUtils::HeaderMatch MarkdownUtils::matchHeader(const QString &p_text)
 {
-    QRegExp regExp(c_headerRegExp);
-    bool matched = regExp.exactMatch(p_text);
-    if (!matched) {
+    QRegularExpression regExp(QRegularExpression::anchoredPattern(c_headerRegExp));
+    auto match = regExp.match(p_text);
+    if (!match.hasMatch()) {
         return HeaderMatch();
     } else {
-        HeaderMatch match;
-        match.m_matched = true;
-        match.m_level = regExp.cap(1).length();
-        match.m_spacesAfterMarker = regExp.cap(2).length();
-        match.m_header = regExp.cap(3).trimmed();
-        match.m_sequence = regExp.cap(4);
-        match.m_spacesAfterSequence = regExp.cap(5).length();
-        return match;
+        HeaderMatch headerMatch;
+        headerMatch.m_matched = true;
+        headerMatch.m_level = match.captured(1).length();
+        headerMatch.m_spacesAfterMarker = match.captured(2).length();
+        headerMatch.m_header = match.captured(3).trimmed();
+        headerMatch.m_sequence = match.captured(4);
+        headerMatch.m_spacesAfterSequence = match.captured(5).length();
+        return headerMatch;
     }
 }
 

@@ -22,7 +22,6 @@
 #include <QStringList>
 #include <QKeyEvent>
 #include "keyparser.h"
-#include <QStringRef>
 
 using namespace KateVi;
 
@@ -527,8 +526,6 @@ const QString KeyParser::encodeKeySequence(const QString &keys) const
         c = keys.at(i);
         if (insideTag) {
             if (c == QLatin1Char('>')) {
-                QString temp;
-                temp.setNum(0xE000 + keyCodeTemp, 16);
                 QChar code(0xE000 + keyCodeTemp);
                 encodedSequence.append(code);
                 keyCodeTemp = 0;
@@ -573,7 +570,7 @@ const QString KeyParser::encodeKeySequence(const QString &keys) const
                                     endOfBlock = keys.length() - 1;
                                 }
                                 encodedSequence.clear();
-                                encodedSequence.append(QString::number(m_nameToKeyCode.value(QStringLiteral("invalid"))));
+                                encodedSequence.append(QChar(m_nameToKeyCode.value(QStringLiteral("invalid"))));
                                 break;
                             }
                         }
@@ -602,8 +599,7 @@ const QString KeyParser::encodeKeySequence(const QString &keys) const
             if (c == QLatin1Char('<')) {
                 // If there's no closing '>', or if there is an opening '<' before the next '>', interpret as a literal '<'
                 // If we are <space>, encode as a literal " ".
-                QString s = keys.mid(i);
-                const QStringRef rest = &s;
+                const QString rest = keys.mid(i);
                 if (rest.indexOf(QLatin1Char('>'), 1) != -1 && rest.mid(1, rest.indexOf(QLatin1Char('>'), 1) - 1) == QLatin1String("space")) {
                     encodedSequence.append(QLatin1Char(' '));
                     i += rest.indexOf(QLatin1Char('>'), 1);
@@ -677,7 +673,7 @@ const QChar KeyParser::KeyEventToQChar(const QKeyEvent &keyEvent)
         return (!text.isEmpty()) ? text.at(0) : QChar();
     }
 
-    if (text.isEmpty() || (text.length() == 1 && text.at(0).row() < 0x20) || keyCode == Qt::Key_Delete
+    if (text.isEmpty() || (text.length() == 1 && text.at(0).toLatin1() < 0x20) || keyCode == Qt::Key_Delete
             || (mods != Qt::NoModifier && mods != Qt::ShiftModifier && mods != Qt::KeypadModifier)) {
         QString keyPress;
 

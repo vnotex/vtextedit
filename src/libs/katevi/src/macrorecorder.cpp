@@ -69,9 +69,7 @@ void MacroRecorder::record(const QKeyEvent &event)
 {
     if (isRepeatOfLastShortcutOverrideAsKeyPress(event, m_eventsLog))
         return;
-    EventData data;
-    data.SetData(event);
-    m_eventsLog.append(data);
+    m_eventsLog.emplace_back(event);
 }
 
 void MacroRecorder::dropLast()

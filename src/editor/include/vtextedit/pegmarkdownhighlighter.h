@@ -3,7 +3,6 @@
 
 #include <QElapsedTimer>
 #include <QTextCharFormat>
-#include <QTime>
 
 #include <vtextedit/pegmarkdownhighlighterdata.h>
 #include <vtextedit/codeblockhighlighter.h>

@@ -18,10 +18,19 @@
 
 #include "macros.h"
 #include "keyparser.h"
-#include "lastchangerecorder.h"
+
 #include <QDebug>
 
 using namespace KateVi;
+
+KeyEvent::KeyEvent(const QKeyEvent &e)
+    : type(e.type()),
+      key(e.key()),
+      modifiers(e.modifiers()),
+      text(e.text()),
+      toChar(KeyParser::self()->KeyEventToQChar(e))
+{
+}
 
 Macros::Macros()
 {
@@ -85,19 +94,14 @@ void Macros::remove(const QChar &reg)
     m_macros.remove(reg);
 }
 
-
-void Macros::store(const QChar &reg, const QList<EventData> &macroKeyEventLog, const CompletionList &completions)
+void Macros::store(const QChar &reg, const QList<KeyEvent> &macroKeyEventLog, const CompletionList &completions)
 {
     m_macros[reg].clear();
-    QList<EventData> withoutClosingQ = macroKeyEventLog;
+    QList<KeyEvent> withoutClosingQ = macroKeyEventLog;
     Q_ASSERT(!macroKeyEventLog.isEmpty() && macroKeyEventLog.last().key == Qt::Key_Q);
-    for (auto it = macroKeyEventLog.begin(); it != macroKeyEventLog.end(); ++it) {
-        if (it + 1 == macroKeyEventLog.end()){
-            break;
-        }
-        const EventData &keyEvent = *it;
-        QChar key = keyEvent.toChar;
-        m_macros[reg].append(key);
+    withoutClosingQ.pop_back();
+    for (const KeyEvent &keyEvent : qAsConst(withoutClosingQ)) {
+        m_macros[reg].append(keyEvent.toChar);
     }
     m_completions[reg] = completions;
 }

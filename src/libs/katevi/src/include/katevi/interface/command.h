@@ -8,7 +8,6 @@
 
 #include <QObject>
 
-
 namespace KateViI
 {
     class KateViEditorInterface;

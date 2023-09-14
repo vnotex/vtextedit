@@ -23,10 +23,23 @@
 #include <katevi/katevi_export.h>
 
 #include <QKeyEvent>
-#include "lastchangerecorder.h"
 
 namespace KateVi
 {
+
+// Deleter of QKeyEvent is protected in Qt 6.
+struct KATEVI_EXPORT KeyEvent
+{
+    KeyEvent() = default;
+    explicit KeyEvent(const QKeyEvent &e);
+
+    QEvent::Type type = QEvent::Type::None;
+    int key = Qt::Key_unknown;
+    Qt::KeyboardModifiers modifiers;
+    QString text;
+    QChar toChar;
+};
+
 
 class KATEVI_EXPORT Macros
 {
@@ -36,7 +49,8 @@ public:
 
     void writeConfig() const;
     void readConfig();
-    void store(const QChar &reg, const QList<EventData> &macroKeyEventLog, const CompletionList &completions);
+
+    void store(const QChar &reg, const QList<KeyEvent> &macroKeyEventLog, const CompletionList &completions);
     void remove(const QChar &reg);
     void clear();
 
