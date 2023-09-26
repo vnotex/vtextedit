@@ -134,8 +134,8 @@ namespace vte
             }
 
             const int keyMask = 0x01FFFFFF;
-            m_key = seq[0] & keyMask;
-            m_modifiers = static_cast<Qt::KeyboardModifiers>(seq[0] & (~keyMask));
+            m_key = seq[0].toCombined() & keyMask;
+            m_modifiers = static_cast<Qt::KeyboardModifiers>(seq[0].toCombined() & (~keyMask));
         }
 
         int m_key = 0;
