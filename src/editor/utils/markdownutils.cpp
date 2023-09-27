@@ -96,7 +96,7 @@ QString MarkdownUtils::fetchImageLinkUrl(const QString &p_text, int &p_width, in
     }
 
     QRegularExpressionMatch match;
-    int lastIndex = p_text.lastIndexOf(regExp, &match);
+    int lastIndex = p_text.lastIndexOf(regExp, -1, &match);
     if (lastIndex != index) {
         return QString();
     }

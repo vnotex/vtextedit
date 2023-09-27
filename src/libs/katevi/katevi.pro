@@ -1,6 +1,10 @@
 TARGET = KateVi
 
-QT += core gui widgets core5compat
+QT += core gui widgets
+
+greaterThan(QT_MAJOR_VERSION, 5) {
+    QT += core5compat
+}
 
 TEMPLATE = lib
 

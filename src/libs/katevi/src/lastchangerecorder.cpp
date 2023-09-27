@@ -58,7 +58,11 @@ void LastChangeRecorder::record(const QKeyEvent &e)
         return;
 
     if (!ViUtils::isModifier(e.key())) {
+#if (QT_VERSION < QT_VERSION_CHECK(6, 0, 0))
+        m_changeLog.append(KeyEvent(e));
+#else
         m_changeLog.emplace_back(e);
+#endif
     }
 }
 
