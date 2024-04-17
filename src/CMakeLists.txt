@@ -3,11 +3,17 @@ project(VTextEdit VERSION 1.0 LANGUAGES C CXX)
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
-set(QT_VERSION_MAJOR 6 CACHE STRING "Qt version to use (5 or 6), defaults to 6")
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Gui Network Svg Widgets LinguistTools)
-find_package(Qt${QT_VERSION_MAJOR} OPTIONAL_COMPONENTS Core5Compat)
+set(QT_DEFAULT_MAJOR_VERSION 6 CACHE STRING "Qt version to use (5 or 6), defaults to 6")
+find_package(Qt${QT_DEFAULT_MAJOR_VERSION} REQUIRED COMPONENTS Core Gui Network Svg Widgets LinguistTools)
+find_package(Qt${QT_DEFAULT_MAJOR_VERSION} OPTIONAL_COMPONENTS Core5Compat)
 
-qt_standard_project_setup()
+if ((QT_DEFAULT_MAJOR_VERSION GREATER 5))
+    qt_standard_project_setup()
+else()
+    set(CMAKE_AUTOMOC ON)
+    set(CMAKE_AUTORCC ON)
+    set(CMAKE_AUTOUIC ON)
+endif()
 
 set(LIBS_FOLDER "../libs")
 
@@ -17,7 +23,7 @@ set(TRANS_FILES
 )
 qt_add_translation(QM_FILES ${TRANS_FILES})
 
-qt_add_library(VTextEdit SHARED
+add_library(VTextEdit SHARED
     ${QM_FILES}
     data/themes/theme.qrc
     ${LIBS_FOLDER}/sonnet/src/core/trigrams.qrc
@@ -142,7 +148,7 @@ target_link_libraries(VTextEdit PUBLIC
     Hunspell
 )
 
-if((QT_VERSION_MAJOR GREATER 5))
+if((QT_DEFAULT_MAJOR_VERSION GREATER 5))
     target_link_libraries(VTextEdit PUBLIC
         Qt::Core5Compat
     )
