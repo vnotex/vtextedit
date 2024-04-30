@@ -19,9 +19,3 @@ add_library(peg-markdown-highlight STATIC
     pmh_definitions.h
     pmh_parser.c pmh_parser.h
 )
-
-install(TARGETS peg-markdown-highlight
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    FRAMEWORK DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-)
