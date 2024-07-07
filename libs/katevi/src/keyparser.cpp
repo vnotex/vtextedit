@@ -231,7 +231,8 @@ void KeyParser::initKeyTables()
     }
     m_katevi2qt.insert(QStringLiteral("cr"), Qt::Key_Enter);
 
-    m_nameToKeyCode.insert(QStringLiteral("invalid"), -1);
+    // From Qt6, QChar can't accept -1.
+    m_nameToKeyCode.insert(QStringLiteral("invalid"), 0xffff);
     m_nameToKeyCode.insert(QStringLiteral("esc"), 1);
     m_nameToKeyCode.insert(QStringLiteral("tab"), 2);
     m_nameToKeyCode.insert(QStringLiteral("backtab"), 3);
