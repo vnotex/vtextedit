@@ -152,7 +152,8 @@ void VTextEdit::resizeEvent(QResizeEvent *p_event)
 void VTextEdit::wheelEvent(QWheelEvent *p_event)
 {
     if (p_event->modifiers() & Qt::ControlModifier) {
-        // Let editor to zoom.
+        // Let editor to zoom. Explicitly ignore it.
+        p_event->ignore();
         return;
     }
     QTextEdit::wheelEvent(p_event);
