@@ -16,37 +16,37 @@
 
 using namespace vte;
 
-const QString MarkdownUtils::c_fencedCodeBlockStartRegExp = QString("^(\\s*)([`~])\\2{2}((?:(?!\\2)[^\\r\\n])*)$");
+const QString MarkdownUtils::c_fencedCodeBlockStartRegExp = QStringLiteral("^(\\s*)([`~])\\2{2}((?:(?!\\2)[^\\r\\n])*)$");
 
-const QString MarkdownUtils::c_fencedCodeBlockEndRegExp = QString("^(\\s*)([`~])\\2{2}\\s*$");
+const QString MarkdownUtils::c_fencedCodeBlockEndRegExp = QStringLiteral("^(\\s*)([`~])\\2{2}\\s*$");
 
-const QString MarkdownUtils::c_imageTitleRegExp = QString("[^\\[\\]]*");
+const QString MarkdownUtils::c_imageTitleRegExp = QStringLiteral("[^\\[\\]]*");
 
-const QString MarkdownUtils::c_imageAltRegExp = QString("[^\"'()]*");
+const QString MarkdownUtils::c_imageAltRegExp = QStringLiteral("[^\"'()]*");
 
-const QString MarkdownUtils::c_imageLinkRegExp = QString("\\!\\[([^\\[\\]]*)\\]"
+const QString MarkdownUtils::c_imageLinkRegExp = QStringLiteral("\\!\\[([^\\[\\]]*)\\]"
                                                          "\\(\\s*"
                                                          "([^\\)\"'\\s]+)"
                                                          "(\\s*(\"[^\"\\)\\n\\r]*\")|('[^'\\)\\n\\r]*'))?"
                                                          "(\\s*=(\\d*)x(\\d*))?"
                                                          "\\s*\\)");
 
-const QString MarkdownUtils::c_linkRegExp = QString("\\[([^\\[\\]]*)\\]"
+const QString MarkdownUtils::c_linkRegExp = QStringLiteral("\\[([^\\[\\]]*)\\]"
                                                     "\\(\\s*"
                                                     "([^\\)\"'\\s]+)"
                                                     "(\\s*(\"[^\"\\)\\n\\r]*\")|('[^'\\)\\n\\r]*'))?"
                                                     "\\s*\\)");
 
 // Constrain the main section number digits within 3 chars to avoid treating a date like 20210101 as a section number.
-const QString MarkdownUtils::c_headerRegExp = QString("^(#{1,6})(\\s+)((\\d{1,3}(?:\\.\\d+)*\\.?(?=\\s))?(\\s*)(?:\\S.*)?)$");
+const QString MarkdownUtils::c_headerRegExp = QStringLiteral("^(#{1,6})(\\s+)((\\d{1,3}(?:\\.\\d+)*\\.?(?=\\s))?(\\s*)(?:\\S.*)?)$");
 
-const QString MarkdownUtils::c_todoListRegExp = QString("^(\\s*)([\\*\\-\\+])\\s+\\[([ x])\\]\\s*(.*)$");
+const QString MarkdownUtils::c_todoListRegExp = QStringLiteral("^(\\s*)([\\*\\-\\+])\\s+\\[([ x])\\]\\s*(.*)$");
 
-const QString MarkdownUtils::c_orderedListRegExp = QString("^(\\s*)(\\d+)\\.\\s+(.*)$");
+const QString MarkdownUtils::c_orderedListRegExp = QStringLiteral("^(\\s*)(\\d+)\\.\\s+(.*)$");
 
-const QString MarkdownUtils::c_unorderedListRegExp = QString("^(\\s*)([\\*\\-\\+])\\s+(.*)$");
+const QString MarkdownUtils::c_unorderedListRegExp = QStringLiteral("^(\\s*)([\\*\\-\\+])\\s+(.*)$");
 
-const QString MarkdownUtils::c_quoteRegExp = QString("^(\\s*)>\\s+(.*)$");
+const QString MarkdownUtils::c_quoteRegExp = QStringLiteral("^(\\s*)>\\s+(.*)$");
 
 QString MarkdownUtils::unindentCodeBlockText(const QString &p_text)
 {
@@ -305,20 +305,20 @@ void MarkdownUtils::typeMarker(VTextEdit *p_edit,
             QString regExp;
             if (p_allowSpacesAtTwoEnds) {
                 if (p_endMarker.size() == 1) {
-                    regExp = QString("%1[^%2]+%2").arg(QRegularExpression::escape(p_startMarker),
+                    regExp = QStringLiteral("%1[^%2]+%2").arg(QRegularExpression::escape(p_startMarker),
                                                        QRegularExpression::escape(p_endMarker));
                 } else {
-                    regExp = QString("%1(?:[^%2]|%2(?!%3))+%4").arg(QRegularExpression::escape(p_startMarker),
+                    regExp = QStringLiteral("%1(?:[^%2]|%2(?!%3))+%4").arg(QRegularExpression::escape(p_startMarker),
                                                                     QRegularExpression::escape(p_endMarker[0]),
                                                                     QRegularExpression::escape(p_endMarker.mid(1)),
                                                                     QRegularExpression::escape(p_endMarker));
                 }
             } else {
                 if (p_endMarker.size() == 1) {
-                    regExp = QString("%1[^%2\\s](?:\\s*[^%2\\s]*)*%2").arg(QRegularExpression::escape(p_startMarker),
+                    regExp = QStringLiteral("%1[^%2\\s](?:\\s*[^%2\\s]*)*%2").arg(QRegularExpression::escape(p_startMarker),
                                                                            QRegularExpression::escape(p_endMarker));
                 } else {
-                    regExp = QString("%1(?:[^%2\\s]|%2(?!%3))(?:\\s*(?:[^%2\\s]|%2(?!%3))*)*%4")
+                    regExp = QStringLiteral("%1(?:[^%2\\s]|%2(?!%3))(?:\\s*(?:[^%2\\s]|%2(?!%3))*)*%4")
                         .arg(QRegularExpression::escape(p_startMarker),
                              QRegularExpression::escape(p_endMarker[0]),
                              QRegularExpression::escape(p_endMarker.mid(1)),
@@ -459,7 +459,7 @@ bool MarkdownUtils::insertUnorderedList(QTextCursor &p_cursor,
         auto match = reg.match(text);
         if (match.hasMatch()) {
             TextEditUtils::selectBlockUnderCursor(p_cursor);
-            p_cursor.insertText(QString("%1%2 %3").arg(match.captured(1),
+            p_cursor.insertText(QStringLiteral("%1%2 %3").arg(match.captured(1),
                                                        match.captured(2),
                                                        match.captured(4)));
             return true;
@@ -472,7 +472,7 @@ bool MarkdownUtils::insertUnorderedList(QTextCursor &p_cursor,
         auto match = reg.match(text);
         if (match.hasMatch()) {
             TextEditUtils::selectBlockUnderCursor(p_cursor);
-            p_cursor.insertText(QString("%1* %2").arg(match.captured(1),
+            p_cursor.insertText(QStringLiteral("%1* %2").arg(match.captured(1),
                                                       match.captured(3)));
             return true;
         }
@@ -484,7 +484,7 @@ bool MarkdownUtils::insertUnorderedList(QTextCursor &p_cursor,
         auto match = reg.match(text);
         if (match.hasMatch()) {
             TextEditUtils::selectBlockUnderCursor(p_cursor);
-            p_cursor.insertText(QString("%1%2").arg(match.captured(1),
+            p_cursor.insertText(QStringLiteral("%1%2").arg(match.captured(1),
                                                     match.captured(3)));
             return true;
         }
@@ -558,7 +558,7 @@ bool MarkdownUtils::insertOrderedList(QTextCursor &p_cursor,
         auto match = reg.match(text);
         if (match.hasMatch()) {
             TextEditUtils::selectBlockUnderCursor(p_cursor);
-            p_cursor.insertText(match.captured(1) + QString("1. %1").arg(match.captured(4)));
+            p_cursor.insertText(match.captured(1) + QStringLiteral("1. %1").arg(match.captured(4)));
             return true;
         }
     }
@@ -569,7 +569,7 @@ bool MarkdownUtils::insertOrderedList(QTextCursor &p_cursor,
         auto match = reg.match(text);
         if (match.hasMatch()) {
             TextEditUtils::selectBlockUnderCursor(p_cursor);
-            p_cursor.insertText(match.captured(1) + QString("1. %1").arg(match.captured(3)));
+            p_cursor.insertText(match.captured(1) + QStringLiteral("1. %1").arg(match.captured(3)));
             return true;
         }
     }
@@ -580,7 +580,7 @@ bool MarkdownUtils::insertOrderedList(QTextCursor &p_cursor,
         auto match = reg.match(text);
         if (match.hasMatch()) {
             TextEditUtils::selectBlockUnderCursor(p_cursor);
-            p_cursor.insertText(QString("%1%2").arg(match.captured(1),
+            p_cursor.insertText(QStringLiteral("%1%2").arg(match.captured(1),
                                                     match.captured(3)));
             return true;
         }
@@ -627,10 +627,10 @@ bool MarkdownUtils::insertTodoList(QTextCursor &p_cursor,
             bool currentChecked = match.captured(3) == QStringLiteral("x");
             if (currentChecked == checked) {
                 // Turn it into normal line.
-                p_cursor.insertText(QString("%1%2").arg(match.captured(1), match.captured(4)));
+                p_cursor.insertText(QStringLiteral("%1%2").arg(match.captured(1), match.captured(4)));
             } else {
                 // Uncheck/Check it.
-                p_cursor.insertText(QString("%1%2 %3 %4").arg(match.captured(1),
+                p_cursor.insertText(QStringLiteral("%1%2 %3 %4").arg(match.captured(1),
                                                                match.captured(2),
                                                                checkMark,
                                                                match.captured(4)));
@@ -645,7 +645,7 @@ bool MarkdownUtils::insertTodoList(QTextCursor &p_cursor,
         auto match = reg.match(text);
         if (match.hasMatch()) {
             TextEditUtils::selectBlockUnderCursor(p_cursor);
-            p_cursor.insertText(QString("%1%2 %3 %4").arg(match.captured(1),
+            p_cursor.insertText(QStringLiteral("%1%2 %3 %4").arg(match.captured(1),
                                                           match.captured(2),
                                                           checkMark,
                                                           match.captured(3)));
@@ -659,7 +659,7 @@ bool MarkdownUtils::insertTodoList(QTextCursor &p_cursor,
         auto match = reg.match(text);
         if (match.hasMatch()) {
             TextEditUtils::selectBlockUnderCursor(p_cursor);
-            p_cursor.insertText(QString("%1* %2 %3").arg(match.captured(1),
+            p_cursor.insertText(QStringLiteral("%1* %2 %3").arg(match.captured(1),
                                                          checkMark,
                                                          match.captured(3)));
             return true;
@@ -670,7 +670,7 @@ bool MarkdownUtils::insertTodoList(QTextCursor &p_cursor,
     {
         int indentation = TextUtils::fetchIndentation(text);
         p_cursor.movePosition(QTextCursor::NextCharacter, QTextCursor::MoveAnchor, indentation);
-        p_cursor.insertText(QString("* %1 ").arg(checkMark));
+        p_cursor.insertText(QStringLiteral("* %1 ").arg(checkMark));
         p_cursor.movePosition(QTextCursor::EndOfBlock);
         return true;
     }
@@ -721,8 +721,8 @@ void MarkdownUtils::typeBlockMarker(VTextEdit *p_edit,
         cursor.movePosition(QTextCursor::EndOfBlock);
     } else {
         // We allow chars after start marker.
-        QRegularExpression startReg(QString("^(\\s*)%1").arg(QRegularExpression::escape(p_startMarker)));
-        QRegularExpression endReg(QString("^(\\s*)%1$").arg(QRegularExpression::escape(p_endMarker)));
+        QRegularExpression startReg(QStringLiteral("^(\\s*)%1").arg(QRegularExpression::escape(p_startMarker)));
+        QRegularExpression endReg(QStringLiteral("^(\\s*)%1$").arg(QRegularExpression::escape(p_endMarker)));
 
         auto block = cursor.block();
         const auto currentText = block.text();
@@ -917,7 +917,7 @@ bool MarkdownUtils::insertQuote(QTextCursor &p_cursor,
             // The first line is a quote already, so we need to un-quote them.
             data.m_insertQuote = false;
             TextEditUtils::selectBlockUnderCursor(p_cursor);
-            p_cursor.insertText(QString("%1%2").arg(match.captured(1), match.captured(2)));
+            p_cursor.insertText(QStringLiteral("%1%2").arg(match.captured(1), match.captured(2)));
         } else {
             // Quote them.
             data.m_insertQuote = true;
@@ -942,7 +942,7 @@ bool MarkdownUtils::insertQuote(QTextCursor &p_cursor,
             auto match = reg.match(text);
             if (match.hasMatch()) {
                 TextEditUtils::selectBlockUnderCursor(p_cursor);
-                p_cursor.insertText(QString("%1%2").arg(match.captured(1), match.captured(2)));
+                p_cursor.insertText(QStringLiteral("%1%2").arg(match.captured(1), match.captured(2)));
             } else {
                 // Need to un-quote it but it is not quoted yet. Ignore it.
                 return false;
@@ -954,7 +954,7 @@ bool MarkdownUtils::insertQuote(QTextCursor &p_cursor,
 
 void MarkdownUtils::typeLink(VTextEdit *p_edit, const QString &p_linkText, const QString &p_linkUrl)
 {
-    p_edit->insertPlainText(QString("[%1](%2)").arg(p_linkText, p_linkUrl));
+    p_edit->insertPlainText(QStringLiteral("[%1](%2)").arg(p_linkText, p_linkUrl));
 }
 
 QString MarkdownUtils::generateImageLink(const QString &p_title,
@@ -966,20 +966,20 @@ QString MarkdownUtils::generateImageLink(const QString &p_title,
     QString scale;
     if (p_width > 0) {
         if (p_height > 0) {
-            scale = QString(QStringLiteral(" =%1x%2")).arg(p_width).arg(p_height);
+            scale = QStringLiteral(" =%1x%2").arg(p_width).arg(p_height);
         } else {
-            scale = QString(QStringLiteral(" =%1x")).arg(p_width);
+            scale = QStringLiteral(" =%1x").arg(p_width);
         }
     } else if (p_height > 0) {
-        scale = QString(QStringLiteral(" =x%1")).arg(p_height);
+        scale = QStringLiteral(" =x%1").arg(p_height);
     }
 
     QString altText;
     if (!p_altText.isEmpty()) {
-        altText = QString(QStringLiteral(" \"%1\"")).arg(p_altText);
+        altText = QStringLiteral(" \"%1\"").arg(p_altText);
     }
 
-    return QString(QStringLiteral("![%1](%2%3%4)")).arg(p_title, p_url, altText, scale);
+    return QStringLiteral("![%1](%2%3%4)").arg(p_title, p_url, altText, scale);
 }
 
 static bool markdownLinkCmp(const MarkdownLink &p_a, const MarkdownLink &p_b)

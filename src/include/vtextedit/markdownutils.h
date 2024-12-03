@@ -35,7 +35,7 @@ namespace vte
 
         QString toString() const
         {
-            return QString("path (%1) urlInLink (%2)").arg(m_path, m_urlInLink);
+            return QStringLiteral("path (%1) urlInLink (%2)").arg(m_path, m_urlInLink);
         }
 
         QString m_urlInLink;
