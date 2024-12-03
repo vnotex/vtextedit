@@ -241,7 +241,7 @@ void PreviewMgr::updateBlockPreview(TimeStamp p_timeStamp,
 QString PreviewMgr::imageResourceName(const ImageLink &p_link)
 {
     // Add size info to the name.
-    QString name = QString("%1_%2_%3").arg(p_link.m_linkShortUrl,
+    QString name = QStringLiteral("%1_%2_%3").arg(p_link.m_linkShortUrl,
                                            QString::number(p_link.m_width),
                                            QString::number(p_link.m_height));
     auto resourceMgr = m_interface->documentResourceMgr();

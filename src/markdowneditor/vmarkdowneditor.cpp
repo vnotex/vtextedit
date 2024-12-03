@@ -316,19 +316,19 @@ void VMarkdownEditor::postKeyReturn(int p_modifiers)
             Q_ASSERT(!isEmpty);
             changed = true;
             cursor.joinPreviousEditBlock();
-            cursor.insertText(QString("%1 [ ] ").arg(listMark));
+            cursor.insertText(QStringLiteral("%1 [ ] ").arg(listMark));
         } else if (MarkdownUtils::isUnorderedList(preText, listMark, isEmpty)) {
             // Insert an unordered list mark.
             Q_ASSERT(!isEmpty);
             changed = true;
             cursor.joinPreviousEditBlock();
-            cursor.insertText(QString("%1 ").arg(listMark));
+            cursor.insertText(QStringLiteral("%1 ").arg(listMark));
         } else if (MarkdownUtils::isOrderedList(preText, listNumber, isEmpty)) {
             // Insert an ordered list mark.
             Q_ASSERT(!isEmpty);
             changed = true;
             cursor.joinPreviousEditBlock();
-            cursor.insertText(QString("%1. ").arg(listNumber.toInt() + 1));
+            cursor.insertText(QStringLiteral("%1. ").arg(listNumber.toInt() + 1));
         }
 
         if (changed) {

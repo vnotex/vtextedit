@@ -49,7 +49,7 @@ namespace vte
 
             QString toString() const
             {
-                return QString("codeblock %1 line %2 indentation %3").arg(m_blockIndex)
+                return QStringLiteral("codeblock %1 line %2 indentation %3").arg(m_blockIndex)
                                                                      .arg(m_lineIndex)
                                                                      .arg(m_indentation);
             }

@@ -44,7 +44,7 @@ namespace peg
 
         QString toString() const
         {
-            return QString("HLUnit %1 %2 %3").arg(start).arg(length).arg(styleIndex);
+            return QStringLiteral("HLUnit %1 %2 %3").arg(start).arg(length).arg(styleIndex);
         }
 
         // Highlight offset @start and @length with style @styleIndex.
@@ -133,7 +133,7 @@ namespace peg
 
         QString toString() const
         {
-            return QString("[%1,%2)").arg(m_startPos).arg(m_endPos);
+            return QStringLiteral("[%1,%2)").arg(m_startPos).arg(m_endPos);
         }
 
         // The start position of the region in document.
@@ -160,7 +160,7 @@ namespace peg
 
         QString toString() const
         {
-            return QString("codeblock startPos %1 [%2,%3] lang %4").arg(m_startPos)
+            return QStringLiteral("codeblock startPos %1 [%2,%3] lang %4").arg(m_startPos)
                                                                    .arg(m_startBlock)
                                                                    .arg(m_endBlock)
                                                                    .arg(m_lang);
@@ -251,7 +251,7 @@ namespace peg
 
         QString toString() const
         {
-            return QString("table [%1,%2) borders %3").arg(m_startPos)
+            return QStringLiteral("table [%1,%2) borders %3").arg(m_startPos)
                                                       .arg(m_endPos)
                                                       .arg(m_borders.size());
         }

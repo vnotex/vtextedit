@@ -38,7 +38,7 @@ namespace peg
 
         QString toString() const
         {
-            return QString("PegParseConfig ts %1 data %2 blocks %3").arg(m_timeStamp)
+            return QStringLiteral("PegParseConfig ts %1 data %2 blocks %3").arg(m_timeStamp)
                                                                     .arg(m_data.size())
                                                                     .arg(m_numOfBlocks);
         }
@@ -74,7 +74,7 @@ namespace peg
 
         QString toString() const
         {
-            return QString("PegParseResult ts %1").arg(m_timeStamp);
+            return QStringLiteral("PegParseResult ts %1").arg(m_timeStamp);
         }
 
         bool isEmpty() const
