@@ -981,7 +981,7 @@ void VTextEditor::setFontPointSizeByStyleSheet(int p_ptSize)
 
 void VTextEditor::setFontAndPaletteByStyleSheet(const QFont &p_font, const QPalette &p_palette)
 {
-    QString styles(QString("vte--VTextEdit {"
+    QString styles(QStringLiteral("vte--VTextEdit {"
                            "font-family: \"%1\";"
                            "font-size: %2pt;"
                            "color: %3;"

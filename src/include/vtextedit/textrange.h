@@ -62,7 +62,7 @@ namespace vte
 
         QString toString() const
         {
-            return QString("TextBlockRange %3 [%1, %2]").arg(m_first.blockNumber())
+            return QStringLiteral("TextBlockRange %3 [%1, %2]").arg(m_first.blockNumber())
                                                         .arg(m_last.blockNumber())
                                                         .arg(isValid());
         }
