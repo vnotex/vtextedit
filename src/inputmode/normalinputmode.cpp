@@ -75,6 +75,20 @@ bool NormalInputMode::handleKeyPress(QKeyEvent *p_event)
         case Qt::Key_K:
             m_interface->scrollDown();
             return true;
+        
+        case Qt::Key_C:
+            if (!m_interface->selection()) {
+                copyCurrentLine(false);
+                return true;
+            }
+            break;
+
+        case Qt::Key_X:
+            if (!m_interface->selection()) {
+                copyCurrentLine(true);
+                return true;
+            }
+            break;
 
         default:
             break;
@@ -169,15 +183,28 @@ void NormalInputMode::gotoLine()
 
     bool ok = false;
     int line = QInputDialog::getInt(nullptr,
-                                     QWidget::tr("Go to Line"),
-                                     QWidget::tr("Line number (1-%1):").arg(maxLine),
-                                     currentLine,
-                                     1,
-                                     maxLine,
-                                     1,
-                                     &ok);
+                                    QWidget::tr("Go to Line"),
+                                    QWidget::tr("Line number (1-%1):").arg(maxLine),
+                                    currentLine,
+                                    1,
+                                    maxLine,
+                                    1,
+                                    &ok);
     if (ok) {
         // Lines are 0-based internally
         m_interface->updateCursor(line - 1, 0);
+    }
+}
+
+void NormalInputMode::copyCurrentLine(bool p_cut)
+{
+    int line = m_interface->cursorPosition().line();
+    // Get the line text before removing it
+    QString text = m_interface->line(line);
+    // Copy to clipboard with newline to maintain line format when pasting
+    m_interface->copyToClipboard(text + '\n');
+    // Remove the line
+    if (p_cut) {
+        m_interface->removeLine(line);
     }
 }
