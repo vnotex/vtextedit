@@ -45,6 +45,8 @@ namespace vte
 
         void gotoLine();
 
+        void copyCurrentLine(bool p_cut = false);
+
         EditorMode m_mode = EditorMode::NormalModeInsert;
     };
 }
