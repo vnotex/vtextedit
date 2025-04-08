@@ -90,6 +90,10 @@ bool NormalInputMode::handleKeyPress(QKeyEvent *p_event)
             }
             break;
 
+        case Qt::Key_L:
+            selectCurrentLine();
+            return true;
+
         default:
             break;
         }
@@ -206,5 +210,22 @@ void NormalInputMode::copyCurrentLine(bool p_cut)
     // Remove the line
     if (p_cut) {
         m_interface->removeLine(line);
+    }
+}
+
+void NormalInputMode::selectCurrentLine()
+{
+    // Get current line number
+    int line = m_interface->cursorPosition().line();
+    // Check if this is the last line
+    int lastLine = m_interface->lastLine();
+
+    if (line < lastLine) {
+        // Select from start of current line to start of next line to include newline
+        m_interface->setSelection(line, 0, line + 1, 0);
+    } else {
+        // Last line - select to end of line since there's no newline
+        int length = m_interface->lineLength(line);
+        m_interface->setSelection(line, 0, line, length);
     }
 }

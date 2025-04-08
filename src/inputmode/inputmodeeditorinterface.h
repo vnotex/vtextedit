@@ -24,6 +24,9 @@ namespace vte
 
         virtual int linesDisplayed() = 0;
 
+        virtual void setSelection(int p_startLine, int p_startColumn,
+                                  int p_endLine, int p_endColumn) = 0;
+
         // Notifiers.
         virtual void notifyEditorModeChanged(EditorMode p_mode) = 0;
 

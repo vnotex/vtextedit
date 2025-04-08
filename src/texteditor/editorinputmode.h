@@ -33,6 +33,9 @@ namespace vte
 
         void scrollDown() Q_DECL_OVERRIDE;
 
+        void setSelection(int p_startLine, int p_startColumn,
+                          int p_endLine, int p_endColumn) Q_DECL_OVERRIDE;
+
     public:
         // KateViEditorInterface.
         QTextCursor textCursor() const Q_DECL_OVERRIDE;

@@ -132,6 +132,24 @@ void EditorInputMode::connectTextInserted(std::function<void(const KateViI::Rang
                   });
 }
 
+void EditorInputMode::setSelection(int p_startLine, int p_startColumn,
+                                  int p_endLine, int p_endColumn)
+{
+    clearSelection();
+    auto cursor = textCursor();
+    auto startBlock = document()->findBlockByNumber(p_startLine);
+    if (startBlock.isValid()) {
+        cursor.setPosition(startBlock.position() + p_startColumn);
+        auto endBlock = document()->findBlockByNumber(p_endLine);
+        if (endBlock.isValid()) {
+            cursor.setPosition(endBlock.position() + p_endColumn, QTextCursor::KeepAnchor);
+        } else {
+            cursor.setPosition(startBlock.position() + startBlock.length(), QTextCursor::KeepAnchor);
+        }
+    }
+    m_textEdit->setTextCursor(cursor);
+}
+
 void EditorInputMode::setSelection(const KateViI::Range &p_range)
 {
     if (!p_range.isValid()) {
