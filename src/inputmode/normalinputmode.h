@@ -43,6 +43,8 @@ namespace vte
 
         void commandCompletePrevious();
 
+        void gotoLine();
+
         EditorMode m_mode = EditorMode::NormalModeInsert;
     };
 }
