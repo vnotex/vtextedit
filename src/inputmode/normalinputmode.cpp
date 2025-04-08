@@ -1,6 +1,7 @@
 #include "normalinputmode.h"
 
 #include <QKeyEvent>
+#include <QInputDialog>
 
 #include "inputmodeeditorinterface.h"
 
@@ -78,6 +79,15 @@ bool NormalInputMode::handleKeyPress(QKeyEvent *p_event)
         default:
             break;
         }
+    } else if (p_event->modifiers() == (Qt::ShiftModifier | Qt::ControlModifier)) {
+        switch (p_event->key()) {
+        case Qt::Key_G:
+            gotoLine();
+            return true;
+
+        default:
+            break;
+        }
     }
 
     return false;
@@ -149,4 +159,25 @@ void NormalInputMode::commandCompletePrevious()
 QSharedPointer<InputModeStatusWidget> NormalInputMode::statusWidget()
 {
     return nullptr;
+}
+
+void NormalInputMode::gotoLine()
+{
+    // Get current line number (1-based) and max line number
+    int currentLine = m_interface->cursorPosition().line() + 1;
+    int maxLine = m_interface->lastLine() + 1;
+
+    bool ok = false;
+    int line = QInputDialog::getInt(nullptr,
+                                     QWidget::tr("Go to Line"),
+                                     QWidget::tr("Line number (1-%1):").arg(maxLine),
+                                     currentLine,
+                                     1,
+                                     maxLine,
+                                     1,
+                                     &ok);
+    if (ok) {
+        // Lines are 0-based internally
+        m_interface->updateCursor(line - 1, 0);
+    }
 }
