@@ -53,6 +53,10 @@ namespace vte
 
         void moveLineDown();
 
+        void duplicateLineUp();
+
+        void duplicateLineDown();
+
         EditorMode m_mode = EditorMode::NormalModeInsert;
     };
 }
