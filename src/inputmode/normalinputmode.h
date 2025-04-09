@@ -57,6 +57,8 @@ namespace vte
 
         void duplicateLineDown();
 
+        void deleteCurrentLine();
+
         EditorMode m_mode = EditorMode::NormalModeInsert;
     };
 }

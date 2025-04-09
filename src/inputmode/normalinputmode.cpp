@@ -103,6 +103,10 @@ bool NormalInputMode::handleKeyPress(QKeyEvent *p_event)
             gotoLine();
             return true;
 
+        case Qt::Key_K:
+            deleteCurrentLine();
+            return true;
+
         default:
             break;
         }
@@ -328,4 +332,20 @@ void NormalInputMode::duplicateLineDown()
     
     // Move cursor to the duplicated line
     m_interface->updateCursor(currentLine + 1, currentColumn);
+}
+
+void NormalInputMode::deleteCurrentLine()
+{
+    int currentLine = m_interface->cursorPosition().line();
+    
+    // Remove the current line
+    m_interface->removeLine(currentLine);
+    
+    // If we deleted the last line, move cursor to the new last line
+    // Otherwise keep it at the same line number which is now the next line
+    if (currentLine > m_interface->lastLine()) {
+        m_interface->updateCursor(m_interface->lastLine(), 0);
+    } else {
+        m_interface->updateCursor(currentLine, 0);
+    }
 }
