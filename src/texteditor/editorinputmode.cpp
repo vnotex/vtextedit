@@ -874,7 +874,10 @@ bool EditorInputMode::insertLine(int p_line, const QString &p_str)
         cursor.setPosition(block.position());
     }
 
+    int pos = cursor.position();
+    // After insertBlock(), the cursor is right behind the new block.
     cursor.insertBlock();
+    cursor.setPosition(pos);
     cursor.insertText(p_str);
     m_textEdit->setTextCursor(cursor);
 

@@ -106,6 +106,19 @@ bool NormalInputMode::handleKeyPress(QKeyEvent *p_event)
         default:
             break;
         }
+    } else if (p_event->modifiers() == Qt::AltModifier) {
+        switch (p_event->key()) {
+        case Qt::Key_Up:
+            moveLineUp();
+            return true;
+
+        case Qt::Key_Down:
+            moveLineDown();
+            return true;
+
+        default:
+            break;
+        }
     }
 
     return false;
@@ -227,5 +240,49 @@ void NormalInputMode::selectCurrentLine()
         // Last line - select to end of line since there's no newline
         int length = m_interface->lineLength(line);
         m_interface->setSelection(line, 0, line, length);
+    }
+}
+
+void NormalInputMode::moveLineUp()
+{
+    int currentLine = m_interface->cursorPosition().line();
+    int currentColumn = m_interface->cursorPosition().column();
+    if (currentLine > 0) {
+        // Get the content of both lines
+        QString currentLineText = m_interface->line(currentLine);
+        QString aboveLineText = m_interface->line(currentLine - 1);
+
+        // Remove both lines from bottom to top to maintain correct line numbers
+        m_interface->removeLine(currentLine);
+        m_interface->removeLine(currentLine - 1);
+
+        // Insert lines in swapped order
+        m_interface->insertLine(currentLine - 1, currentLineText);
+        m_interface->insertLine(currentLine, aboveLineText);
+
+        // Move cursor to new line position
+        m_interface->updateCursor(currentLine - 1, currentColumn);
+    }
+}
+
+void NormalInputMode::moveLineDown()
+{
+    int currentLine = m_interface->cursorPosition().line();
+    int currentColumn = m_interface->cursorPosition().column();
+    if (currentLine < m_interface->lastLine()) {
+        // Get the content of both lines
+        QString currentLineText = m_interface->line(currentLine);
+        QString belowLineText = m_interface->line(currentLine + 1);
+
+        // Remove both lines from bottom to top to maintain correct line numbers
+        m_interface->removeLine(currentLine + 1);
+        m_interface->removeLine(currentLine);
+
+        // Insert lines in swapped order
+        m_interface->insertLine(currentLine, belowLineText);
+        m_interface->insertLine(currentLine + 1, currentLineText);
+
+        // Move cursor to new line position
+        m_interface->updateCursor(currentLine + 1, currentColumn);
     }
 }
