@@ -49,6 +49,10 @@ namespace vte
 
         void selectCurrentLine();
 
+        void moveLineUp();
+
+        void moveLineDown();
+
         EditorMode m_mode = EditorMode::NormalModeInsert;
     };
 }
