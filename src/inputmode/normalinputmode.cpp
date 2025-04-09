@@ -119,6 +119,19 @@ bool NormalInputMode::handleKeyPress(QKeyEvent *p_event)
         default:
             break;
         }
+    } else if (p_event->modifiers() == (Qt::ShiftModifier | Qt::AltModifier)) {
+        switch (p_event->key()) {
+        case Qt::Key_Up:
+            duplicateLineUp();
+            return true;
+
+        case Qt::Key_Down:
+            duplicateLineDown();
+            return true;
+
+        default:
+            break;
+        }
     }
 
     return false;
@@ -285,4 +298,34 @@ void NormalInputMode::moveLineDown()
         // Move cursor to new line position
         m_interface->updateCursor(currentLine + 1, currentColumn);
     }
+}
+
+void NormalInputMode::duplicateLineUp()
+{
+    int currentLine = m_interface->cursorPosition().line();
+    int currentColumn = m_interface->cursorPosition().column();
+    
+    // Get the content of current line
+    QString lineText = m_interface->line(currentLine);
+    
+    // Insert a copy of the line above the current line
+    m_interface->insertLine(currentLine, lineText);
+    
+    // Keep cursor on the same column in the duplicated line
+    m_interface->updateCursor(currentLine, currentColumn);
+}
+
+void NormalInputMode::duplicateLineDown()
+{
+    int currentLine = m_interface->cursorPosition().line();
+    int currentColumn = m_interface->cursorPosition().column();
+    
+    // Get the content of current line
+    QString lineText = m_interface->line(currentLine);
+    
+    // Insert a copy of the line below the current line
+    m_interface->insertLine(currentLine + 1, lineText);
+    
+    // Move cursor to the duplicated line
+    m_interface->updateCursor(currentLine + 1, currentColumn);
 }
