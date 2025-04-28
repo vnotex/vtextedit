@@ -441,6 +441,20 @@ void TextDocumentLayout::layoutBlock(const QTextBlock &p_block) {
   QTextDocument *doc = document();
   Q_ASSERT(m_margin == doc->documentMargin());
 
+  if (!p_block.isVisible()) {
+    // Invisible (folded) blocks get zero height but non-null rect to preserve
+    // BlockLayoutData sentinel semantics (isNull() checks width AND height).
+    QTextLayout *tl = p_block.layout();
+    tl->beginLayout();
+    tl->endLayout();
+    const_cast<QTextBlock &>(p_block).setLineCount(0);
+
+    auto info = BlockLayoutData::get(p_block);
+    info->reset();
+    info->m_rect = QRectF(0, 0, m_margin * 2 + m_cursorWidth, 0);
+    return;
+  }
+
   QTextLayout *tl = p_block.layout();
   QTextOption option = doc->defaultTextOption();
 
