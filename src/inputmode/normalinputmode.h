@@ -43,22 +43,6 @@ namespace vte
 
         void commandCompletePrevious();
 
-        void gotoLine();
-
-        void copyCurrentLine(bool p_cut = false);
-
-        void selectCurrentLine();
-
-        void moveLineUp();
-
-        void moveLineDown();
-
-        void duplicateLineUp();
-
-        void duplicateLineDown();
-
-        void deleteCurrentLine();
-
         EditorMode m_mode = EditorMode::NormalModeInsert;
     };
 }

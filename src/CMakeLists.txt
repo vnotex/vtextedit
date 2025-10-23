@@ -60,6 +60,8 @@ add_library(VTextEdit SHARED
     inputmode/normalinputmodefactory.cpp inputmode/normalinputmodefactory.h
     inputmode/viinputmode.cpp inputmode/viinputmode.h
     inputmode/viinputmodefactory.cpp inputmode/viinputmodefactory.h
+    inputmode/vscodeinputmode.cpp inputmode/vscodeinputmode.h
+    inputmode/vscodeinputmodefactory.cpp inputmode/vscodeinputmodefactory.h
     markdowneditor/codeblockhighlighter.cpp
     markdowneditor/documentresourcemgr.cpp markdowneditor/documentresourcemgr.h
     markdowneditor/editorpegmarkdownhighlighter.cpp markdowneditor/editorpegmarkdownhighlighter.h
