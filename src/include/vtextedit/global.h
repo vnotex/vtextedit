@@ -10,6 +10,7 @@ namespace vte
     {
         NormalMode = 0,
         ViMode,
+        VscodeMode,
         MaxInputMode
     };
 
