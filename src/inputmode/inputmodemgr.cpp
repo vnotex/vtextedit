@@ -2,6 +2,7 @@
 
 #include "normalinputmodefactory.h"
 #include "viinputmodefactory.h"
+#include "vscodeinputmodefactory.h"
 
 using namespace vte;
 
@@ -35,6 +36,10 @@ QSharedPointer<AbstractInputModeFactory> InputModeMgr::createModeFactory(InputMo
 
     case InputMode::ViMode:
         return QSharedPointer<ViInputModeFactory>::create();
+        break;
+
+    case InputMode::VscodeMode:
+        return QSharedPointer<VscodeInputModeFactory>::create();
         break;
 
     default:
