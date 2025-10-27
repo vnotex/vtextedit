@@ -1,80 +1,77 @@
 #ifndef STATUSINDICATOR_H
 #define STATUSINDICATOR_H
 
-#include <QWidget>
 #include <QSharedPointer>
+#include <QWidget>
 
 #include <vtextedit/global.h>
 
 class QLabel;
 class QToolButton;
 
-namespace vte
-{
-    class InputModeStatusWidget;
+namespace vte {
+class InputModeStatusWidget;
 
-    class StatusIndicator : public QWidget
-    {
-        Q_OBJECT
-    public:
-        explicit StatusIndicator(QWidget *p_parent = nullptr);
+class StatusIndicator : public QWidget {
+  Q_OBJECT
+public:
+  explicit StatusIndicator(QWidget *p_parent = nullptr);
 
-        ~StatusIndicator();
+  ~StatusIndicator();
 
-        void updateCursor(int p_lineCount, int p_line, int p_column);
+  void updateCursor(int p_lineCount, int p_line, int p_column);
 
-        void updateSyntax(const QString &p_syntax);
+  void updateSyntax(const QString &p_syntax);
 
-        void updateMode(const EditorMode& p_mode);
+  void updateMode(const EditorMode &p_mode);
 
-        void updateInputModeStatusWidget(const QSharedPointer<InputModeStatusWidget> &p_statusWidget);
+  void updateInputModeStatusWidget(const QSharedPointer<InputModeStatusWidget> &p_statusWidget);
 
-        void updateSpellCheck(bool p_spellCheckEnabled,
-                              bool p_autoDetectLanguageEnabled,
-                              const QString &p_currentLanguage,
-                              const QMap<QString, QString>& p_dictionaries);
+  void updateSpellCheck(bool p_spellCheckEnabled, bool p_autoDetectLanguageEnabled,
+                        const QString &p_currentLanguage,
+                        const QMap<QString, QString> &p_dictionaries);
 
-        const QSharedPointer<InputModeStatusWidget> &getInputModeStatusWidget() const;
+  const QSharedPointer<InputModeStatusWidget> &getInputModeStatusWidget() const;
 
-    signals:
-        void focusIn();
+signals:
+  void focusIn();
 
-        void focusOut();
+  void focusOut();
 
-        void spellCheckChanged(bool p_enabled, bool p_autoDetect, const QString &p_currentLang);
+  void spellCheckChanged(bool p_enabled, bool p_autoDetect, const QString &p_currentLang);
 
-    private slots:
-        void hideInputModeStatusWidget();
+private slots:
+  void hideInputModeStatusWidget();
 
-    private:
-        void setupUI();
+private:
+  void setupUI();
 
-        void signalSpellCheckChanged();
+  void signalSpellCheckChanged();
 
-        static QString generateCursorLabelText(int p_lineCount, int p_line, int p_column);
+  static QString generateCursorLabelText(int p_lineCount, int p_line, int p_column);
 
-        QToolButton *m_spellCheckBtn = nullptr;
+  QToolButton *m_spellCheckBtn = nullptr;
 
-        QLabel *m_cursorLabel = nullptr;
+  QLabel *m_cursorLabel = nullptr;
 
-        QLabel *m_syntaxLabel = nullptr;
+  QLabel *m_syntaxLabel = nullptr;
 
-        QLabel *m_modeLabel = nullptr;
+  QLabel *m_modeLabel = nullptr;
 
-        QSharedPointer<InputModeStatusWidget> m_inputModeWidget;
+  QSharedPointer<InputModeStatusWidget> m_inputModeWidget;
 
-        bool m_spellCheckEnabled = false;
+  bool m_spellCheckEnabled = false;
 
-        bool m_autoDetectLanguageEnabled = false;
+  bool m_autoDetectLanguageEnabled = false;
 
-        QString m_defaultSpellCheckLanguage;
+  QString m_defaultSpellCheckLanguage;
 
-        static const char *c_cursorLabelProperty;
+  static const char *c_cursorLabelProperty;
 
-        static const char *c_syntaxLabelProperty;
+  static const char *c_syntaxLabelProperty;
 
-        static const char *c_modeLabelProperty;
-    };
-}
+  static const char *c_modeLabelProperty;
+};
+} // namespace vte
 
 #endif // STATUSINDICATOR_H

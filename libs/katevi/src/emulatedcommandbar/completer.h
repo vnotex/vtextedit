@@ -30,108 +30,100 @@ class QCompleter;
 class QStringListModel;
 class QKeyEvent;
 
-namespace KateViI
-{
-    class KateViEditorInterface;
+namespace KateViI {
+class KateViEditorInterface;
 }
 
-namespace KateVi
-{
-    class ActiveMode;
-    class EmulatedCommandBar;
+namespace KateVi {
+class ActiveMode;
+class EmulatedCommandBar;
 
-    struct CompletionStartParams
-    {
-        static CompletionStartParams createModeSpecific(
-            const QStringList &completions,
-            int wordStartPos,
-            std::function<QString(const QString &)> completionTransform = std::function<QString(const QString &)>())
-        {
-            CompletionStartParams completionStartParams;
-            completionStartParams.completionType = ModeSpecific;
-            completionStartParams.completions = completions;
-            completionStartParams.wordStartPos = wordStartPos;
-            completionStartParams.completionTransform = completionTransform;
-            return completionStartParams;
-        }
+struct CompletionStartParams {
+  static CompletionStartParams
+  createModeSpecific(const QStringList &completions, int wordStartPos,
+                     std::function<QString(const QString &)> completionTransform =
+                         std::function<QString(const QString &)>()) {
+    CompletionStartParams completionStartParams;
+    completionStartParams.completionType = ModeSpecific;
+    completionStartParams.completions = completions;
+    completionStartParams.wordStartPos = wordStartPos;
+    completionStartParams.completionTransform = completionTransform;
+    return completionStartParams;
+  }
 
-        static CompletionStartParams invalid()
-        {
-            CompletionStartParams completionStartParams;
-            completionStartParams.completionType = None;
-            return completionStartParams;
-        }
+  static CompletionStartParams invalid() {
+    CompletionStartParams completionStartParams;
+    completionStartParams.completionType = None;
+    return completionStartParams;
+  }
 
-        enum CompletionType { None, ModeSpecific, WordFromDocument };
+  enum CompletionType { None, ModeSpecific, WordFromDocument };
 
-        CompletionType completionType = None;
+  CompletionType completionType = None;
 
-        int wordStartPos = -1;
+  int wordStartPos = -1;
 
-        QStringList completions;
+  QStringList completions;
 
-        std::function<QString(const QString &)> completionTransform;
-    };
+  std::function<QString(const QString &)> completionTransform;
+};
 
-    class Completer
-    {
-    public:
-        enum class CompletionInvocation { ExtraContext, NormalContext };
+class Completer {
+public:
+  enum class CompletionInvocation { ExtraContext, NormalContext };
 
-        Completer(EmulatedCommandBar *emulatedCommandBar,
-                  KateViI::KateViEditorInterface *editorInterface,
-                  QLineEdit *edit);
+  Completer(EmulatedCommandBar *emulatedCommandBar, KateViI::KateViEditorInterface *editorInterface,
+            QLineEdit *edit);
 
-        void startCompletion(const CompletionStartParams &completionStartParams);
+  void startCompletion(const CompletionStartParams &completionStartParams);
 
-        void deactivateCompletion();
+  void deactivateCompletion();
 
-        bool isCompletionActive() const;
+  bool isCompletionActive() const;
 
-        bool isNextTextChangeDueToCompletionChange() const;
+  bool isNextTextChangeDueToCompletionChange() const;
 
-        bool completerHandledKeyPress(const QKeyEvent *keyEvent);
+  bool completerHandledKeyPress(const QKeyEvent *keyEvent);
 
-        void editTextChanged(const QString &newText);
+  void editTextChanged(const QString &newText);
 
-        void setCurrentMode(ActiveMode *currentMode);
+  void setCurrentMode(ActiveMode *currentMode);
 
-    private:
-        void currentCompletionChanged();
+private:
+  void currentCompletionChanged();
 
-        QString wordBeforeCursor();
+  QString wordBeforeCursor();
 
-        int wordBeforeCursorBegin();
+  int wordBeforeCursorBegin();
 
-        void updateCompletionPrefix();
+  void updateCompletionPrefix();
 
-        void setCompletionIndex(int index);
+  void setCompletionIndex(int index);
 
-        CompletionStartParams activateWordFromDocumentCompletion();
+  CompletionStartParams activateWordFromDocumentCompletion();
 
-        void abortCompletionAndResetToPreCompletion();
+  void abortCompletionAndResetToPreCompletion();
 
-        QLineEdit *m_edit = nullptr;
+  QLineEdit *m_edit = nullptr;
 
-        KateViI::KateViEditorInterface *m_interface = nullptr;
+  KateViI::KateViEditorInterface *m_interface = nullptr;
 
-        ActiveMode *m_currentMode = nullptr;
+  ActiveMode *m_currentMode = nullptr;
 
-        // Managed by QObject.
-        QCompleter *m_completer = nullptr;
+  // Managed by QObject.
+  QCompleter *m_completer = nullptr;
 
-        QStringListModel *m_completionModel = nullptr;
+  QStringListModel *m_completionModel = nullptr;
 
-        QString m_textToRevertToIfCompletionAborted;
+  QString m_textToRevertToIfCompletionAborted;
 
-        int m_cursorPosToRevertToIfCompletionAborted = 0;
+  int m_cursorPosToRevertToIfCompletionAborted = 0;
 
-        bool m_isNextTextChangeDueToCompletionChange = false;
+  bool m_isNextTextChangeDueToCompletionChange = false;
 
-        CompletionStartParams m_currentCompletionStartParams;
+  CompletionStartParams m_currentCompletionStartParams;
 
-        CompletionStartParams::CompletionType m_currentCompletionType = CompletionStartParams::None;
-    };
-}
+  CompletionStartParams::CompletionType m_currentCompletionType = CompletionStartParams::None;
+};
+} // namespace KateVi
 #endif
-

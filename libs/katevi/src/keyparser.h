@@ -23,51 +23,46 @@
 #define KATEVI_KEY_PARSER_H
 
 #include <QChar>
-#include <QString>
 #include <QHash>
+#include <QString>
 #include <katevi/katevi_export.h>
 
 class QKeyEvent;
 
-namespace KateVi
-{
+namespace KateVi {
 
 /**
- * for encoding keypresses w/ modifiers into an internal QChar representation and back again to a
- * descriptive text string
+ * for encoding keypresses w/ modifiers into an internal QChar representation
+ * and back again to a descriptive text string
  */
-class KATEVI_EXPORT KeyParser
-{
+class KATEVI_EXPORT KeyParser {
 private:
-    KeyParser();
+  KeyParser();
 
 public:
-    static KeyParser *self();
-    ~KeyParser()
-    {
-        m_instance = nullptr;
-    }
-    KeyParser(const KeyParser &) = delete;
-    KeyParser& operator=(const KeyParser &) = delete;
+  static KeyParser *self();
+  ~KeyParser() { m_instance = nullptr; }
+  KeyParser(const KeyParser &) = delete;
+  KeyParser &operator=(const KeyParser &) = delete;
 
-    const QString encodeKeySequence(const QString &keys) const;
-    const QString decodeKeySequence(const QString &keys) const;
-    QString qt2vi(int key) const;
-    int vi2qt(const QString &keypress) const;
-    int encoded2qt(const QString &keypress) const;
-    const QChar KeyEventToQChar(const QKeyEvent &keyEvent);
+  const QString encodeKeySequence(const QString &keys) const;
+  const QString decodeKeySequence(const QString &keys) const;
+  QString qt2vi(int key) const;
+  int vi2qt(const QString &keypress) const;
+  int encoded2qt(const QString &keypress) const;
+  const QChar KeyEventToQChar(const QKeyEvent &keyEvent);
 
 private:
-    void initKeyTables();
+  void initKeyTables();
 
-    QHash<int, QString> m_qt2katevi;
-    QHash<QString, int> m_katevi2qt;
-    QHash<QString, int> m_nameToKeyCode;
-    QHash<int, QString> m_keyCodeToName;
+  QHash<int, QString> m_qt2katevi;
+  QHash<QString, int> m_katevi2qt;
+  QHash<QString, int> m_nameToKeyCode;
+  QHash<int, QString> m_keyCodeToName;
 
-    static KeyParser *m_instance;
+  static KeyParser *m_instance;
 };
 
-}
+} // namespace KateVi
 
 #endif /* KATEVI_KEY_PARSER_H */

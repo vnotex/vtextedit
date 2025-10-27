@@ -22,41 +22,39 @@
 #define KATEVI_MACRORECORDER_H
 
 #include <QChar>
-#include <QList>
 #include <QKeyEvent>
+#include <QList>
 
-namespace KateVi
-{
+namespace KateVi {
 class InputModeManager;
 struct KeyEvent;
 
-class MacroRecorder
-{
+class MacroRecorder {
 public:
-    explicit MacroRecorder(InputModeManager *viInputModeManager);
-    ~MacroRecorder();
+  explicit MacroRecorder(InputModeManager *viInputModeManager);
+  ~MacroRecorder();
 
-    void start(const QChar &macroRegister);
-    void stop();
+  void start(const QChar &macroRegister);
+  void stop();
 
-    bool isRecording() const;
+  bool isRecording() const;
 
-    void record(const QKeyEvent &event);
-    void dropLast();
+  void record(const QKeyEvent &event);
+  void dropLast();
 
-    void replay(const QChar &macroRegister);
-    bool isReplaying();
+  void replay(const QChar &macroRegister);
+  bool isReplaying();
 
 private:
-    InputModeManager *m_viInputModeManager = nullptr;
+  InputModeManager *m_viInputModeManager = nullptr;
 
-    bool m_isRecording = false;
-    QChar m_register;
-    QList<KeyEvent> m_eventsLog;
+  bool m_isRecording = false;
+  QChar m_register;
+  QList<KeyEvent> m_eventsLog;
 
-    int m_macrosBeingReplayedCount = 0;
-    QChar m_lastPlayedMacroRegister = QChar::Null;
+  int m_macrosBeingReplayedCount = 0;
+  QChar m_lastPlayedMacroRegister = QChar::Null;
 };
-}
+} // namespace KateVi
 
 #endif // KATEVI_MACRORECORDER_H

@@ -21,29 +21,27 @@
 #ifndef KATEVI_COMPLETION_H
 #define KATEVI_COMPLETION_H
 
-#include <QString>
 #include <QList>
+#include <QString>
 
-namespace KateVi
-{
+namespace KateVi {
 
-class Completion
-{
+class Completion {
 public:
-    enum CompletionType { PlainText, FunctionWithoutArgs, FunctionWithArgs };
+  enum CompletionType { PlainText, FunctionWithoutArgs, FunctionWithArgs };
 
-    explicit Completion(const QString &completedText, bool removeTail, CompletionType completionType);
-    QString completedText() const;
-    bool removeTail() const;
-    CompletionType completionType() const;
+  explicit Completion(const QString &completedText, bool removeTail, CompletionType completionType);
+  QString completedText() const;
+  bool removeTail() const;
+  CompletionType completionType() const;
 
 private:
-    QString m_completedText;
-    bool m_removeTail;
-    CompletionType m_completionType;
+  QString m_completedText;
+  bool m_removeTail;
+  CompletionType m_completionType;
 };
 
 typedef QList<Completion> CompletionList;
-}
+} // namespace KateVi
 
 #endif // KATEVI_COMPLETION_H

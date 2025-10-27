@@ -20,27 +20,25 @@
 #ifndef KATEVI_HISTORY_H
 #define KATEVI_HISTORY_H
 
-#include <katevi/katevi_export.h>
 #include <QStringList>
+#include <katevi/katevi_export.h>
 
-namespace KateVi
-{
+namespace KateVi {
 
-class KATEVI_EXPORT History
-{
+class KATEVI_EXPORT History {
 
 public:
-    explicit History() = default;
-    ~History() = default;
+  explicit History() = default;
+  ~History() = default;
 
-    void append(const QString &historyItem);
-    inline const QStringList &items() const { return m_items; }
-    void clear();
-    inline bool isEmpty() { return m_items.isEmpty(); }
+  void append(const QString &historyItem);
+  inline const QStringList &items() const { return m_items; }
+  void clear();
+  inline bool isEmpty() { return m_items.isEmpty(); }
 
 private:
-    QStringList m_items;
+  QStringList m_items;
 };
-}
+} // namespace KateVi
 
 #endif // KATEVI_HISTORY_H

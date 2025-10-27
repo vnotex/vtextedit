@@ -27,99 +27,77 @@
 #include <katevi/interface/range.h>
 #include <modes/normalvimode.h>
 
-namespace KateVi
-{
+namespace KateVi {
 class InputModeManager;
 
-class VisualViMode : public NormalViMode
-{
-    Q_OBJECT
+class VisualViMode : public NormalViMode {
+  Q_OBJECT
 
 public:
-    explicit VisualViMode(InputModeManager *viInputModeManager,
-                          KateViI::KateViEditorInterface *editorInterface);
+  explicit VisualViMode(InputModeManager *viInputModeManager,
+                        KateViI::KateViEditorInterface *editorInterface);
 
-    ~VisualViMode() override;
+  ~VisualViMode() override;
 
-    void init();
+  void init();
 
-    bool isVisualLine() const
-    {
-        return m_mode == VisualLineMode;
-    }
+  bool isVisualLine() const { return m_mode == VisualLineMode; }
 
-    bool isVisualBlock() const
-    {
-        return m_mode == VisualBlockMode;
-    }
+  bool isVisualBlock() const { return m_mode == VisualBlockMode; }
 
-    void setVisualModeType(const ViMode mode);
+  void setVisualModeType(const ViMode mode);
 
-    void reset() Q_DECL_OVERRIDE;
+  void reset() Q_DECL_OVERRIDE;
 
-    void saveRangeMarks();
+  void saveRangeMarks();
 
-    void switchStartEnd();
+  void switchStartEnd();
 
-    void setStart(const KateViI::Cursor &c)
-    {
-        m_start = c;
-    }
+  void setStart(const KateViI::Cursor &c) { m_start = c; }
 
-    KateViI::Cursor getStart()
-    {
-        return m_start;
-    }
+  KateViI::Cursor getStart() { return m_start; }
 
-    void goToPos(const KateViI::Cursor &c);
+  void goToPos(const KateViI::Cursor &c);
 
-    ViMode getLastVisualMode() const
-    {
-        return m_lastVisualMode;
-    }
+  ViMode getLastVisualMode() const { return m_lastVisualMode; }
 
-    const KateViI::Cursor &getStart() const
-    {
-        return m_start;
-    }
+  const KateViI::Cursor &getStart() const { return m_start; }
 
-    // Selects all lines in range;
-    void selectLines(const KateViI::Range &range);
+  // Selects all lines in range;
+  void selectLines(const KateViI::Range &range);
 
-    // Selects range between c1 and c2, but includes the end cursor position.
-    void selectInclusive(const KateViI::Cursor &c1,
-                         const KateViI::Cursor &c2);
+  // Selects range between c1 and c2, but includes the end cursor position.
+  void selectInclusive(const KateViI::Cursor &c1, const KateViI::Cursor &c2);
 
-    // Select block between c1 and c2.
-    void selectBlockInclusive(const KateViI::Cursor &c1,
-                              const KateViI::Cursor &c2);
+  // Select block between c1 and c2.
+  void selectBlockInclusive(const KateViI::Cursor &c1, const KateViI::Cursor &c2);
 
 protected:
-    /**
-     * Called when a motion/text object is used. Updates the cursor position
-     * and modifies the range. A motion will only modify the end of the range
-     * (i.e. move the cursor) while a text object may modify both the start and
-     * the end. Overridden from the ModeBase class.
-     */
-    void goToPos(const Range &r) override;
+  /**
+   * Called when a motion/text object is used. Updates the cursor position
+   * and modifies the range. A motion will only modify the end of the range
+   * (i.e. move the cursor) while a text object may modify both the start and
+   * the end. Overridden from the ModeBase class.
+   */
+  void goToPos(const Range &r) override;
 
 private:
-    void initializeCommands();
+  void initializeCommands();
 
 public Q_SLOTS:
-    /**
-     * Updates the visual mode's range to reflect a new cursor position. This
-     * needs to be called if modifying the range from outside the vi mode, e.g.
-     * via mouse selection.
-     */
-    void updateSelection();
+  /**
+   * Updates the visual mode's range to reflect a new cursor position. This
+   * needs to be called if modifying the range from outside the vi mode, e.g.
+   * via mouse selection.
+   */
+  void updateSelection();
 
 private:
-    KateViI::Cursor m_start = {-1, -1};
-    ViMode m_mode = ViMode::VisualMode;
-    ViMode m_lastVisualMode = ViMode::NormalMode;
+  KateViI::Cursor m_start = {-1, -1};
+  ViMode m_mode = ViMode::VisualMode;
+  ViMode m_lastVisualMode = ViMode::NormalMode;
 };
 
-}
+} // namespace KateVi
 
 #endif /* KATEVI_VISUAL_VI_MODE_H */

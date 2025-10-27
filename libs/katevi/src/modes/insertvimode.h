@@ -23,104 +23,93 @@
 #ifndef KATEVI_INSERT_VI_MODE_H
 #define KATEVI_INSERT_VI_MODE_H
 
-#include <modes/modebase.h>
 #include <katevi/katevi_export.h>
+#include <modes/modebase.h>
 
 class QKeyEvent;
 
-namespace KateVi
-{
+namespace KateVi {
 class Motion;
 
 /**
  * Commands for the vi insert mode
  */
-enum BlockInsert {
-    None,
-    Prepend,
-    Append,
-    AppendEOL
-};
+enum BlockInsert { None, Prepend, Append, AppendEOL };
 
-class KATEVI_EXPORT InsertViMode : public ModeBase
-{
-    Q_OBJECT
+class KATEVI_EXPORT InsertViMode : public ModeBase {
+  Q_OBJECT
 
 public:
-    explicit InsertViMode(InputModeManager *viInputModeManager,
-                          KateViI::KateViEditorInterface *editorInterface);
+  explicit InsertViMode(InputModeManager *viInputModeManager,
+                        KateViI::KateViEditorInterface *editorInterface);
 
-    ~InsertViMode() override;
+  ~InsertViMode() override;
 
-    bool handleKeyPress(const QKeyEvent *e) override;
+  bool handleKeyPress(const QKeyEvent *e) override;
 
-    bool commandInsertFromAbove();
-    bool commandInsertFromBelow();
+  bool commandInsertFromAbove();
+  bool commandInsertFromBelow();
 
-    bool commandDeleteWord();
-    bool commandDeleteLine();
-    bool commandNewLine();
-    bool commandDeleteCharBackward();
+  bool commandDeleteWord();
+  bool commandDeleteLine();
+  bool commandNewLine();
+  bool commandDeleteCharBackward();
 
-    bool commandIndent();
-    bool commandUnindent();
+  bool commandIndent();
+  bool commandUnindent();
 
-    bool commandToFirstCharacterInFile();
-    bool commandToLastCharacterInFile();
+  bool commandToFirstCharacterInFile();
+  bool commandToLastCharacterInFile();
 
-    bool commandMoveOneWordLeft();
-    bool commandMoveOneWordRight();
+  bool commandMoveOneWordLeft();
+  bool commandMoveOneWordRight();
 
-    bool commandCompleteNext();
-    bool commandCompletePrevious();
+  bool commandCompleteNext();
+  bool commandCompletePrevious();
 
-    bool commandInsertContentOfRegister();
-    bool commandSwitchToNormalModeForJustOneCommand();
+  bool commandInsertContentOfRegister();
+  bool commandSwitchToNormalModeForJustOneCommand();
 
-    void setBlockPrependMode(Range blockRange);
-    void setBlockAppendMode(Range blockRange, BlockInsert b);
+  void setBlockPrependMode(Range blockRange);
+  void setBlockAppendMode(Range blockRange, BlockInsert b);
 
-    void setCount(int count)
-    {
-        m_count = count;
-    }
+  void setCount(int count) { m_count = count; }
 
-    void setCountedRepeatsBeginOnNewLine(bool countedRepeatsBeginOnNewLine)
-    {
-        m_countedRepeatsBeginOnNewLine = countedRepeatsBeginOnNewLine;
-    }
+  void setCountedRepeatsBeginOnNewLine(bool countedRepeatsBeginOnNewLine) {
+    m_countedRepeatsBeginOnNewLine = countedRepeatsBeginOnNewLine;
+  }
 
 protected:
-    void leaveInsertMode(bool force = false);
+  void leaveInsertMode(bool force = false);
 
-    void completionFinished();
+  void completionFinished();
 
 protected:
-    BlockInsert m_blockInsert = None;
+  BlockInsert m_blockInsert = None;
 
-    // length of first line in eol mode before text is appended.
-    unsigned int m_eolPos = 0;
+  // length of first line in eol mode before text is appended.
+  unsigned int m_eolPos = 0;
 
-    Range m_blockRange;
+  Range m_blockRange;
 
-    QString m_keys;
+  QString m_keys;
 
-    bool m_waitingRegister = false;
+  bool m_waitingRegister = false;
 
-    unsigned int m_count = 1;
+  unsigned int m_count = 1;
 
-    bool m_countedRepeatsBeginOnNewLine = false;
+  bool m_countedRepeatsBeginOnNewLine = false;
 
-    bool m_isExecutingCompletion = false;
+  bool m_isExecutingCompletion = false;
 
-    QString m_textInsertedByCompletion;
+  QString m_textInsertedByCompletion;
 
-    KateViI::Cursor m_textInsertedByCompletionEndPos;
+  KateViI::Cursor m_textInsertedByCompletionEndPos;
 
 private Q_SLOTS:
-    void textInserted(const KateViI::Range &p_range);
+  void textInserted(const KateViI::Range &p_range);
 };
 
-}
+} // namespace KateVi
 
 #endif /* KATEVI_INSERT_VI_MODE_H */

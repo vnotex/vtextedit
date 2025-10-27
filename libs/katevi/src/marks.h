@@ -25,64 +25,61 @@
 #include <QObject>
 
 namespace KateViI {
-    class KateViEditorInterface;
-    class Cursor;
-    class MovingCursor;
-}
+class KateViEditorInterface;
+class Cursor;
+class MovingCursor;
+} // namespace KateViI
 
-namespace KateVi
-{
+namespace KateVi {
 class InputModeManager;
 
-class Marks : public QObject
-{
-    Q_OBJECT
+class Marks : public QObject {
+  Q_OBJECT
 
 public:
-    explicit Marks(InputModeManager *imm);
-    ~Marks();
+  explicit Marks(InputModeManager *imm);
+  ~Marks();
 
-    /** JBOS == Just a Bunch Of Shortcuts **/
-    void setStartEditYanked(const KateViI::Cursor &pos);
-    void setFinishEditYanked(const KateViI::Cursor &pos);
-    void setLastChange(const KateViI::Cursor &pos);
-    void setInsertStopped(const KateViI::Cursor &pos);
-    void setSelectionStart(const KateViI::Cursor &pos);
-    void setSelectionFinish(const KateViI::Cursor &pos);
-    void setUserMark(const QChar &mark, const KateViI::Cursor &pos);
+  /** JBOS == Just a Bunch Of Shortcuts **/
+  void setStartEditYanked(const KateViI::Cursor &pos);
+  void setFinishEditYanked(const KateViI::Cursor &pos);
+  void setLastChange(const KateViI::Cursor &pos);
+  void setInsertStopped(const KateViI::Cursor &pos);
+  void setSelectionStart(const KateViI::Cursor &pos);
+  void setSelectionFinish(const KateViI::Cursor &pos);
+  void setUserMark(const QChar &mark, const KateViI::Cursor &pos);
 
-    KateViI::Cursor getStartEditYanked() const;
-    KateViI::Cursor getFinishEditYanked() const;
-    KateViI::Cursor getLastChange() const;
-    KateViI::Cursor getInsertStopped() const;
-    KateViI::Cursor getSelectionStart() const;
-    KateViI::Cursor getSelectionFinish() const;
-    KateViI::Cursor getMarkPosition(const QChar &mark) const;
+  KateViI::Cursor getStartEditYanked() const;
+  KateViI::Cursor getFinishEditYanked() const;
+  KateViI::Cursor getLastChange() const;
+  KateViI::Cursor getInsertStopped() const;
+  KateViI::Cursor getSelectionStart() const;
+  KateViI::Cursor getSelectionFinish() const;
+  KateViI::Cursor getMarkPosition(const QChar &mark) const;
 
-    void writeSessionConfig() const;
-    void readSessionConfig();
+  void writeSessionConfig() const;
+  void readSessionConfig();
 
-    QString getMarksOnTheLine(int line) const;
+  QString getMarksOnTheLine(int line) const;
 
 private:
-    void syncViMarksAndBookmarks();
-    bool isShowable(const QChar &mark);
+  void syncViMarksAndBookmarks();
+  bool isShowable(const QChar &mark);
 
-    void setMark(const QChar &mark, const KateViI::Cursor &pos);
+  void setMark(const QChar &mark, const KateViI::Cursor &pos);
 
 private Q_SLOTS:
-    void markChanged(KateViI::KateViEditorInterface *editorInterface,
-                     KateViI::Mark mark,
-                     KateViI::MarkInterface::MarkChangeAction action);
+  void markChanged(KateViI::KateViEditorInterface *editorInterface, KateViI::Mark mark,
+                   KateViI::MarkInterface::MarkChangeAction action);
 
 private:
-    InputModeManager *m_inputModeManager = nullptr;
+  InputModeManager *m_inputModeManager = nullptr;
 
-    KateViI::KateViEditorInterface *m_interface = nullptr;
+  KateViI::KateViEditorInterface *m_interface = nullptr;
 
-    QMap<QChar, KateViI::MovingCursor *> m_marks;
-    bool m_settingMark = false;
+  QMap<QChar, KateViI::MovingCursor *> m_marks;
+  bool m_settingMark = false;
 };
-}
+} // namespace KateVi
 
 #endif // KATE_VIMODE_MARKS_H

@@ -29,175 +29,157 @@
 #include <katevi/interface/range.h>
 #include <katevi/katevi_export.h>
 
-#include <range.h>
 #include <katevi/definitions.h>
+#include <range.h>
 
 class QKeyEvent;
 class QString;
 class QRegExp;
 
-namespace KateViI
-{
-    class KateViEditorInterface;
+namespace KateViI {
+class KateViEditorInterface;
 }
 
-namespace KateVi
-{
+namespace KateVi {
 class InputModeManager;
 
-enum Direction {
-    Up,
-    Down,
-    Left,
-    Right,
-    Next,
-    Prev
-};
+enum Direction { Up, Down, Left, Right, Next, Prev };
 
-class KATEVI_EXPORT ModeBase : public QObject
-{
-    Q_OBJECT
+class KATEVI_EXPORT ModeBase : public QObject {
+  Q_OBJECT
 
 public:
-    ModeBase()
-        : QObject()
-    {
-    }
+  ModeBase() : QObject() {}
 
-    virtual ~ModeBase() {}
+  virtual ~ModeBase() {}
 
-    /**
-     * @return normal mode command accumulated so far
-     */
-    QString getVerbatimKeys() const;
-    virtual bool handleKeyPress(const QKeyEvent *e) = 0;
+  /**
+   * @return normal mode command accumulated so far
+   */
+  QString getVerbatimKeys() const;
+  virtual bool handleKeyPress(const QKeyEvent *e) = 0;
 
-    void setCount(unsigned int count)
-    {
-        m_count = count;
-    }
+  void setCount(unsigned int count) { m_count = count; }
 
-    void setRegister(QChar reg)
-    {
-        m_register = reg;
-    }
+  void setRegister(QChar reg) { m_register = reg; }
 
-    void error(const QString &errorMsg);
-    void message(const QString &msg);
+  void error(const QString &errorMsg);
+  void message(const QString &msg);
 
-    Range motionFindNext();
-    Range motionFindPrev();
+  Range motionFindNext();
+  Range motionFindPrev();
 
-    // Only use endline and endcolumn of the range.
-    virtual void goToPos(const Range &r);
+  // Only use endline and endcolumn of the range.
+  virtual void goToPos(const Range &r);
 
-    // Get the repeat count of a command.
-    int getCount() const;
+  // Get the repeat count of a command.
+  int getCount() const;
 
-    bool startInsertMode();
+  bool startInsertMode();
 
 protected:
-    // helper methods
-    // Copy @text to system clipboard if @chosen_register is not 0 or -.
-    void yankToClipBoard(QChar chosen_register, QString text);
+  // helper methods
+  // Copy @text to system clipboard if @chosen_register is not 0 or -.
+  void yankToClipBoard(QChar chosen_register, QString text);
 
-    bool deleteRange(Range &r, OperationMode mode = LineWise, bool addToRegister = true);
+  bool deleteRange(Range &r, OperationMode mode = LineWise, bool addToRegister = true);
 
-    const QString getRange(Range &r, OperationMode mode = LineWise) const;
+  const QString getRange(Range &r, OperationMode mode = LineWise) const;
 
-    const QString getLine(int line = -1) const;
+  const QString getLine(int line = -1) const;
 
-    const QChar getCharUnderCursor() const;
+  const QChar getCharUnderCursor() const;
 
-    const QString getWordUnderCursor() const;
-    const KateViI::Range getWordRangeUnderCursor() const;
-    KateViI::Cursor findNextWordStart(int fromLine, int fromColumn, bool onlyCurrentLine = false) const;
-    KateViI::Cursor findNextWORDStart(int fromLine, int fromColumn, bool onlyCurrentLine = false) const;
-    KateViI::Cursor findPrevWordStart(int fromLine, int fromColumn, bool onlyCurrentLine = false) const;
-    KateViI::Cursor findPrevWORDStart(int fromLine, int fromColumn, bool onlyCurrentLine = false) const;
-    KateViI::Cursor findPrevWordEnd(int fromLine, int fromColumn, bool onlyCurrentLine = false) const;
-    KateViI::Cursor findPrevWORDEnd(int fromLine, int fromColumn, bool onlyCurrentLine = false) const;
+  const QString getWordUnderCursor() const;
+  const KateViI::Range getWordRangeUnderCursor() const;
+  KateViI::Cursor findNextWordStart(int fromLine, int fromColumn,
+                                    bool onlyCurrentLine = false) const;
+  KateViI::Cursor findNextWORDStart(int fromLine, int fromColumn,
+                                    bool onlyCurrentLine = false) const;
+  KateViI::Cursor findPrevWordStart(int fromLine, int fromColumn,
+                                    bool onlyCurrentLine = false) const;
+  KateViI::Cursor findPrevWORDStart(int fromLine, int fromColumn,
+                                    bool onlyCurrentLine = false) const;
+  KateViI::Cursor findPrevWordEnd(int fromLine, int fromColumn, bool onlyCurrentLine = false) const;
+  KateViI::Cursor findPrevWORDEnd(int fromLine, int fromColumn, bool onlyCurrentLine = false) const;
 
-    KateViI::Cursor findWordEnd(int fromLine, int fromColumn, bool onlyCurrentLine = false) const;
+  KateViI::Cursor findWordEnd(int fromLine, int fromColumn, bool onlyCurrentLine = false) const;
 
-    KateViI::Cursor findWORDEnd(int fromLine, int fromColumn, bool onlyCurrentLine = false) const;
+  KateViI::Cursor findWORDEnd(int fromLine, int fromColumn, bool onlyCurrentLine = false) const;
 
-    Range findSurroundingBrackets(const QChar &c1, const QChar &c2, bool inner,
-                                  const QChar &nested1, const QChar &nested2) const;
+  Range findSurroundingBrackets(const QChar &c1, const QChar &c2, bool inner, const QChar &nested1,
+                                const QChar &nested2) const;
 
-    Range findSurrounding(const QRegExp &c1, const QRegExp &c2, bool inner = false) const;
-    Range findSurroundingQuotes(const QChar &c, bool inner = false) const;
+  Range findSurrounding(const QRegExp &c1, const QRegExp &c2, bool inner = false) const;
+  Range findSurroundingQuotes(const QChar &c, bool inner = false) const;
 
-    int findLineStartingWitchChar(const QChar &c, int count, bool forward = true) const;
-    void updateCursor(const KateViI::Cursor &c) const;
-    const QChar getCharAtVirtualColumn(const QString &line, int virtualColumn, int tabWidht) const;
+  int findLineStartingWitchChar(const QChar &c, int count, bool forward = true) const;
+  void updateCursor(const KateViI::Cursor &c) const;
+  const QChar getCharAtVirtualColumn(const QString &line, int virtualColumn, int tabWidht) const;
 
-    void addToNumberUnderCursor(int count);
+  void addToNumberUnderCursor(int count);
 
-    Range goLineUp();
-    Range goLineDown();
-    Range goLineUpDown(int lines);
-    Range goVisualLineUpDown(int lines);
+  Range goLineUp();
+  Range goLineDown();
+  Range goLineUpDown(int lines);
+  Range goVisualLineUpDown(int lines);
 
-    unsigned int linesDisplayed() const;
+  unsigned int linesDisplayed() const;
 
-    bool isCounted() const
-    {
-        return m_iscounted;
-    }
+  bool isCounted() const { return m_iscounted; }
 
-    bool startNormalMode();
-    bool startVisualMode();
-    bool startVisualLineMode();
-    bool startVisualBlockMode();
-    bool startReplaceMode();
+  bool startNormalMode();
+  bool startVisualMode();
+  bool startVisualLineMode();
+  bool startVisualBlockMode();
+  bool startReplaceMode();
 
-    QChar getChosenRegister(const QChar &defaultReg) const;
-    QString getRegisterContent(const QChar &reg);
-    OperationMode getRegisterFlag(const QChar &reg) const;
-    void fillRegister(const QChar &reg, const QString &text, OperationMode flag = CharWise);
+  QChar getChosenRegister(const QChar &defaultReg) const;
+  QString getRegisterContent(const QChar &reg);
+  OperationMode getRegisterFlag(const QChar &reg) const;
+  void fillRegister(const QChar &reg, const QString &text, OperationMode flag = CharWise);
 
-    void switchView(Direction direction = Next);
+  void switchView(Direction direction = Next);
 
-    void addJump(KateViI::Cursor cursor);
-    KateViI::Cursor getNextJump(KateViI::Cursor) const;
-    KateViI::Cursor getPrevJump(KateViI::Cursor) const;
+  void addJump(KateViI::Cursor cursor);
+  KateViI::Cursor getNextJump(KateViI::Cursor) const;
+  KateViI::Cursor getPrevJump(KateViI::Cursor) const;
 
-    void appendToKeysVerbatim(const QString &p_keys);
-    void clearKeysVerbatim();
+  void appendToKeysVerbatim(const QString &p_keys);
+  void clearKeysVerbatim();
 
 protected:
-    // Register assigned to use.
-    QChar m_register;
+  // Register assigned to use.
+  QChar m_register;
 
-    // The range given by a motion to execute a command.
-    Range m_commandRange;
+  // The range given by a motion to execute a command.
+  Range m_commandRange;
 
-    // Repeat count of a command.
-    unsigned int m_count = 0;
+  // Repeat count of a command.
+  unsigned int m_count = 0;
 
-    int m_oneTimeCountOverride = -1;
+  int m_oneTimeCountOverride = -1;
 
-    bool m_iscounted = false;
+  bool m_iscounted = false;
 
-    // Characters that would be treated as a word start.
-    QString m_extraWordCharacters;
+  // Characters that would be treated as a word start.
+  QString m_extraWordCharacters;
 
-    int m_stickyColumn = -1;
+  int m_stickyColumn = -1;
 
-    bool m_lastMotionWasVisualLineUpOrDown = false;
+  bool m_lastMotionWasVisualLineUpOrDown = false;
 
-    bool m_currentMotionWasVisualLineUpOrDown = false;
+  bool m_currentMotionWasVisualLineUpOrDown = false;
 
-    KateViI::KateViEditorInterface *m_interface = nullptr;
+  KateViI::KateViEditorInterface *m_interface = nullptr;
 
-    InputModeManager *m_viInputModeManager = nullptr;
+  InputModeManager *m_viInputModeManager = nullptr;
 
 private:
-    // Used to display pending key strokes.
-    QString m_keysVerbatim;
+  // Used to display pending key strokes.
+  QString m_keysVerbatim;
 };
 
-}
+} // namespace KateVi
 
 #endif

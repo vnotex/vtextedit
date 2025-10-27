@@ -25,41 +25,39 @@
 
 #include <katevi/katevi_export.h>
 
-namespace KateVi
-{
+namespace KateVi {
 class History;
 class Macros;
 class Mappings;
 class Registers;
 
-class KATEVI_EXPORT GlobalState
-{
+class KATEVI_EXPORT GlobalState {
 public:
-    explicit GlobalState();
-    ~GlobalState();
-    GlobalState(const GlobalState &) = delete;
-    GlobalState& operator=(const GlobalState &) = delete;
+  explicit GlobalState();
+  ~GlobalState();
+  GlobalState(const GlobalState &) = delete;
+  GlobalState &operator=(const GlobalState &) = delete;
 
-    void writeConfig() const;
-    void readConfig();
+  void writeConfig() const;
+  void readConfig();
 
-    inline Macros *macros() const { return m_macros; }
-    inline Mappings *mappings() const { return m_mappings; }
-    inline Registers *registers() const { return m_registers; }
+  inline Macros *macros() const { return m_macros; }
+  inline Mappings *mappings() const { return m_mappings; }
+  inline Registers *registers() const { return m_registers; }
 
-    inline History *searchHistory() const { return m_searchHistory; }
-    inline History *commandHistory() const { return m_commandHistory; }
-    inline History *replaceHistory() const { return m_replaceHistory; }
+  inline History *searchHistory() const { return m_searchHistory; }
+  inline History *commandHistory() const { return m_commandHistory; }
+  inline History *replaceHistory() const { return m_replaceHistory; }
 
 private:
-    Macros *m_macros;
-    Mappings *m_mappings;
-    Registers *m_registers;
+  Macros *m_macros;
+  Mappings *m_mappings;
+  Registers *m_registers;
 
-    History *m_searchHistory;
-    History *m_commandHistory;
-    History *m_replaceHistory;
+  History *m_searchHistory;
+  History *m_commandHistory;
+  History *m_replaceHistory;
 };
-}
+} // namespace KateVi
 
 #endif

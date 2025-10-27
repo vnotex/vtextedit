@@ -25,27 +25,16 @@
 using namespace KateVi;
 
 Completion::Completion(const QString &completedText, bool removeTail, CompletionType completionType)
-    : m_completedText(completedText),
-      m_removeTail(removeTail),
-      m_completionType(completionType)
-{
-    if (m_completionType == FunctionWithArgs || m_completionType == FunctionWithoutArgs) {
-        qWarning() << "Completing a function while not removing tail currently unsupported; will remove tail instead";
-        m_removeTail = true;
-    }
+    : m_completedText(completedText), m_removeTail(removeTail), m_completionType(completionType) {
+  if (m_completionType == FunctionWithArgs || m_completionType == FunctionWithoutArgs) {
+    qWarning() << "Completing a function while not removing tail currently "
+                  "unsupported; will remove tail instead";
+    m_removeTail = true;
+  }
 }
 
-QString Completion::completedText() const
-{
-    return m_completedText;
-}
+QString Completion::completedText() const { return m_completedText; }
 
-bool Completion::removeTail() const
-{
-    return m_removeTail;
-}
+bool Completion::removeTail() const { return m_removeTail; }
 
-Completion::CompletionType Completion::completionType() const
-{
-    return m_completionType;
-}
+Completion::CompletionType Completion::completionType() const { return m_completionType; }

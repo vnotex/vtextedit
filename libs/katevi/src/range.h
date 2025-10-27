@@ -22,72 +22,66 @@
 #define KATEVI_RANGE_H
 
 #include <QDebug>
-#include <katevi/katevi_export.h>
 #include <katevi/definitions.h>
+#include <katevi/katevi_export.h>
 
 namespace KateViI {
-    class Cursor;
-    class Range;
-}
+class Cursor;
+class Range;
+} // namespace KateViI
 
-namespace KateVi
-{
+namespace KateVi {
 
-enum MotionType {
-    ExclusiveMotion = 0,
-    InclusiveMotion
-};
+enum MotionType { ExclusiveMotion = 0, InclusiveMotion };
 
-class KATEVI_EXPORT Range
-{
+class KATEVI_EXPORT Range {
 public:
-    Range();
+  Range();
 
-    /**
-     * For motions which only return a position, in contrast to
-     * "text objects" which returns a full blown range.
-     */
-    explicit Range(int elin, int ecol, MotionType inc);
+  /**
+   * For motions which only return a position, in contrast to
+   * "text objects" which returns a full blown range.
+   */
+  explicit Range(int elin, int ecol, MotionType inc);
 
-    explicit Range(int slin, int scol, int elin, int ecol, MotionType mt);
-    explicit Range(const KateViI::Cursor &c, MotionType mt);
-    explicit Range(const KateViI::Cursor &c1, const KateViI::Cursor c2, MotionType mt);
+  explicit Range(int slin, int scol, int elin, int ecol, MotionType mt);
+  explicit Range(const KateViI::Cursor &c, MotionType mt);
+  explicit Range(const KateViI::Cursor &c1, const KateViI::Cursor c2, MotionType mt);
 
-    /**
-     * Modifies this range so the start attributes are lesser than
-     * the end attributes.
-     */
-    void normalize();
+  /**
+   * Modifies this range so the start attributes are lesser than
+   * the end attributes.
+   */
+  void normalize();
 
-    /**
-     * @returns an equivalent KateViI::Range for this Range.
-     */
-    KateViI::Range toEditorRange() const;
+  /**
+   * @returns an equivalent KateViI::Range for this Range.
+   */
+  KateViI::Range toEditorRange() const;
 
-    /**
-     * Writes this KateViRange to the debug output in a nicely formatted way.
-     */
-    friend QDebug operator<< (QDebug s, const Range &range)
-    {
-        s   << "[" << " (" << range.startLine << ", " << range.startColumn << ")"
-            << " -> " << " (" << range.endLine << ", " << range.endColumn << ")"
-            << "]" << " (" << (range.motionType == InclusiveMotion ? "Inclusive" : "Exclusive")
-            << ") (jump: " << (range.jump ? "true" : "false") << ")";
-        return s;
-    }
+  /**
+   * Writes this KateViRange to the debug output in a nicely formatted way.
+   */
+  friend QDebug operator<<(QDebug s, const Range &range) {
+    s << "[" << " (" << range.startLine << ", " << range.startColumn << ")"
+      << " -> " << " (" << range.endLine << ", " << range.endColumn << ")"
+      << "]" << " (" << (range.motionType == InclusiveMotion ? "Inclusive" : "Exclusive")
+      << ") (jump: " << (range.jump ? "true" : "false") << ")";
+    return s;
+  }
 
-    /**
-     * @returns an invalid KateViRange allocated on stack.
-     */
-    static Range invalid();
+  /**
+   * @returns an invalid KateViRange allocated on stack.
+   */
+  static Range invalid();
 
 public:
-    int startLine, startColumn;
-    int endLine, endColumn;
-    MotionType motionType;
-    bool valid, jump;
+  int startLine, startColumn;
+  int endLine, endColumn;
+  MotionType motionType;
+  bool valid, jump;
 };
 
-}
+} // namespace KateVi
 
 #endif /* KATEVI_RANGE_H */

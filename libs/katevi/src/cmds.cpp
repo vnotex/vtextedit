@@ -22,12 +22,12 @@
 
 #include <vimode/cmds.h>
 
-#include <modes/normalvimode.h>
 #include <emulatedcommandbar/emulatedcommandbar.h>
-#include <katevi/interface/kateviinputmode.h>
-#include <katevi/inputmodemanager.h>
-#include <katevi/globalstate.h>
 #include <katevi/global.h>
+#include <katevi/globalstate.h>
+#include <katevi/inputmodemanager.h>
+#include <katevi/interface/kateviinputmode.h>
+#include <modes/normalvimode.h>
 
 #include "marks.h"
 
@@ -40,28 +40,16 @@ using namespace KateVi;
 Commands *Commands::m_instance = nullptr;
 
 Commands::Commands()
-    : KateViI::Command(QStringList() << mappingCommands()
-                                     << QStringLiteral("d")
-                                     << QStringLiteral("delete")
-                                     << QStringLiteral("j")
-                                     << QStringLiteral("c")
-                                     << QStringLiteral("change")
-                                     << QStringLiteral("<")
-                                     << QStringLiteral(">")
-                                     << QStringLiteral("y")
-                                     << QStringLiteral("yank")
-                                     << QStringLiteral("ma")
-                                     << QStringLiteral("mark")
-                                     << QStringLiteral("k"))
-{
-}
+    : KateViI::Command(QStringList()
+                       << mappingCommands() << QStringLiteral("d") << QStringLiteral("delete")
+                       << QStringLiteral("j") << QStringLiteral("c") << QStringLiteral("change")
+                       << QStringLiteral("<") << QStringLiteral(">") << QStringLiteral("y")
+                       << QStringLiteral("yank") << QStringLiteral("ma") << QStringLiteral("mark")
+                       << QStringLiteral("k")) {}
 
-bool Commands::exec(KateViI::KateViEditorInterface *editorInterface,
-                    const QString &_cmd,
-                    QString &msg,
-                    const KateViI::Range &range)
-{
-    KATEVI_NIY;
+bool Commands::exec(KateViI::KateViEditorInterface *editorInterface, const QString &_cmd,
+                    QString &msg, const KateViI::Range &range) {
+  KATEVI_NIY;
 #if 0
     Q_UNUSED(range)
     // cast it hardcore, we know that it is really a kateview :)
@@ -195,35 +183,25 @@ bool Commands::exec(KateViI::KateViEditorInterface *editorInterface,
     msg = i18n("Unknown command '%1'", cmd);
     return false;
 #endif
-    return false;
+  return false;
 }
 
-bool Commands::supportsRange(const QString &range)
-{
-    static QStringList l;
+bool Commands::supportsRange(const QString &range) {
+  static QStringList l;
 
-    if (l.isEmpty()) {
-        l << QStringLiteral("d")
-          << QStringLiteral("delete")
-          << QStringLiteral("j")
-          << QStringLiteral("c")
-          << QStringLiteral("change")
-          << QStringLiteral("<")
-          << QStringLiteral(">")
-          << QStringLiteral("y")
-          << QStringLiteral("yank")
-          << QStringLiteral("ma")
-          << QStringLiteral("mark")
-          << QStringLiteral("k");
-    }
+  if (l.isEmpty()) {
+    l << QStringLiteral("d") << QStringLiteral("delete") << QStringLiteral("j")
+      << QStringLiteral("c") << QStringLiteral("change") << QStringLiteral("<")
+      << QStringLiteral(">") << QStringLiteral("y") << QStringLiteral("yank")
+      << QStringLiteral("ma") << QStringLiteral("mark") << QStringLiteral("k");
+  }
 
-    return l.contains(range.split(QLatin1Char(' ')).at(0));
+  return l.contains(range.split(QLatin1Char(' ')).at(0));
 }
 
 KCompletion *Commands::completionObject(KateViI::KateViEditorInterface *editorInterface,
-                                        const QString &cmd)
-{
-    KATEVI_NIY;
+                                        const QString &cmd) {
+  KATEVI_NIY;
 #if 0
     KTextEditor::ViewPrivate *v = static_cast<KTextEditor::ViewPrivate *>(view);
 
@@ -236,83 +214,66 @@ KCompletion *Commands::completionObject(KateViI::KateViEditorInterface *editorIn
         return co;
     }
 #endif
-    return nullptr;
+  return nullptr;
 }
 
-const QStringList &Commands::mappingCommands()
-{
-    static QStringList mappingsCommands;
-    if (mappingsCommands.isEmpty()) {
-        mappingsCommands << QStringLiteral("nmap")
-                         << QStringLiteral("nm")
-                         << QStringLiteral("noremap")
-                         << QStringLiteral("nnoremap")
-                         << QStringLiteral("nn")
-                         << QStringLiteral("no")
-                         << QStringLiteral("vmap")
-                         << QStringLiteral("vm")
-                         << QStringLiteral("vnoremap")
-                         << QStringLiteral("vn")
-                         << QStringLiteral("imap")
-                         << QStringLiteral("im")
-                         << QStringLiteral("inoremap")
-                         << QStringLiteral("ino")
-                         << QStringLiteral("cmap")
-                         << QStringLiteral("cm")
-                         << QStringLiteral("cnoremap")
-                         << QStringLiteral("cno")
-                         << QStringLiteral("nunmap")
-                         << QStringLiteral("vunmap")
-                         << QStringLiteral("iunmap")
-                         << QStringLiteral("cunmap");
-    }
+const QStringList &Commands::mappingCommands() {
+  static QStringList mappingsCommands;
+  if (mappingsCommands.isEmpty()) {
+    mappingsCommands << QStringLiteral("nmap") << QStringLiteral("nm") << QStringLiteral("noremap")
+                     << QStringLiteral("nnoremap") << QStringLiteral("nn") << QStringLiteral("no")
+                     << QStringLiteral("vmap") << QStringLiteral("vm") << QStringLiteral("vnoremap")
+                     << QStringLiteral("vn") << QStringLiteral("imap") << QStringLiteral("im")
+                     << QStringLiteral("inoremap") << QStringLiteral("ino")
+                     << QStringLiteral("cmap") << QStringLiteral("cm") << QStringLiteral("cnoremap")
+                     << QStringLiteral("cno") << QStringLiteral("nunmap")
+                     << QStringLiteral("vunmap") << QStringLiteral("iunmap")
+                     << QStringLiteral("cunmap");
+  }
 
-    return mappingsCommands;
+  return mappingsCommands;
 }
 
-Mappings::MappingMode Commands::modeForMapCommand(const QString &mapCommand)
-{
-    static QMap<QString, Mappings::MappingMode> modeForMapCommand;
-    if (modeForMapCommand.isEmpty()) {
-        // Normal is the default.
-        modeForMapCommand.insert(QStringLiteral("vmap"), Mappings::VisualModeMapping);
-        modeForMapCommand.insert(QStringLiteral("vm"), Mappings::VisualModeMapping);
-        modeForMapCommand.insert(QStringLiteral("vnoremap"), Mappings::VisualModeMapping);
-        modeForMapCommand.insert(QStringLiteral("vn"), Mappings::VisualModeMapping);
-        modeForMapCommand.insert(QStringLiteral("imap"), Mappings::InsertModeMapping);
-        modeForMapCommand.insert(QStringLiteral("im"), Mappings::InsertModeMapping);
-        modeForMapCommand.insert(QStringLiteral("inoremap"), Mappings::InsertModeMapping);
-        modeForMapCommand.insert(QStringLiteral("ino"), Mappings::InsertModeMapping);
-        modeForMapCommand.insert(QStringLiteral("cmap"), Mappings::CommandModeMapping);
-        modeForMapCommand.insert(QStringLiteral("cm"), Mappings::CommandModeMapping);
-        modeForMapCommand.insert(QStringLiteral("cnoremap"), Mappings::CommandModeMapping);
-        modeForMapCommand.insert(QStringLiteral("cno"), Mappings::CommandModeMapping);
+Mappings::MappingMode Commands::modeForMapCommand(const QString &mapCommand) {
+  static QMap<QString, Mappings::MappingMode> modeForMapCommand;
+  if (modeForMapCommand.isEmpty()) {
+    // Normal is the default.
+    modeForMapCommand.insert(QStringLiteral("vmap"), Mappings::VisualModeMapping);
+    modeForMapCommand.insert(QStringLiteral("vm"), Mappings::VisualModeMapping);
+    modeForMapCommand.insert(QStringLiteral("vnoremap"), Mappings::VisualModeMapping);
+    modeForMapCommand.insert(QStringLiteral("vn"), Mappings::VisualModeMapping);
+    modeForMapCommand.insert(QStringLiteral("imap"), Mappings::InsertModeMapping);
+    modeForMapCommand.insert(QStringLiteral("im"), Mappings::InsertModeMapping);
+    modeForMapCommand.insert(QStringLiteral("inoremap"), Mappings::InsertModeMapping);
+    modeForMapCommand.insert(QStringLiteral("ino"), Mappings::InsertModeMapping);
+    modeForMapCommand.insert(QStringLiteral("cmap"), Mappings::CommandModeMapping);
+    modeForMapCommand.insert(QStringLiteral("cm"), Mappings::CommandModeMapping);
+    modeForMapCommand.insert(QStringLiteral("cnoremap"), Mappings::CommandModeMapping);
+    modeForMapCommand.insert(QStringLiteral("cno"), Mappings::CommandModeMapping);
 
-        modeForMapCommand.insert(QStringLiteral("nunmap"), Mappings::NormalModeMapping);
-        modeForMapCommand.insert(QStringLiteral("vunmap"), Mappings::VisualModeMapping);
-        modeForMapCommand.insert(QStringLiteral("iunmap"), Mappings::InsertModeMapping);
-        modeForMapCommand.insert(QStringLiteral("cunmap"), Mappings::CommandModeMapping);
-    }
+    modeForMapCommand.insert(QStringLiteral("nunmap"), Mappings::NormalModeMapping);
+    modeForMapCommand.insert(QStringLiteral("vunmap"), Mappings::VisualModeMapping);
+    modeForMapCommand.insert(QStringLiteral("iunmap"), Mappings::InsertModeMapping);
+    modeForMapCommand.insert(QStringLiteral("cunmap"), Mappings::CommandModeMapping);
+  }
 
-    return modeForMapCommand.value(mapCommand);
+  return modeForMapCommand.value(mapCommand);
 }
 
-bool Commands::isMapCommandRecursive(const QString &mapCommand)
-{
-    static QMap<QString, bool> isMapCommandRecursive;
-    if (isMapCommandRecursive.isEmpty())
-    {
-        isMapCommandRecursive.insert(QStringLiteral("nmap"), true);
-        isMapCommandRecursive.insert(QStringLiteral("nm"), true);
-        isMapCommandRecursive.insert(QStringLiteral("vmap"), true);
-        isMapCommandRecursive.insert(QStringLiteral("vm"), true);
-        isMapCommandRecursive.insert(QStringLiteral("imap"), true);
-        isMapCommandRecursive.insert(QStringLiteral("im"), true);
-        isMapCommandRecursive.insert(QStringLiteral("cmap"), true);
-        isMapCommandRecursive.insert(QStringLiteral("cm"), true);
-    }
+bool Commands::isMapCommandRecursive(const QString &mapCommand) {
+  static QMap<QString, bool> isMapCommandRecursive;
+  if (isMapCommandRecursive.isEmpty()) {
+    isMapCommandRecursive.insert(QStringLiteral("nmap"), true);
+    isMapCommandRecursive.insert(QStringLiteral("nm"), true);
+    isMapCommandRecursive.insert(QStringLiteral("vmap"), true);
+    isMapCommandRecursive.insert(QStringLiteral("vm"), true);
+    isMapCommandRecursive.insert(QStringLiteral("imap"), true);
+    isMapCommandRecursive.insert(QStringLiteral("im"), true);
+    isMapCommandRecursive.insert(QStringLiteral("cmap"), true);
+    isMapCommandRecursive.insert(QStringLiteral("cm"), true);
+  }
 
-    return isMapCommandRecursive.value(mapCommand);
+  return isMapCommandRecursive.value(mapCommand);
 }
 
 #if 0

@@ -19,92 +19,77 @@
  */
 
 #include "macrorecorder.h"
-#include <katevi/inputmodemanager.h>
 #include "completionrecorder.h"
-#include <keymapper.h>
-#include <katevi/globalstate.h>
-#include "macros.h"
 #include "completionreplayer.h"
 #include "lastchangerecorder.h"
+#include "macros.h"
+#include <katevi/globalstate.h>
+#include <katevi/inputmodemanager.h>
+#include <keymapper.h>
 
 namespace {
-    const QChar LastPlayedRegister = QLatin1Char('@');
+const QChar LastPlayedRegister = QLatin1Char('@');
 }
 
 using namespace KateVi;
 
 MacroRecorder::MacroRecorder(InputModeManager *viInputModeManager)
-    : m_viInputModeManager(viInputModeManager)
-{
+    : m_viInputModeManager(viInputModeManager) {}
+
+MacroRecorder::~MacroRecorder() {}
+
+void MacroRecorder::start(const QChar &macroRegister) {
+  Q_ASSERT(!m_isRecording);
+  m_isRecording = true;
+  m_register = macroRegister;
+  m_viInputModeManager->globalState()->macros()->remove(macroRegister);
+  m_eventsLog.clear();
+  m_viInputModeManager->completionRecorder()->start();
 }
 
-MacroRecorder::~MacroRecorder()
-{
+void MacroRecorder::stop() {
+  Q_ASSERT(m_isRecording);
+  m_isRecording = false;
+  CompletionList completions = m_viInputModeManager->completionRecorder()->stop();
+  m_viInputModeManager->globalState()->macros()->store(m_register, m_eventsLog, completions);
 }
 
-void MacroRecorder::start(const QChar &macroRegister)
-{
-    Q_ASSERT(!m_isRecording);
-    m_isRecording = true;
-    m_register = macroRegister;
-    m_viInputModeManager->globalState()->macros()->remove(macroRegister);
-    m_eventsLog.clear();
-    m_viInputModeManager->completionRecorder()->start();
-}
+bool MacroRecorder::isRecording() const { return m_isRecording; }
 
-void MacroRecorder::stop()
-{
-    Q_ASSERT(m_isRecording);
-    m_isRecording = false;
-    CompletionList completions = m_viInputModeManager->completionRecorder()->stop();
-    m_viInputModeManager->globalState()->macros()->store(m_register, m_eventsLog, completions);
-}
-
-bool MacroRecorder::isRecording() const
-{
-    return m_isRecording;
-}
-
-void MacroRecorder::record(const QKeyEvent &event)
-{
-    if (isRepeatOfLastShortcutOverrideAsKeyPress(event, m_eventsLog))
-        return;
+void MacroRecorder::record(const QKeyEvent &event) {
+  if (isRepeatOfLastShortcutOverrideAsKeyPress(event, m_eventsLog))
+    return;
 #if (QT_VERSION < QT_VERSION_CHECK(6, 0, 0))
-    m_eventsLog.append(KeyEvent(event));
+  m_eventsLog.append(KeyEvent(event));
 #else
-    m_eventsLog.emplace_back(event);
+  m_eventsLog.emplace_back(event);
 #endif
 }
 
-void MacroRecorder::dropLast()
-{
-    if (m_isRecording) {
-        Q_ASSERT(!m_eventsLog.isEmpty());
-        m_eventsLog.pop_back();
-    }
+void MacroRecorder::dropLast() {
+  if (m_isRecording) {
+    Q_ASSERT(!m_eventsLog.isEmpty());
+    m_eventsLog.pop_back();
+  }
 }
 
-void MacroRecorder::replay(const QChar &macroRegister)
-{
-    const QChar reg = (macroRegister == LastPlayedRegister) ? m_lastPlayedMacroRegister
-                                                            : macroRegister;
-    m_lastPlayedMacroRegister = reg;
-    const QString macroAsFeedableKeypresses = m_viInputModeManager->globalState()->macros()->get(reg);
+void MacroRecorder::replay(const QChar &macroRegister) {
+  const QChar reg =
+      (macroRegister == LastPlayedRegister) ? m_lastPlayedMacroRegister : macroRegister;
+  m_lastPlayedMacroRegister = reg;
+  const QString macroAsFeedableKeypresses = m_viInputModeManager->globalState()->macros()->get(reg);
 
-    QSharedPointer<KeyMapper> mapper(new KeyMapper(m_viInputModeManager,
-                                                   m_viInputModeManager->editorInterface()));
-    CompletionList completions = m_viInputModeManager->globalState()->macros()->getCompletions(reg);
+  QSharedPointer<KeyMapper> mapper(
+      new KeyMapper(m_viInputModeManager, m_viInputModeManager->editorInterface()));
+  CompletionList completions = m_viInputModeManager->globalState()->macros()->getCompletions(reg);
 
-    m_macrosBeingReplayedCount++;
-    m_viInputModeManager->completionReplayer()->start(completions);
-    m_viInputModeManager->pushKeyMapper(mapper);
-    m_viInputModeManager->feedKeyPresses(macroAsFeedableKeypresses);
-    m_viInputModeManager->popKeyMapper();
-    m_viInputModeManager->completionReplayer()->stop();
-    m_macrosBeingReplayedCount--;
+  m_macrosBeingReplayedCount++;
+  m_viInputModeManager->completionReplayer()->start(completions);
+  m_viInputModeManager->pushKeyMapper(mapper);
+  m_viInputModeManager->feedKeyPresses(macroAsFeedableKeypresses);
+  m_viInputModeManager->popKeyMapper();
+  m_viInputModeManager->completionReplayer()->stop();
+  m_macrosBeingReplayedCount--;
 }
 
-bool MacroRecorder::isReplaying()
-{
-    return m_macrosBeingReplayedCount > 0;
-}
+bool MacroRecorder::isReplaying() { return m_macrosBeingReplayedCount > 0; }

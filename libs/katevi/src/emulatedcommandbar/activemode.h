@@ -27,45 +27,37 @@ class QKeyEvent;
 class QString;
 class QWidget;
 
-namespace KateViI
-{
-    class Cursor;
-    class Range;
-    class KateViEditorInterface;
-}
+namespace KateViI {
+class Cursor;
+class Range;
+class KateViEditorInterface;
+} // namespace KateViI
 
-namespace KateVi
-{
+namespace KateVi {
 class EmulatedCommandBar;
 struct CompletionStartParams;
 class MatchHighlighter;
 class InputModeManager;
 
-class ActiveMode
-{
+class ActiveMode {
 public:
-    ActiveMode(EmulatedCommandBar* emulatedCommandBar,
-               MatchHighlighter* matchHighlighter,
-               InputModeManager* viInputModeManager);
+  ActiveMode(EmulatedCommandBar *emulatedCommandBar, MatchHighlighter *matchHighlighter,
+             InputModeManager *viInputModeManager);
 
-    virtual ~ActiveMode();
+  virtual ~ActiveMode();
 
-    virtual bool handleKeyPress(const QKeyEvent *keyEvent) = 0;
+  virtual bool handleKeyPress(const QKeyEvent *keyEvent) = 0;
 
-    virtual void editTextChanged(const QString &newText)
-    {
-        Q_UNUSED(newText);
-    }
+  virtual void editTextChanged(const QString &newText) { Q_UNUSED(newText); }
 
-    virtual KateVi::CompletionStartParams completionInvoked(Completer::CompletionInvocation invocationType);
+  virtual KateVi::CompletionStartParams
+  completionInvoked(Completer::CompletionInvocation invocationType);
 
-    virtual void completionChosen()
-    {
-    }
+  virtual void completionChosen() {}
 
-    virtual void deactivate(bool wasAborted) = 0;
+  virtual void deactivate(bool wasAborted) = 0;
 
-    void setViInputModeManager(InputModeManager *viInputModeManager);
+  void setViInputModeManager(InputModeManager *viInputModeManager);
 
 protected:
 #if 0
@@ -78,20 +70,20 @@ protected:
     void moveCursorTo(const KTextEditor::Cursor &cursorPos);
 #endif
 
-    EmulatedCommandBar *emulatedCommandBar();
+  EmulatedCommandBar *emulatedCommandBar();
 
-    KateViI::KateViEditorInterface *editorInterface();
+  KateViI::KateViEditorInterface *editorInterface();
 
-    InputModeManager* viInputModeManager();
+  InputModeManager *viInputModeManager();
 
 private:
-    EmulatedCommandBar *m_emulatedCommandBar = nullptr;
+  EmulatedCommandBar *m_emulatedCommandBar = nullptr;
 
-    InputModeManager* m_viInputModeManager = nullptr;
+  InputModeManager *m_viInputModeManager = nullptr;
 
-    KateViI::KateViEditorInterface *m_interface = nullptr;
+  KateViI::KateViEditorInterface *m_interface = nullptr;
 
-    MatchHighlighter *m_matchHighligher = nullptr;
+  MatchHighlighter *m_matchHighligher = nullptr;
 };
-}
+} // namespace KateVi
 #endif

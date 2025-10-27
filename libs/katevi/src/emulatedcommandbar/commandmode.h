@@ -28,47 +28,42 @@
 
 #include <QHash>
 
-namespace KateVi
-{
-    class EmulatedCommandBar;
-    class MatchHighlighter;
-    class InteractiveSedReplaceMode;
-    class Completer;
-    class InputModeManager;
+namespace KateVi {
+class EmulatedCommandBar;
+class MatchHighlighter;
+class InteractiveSedReplaceMode;
+class Completer;
+class InputModeManager;
 
-    class CommandMode : public ActiveMode
-    {
-    public:
-        CommandMode(EmulatedCommandBar* emulatedCommandBar,
-                    MatchHighlighter* matchHighlighter,
-                    InputModeManager* viInputModeManager,
-                    QLineEdit* edit,
-                    InteractiveSedReplaceMode *interactiveSedReplaceMode,
-                    Completer* completer);
+class CommandMode : public ActiveMode {
+public:
+  CommandMode(EmulatedCommandBar *emulatedCommandBar, MatchHighlighter *matchHighlighter,
+              InputModeManager *viInputModeManager, QLineEdit *edit,
+              InteractiveSedReplaceMode *interactiveSedReplaceMode, Completer *completer);
 
-        bool handleKeyPress(const QKeyEvent* keyEvent) override;
+  bool handleKeyPress(const QKeyEvent *keyEvent) override;
 
-        void editTextChanged(const QString &newText) override;
+  void editTextChanged(const QString &newText) override;
 
-        CompletionStartParams completionInvoked(Completer::CompletionInvocation invocationType) override;
+  CompletionStartParams completionInvoked(Completer::CompletionInvocation invocationType) override;
 
-        void completionChosen() override;
+  void completionChosen() override;
 
-        void deactivate(bool wasAborted) override;
+  void deactivate(bool wasAborted) override;
 
-        QString executeCommand(const QString &commandToExecute);
+  QString executeCommand(const QString &commandToExecute);
 
-    private:
-        // Stuff to do with expressions of the form:
-        //   s/find/replace/<sedflags>
-        struct ParsedSedExpression {
-            bool parsedSuccessfully;
-            int findBeginPos;
-            int findEndPos;
-            int replaceBeginPos;
-            int replaceEndPos;
-            QChar delimiter;
-        };
+private:
+  // Stuff to do with expressions of the form:
+  //   s/find/replace/<sedflags>
+  struct ParsedSedExpression {
+    bool parsedSuccessfully;
+    int findBeginPos;
+    int findEndPos;
+    int replaceBeginPos;
+    int replaceEndPos;
+    QChar delimiter;
+  };
 
 #if 0
         CompletionStartParams activateCommandCompletion();
@@ -95,16 +90,16 @@ namespace KateVi
         KateViI::Command *queryCommand(const QString &cmd) const;
 #endif
 
-        QLineEdit *m_edit = nullptr;
+  QLineEdit *m_edit = nullptr;
 
-        InteractiveSedReplaceMode *m_interactiveSedReplaceMode = nullptr;
+  InteractiveSedReplaceMode *m_interactiveSedReplaceMode = nullptr;
 
-        Completer *m_completer = nullptr;
+  Completer *m_completer = nullptr;
 
-        KateViI::KCompletion m_cmdCompletion;
+  KateViI::KCompletion m_cmdCompletion;
 
-        QHash<QString, KateViI::Command *> m_cmdDict;
-    };
-}
+  QHash<QString, KateViI::Command *> m_cmdDict;
+};
+} // namespace KateVi
 
 #endif

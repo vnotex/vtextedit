@@ -25,30 +25,29 @@
 
 namespace KateVi {
 
-class Jumps
-{
+class Jumps {
 public:
-    explicit Jumps() = default;
-    ~Jumps() = default;
+  explicit Jumps() = default;
+  ~Jumps() = default;
 
-    Jumps(const Jumps &) = delete;
-    Jumps& operator=(const Jumps &) = delete;
+  Jumps(const Jumps &) = delete;
+  Jumps &operator=(const Jumps &) = delete;
 
-    void add(const KateViI::Cursor &cursor);
-    KateViI::Cursor next(const KateViI::Cursor &cursor);
-    KateViI::Cursor prev(const KateViI::Cursor &cursor);
+  void add(const KateViI::Cursor &cursor);
+  KateViI::Cursor next(const KateViI::Cursor &cursor);
+  KateViI::Cursor prev(const KateViI::Cursor &cursor);
 
-    void writeSessionConfig() const;
-    void readSessionConfig();
-
-private:
-    void printJumpList() const;
+  void writeSessionConfig() const;
+  void readSessionConfig();
 
 private:
-    QVector<KateViI::Cursor> m_jumps;
-    QVector<KateViI::Cursor>::iterator m_current = m_jumps.begin();
+  void printJumpList() const;
+
+private:
+  QVector<KateViI::Cursor> m_jumps;
+  QVector<KateViI::Cursor>::iterator m_current = m_jumps.begin();
 };
 
-}
+} // namespace KateVi
 
 #endif // KATEVI_JUMPS_H

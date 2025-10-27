@@ -4,32 +4,29 @@
 #include <QTextCharFormat>
 #include <QVector>
 
-namespace vte
-{
-    // Cache of QTextCharFormat from KSyntaxHighlighting::Format by id().
-    class FormatCache
-    {
-    public:
-        FormatCache();
+namespace vte {
+// Cache of QTextCharFormat from KSyntaxHighlighting::Format by id().
+class FormatCache {
+public:
+  FormatCache();
 
-        bool contains(int p_id) const;
+  bool contains(int p_id) const;
 
-        const QTextCharFormat &get(int p_id) const;
+  const QTextCharFormat &get(int p_id) const;
 
-        void insert(int p_id, const QTextCharFormat &p_format);
+  void insert(int p_id, const QTextCharFormat &p_format);
 
-    private:
-        struct CacheItem
-        {
-            bool m_valid = false;
+private:
+  struct CacheItem {
+    bool m_valid = false;
 
-            QTextCharFormat m_textCharFormat;
-        };
+    QTextCharFormat m_textCharFormat;
+  };
 
-        int m_capacity = 256;
+  int m_capacity = 256;
 
-        QVector<CacheItem> m_cache;
-    };
-}
+  QVector<CacheItem> m_cache;
+};
+} // namespace vte
 
 #endif // FORMATCACHE_H

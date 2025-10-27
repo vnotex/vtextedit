@@ -23,71 +23,60 @@
 #ifndef KATEVI_CMDS_H
 #define KATEVI_CMDS_H
 
-#include <katevi/interface/command.h>
 #include "mappings.h"
+#include <katevi/interface/command.h>
 
 #include <QStringList>
 
-namespace KateViI
-{
-    class KateViEditorInterface;
+namespace KateViI {
+class KateViEditorInterface;
 }
 
-namespace KateVi
-{
-    class Commands : public KateViI::Command
-    {
-        Commands();
+namespace KateVi {
+class Commands : public KateViI::Command {
+  Commands();
 
-        static Commands *m_instance;
+  static Commands *m_instance;
 
-    public:
-        ~Commands() override
-        {
-            delete m_instance;
-            m_instance = nullptr;
-        }
+public:
+  ~Commands() override {
+    delete m_instance;
+    m_instance = nullptr;
+  }
 
-        /**
-         * execute command on given range
-         * @param view view to use for execution
-         * @param cmd cmd string
-         * @param msg message returned from running the command
-         * @param range range to execute command on
-         * @return success
-         */
-        bool exec(KateViI::KateViEditorInterface *editorInterface,
-                  const QString &cmd,
-                  QString &msg,
-                  const KateViI::Range &range = KateViI::Range(-1, -0, -1, 0)) override;
+  /**
+   * execute command on given range
+   * @param view view to use for execution
+   * @param cmd cmd string
+   * @param msg message returned from running the command
+   * @param range range to execute command on
+   * @return success
+   */
+  bool exec(KateViI::KateViEditorInterface *editorInterface, const QString &cmd, QString &msg,
+            const KateViI::Range &range = KateViI::Range(-1, -0, -1, 0)) override;
 
-        bool supportsRange(const QString &range) override;
+  bool supportsRange(const QString &range) override;
 
-        /** This command does not have help. @see KTextEditor::Command::help */
-        bool help(KateViI::KateViEditorInterface *,
-                  const QString &,
-                  QString &) override
-        {
-            return false;
-        }
+  /** This command does not have help. @see KTextEditor::Command::help */
+  bool help(KateViI::KateViEditorInterface *, const QString &, QString &) override { return false; }
 
-        KateViI::KCompletion *completionObject(KateViI::KateViEditorInterface *, const QString &) override;
+  KateViI::KCompletion *completionObject(KateViI::KateViEditorInterface *,
+                                         const QString &) override;
 
-        static Commands *self()
-        {
-            if (m_instance == nullptr) {
-                m_instance = new Commands();
-            }
-            return m_instance;
-        }
+  static Commands *self() {
+    if (m_instance == nullptr) {
+      m_instance = new Commands();
+    }
+    return m_instance;
+  }
 
-    private:
-        const QStringList &mappingCommands();
+private:
+  const QStringList &mappingCommands();
 
-        Mappings::MappingMode modeForMapCommand(const QString &mapCommand);
+  Mappings::MappingMode modeForMapCommand(const QString &mapCommand);
 
-        bool isMapCommandRecursive(const QString &mapCommand);
-    };
+  bool isMapCommandRecursive(const QString &mapCommand);
+};
 
 #if 0
     /**
@@ -117,6 +106,6 @@ namespace KateVi
         bool interactiveSedReplace(KTextEditor::ViewPrivate *kateView, QSharedPointer<InteractiveSedReplacer> interactiveSedReplace) override;
     };
 #endif
-}
+} // namespace KateVi
 
 #endif /* KATEVI_CMDS_H */

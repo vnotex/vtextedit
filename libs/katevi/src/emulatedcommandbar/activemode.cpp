@@ -29,29 +29,21 @@
 
 using namespace KateVi;
 
-ActiveMode::ActiveMode(EmulatedCommandBar* emulatedCommandBar,
-                       MatchHighlighter* matchHighlighter,
-                       InputModeManager* viInputModeManager)
-    : m_emulatedCommandBar(emulatedCommandBar),
-      m_viInputModeManager(viInputModeManager),
-      m_interface(viInputModeManager->editorInterface()),
-      m_matchHighligher(matchHighlighter)
-{
+ActiveMode::ActiveMode(EmulatedCommandBar *emulatedCommandBar, MatchHighlighter *matchHighlighter,
+                       InputModeManager *viInputModeManager)
+    : m_emulatedCommandBar(emulatedCommandBar), m_viInputModeManager(viInputModeManager),
+      m_interface(viInputModeManager->editorInterface()), m_matchHighligher(matchHighlighter) {}
+
+ActiveMode::~ActiveMode() {}
+
+CompletionStartParams
+ActiveMode::completionInvoked(Completer::CompletionInvocation invocationType) {
+  Q_UNUSED(invocationType);
+  return CompletionStartParams();
 }
 
-ActiveMode::~ActiveMode()
-{
-}
-
-CompletionStartParams ActiveMode::completionInvoked(Completer::CompletionInvocation invocationType)
-{
-    Q_UNUSED(invocationType);
-    return CompletionStartParams();
-}
-
-void ActiveMode::setViInputModeManager(InputModeManager* viInputModeManager)
-{
-    m_viInputModeManager = viInputModeManager;
+void ActiveMode::setViInputModeManager(InputModeManager *viInputModeManager) {
+  m_viInputModeManager = viInputModeManager;
 }
 
 #if 0
@@ -92,17 +84,8 @@ void ActiveMode::moveCursorTo(const KTextEditor::Cursor &cursorPos)
 }
 #endif
 
-EmulatedCommandBar *ActiveMode::emulatedCommandBar()
-{
-    return m_emulatedCommandBar;
-}
+EmulatedCommandBar *ActiveMode::emulatedCommandBar() { return m_emulatedCommandBar; }
 
-KateViI::KateViEditorInterface *ActiveMode::editorInterface()
-{
-    return m_interface;
-}
+KateViI::KateViEditorInterface *ActiveMode::editorInterface() { return m_interface; }
 
-InputModeManager* ActiveMode::viInputModeManager()
-{
-    return m_viInputModeManager;
-}
+InputModeManager *ActiveMode::viInputModeManager() { return m_viInputModeManager; }

@@ -19,57 +19,42 @@
  */
 
 #include "completionrecorder.h"
-#include <katevi/inputmodemanager.h>
-#include "macrorecorder.h"
 #include "lastchangerecorder.h"
+#include "macrorecorder.h"
+#include <katevi/inputmodemanager.h>
 
 #include <QKeyEvent>
 
 using namespace KateVi;
 
 CompletionRecorder::CompletionRecorder(InputModeManager *viInputModeManager)
-    : m_viInputModeManager(viInputModeManager)
-{
+    : m_viInputModeManager(viInputModeManager) {}
+
+CompletionRecorder::~CompletionRecorder() {}
+
+void CompletionRecorder::logCompletionEvent(const Completion &completion) {
+  // Ctrl-space is a special code that means: if you're replaying a macro, fetch
+  // and execute the next logged completion.
+  static const QKeyEvent CompletionEvent(QKeyEvent::KeyPress, Qt::Key_Space, Qt::ControlModifier,
+                                         QStringLiteral(" "));
+
+  if (m_viInputModeManager->macroRecorder()->isRecording()) {
+    m_viInputModeManager->macroRecorder()->record(CompletionEvent);
+    m_currentMacroCompletionsLog.append(completion);
+  }
+
+  m_viInputModeManager->lastChangeRecorder()->record(CompletionEvent);
+  m_currentChangeCompletionsLog.append(completion);
 }
 
-CompletionRecorder::~CompletionRecorder()
-{
+void CompletionRecorder::start() { m_currentMacroCompletionsLog.clear(); }
+
+CompletionList CompletionRecorder::stop() { return m_currentMacroCompletionsLog; }
+
+void CompletionRecorder::clearCurrentChangeCompletionsLog() {
+  m_currentChangeCompletionsLog.clear();
 }
 
-void CompletionRecorder::logCompletionEvent(const Completion &completion)
-{
-    // Ctrl-space is a special code that means: if you're replaying a macro, fetch and execute
-    // the next logged completion.
-    static const QKeyEvent CompletionEvent(QKeyEvent::KeyPress,
-                                           Qt::Key_Space,
-                                           Qt::ControlModifier,
-                                           QStringLiteral(" "));
-
-    if (m_viInputModeManager->macroRecorder()->isRecording()) {
-        m_viInputModeManager->macroRecorder()->record(CompletionEvent);
-        m_currentMacroCompletionsLog.append(completion);
-    }
-
-    m_viInputModeManager->lastChangeRecorder()->record(CompletionEvent);
-    m_currentChangeCompletionsLog.append(completion);
-}
-
-void CompletionRecorder::start()
-{
-    m_currentMacroCompletionsLog.clear();
-}
-
-CompletionList CompletionRecorder::stop()
-{
-    return m_currentMacroCompletionsLog;
-}
-
-void CompletionRecorder::clearCurrentChangeCompletionsLog()
-{
-    m_currentChangeCompletionsLog.clear();
-}
-
-CompletionList CompletionRecorder::currentChangeCompletionsLog()
-{
-    return m_currentChangeCompletionsLog;
+CompletionList CompletionRecorder::currentChangeCompletionsLog() {
+  return m_currentChangeCompletionsLog;
 }

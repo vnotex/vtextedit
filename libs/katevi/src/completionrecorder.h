@@ -23,31 +23,29 @@
 
 #include <katevi/completion.h>
 
-namespace KateVi
-{
+namespace KateVi {
 class InputModeManager;
 
-class CompletionRecorder
-{
+class CompletionRecorder {
 public:
-    explicit CompletionRecorder(InputModeManager *viInputModeManager);
-    ~CompletionRecorder();
+  explicit CompletionRecorder(InputModeManager *viInputModeManager);
+  ~CompletionRecorder();
 
-    void logCompletionEvent(const Completion &completion);
+  void logCompletionEvent(const Completion &completion);
 
-    void start();
-    CompletionList stop();
+  void start();
+  CompletionList stop();
 
-    CompletionList currentChangeCompletionsLog();
-    void clearCurrentChangeCompletionsLog();
+  CompletionList currentChangeCompletionsLog();
+  void clearCurrentChangeCompletionsLog();
 
 private:
-    InputModeManager *m_viInputModeManager = nullptr;
+  InputModeManager *m_viInputModeManager = nullptr;
 
-    CompletionList m_currentMacroCompletionsLog;
-    CompletionList m_currentChangeCompletionsLog;
+  CompletionList m_currentMacroCompletionsLog;
+  CompletionList m_currentChangeCompletionsLog;
 };
 
-}
+} // namespace KateVi
 
 #endif // KATEVI_COMPLETIONRECORDER_H

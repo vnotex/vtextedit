@@ -3,13 +3,10 @@
 
 #include <QMap>
 
-namespace vte
-{
-    struct QMapDummyValue
-    {
-    };
+namespace vte {
+struct QMapDummyValue {};
 
-    typedef QMap<int, QMapDummyValue> OrderedIntSet;
-}
+typedef QMap<int, QMapDummyValue> OrderedIntSet;
+} // namespace vte
 
 #endif // ORDEREDINTSET_H
