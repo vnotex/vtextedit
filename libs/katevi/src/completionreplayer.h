@@ -25,34 +25,34 @@
 
 #include <QStack>
 
-namespace KateViI { class Cursor; }
+namespace KateViI {
+class Cursor;
+}
 
-namespace KateVi
-{
+namespace KateVi {
 class InputModeManager;
 
-class CompletionReplayer
-{
+class CompletionReplayer {
 public:
-    explicit CompletionReplayer(InputModeManager *viInputModeManager);
-    ~CompletionReplayer();
+  explicit CompletionReplayer(InputModeManager *viInputModeManager);
+  ~CompletionReplayer();
 
-    void start(const CompletionList &completions);
-    void stop();
+  void start(const CompletionList &completions);
+  void stop();
 
-    void replay();
-
-private:
-    Completion nextCompletion();
-    int findNextMergeableBracketPos(const KateViI::Cursor &startPos) const;
+  void replay();
 
 private:
-    InputModeManager *m_viInputModeManager = nullptr;
+  Completion nextCompletion();
+  int findNextMergeableBracketPos(const KateViI::Cursor &startPos) const;
 
-    QStack<CompletionList> m_CompletionsToReplay;
-    QStack<int> m_nextCompletionIndex;
+private:
+  InputModeManager *m_viInputModeManager = nullptr;
+
+  QStack<CompletionList> m_CompletionsToReplay;
+  QStack<int> m_nextCompletionIndex;
 };
 
-}
+} // namespace KateVi
 
 #endif // KATEVI_COMPLETIONREPLAYER_H

@@ -22,14 +22,10 @@
 
 using namespace KateVi;
 
-Motion::Motion(NormalViMode *parent, const QString &pattern,
-               Range(NormalViMode::*commandMethod)(), unsigned int flags)
-    : Command(parent, pattern, nullptr, flags)
-{
-    m_ptr2commandMethod = commandMethod;
+Motion::Motion(NormalViMode *parent, const QString &pattern, Range (NormalViMode::*commandMethod)(),
+               unsigned int flags)
+    : Command(parent, pattern, nullptr, flags) {
+  m_ptr2commandMethod = commandMethod;
 }
 
-Range Motion::execute() const
-{
-    return (m_parent->*m_ptr2commandMethod)();
-}
+Range Motion::execute() const { return (m_parent->*m_ptr2commandMethod)(); }

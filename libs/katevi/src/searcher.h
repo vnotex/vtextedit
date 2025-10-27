@@ -26,54 +26,55 @@
 #include <QString>
 
 namespace KateViI {
-    class Cursor;
-    class Range;
-    class KateViEditorInterface;
-}
+class Cursor;
+class Range;
+class KateViEditorInterface;
+} // namespace KateViI
 
-namespace KateVi
-{
+namespace KateVi {
 class InputModeManager;
 
-class Searcher
-{
+class Searcher {
 public:
-    explicit Searcher(InputModeManager *viInputModeManager);
-    ~Searcher();
+  explicit Searcher(InputModeManager *viInputModeManager);
+  ~Searcher();
 
-    /** Command part **/
-    void findNext();
-    void findPrevious();
+  /** Command part **/
+  void findNext();
+  void findPrevious();
 
-    /** Simple searchers **/
-    Range motionFindNext(int count = 1);
-    Range motionFindPrev(int count = 1);
-    Range findWordForMotion(const QString &pattern, bool backwards, const KateViI::Cursor &startFrom, int count);
+  /** Simple searchers **/
+  Range motionFindNext(int count = 1);
+  Range motionFindPrev(int count = 1);
+  Range findWordForMotion(const QString &pattern, bool backwards, const KateViI::Cursor &startFrom,
+                          int count);
 
-    /** Extended searcher for Emulated Command Bar. **/
-    struct SearchParams
-    {
-        QString pattern;
-        bool isBackwards = false;
-        bool isCaseSensitive = false;
-        bool shouldPlaceCursorAtEndOfMatch = false;
-    };
-    KateViI::Range findPattern(const SearchParams& searchParams, const KateViI::Cursor &startFrom, int count, bool addToSearchHistory = true);
+  /** Extended searcher for Emulated Command Bar. **/
+  struct SearchParams {
+    QString pattern;
+    bool isBackwards = false;
+    bool isCaseSensitive = false;
+    bool shouldPlaceCursorAtEndOfMatch = false;
+  };
+  KateViI::Range findPattern(const SearchParams &searchParams, const KateViI::Cursor &startFrom,
+                             int count, bool addToSearchHistory = true);
 
-    const QString getLastSearchPattern() const;
-    void setLastSearchParams(const SearchParams& searchParams);
-
-private:
-    Range findPatternForMotion(const SearchParams& searchParams, const KateViI::Cursor &startFrom, int count = 1) const;
-    KateViI::Range findPatternWorker(const SearchParams& searchParams, const KateViI::Cursor &startFrom, int count) const;
+  const QString getLastSearchPattern() const;
+  void setLastSearchParams(const SearchParams &searchParams);
 
 private:
-    InputModeManager *m_viInputModeManager;
+  Range findPatternForMotion(const SearchParams &searchParams, const KateViI::Cursor &startFrom,
+                             int count = 1) const;
+  KateViI::Range findPatternWorker(const SearchParams &searchParams,
+                                   const KateViI::Cursor &startFrom, int count) const;
 
-    KateViI::KateViEditorInterface *m_interface;
+private:
+  InputModeManager *m_viInputModeManager;
 
-    SearchParams m_lastSearchConfig;
+  KateViI::KateViEditorInterface *m_interface;
+
+  SearchParams m_lastSearchConfig;
 };
-}
+} // namespace KateVi
 
 #endif // KATEVI_SEARCHER_H

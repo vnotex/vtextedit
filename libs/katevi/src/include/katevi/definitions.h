@@ -19,27 +19,15 @@
 #ifndef KATEVI_DEFINITIONS_H
 #define KATEVI_DEFINITIONS_H
 
-namespace KateVi
-{
-    /**
-     * The four vi modes supported by Kate's vi input mode
-     */
-    enum ViMode {
-        NormalMode,
-        InsertMode,
-        VisualMode,
-        VisualLineMode,
-        VisualBlockMode,
-        ReplaceMode
-    };
+namespace KateVi {
+/**
+ * The four vi modes supported by Kate's vi input mode
+ */
+enum ViMode { NormalMode, InsertMode, VisualMode, VisualLineMode, VisualBlockMode, ReplaceMode };
 
-    enum OperationMode {
-        CharWise = 0,
-        LineWise,
-        Block
-    };
+enum OperationMode { CharWise = 0, LineWise, Block };
 
-    const unsigned int EOL = 99999;
-}
+const unsigned int EOL = 99999;
+} // namespace KateVi
 
 #endif // KATEVI_DEFINITIONS_H

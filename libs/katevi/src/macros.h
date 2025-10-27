@@ -24,49 +24,47 @@
 
 #include <QKeyEvent>
 
-namespace KateVi
-{
+namespace KateVi {
 
 // Deleter of QKeyEvent is protected in Qt 6.
-struct KATEVI_EXPORT KeyEvent
-{
-    KeyEvent() = default;
-    explicit KeyEvent(const QKeyEvent &e);
+struct KATEVI_EXPORT KeyEvent {
+  KeyEvent() = default;
+  explicit KeyEvent(const QKeyEvent &e);
 
-    QEvent::Type type = QEvent::Type::None;
-    int key = Qt::Key_unknown;
-    Qt::KeyboardModifiers modifiers;
-    QString text;
-    QChar toChar;
+  QEvent::Type type = QEvent::Type::None;
+  int key = Qt::Key_unknown;
+  Qt::KeyboardModifiers modifiers;
+  QString text;
+  QChar toChar;
 };
 
-
-class KATEVI_EXPORT Macros
-{
+class KATEVI_EXPORT Macros {
 public:
-    explicit Macros();
-    ~Macros();
+  explicit Macros();
+  ~Macros();
 
-    void writeConfig() const;
-    void readConfig();
+  void writeConfig() const;
+  void readConfig();
 
-    void store(const QChar &reg, const QList<KeyEvent> &macroKeyEventLog, const CompletionList &completions);
-    void remove(const QChar &reg);
-    void clear();
+  void store(const QChar &reg, const QList<KeyEvent> &macroKeyEventLog,
+             const CompletionList &completions);
+  void remove(const QChar &reg);
+  void clear();
 
-    QString get(const QChar &reg) const;
-    CompletionList getCompletions(const QChar &reg) const;
-
-private:
-    int readMacroCompletions(const QChar &reg, const QStringList &encodedMacroCompletions, int macroCompletionIndex);
-    QString encodeMacroCompletionForConfig(const Completion &completionForMacro) const;
-    Completion decodeMacroCompletionFromConfig(const QString &encodedMacroCompletion);
+  QString get(const QChar &reg) const;
+  CompletionList getCompletions(const QChar &reg) const;
 
 private:
-    QHash<QChar, QString> m_macros;
-    QHash<QChar, QList<Completion>> m_completions;
+  int readMacroCompletions(const QChar &reg, const QStringList &encodedMacroCompletions,
+                           int macroCompletionIndex);
+  QString encodeMacroCompletionForConfig(const Completion &completionForMacro) const;
+  Completion decodeMacroCompletionFromConfig(const QString &encodedMacroCompletion);
+
+private:
+  QHash<QChar, QString> m_macros;
+  QHash<QChar, QList<Completion>> m_completions;
 };
 
-}
+} // namespace KateVi
 
 #endif // KATEVI_MACROS_H

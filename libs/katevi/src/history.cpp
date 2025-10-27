@@ -22,25 +22,21 @@
 using namespace KateVi;
 
 namespace {
-    const int HISTORY_SIZE_LIMIT = 100;
+const int HISTORY_SIZE_LIMIT = 100;
 }
 
-void History::append(const QString &historyItem)
-{
-    if (historyItem.isEmpty()) {
-        return;
-    }
+void History::append(const QString &historyItem) {
+  if (historyItem.isEmpty()) {
+    return;
+  }
 
-    m_items.removeAll(historyItem);
+  m_items.removeAll(historyItem);
 
-    if (m_items.size() == HISTORY_SIZE_LIMIT) {
-        m_items.removeFirst();
-    }
+  if (m_items.size() == HISTORY_SIZE_LIMIT) {
+    m_items.removeFirst();
+  }
 
-    m_items.append(historyItem);
+  m_items.append(historyItem);
 }
 
-void History::clear()
-{
-    m_items.clear();
-}
+void History::clear() { m_items.clear(); }

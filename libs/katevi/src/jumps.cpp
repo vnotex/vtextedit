@@ -24,60 +24,47 @@
 
 using namespace KateVi;
 
-void Jumps::add(const KateViI::Cursor &cursor)
-{
-    for (auto iterator = m_jumps.begin();
-            iterator != m_jumps.end();
-            iterator++
-        )
-    {
-        if ((*iterator).line() == cursor.line()) {
-            m_jumps.erase(iterator);
-            break;
-        }
+void Jumps::add(const KateViI::Cursor &cursor) {
+  for (auto iterator = m_jumps.begin(); iterator != m_jumps.end(); iterator++) {
+    if ((*iterator).line() == cursor.line()) {
+      m_jumps.erase(iterator);
+      break;
     }
+  }
 
-    m_jumps.push_back(cursor);
-    m_current = m_jumps.end();
+  m_jumps.push_back(cursor);
+  m_current = m_jumps.end();
 }
 
-KateViI::Cursor Jumps::next(const KateViI::Cursor &cursor)
-{
-    if (m_current == m_jumps.end()) {
-        return cursor;
-    }
-
-    KateViI::Cursor jump;
-    if (m_current + 1 != m_jumps.end()) {
-        jump = *(++m_current);
-    } else {
-        jump = *(m_current);
-    }
-
-    return jump;
-}
-
-KateViI::Cursor Jumps::prev(const KateViI::Cursor &cursor)
-{
-    if (m_current == m_jumps.end()) {
-        add(cursor);
-        m_current--;
-    }
-
-    if (m_current != m_jumps.begin()) {
-        m_current--;
-        return *m_current;
-    }
-
+KateViI::Cursor Jumps::next(const KateViI::Cursor &cursor) {
+  if (m_current == m_jumps.end()) {
     return cursor;
+  }
+
+  KateViI::Cursor jump;
+  if (m_current + 1 != m_jumps.end()) {
+    jump = *(++m_current);
+  } else {
+    jump = *(m_current);
+  }
+
+  return jump;
 }
 
-void Jumps::readSessionConfig()
-{
-    KATEVI_NIY;
+KateViI::Cursor Jumps::prev(const KateViI::Cursor &cursor) {
+  if (m_current == m_jumps.end()) {
+    add(cursor);
+    m_current--;
+  }
+
+  if (m_current != m_jumps.begin()) {
+    m_current--;
+    return *m_current;
+  }
+
+  return cursor;
 }
 
-void Jumps::writeSessionConfig() const
-{
-    KATEVI_NIY;
-}
+void Jumps::readSessionConfig() { KATEVI_NIY; }
+
+void Jumps::writeSessionConfig() const { KATEVI_NIY; }

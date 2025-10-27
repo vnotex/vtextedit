@@ -28,77 +28,77 @@
 class QTimer;
 
 namespace KateViI {
-    class KateViEditorInterface;
+class KateViEditorInterface;
 }
 
-namespace KateVi
-{
+namespace KateVi {
 
 class InputModeManager;
 
-class KATEVI_EXPORT KeyMapper : public QObject
-{
-    Q_OBJECT
+class KATEVI_EXPORT KeyMapper : public QObject {
+  Q_OBJECT
 
 public:
-    KeyMapper(InputModeManager *kateViInputModeManager,
-              KateViI::KateViEditorInterface *editorInterface);
+  KeyMapper(InputModeManager *kateViInputModeManager,
+            KateViI::KateViEditorInterface *editorInterface);
 
-    bool handleKeyPress(QChar key);
+  bool handleKeyPress(QChar key);
 
-    void setMappingTimeout(int timeoutMS);
+  void setMappingTimeout(int timeoutMS);
 
-    void setDoNotMapNextKeyPress();
+  void setDoNotMapNextKeyPress();
 
-    bool isExecutingMapping();
+  bool isExecutingMapping();
 
-    bool isPlayingBackRejectedKeys();
+  bool isPlayingBackRejectedKeys();
 
 public Q_SLOTS:
-    void mappingTimerTimeOut();
+  void mappingTimerTimeOut();
 
 private:
-    // Will be the mapping used if we decide that no extra mapping characters will be
-    // typed, either because we have a mapping that cannot be extended to another
-    // mapping by adding additional characters, or we have a mapping and timed out waiting
-    // for it to be extended to a longer mapping.
-    // (Essentially, this allows us to have mappings that extend each other e.g. "'12" and
-    // "'123", and to choose between them.)
-    QString m_fullMappingMatch;
+  // Will be the mapping used if we decide that no extra mapping characters will
+  // be typed, either because we have a mapping that cannot be extended to
+  // another mapping by adding additional characters, or we have a mapping and
+  // timed out waiting for it to be extended to a longer mapping. (Essentially,
+  // this allows us to have mappings that extend each other e.g. "'12" and
+  // "'123", and to choose between them.)
+  QString m_fullMappingMatch;
 
-    // Pending mapping keys.
-    QString m_mappingKeys;
+  // Pending mapping keys.
+  QString m_mappingKeys;
 
-    // For recrusive mapping.
-    bool m_doNotExpandFurtherMappings = false;
+  // For recrusive mapping.
+  bool m_doNotExpandFurtherMappings = false;
 
-    QTimer *m_mappingTimer = nullptr;
+  QTimer *m_mappingTimer = nullptr;
 
-    InputModeManager *m_viInputModeManager = nullptr;
+  InputModeManager *m_viInputModeManager = nullptr;
 
-    KateViI::KateViEditorInterface *m_interface = nullptr;
+  KateViI::KateViEditorInterface *m_interface = nullptr;
 
-    // Time to wait for the next keyPress of a multi-key mapping (default: 1000 ms)
-    int m_timeoutlen = 1000;
+  // Time to wait for the next keyPress of a multi-key mapping (default: 1000
+  // ms)
+  int m_timeoutlen = 1000;
 
-    // If true, do nothing in next handleKeyPress().
-    bool m_doNotMapNextKeyPress = false;;
+  // If true, do nothing in next handleKeyPress().
+  bool m_doNotMapNextKeyPress = false;
+  ;
 
-    // Num of matched mappings begin executed.
-    int m_numMappingsBeingExecuted = 0;
+  // Num of matched mappings begin executed.
+  int m_numMappingsBeingExecuted = 0;
 
-    bool m_isPlayingBackRejectedKeys = false;
+  bool m_isPlayingBackRejectedKeys = false;
 
 private:
-    void executeMapping();
+  void executeMapping();
 
-    // If @m_mappingKeys does not end up in a full mapping match, we need to
-    // play back these keys without any mapping.
-    void playBackRejectedKeys();
+  // If @m_mappingKeys does not end up in a full mapping match, we need to
+  // play back these keys without any mapping.
+  void playBackRejectedKeys();
 
-    void appendMappingKey(const QChar &key);
+  void appendMappingKey(const QChar &key);
 };
 
-}
+} // namespace KateVi
 
 #endif /* KATEVI_KEY_MAPPER_H */

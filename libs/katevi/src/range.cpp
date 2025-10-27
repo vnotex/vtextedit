@@ -24,62 +24,46 @@
 
 using namespace KateVi;
 
-Range::Range()
-    : Range(-1, -1, -1, -1, InclusiveMotion)
-{
-}
+Range::Range() : Range(-1, -1, -1, -1, InclusiveMotion) {}
 
 Range::Range(int slin, int scol, int elin, int ecol, MotionType inc)
-    : startLine(slin), startColumn(scol), endLine(elin), endColumn(ecol)
-    , motionType(inc), valid(true), jump(false)
-{
-}
+    : startLine(slin), startColumn(scol), endLine(elin), endColumn(ecol), motionType(inc),
+      valid(true), jump(false) {}
 
-Range::Range(int elin, int ecol, MotionType inc)
-    : Range(-1, -1, elin, ecol, inc)
-{
-}
+Range::Range(int elin, int ecol, MotionType inc) : Range(-1, -1, elin, ecol, inc) {}
 
-Range::Range(const KateViI::Cursor& c, MotionType mt)
-    : Range(-1, -1, c.line(), c.column(), mt)
-{
-}
+Range::Range(const KateViI::Cursor &c, MotionType mt) : Range(-1, -1, c.line(), c.column(), mt) {}
 
-Range::Range(const KateViI::Cursor& c1, const KateViI::Cursor c2, MotionType mt)
-    : Range(c1.line(), c1.column(), c2.line(), c2.column(), mt)
-{
-}
+Range::Range(const KateViI::Cursor &c1, const KateViI::Cursor c2, MotionType mt)
+    : Range(c1.line(), c1.column(), c2.line(), c2.column(), mt) {}
 
-void Range::normalize()
-{
-    int sl = startLine, el = endLine, sc = startColumn, ec = endColumn;
+void Range::normalize() {
+  int sl = startLine, el = endLine, sc = startColumn, ec = endColumn;
 
-    if (sl < el) {
-        startLine = sl;
-        startColumn = sc;
-        endLine = el;
-        endColumn = ec;
+  if (sl < el) {
+    startLine = sl;
+    startColumn = sc;
+    endLine = el;
+    endColumn = ec;
+  } else {
+    startLine = el;
+    endLine = sl;
+    if (sl != el) {
+      startColumn = ec;
+      endColumn = sc;
     } else {
-        startLine = el;
-        endLine = sl;
-        if (sl != el) {
-            startColumn = ec;
-            endColumn = sc;
-        } else {
-            startColumn = qMin(sc, ec);
-            endColumn = qMax(sc, ec);
-        }
+      startColumn = qMin(sc, ec);
+      endColumn = qMax(sc, ec);
     }
+  }
 }
 
-KateViI::Range Range::toEditorRange() const
-{
-    return KateViI::Range(startLine, startColumn, endLine, endColumn);
+KateViI::Range Range::toEditorRange() const {
+  return KateViI::Range(startLine, startColumn, endLine, endColumn);
 }
 
-Range Range::invalid()
-{
-    Range r;
-    r.valid = false;
-    return r;
+Range Range::invalid() {
+  Range r;
+  r.valid = false;
+  return r;
 }

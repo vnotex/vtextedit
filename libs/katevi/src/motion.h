@@ -22,12 +22,11 @@
 #define KATEVI_MOTION_H
 
 #include <command.h>
-#include <range.h>
-#include <modes/normalvimode.h>
 #include <katevi/katevi_export.h>
+#include <modes/normalvimode.h>
+#include <range.h>
 
-namespace KateVi
-{
+namespace KateVi {
 
 /**
  * combined class for motions and text objects. execute() returns a KateViRange.
@@ -35,17 +34,16 @@ namespace KateVi
  * indicate this) for text objects a range (startx, starty), (endx, endy) is
  * returned
  */
-class KATEVI_EXPORT Motion : public Command
-{
+class KATEVI_EXPORT Motion : public Command {
 public:
-    Motion(NormalViMode *parent, const QString &pattern,
-           Range(NormalViMode::*commandMethod)(), unsigned int flags = 0);
-    Range execute() const;
+  Motion(NormalViMode *parent, const QString &pattern, Range (NormalViMode::*commandMethod)(),
+         unsigned int flags = 0);
+  Range execute() const;
 
 protected:
-    Range(NormalViMode::*m_ptr2commandMethod)();
+  Range (NormalViMode::*m_ptr2commandMethod)();
 };
 
-}
+} // namespace KateVi
 
 #endif /* KATEVI_MOTION_H */

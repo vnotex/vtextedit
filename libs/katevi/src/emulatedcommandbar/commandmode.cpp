@@ -27,10 +27,10 @@
 
 // #include <vimode/appcommands.h>
 #include <cmds.h>
-#include <katevi/inputmodemanager.h>
-#include <katevi/globalstate.h>
-#include <katevi/global.h>
 #include <history.h>
+#include <katevi/global.h>
+#include <katevi/globalstate.h>
+#include <katevi/inputmodemanager.h>
 
 #include <QLineEdit>
 #include <QRegularExpression>
@@ -38,47 +38,40 @@
 
 using namespace KateVi;
 
-CommandMode::CommandMode(EmulatedCommandBar* emulatedCommandBar,
-                         MatchHighlighter* matchHighlighter,
-                         InputModeManager* viInputModeManager,
-                         QLineEdit* edit,
-                         InteractiveSedReplaceMode* interactiveSedReplaceMode,
-                         Completer* completer)
-    : ActiveMode(emulatedCommandBar, matchHighlighter, viInputModeManager),
-      m_edit(edit),
-      m_interactiveSedReplaceMode(interactiveSedReplaceMode),
-      m_completer(completer)
-{
-    QVector<KateViI::Command *> cmds;
-    KATEVI_NIY;
-    /*
-    cmds.push_back(KateCommands::CoreCommands::self());
-    cmds.push_back(Commands::self());
-    cmds.push_back(AppCommands::self());
-    cmds.push_back(SedReplace::self());
-    cmds.push_back(BufferCommands::self());
+CommandMode::CommandMode(EmulatedCommandBar *emulatedCommandBar, MatchHighlighter *matchHighlighter,
+                         InputModeManager *viInputModeManager, QLineEdit *edit,
+                         InteractiveSedReplaceMode *interactiveSedReplaceMode, Completer *completer)
+    : ActiveMode(emulatedCommandBar, matchHighlighter, viInputModeManager), m_edit(edit),
+      m_interactiveSedReplaceMode(interactiveSedReplaceMode), m_completer(completer) {
+  QVector<KateViI::Command *> cmds;
+  KATEVI_NIY;
+  /*
+  cmds.push_back(KateCommands::CoreCommands::self());
+  cmds.push_back(Commands::self());
+  cmds.push_back(AppCommands::self());
+  cmds.push_back(SedReplace::self());
+  cmds.push_back(BufferCommands::self());
 
-    for (KTextEditor::Command *cmd : KateScriptManager::self()->commandLineScripts()) {
-        cmds.push_back(cmd);
+  for (KTextEditor::Command *cmd :
+  KateScriptManager::self()->commandLineScripts()) { cmds.push_back(cmd);
+  }
+  */
+
+  for (KateViI::Command *cmd : qAsConst(cmds)) {
+    QStringList l = cmd->cmds();
+
+    for (int z = 0; z < l.count(); z++) {
+      m_cmdDict.insert(l[z], cmd);
     }
-    */
 
-    for (KateViI::Command *cmd : qAsConst(cmds)) {
-        QStringList l = cmd->cmds();
-
-        for (int z = 0; z < l.count(); z++) {
-            m_cmdDict.insert(l[z], cmd);
-        }
-
-        // m_cmdCompletion.insertItems(l);
-    }
+    // m_cmdCompletion.insertItems(l);
+  }
 }
 
-bool CommandMode::handleKeyPress(const QKeyEvent* keyEvent)
-{
-    if (keyEvent->modifiers() == Qt::ControlModifier
-        && (keyEvent->key() == Qt::Key_D || keyEvent->key() == Qt::Key_F)) {
-        KATEVI_NIY;
+bool CommandMode::handleKeyPress(const QKeyEvent *keyEvent) {
+  if (keyEvent->modifiers() == Qt::ControlModifier &&
+      (keyEvent->key() == Qt::Key_D || keyEvent->key() == Qt::Key_F)) {
+    KATEVI_NIY;
 #if 0
         CommandMode::ParsedSedExpression parsedSedExpression = parseAsSedExpression();
         if (parsedSedExpression.parsedSuccessfully) {
@@ -94,14 +87,13 @@ bool CommandMode::handleKeyPress(const QKeyEvent* keyEvent)
         }
         return true;
 #endif
-    }
+  }
 
-    return false;
+  return false;
 }
 
-void CommandMode::editTextChanged(const QString& newText)
-{
-    KATEVI_NIY;
+void CommandMode::editTextChanged(const QString &newText) {
+  KATEVI_NIY;
 #if 0
     // We read the current text from m_edit.
     Q_UNUSED(newText);
@@ -123,22 +115,22 @@ void CommandMode::editTextChanged(const QString& newText)
 #endif
 }
 
-void CommandMode::deactivate(bool wasAborted)
-{
-    if (wasAborted) {
-        // Appending the command to the history when it is executed is handled elsewhere; we can't
-        // do it inside closed() as we may still be showing the command response display.
-        viInputModeManager()->globalState()->commandHistory()->append(m_edit->text());
-        // With Vim, aborting a command returns us to Normal mode, even if we were in Visual Mode.
-        // If we switch from Visual to Normal mode, we need to clear the selection.
-        editorInterface()->clearSelection();
-    }
-
+void CommandMode::deactivate(bool wasAborted) {
+  if (wasAborted) {
+    // Appending the command to the history when it is executed is handled
+    // elsewhere; we can't do it inside closed() as we may still be showing the
+    // command response display.
+    viInputModeManager()->globalState()->commandHistory()->append(m_edit->text());
+    // With Vim, aborting a command returns us to Normal mode, even if we were
+    // in Visual Mode. If we switch from Visual to Normal mode, we need to clear
+    // the selection.
+    editorInterface()->clearSelection();
+  }
 }
 
-CompletionStartParams CommandMode::completionInvoked(Completer::CompletionInvocation invocationType)
-{
-    KATEVI_NIY;
+CompletionStartParams
+CommandMode::completionInvoked(Completer::CompletionInvocation invocationType) {
+  KATEVI_NIY;
 #if 0
     CompletionStartParams completionStartParams;
     if (invocationType == Completer::CompletionInvocation::ExtraContext)
@@ -158,12 +150,11 @@ CompletionStartParams CommandMode::completionInvoked(Completer::CompletionInvoca
     }
     return completionStartParams;
 #endif
-    return CompletionStartParams();
+  return CompletionStartParams();
 }
 
-void CommandMode::completionChosen()
-{
-    KATEVI_NIY;
+void CommandMode::completionChosen() {
+  KATEVI_NIY;
 #if 0
     QString commandToExecute = m_edit->text();
     CommandMode::ParsedSedExpression parsedSedExpression = parseAsSedExpression();
@@ -190,9 +181,8 @@ void CommandMode::completionChosen()
 #endif
 }
 
-QString CommandMode::executeCommand(const QString& commandToExecute)
-{
-    KATEVI_NIY;
+QString CommandMode::executeCommand(const QString &commandToExecute) {
+  KATEVI_NIY;
 #if 0
     // Silently ignore leading space characters and colon characters (for vi-heads).
     uint n = 0;
@@ -255,7 +245,7 @@ QString CommandMode::executeCommand(const QString& commandToExecute)
     viInputModeManager()->reset();
     return commandResponseMessage;
 #endif
-    return "";
+  return "";
 }
 
 #if 0

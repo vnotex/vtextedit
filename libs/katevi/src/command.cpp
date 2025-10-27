@@ -25,46 +25,38 @@
 
 using namespace KateVi;
 
-Command::Command(NormalViMode *parent, QString pattern,
-                 bool(NormalViMode::*commandMethod)(), unsigned int flags)
-{
-    //Judge the OS CTRL, CTRL replaced with META because QT.
+Command::Command(NormalViMode *parent, QString pattern, bool (NormalViMode::*commandMethod)(),
+                 unsigned int flags) {
+  // Judge the OS CTRL, CTRL replaced with META because QT.
 #if defined(Q_OS_MACOS) || defined(Q_OS_MAC)
-    pattern.replace(QLatin1String("c-"), QLatin1String("m-"));
+  pattern.replace(QLatin1String("c-"), QLatin1String("m-"));
 #endif
 
-    m_parent = parent;
-    m_pattern = KeyParser::self()->encodeKeySequence(pattern);
-    m_flags = flags;
-    m_ptr2commandMethod = commandMethod;
+  m_parent = parent;
+  m_pattern = KeyParser::self()->encodeKeySequence(pattern);
+  m_flags = flags;
+  m_ptr2commandMethod = commandMethod;
 }
 
-Command::~Command()
-{
+Command::~Command() {}
+
+bool Command::execute() const { return (m_parent->*m_ptr2commandMethod)(); }
+
+bool Command::matches(const QString &pattern) const {
+  if (!(m_flags & REGEX_PATTERN)) {
+    return m_pattern.startsWith(pattern);
+  } else {
+    QRegExp re(m_pattern);
+    re.exactMatch(pattern);
+    return (re.matchedLength() == pattern.length());
+  }
 }
 
-bool Command::execute() const
-{
-    return (m_parent->*m_ptr2commandMethod)();
-}
-
-bool Command::matches(const QString &pattern) const
-{
-    if (!(m_flags & REGEX_PATTERN)) {
-        return m_pattern.startsWith(pattern);
-    } else {
-        QRegExp re(m_pattern);
-        re.exactMatch(pattern);
-        return (re.matchedLength() == pattern.length());
-    }
-}
-
-bool Command::matchesExact(const QString &pattern) const
-{
-    if (!(m_flags & REGEX_PATTERN)) {
-        return (m_pattern == pattern);
-    } else {
-        QRegExp re(m_pattern);
-        return re.exactMatch(pattern);
-    }
+bool Command::matchesExact(const QString &pattern) const {
+  if (!(m_flags & REGEX_PATTERN)) {
+    return (m_pattern == pattern);
+  } else {
+    QRegExp re(m_pattern);
+    return re.exactMatch(pattern);
+  }
 }

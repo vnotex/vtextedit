@@ -1,154 +1,107 @@
 #ifndef VTEXTEDIT_GLOBAL_H
 #define VTEXTEDIT_GLOBAL_H
 
-#include <QObject>
 #include <QKeySequence>
+#include <QObject>
 
-namespace vte
-{
-    enum InputMode
-    {
-        NormalMode = 0,
-        ViMode,
-        VscodeMode,
-        MaxInputMode
-    };
+namespace vte {
+enum InputMode { NormalMode = 0, ViMode, VscodeMode, MaxInputMode };
 
-    // Must align with KateViEditorInterface::ViewMode.
-    enum EditorMode
-    {
-        NormalModeInsert = 0,    /**< Insert mode. Characters will be added. */
-        NormalModeOverwrite = 1, /**< Overwrite mode. Characters will be replaced. */
+// Must align with KateViEditorInterface::ViewMode.
+enum EditorMode {
+  NormalModeInsert = 0,    /**< Insert mode. Characters will be added. */
+  NormalModeOverwrite = 1, /**< Overwrite mode. Characters will be replaced. */
 
-        ViModeNormal = 10,
-        ViModeInsert = 11,
-        ViModeVisual = 12,
-        ViModeVisualLine = 13,
-        ViModeVisualBlock = 14,
-        ViModeReplace = 15
-    };
+  ViModeNormal = 10,
+  ViModeInsert = 11,
+  ViModeVisual = 12,
+  ViModeVisualLine = 13,
+  ViModeVisualBlock = 14,
+  ViModeReplace = 15
+};
 
-    class VTextEditTranslate : public QObject
-    {
-        Q_OBJECT
-    };
+class VTextEditTranslate : public QObject {
+  Q_OBJECT
+};
 
-    inline QString editorModeToString(EditorMode p_mode)
-    {
-        switch (p_mode) {
-        case EditorMode::NormalModeInsert:
-            return VTextEditTranslate::tr("Insert");
+inline QString editorModeToString(EditorMode p_mode) {
+  switch (p_mode) {
+  case EditorMode::NormalModeInsert:
+    return VTextEditTranslate::tr("Insert");
 
-        case EditorMode::NormalModeOverwrite:
-            return VTextEditTranslate::tr("Overwrite");
+  case EditorMode::NormalModeOverwrite:
+    return VTextEditTranslate::tr("Overwrite");
 
-        case EditorMode::ViModeNormal:
-            return VTextEditTranslate::tr("Normal (Vi)");
+  case EditorMode::ViModeNormal:
+    return VTextEditTranslate::tr("Normal (Vi)");
 
-        case EditorMode::ViModeInsert:
-            return VTextEditTranslate::tr("Insert (Vi)");
+  case EditorMode::ViModeInsert:
+    return VTextEditTranslate::tr("Insert (Vi)");
 
-        case EditorMode::ViModeVisual:
-            return VTextEditTranslate::tr("Visual (Vi)");
+  case EditorMode::ViModeVisual:
+    return VTextEditTranslate::tr("Visual (Vi)");
 
-        case EditorMode::ViModeVisualLine:
-            return VTextEditTranslate::tr("Visual Line (Vi)");
+  case EditorMode::ViModeVisualLine:
+    return VTextEditTranslate::tr("Visual Line (Vi)");
 
-        case EditorMode::ViModeVisualBlock:
-            return VTextEditTranslate::tr("Visual Block (Vi)");
+  case EditorMode::ViModeVisualBlock:
+    return VTextEditTranslate::tr("Visual Block (Vi)");
 
-        case EditorMode::ViModeReplace:
-            return VTextEditTranslate::tr("Replace (Vi)");
+  case EditorMode::ViModeReplace:
+    return VTextEditTranslate::tr("Replace (Vi)");
 
-        default:
-            return VTextEditTranslate::tr("Unknown");
-        }
+  default:
+    return VTextEditTranslate::tr("Unknown");
+  }
+}
+
+enum CaretStyle { Line, Block, Underline, Half, MaxCaretStyle };
+
+typedef unsigned long long TimeStamp;
+
+enum CenterCursor { NeverCenter, AlwaysCenter, CenterOnBottom };
+
+enum WrapMode { NoWrap, WordWrap, WrapAnywhere, WordWrapOrAnywhere };
+
+enum FindFlag {
+  None = 0,
+  FindBackward = 0x1,
+  CaseSensitive = 0x2,
+  WholeWordOnly = 0x4,
+  RegularExpression = 0x8
+};
+Q_DECLARE_FLAGS(FindFlags, FindFlag);
+
+enum class LineEndingPolicy { Platform, File, LF, CRLF, CR };
+
+enum class LineEnding { LF, CRLF, CR };
+
+struct Key {
+  Key() = default;
+
+  Key(int p_key, Qt::KeyboardModifiers p_modifiers) : m_key(p_key), m_modifiers(p_modifiers) {}
+
+  Key(const QString &p_key) {
+    QKeySequence seq(p_key);
+    if (seq.count() == 0) {
+      return;
     }
 
-    enum CaretStyle
-    {
-        Line,
-        Block,
-        Underline,
-        Half,
-        MaxCaretStyle
-    };
-
-    typedef unsigned long long TimeStamp;
-
-    enum CenterCursor
-    {
-        NeverCenter,
-        AlwaysCenter,
-        CenterOnBottom
-    };
-
-    enum WrapMode
-    {
-        NoWrap,
-        WordWrap,
-        WrapAnywhere,
-        WordWrapOrAnywhere
-    };
-
-    enum FindFlag
-    {
-        None = 0,
-        FindBackward = 0x1,
-        CaseSensitive = 0x2,
-        WholeWordOnly = 0x4,
-        RegularExpression = 0x8
-    };
-    Q_DECLARE_FLAGS(FindFlags, FindFlag);
-
-    enum class LineEndingPolicy
-    {
-        Platform,
-        File,
-        LF,
-        CRLF,
-        CR
-    };
-
-    enum class LineEnding
-    {
-        LF,
-        CRLF,
-        CR
-    };
-
-    struct Key
-    {
-        Key() = default;
-
-        Key(int p_key, Qt::KeyboardModifiers p_modifiers)
-            : m_key(p_key),
-              m_modifiers(p_modifiers)
-        {
-        }
-
-        Key(const QString &p_key)
-        {
-            QKeySequence seq(p_key);
-            if (seq.count() == 0) {
-                return;
-            }
-
-            const int keyMask = 0x01FFFFFF;
+    const int keyMask = 0x01FFFFFF;
 #if (QT_VERSION < QT_VERSION_CHECK(6, 0, 0))
-            const int keyModifiers = seq[0];
+    const int keyModifiers = seq[0];
 #else
-            const int keyModifiers = seq[0].toCombined();
+    const int keyModifiers = seq[0].toCombined();
 #endif
-            m_key = keyModifiers & keyMask;
-            m_modifiers = static_cast<Qt::KeyboardModifiers>(keyModifiers & (~keyMask));
-        }
+    m_key = keyModifiers & keyMask;
+    m_modifiers = static_cast<Qt::KeyboardModifiers>(keyModifiers & (~keyMask));
+  }
 
-        int m_key = 0;
+  int m_key = 0;
 
-        Qt::KeyboardModifiers m_modifiers = Qt::NoModifier;
-    };
-}
+  Qt::KeyboardModifiers m_modifiers = Qt::NoModifier;
+};
+} // namespace vte
 
 Q_DECLARE_OPERATORS_FOR_FLAGS(vte::FindFlags)
 

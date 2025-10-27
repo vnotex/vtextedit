@@ -5,19 +5,17 @@
 
 class QToolButton;
 
-namespace vte
-{
-    class Utils
-    {
-    public:
-        Utils() = delete;
+namespace vte {
+class Utils {
+public:
+  Utils() = delete;
 
-        static void sleepWait(int p_milliseconds);
+  static void sleepWait(int p_milliseconds);
 
-        static void removeMenuIndicator(QToolButton *p_btn);
+  static void removeMenuIndicator(QToolButton *p_btn);
 
-        static bool isFilePath(const QString &p_name);
-    };
-}
+  static bool isFilePath(const QString &p_name);
+};
+} // namespace vte
 
 #endif // UTILS_H

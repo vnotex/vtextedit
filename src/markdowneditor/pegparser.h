@@ -3,9 +3,9 @@
 
 #include <QObject>
 
+#include <QAtomicInt>
 #include <QSharedPointer>
 #include <QThread>
-#include <QAtomicInt>
 #include <QVector>
 
 #include <vtextedit/global.h>
@@ -16,246 +16,202 @@ extern "C" {
 #include <pmh_parser.h>
 }
 
-namespace vte
-{
-namespace peg
-{
-    struct PegParseConfig
-    {
-        TimeStamp m_timeStamp = 0;
-
-        QByteArray m_data;
-
-        int m_numOfBlocks = 0;
+namespace vte {
+namespace peg {
+struct PegParseConfig {
+  TimeStamp m_timeStamp = 0;
 
-        // Offset of m_data in the document.
-        int m_offset = 0;
+  QByteArray m_data;
 
-        int m_extensions = pmh_EXT_NONE;
+  int m_numOfBlocks = 0;
 
-        // Fast parse.
-        bool m_fast = false;
+  // Offset of m_data in the document.
+  int m_offset = 0;
 
-        QString toString() const
-        {
-            return QStringLiteral("PegParseConfig ts %1 data %2 blocks %3").arg(m_timeStamp)
-                                                                    .arg(m_data.size())
-                                                                    .arg(m_numOfBlocks);
-        }
-    };
+  int m_extensions = pmh_EXT_NONE;
 
-    struct PegParseResult
-    {
-        PegParseResult(const QSharedPointer<PegParseConfig> &p_config)
-            : m_timeStamp(p_config->m_timeStamp),
-              m_numOfBlocks(p_config->m_numOfBlocks),
-              m_offset(p_config->m_offset),
-              m_pmhElements(NULL)
-        {
-        }
+  // Fast parse.
+  bool m_fast = false;
 
-        ~PegParseResult()
-        {
-            clearPmhElements();
-        }
+  QString toString() const {
+    return QStringLiteral("PegParseConfig ts %1 data %2 blocks %3")
+        .arg(m_timeStamp)
+        .arg(m_data.size())
+        .arg(m_numOfBlocks);
+  }
+};
 
-        void clearPmhElements()
-        {
-            if (m_pmhElements) {
-                pmh_free_elements(m_pmhElements);
-                m_pmhElements = NULL;
-            }
-        }
+struct PegParseResult {
+  PegParseResult(const QSharedPointer<PegParseConfig> &p_config)
+      : m_timeStamp(p_config->m_timeStamp), m_numOfBlocks(p_config->m_numOfBlocks),
+        m_offset(p_config->m_offset), m_pmhElements(NULL) {}
 
-        bool operator<(const PegParseResult &p_other) const
-        {
-            return m_timeStamp < p_other.m_timeStamp;
-        }
+  ~PegParseResult() { clearPmhElements(); }
 
-        QString toString() const
-        {
-            return QStringLiteral("PegParseResult ts %1").arg(m_timeStamp);
-        }
+  void clearPmhElements() {
+    if (m_pmhElements) {
+      pmh_free_elements(m_pmhElements);
+      m_pmhElements = NULL;
+    }
+  }
 
-        bool isEmpty() const
-        {
-            return !m_pmhElements;
-        }
+  bool operator<(const PegParseResult &p_other) const { return m_timeStamp < p_other.m_timeStamp; }
 
-        // Parse m_pmhElements.
-        void parse(QAtomicInt &p_stop, bool p_fast);
+  QString toString() const { return QStringLiteral("PegParseResult ts %1").arg(m_timeStamp); }
 
-        TimeStamp m_timeStamp = 0;
+  bool isEmpty() const { return !m_pmhElements; }
 
-        int m_numOfBlocks = 0;
+  // Parse m_pmhElements.
+  void parse(QAtomicInt &p_stop, bool p_fast);
 
-        int m_offset = 0;
+  TimeStamp m_timeStamp = 0;
 
-        pmh_element **m_pmhElements = nullptr;
+  int m_numOfBlocks = 0;
 
-        // All image link regions.
-        QVector<ElementRegion> m_imageRegions;
+  int m_offset = 0;
 
-        // All header regions.
-        // Sorted by start position.
-        QVector<ElementRegion> m_headerRegions;
+  pmh_element **m_pmhElements = nullptr;
 
-        // Fenced code block regions.
-        // Ordered by start position in ascending order.
-        QMap<int, ElementRegion>  m_codeBlockRegions;
+  // All image link regions.
+  QVector<ElementRegion> m_imageRegions;
 
-        // All $ $ inline equation regions.
-        QVector<ElementRegion> m_inlineEquationRegions;
+  // All header regions.
+  // Sorted by start position.
+  QVector<ElementRegion> m_headerRegions;
 
-        // All $$ $$ display formula regions.
-        // Sorted by start position.
-        QVector<ElementRegion> m_displayFormulaRegions;
+  // Fenced code block regions.
+  // Ordered by start position in ascending order.
+  QMap<int, ElementRegion> m_codeBlockRegions;
 
-        // HRule regions.
-        QVector<ElementRegion> m_hruleRegions;
+  // All $ $ inline equation regions.
+  QVector<ElementRegion> m_inlineEquationRegions;
 
-        // All table regions.
-        // Sorted by start position.
-        QVector<ElementRegion> m_tableRegions;
+  // All $$ $$ display formula regions.
+  // Sorted by start position.
+  QVector<ElementRegion> m_displayFormulaRegions;
 
-        // All table header regions.
-        QVector<ElementRegion> m_tableHeaderRegions;
+  // HRule regions.
+  QVector<ElementRegion> m_hruleRegions;
 
-        // All table border regions.
-        QVector<ElementRegion> m_tableBorderRegions;
+  // All table regions.
+  // Sorted by start position.
+  QVector<ElementRegion> m_tableRegions;
 
-    private:
-        void parseImageRegions(QAtomicInt &p_stop);
+  // All table header regions.
+  QVector<ElementRegion> m_tableHeaderRegions;
 
-        void parseHeaderRegions(QAtomicInt &p_stop);
+  // All table border regions.
+  QVector<ElementRegion> m_tableBorderRegions;
 
-        void parseFencedCodeBlockRegions(QAtomicInt &p_stop);
+private:
+  void parseImageRegions(QAtomicInt &p_stop);
 
-        void parseInlineEquationRegions(QAtomicInt &p_stop);
+  void parseHeaderRegions(QAtomicInt &p_stop);
 
-        void parseDisplayFormulaRegions(QAtomicInt &p_stop);
+  void parseFencedCodeBlockRegions(QAtomicInt &p_stop);
 
-        void parseHRuleRegions(QAtomicInt &p_stop);
+  void parseInlineEquationRegions(QAtomicInt &p_stop);
 
-        void parseTableRegions(QAtomicInt &p_stop);
+  void parseDisplayFormulaRegions(QAtomicInt &p_stop);
 
-        void parseTableHeaderRegions(QAtomicInt &p_stop);
+  void parseHRuleRegions(QAtomicInt &p_stop);
 
-        void parseTableBorderRegions(QAtomicInt &p_stop);
+  void parseTableRegions(QAtomicInt &p_stop);
 
-        void parseRegions(QAtomicInt &p_stop,
-                          pmh_element_type p_type,
-                          QVector<ElementRegion> &p_result,
-                          bool p_sort = false);
-    };
+  void parseTableHeaderRegions(QAtomicInt &p_stop);
 
-    class PegParserWorker : public QThread
-    {
-        Q_OBJECT
-    public:
-        enum WorkerState
-        {
-            Idle,
-            Busy,
-            Cancelled,
-            Finished
-        };
+  void parseTableBorderRegions(QAtomicInt &p_stop);
 
-        explicit PegParserWorker(QObject *p_parent = nullptr);
+  void parseRegions(QAtomicInt &p_stop, pmh_element_type p_type, QVector<ElementRegion> &p_result,
+                    bool p_sort = false);
+};
 
-        void prepareParse(const QSharedPointer<PegParseConfig> &p_config);
+class PegParserWorker : public QThread {
+  Q_OBJECT
+public:
+  enum WorkerState { Idle, Busy, Cancelled, Finished };
 
-        void reset();
+  explicit PegParserWorker(QObject *p_parent = nullptr);
 
-        int state() const
-        {
-            return m_state;
-        }
+  void prepareParse(const QSharedPointer<PegParseConfig> &p_config);
 
-        TimeStamp workTimeStamp() const
-        {
-            if (m_parseConfig.isNull()) {
-                return 0;
-            }
+  void reset();
 
-            return m_parseConfig->m_timeStamp;
-        }
+  int state() const { return m_state; }
 
-        const QSharedPointer<PegParseConfig> &parseConfig() const
-        {
-            return m_parseConfig;
-        }
+  TimeStamp workTimeStamp() const {
+    if (m_parseConfig.isNull()) {
+      return 0;
+    }
 
-        const QSharedPointer<PegParseResult> &parseResult() const
-        {
-            return m_parseResult;
-        }
+    return m_parseConfig->m_timeStamp;
+  }
 
-    public slots:
-        void stop();
+  const QSharedPointer<PegParseConfig> &parseConfig() const { return m_parseConfig; }
 
-    protected:
-        void run() Q_DECL_OVERRIDE;
+  const QSharedPointer<PegParseResult> &parseResult() const { return m_parseResult; }
 
-    private:
-        QSharedPointer<PegParseResult> parseMarkdown(const QSharedPointer<PegParseConfig> &p_config,
-                                                     QAtomicInt &p_stop);
+public slots:
+  void stop();
 
-        bool isAskedToStop() const
-        {
-            return m_stop.loadAcquire() == 1;
-        }
+protected:
+  void run() Q_DECL_OVERRIDE;
 
-        QAtomicInt m_stop = 0;
+private:
+  QSharedPointer<PegParseResult> parseMarkdown(const QSharedPointer<PegParseConfig> &p_config,
+                                               QAtomicInt &p_stop);
 
-        int m_state = WorkerState::Idle;
+  bool isAskedToStop() const { return m_stop.loadAcquire() == 1; }
 
-        QSharedPointer<PegParseConfig> m_parseConfig;
+  QAtomicInt m_stop = 0;
 
-        QSharedPointer<PegParseResult> m_parseResult;
-    };
+  int m_state = WorkerState::Idle;
 
-    class PegParser : public QObject
-    {
-        Q_OBJECT
-    public:
-        explicit PegParser(QObject *p_parent = nullptr);
+  QSharedPointer<PegParseConfig> m_parseConfig;
 
-        ~PegParser();
+  QSharedPointer<PegParseResult> m_parseResult;
+};
 
-        QSharedPointer<PegParseResult> parse(const QSharedPointer<PegParseConfig> &p_config);
+class PegParser : public QObject {
+  Q_OBJECT
+public:
+  explicit PegParser(QObject *p_parent = nullptr);
 
-        void parseAsync(const QSharedPointer<PegParseConfig> &p_config);
+  ~PegParser();
 
-        static QVector<ElementRegion> parseImageRegions(const QSharedPointer<PegParseConfig> &p_config);
+  QSharedPointer<PegParseResult> parse(const QSharedPointer<PegParseConfig> &p_config);
 
-        // MUST pmh_free_elements() the result.
-        static pmh_element **parseMarkdownToElements(const QSharedPointer<PegParseConfig> &p_config);
+  void parseAsync(const QSharedPointer<PegParseConfig> &p_config);
 
-        static int getNumberOfStyles();
+  static QVector<ElementRegion> parseImageRegions(const QSharedPointer<PegParseConfig> &p_config);
 
-    signals:
-        void parseResultReady(const QSharedPointer<PegParseResult> &p_result);
+  // MUST pmh_free_elements() the result.
+  static pmh_element **parseMarkdownToElements(const QSharedPointer<PegParseConfig> &p_config);
 
-    private slots:
-        void handleWorkerFinished(PegParserWorker *p_worker);
+  static int getNumberOfStyles();
 
-    private:
-        void init();
+signals:
+  void parseResultReady(const QSharedPointer<PegParseResult> &p_result);
 
-        void clear();
+private slots:
+  void handleWorkerFinished(PegParserWorker *p_worker);
 
-        void pickWorker();
+private:
+  void init();
 
-        void scheduleWork(PegParserWorker *p_worker, const QSharedPointer<PegParseConfig> &p_config);
+  void clear();
 
-        // Maintain a fixed number of workers to pick work.
-        QVector<PegParserWorker *> m_workers;
+  void pickWorker();
 
-        QSharedPointer<PegParseConfig> m_pendingWork;
-    };
+  void scheduleWork(PegParserWorker *p_worker, const QSharedPointer<PegParseConfig> &p_config);
 
-}
-}
+  // Maintain a fixed number of workers to pick work.
+  QVector<PegParserWorker *> m_workers;
+
+  QSharedPointer<PegParseConfig> m_pendingWork;
+};
+
+} // namespace peg
+} // namespace vte
 
 #endif // PEGPARSER_H

@@ -20,61 +20,57 @@
  *  Boston, MA 02110-1301, USA.
  */
 
-#include <katevi/globalstate.h>
 #include "history.h"
 #include "macros.h"
 #include "mappings.h"
 #include "registers.h"
+#include <katevi/globalstate.h>
 
 #include <QDebug>
 
 using namespace KateVi;
 
-GlobalState::GlobalState()
-{
-    m_macros = new Macros();
-    m_mappings = new Mappings();
-    m_registers = new Registers();
-    m_searchHistory = new History();
-    m_replaceHistory = new History();
-    m_commandHistory = new History();
+GlobalState::GlobalState() {
+  m_macros = new Macros();
+  m_mappings = new Mappings();
+  m_registers = new Registers();
+  m_searchHistory = new History();
+  m_replaceHistory = new History();
+  m_commandHistory = new History();
 
-    readConfig();
+  readConfig();
 }
 
-GlobalState::~GlobalState()
-{
-    writeConfig();
+GlobalState::~GlobalState() {
+  writeConfig();
 
-    delete m_searchHistory;
-    delete m_replaceHistory;
-    delete m_commandHistory;
-    delete m_macros;
-    delete m_mappings;
-    delete m_registers;
+  delete m_searchHistory;
+  delete m_replaceHistory;
+  delete m_commandHistory;
+  delete m_macros;
+  delete m_mappings;
+  delete m_registers;
 }
 
-void GlobalState::writeConfig() const
-{
-    qDebug() << "Not implemented yet";
-    /*
-    // FIXME: use own groups instead of one big group!
-    KConfigGroup config(configFile, "Kate Vi Input Mode Settings");
-    m_macros->writeConfig(config);
-    m_mappings->writeConfig(config);
-    m_registers->writeConfig(config);
-    */
+void GlobalState::writeConfig() const {
+  qDebug() << "Not implemented yet";
+  /*
+  // FIXME: use own groups instead of one big group!
+  KConfigGroup config(configFile, "Kate Vi Input Mode Settings");
+  m_macros->writeConfig(config);
+  m_mappings->writeConfig(config);
+  m_registers->writeConfig(config);
+  */
 }
 
-void GlobalState::readConfig()
-{
-    qDebug() << "Not implemented yet";
-    /*
-    // FIXME: use own groups instead of one big group!
-    const KConfigGroup config(configFile, "Kate Vi Input Mode Settings");
+void GlobalState::readConfig() {
+  qDebug() << "Not implemented yet";
+  /*
+  // FIXME: use own groups instead of one big group!
+  const KConfigGroup config(configFile, "Kate Vi Input Mode Settings");
 
-    m_macros->readConfig(config);
-    m_mappings->readConfig(config);
-    m_registers->readConfig(config);
-    */
+  m_macros->readConfig(config);
+  m_mappings->readConfig(config);
+  m_registers->readConfig(config);
+  */
 }

@@ -21,13 +21,12 @@
 
 #include <katevi/definitions.h>
 
-#include <QString>
 #include <QChar>
-#include <QMap>
 #include <QList>
+#include <QMap>
+#include <QString>
 
-namespace KateVi
-{
+namespace KateVi {
 
 const QChar BlackHoleRegister = QLatin1Char('_');
 const QChar SmallDeleteRegister = QLatin1Char('-');
@@ -39,34 +38,33 @@ const QChar SystemClipboardRegister = QLatin1Char('+');
 const QChar UnnamedRegister = QLatin1Char('"');
 const QChar InsertStoppedRegister = QLatin1Char('^');
 
-class Registers
-{
+class Registers {
 public:
-    explicit Registers();
-    ~Registers();
+  explicit Registers();
+  ~Registers();
 
-    void writeConfig() const;
-    void readConfig();
+  void writeConfig() const;
+  void readConfig();
 
-    void setInsertStopped(const QString &text);
+  void setInsertStopped(const QString &text);
 
-    void set(const QChar &reg, const QString &text, OperationMode flag = CharWise);
-    QString getContent(const QChar &reg) const;
-    OperationMode getFlag(const QChar &reg) const;
-
-private:
-    typedef QPair<QString, OperationMode> Register;
+  void set(const QChar &reg, const QString &text, OperationMode flag = CharWise);
+  QString getContent(const QChar &reg) const;
+  OperationMode getFlag(const QChar &reg) const;
 
 private:
-    void setNumberedRegister(const QString &text, OperationMode flag = CharWise);
-    Register getRegister(const QChar &reg) const;
+  typedef QPair<QString, OperationMode> Register;
 
 private:
-    QList<Register> m_numbered;
-    QMap<QChar, Register> m_registers;
-    QChar m_default;
+  void setNumberedRegister(const QString &text, OperationMode flag = CharWise);
+  Register getRegister(const QChar &reg) const;
+
+private:
+  QList<Register> m_numbered;
+  QMap<QChar, Register> m_registers;
+  QChar m_default;
 };
 
-}
+} // namespace KateVi
 
 #endif // KATEVI_REGISTERS_H

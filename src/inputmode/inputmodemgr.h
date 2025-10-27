@@ -1,27 +1,25 @@
 #ifndef INPUTMODEMGR_H
 #define INPUTMODEMGR_H
 
-#include <QVector>
 #include "abstractinputmodefactory.h"
-#include <vtextedit/global.h>
+#include <QVector>
 #include <utils/noncopyable.h>
+#include <vtextedit/global.h>
 
-namespace vte
-{
-    class InputModeMgr : public Noncopyable
-    {
-    public:
-        static InputModeMgr &getInst();
+namespace vte {
+class InputModeMgr : public Noncopyable {
+public:
+  static InputModeMgr &getInst();
 
-        const QSharedPointer<AbstractInputModeFactory> &getFactory(InputMode p_mode);
+  const QSharedPointer<AbstractInputModeFactory> &getFactory(InputMode p_mode);
 
-    private:
-        InputModeMgr();
+private:
+  InputModeMgr();
 
-        static QSharedPointer<AbstractInputModeFactory> createModeFactory(InputMode p_mode);
+  static QSharedPointer<AbstractInputModeFactory> createModeFactory(InputMode p_mode);
 
-        QVector<QSharedPointer<AbstractInputModeFactory>> m_factories;
-    };
-}
+  QVector<QSharedPointer<AbstractInputModeFactory>> m_factories;
+};
+} // namespace vte
 
 #endif // INPUTMODEMGR_H

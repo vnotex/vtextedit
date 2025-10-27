@@ -27,41 +27,41 @@
 #include <QList>
 #include <QString>
 
-namespace KateVi
-{
+namespace KateVi {
 class InputModeManager;
 struct KeyEvent;
 
 /**
- * In e.g. Insert mode, Qt seems to feed each keypress through twice; once as a ShortcutOverride (even if the key
- * doesn't actually appear to be a ShortcutOverride) and then, whether the "ShortcutOverride" was accepted or not,
- * again as a KeyPress.  We don't want to store both, so this helper helps to decide what to do.
+ * In e.g. Insert mode, Qt seems to feed each keypress through twice; once as a
+ * ShortcutOverride (even if the key doesn't actually appear to be a
+ * ShortcutOverride) and then, whether the "ShortcutOverride" was accepted or
+ * not, again as a KeyPress.  We don't want to store both, so this helper helps
+ * to decide what to do.
  */
-bool isRepeatOfLastShortcutOverrideAsKeyPress(const QKeyEvent& currentKeyPress,
-                                              const QList<KeyEvent>& keyEventLog);
+bool isRepeatOfLastShortcutOverrideAsKeyPress(const QKeyEvent &currentKeyPress,
+                                              const QList<KeyEvent> &keyEventLog);
 
-class LastChangeRecorder
-{
+class LastChangeRecorder {
 public:
-    explicit LastChangeRecorder(InputModeManager *viInputModeManager);
-    ~LastChangeRecorder();
+  explicit LastChangeRecorder(InputModeManager *viInputModeManager);
+  ~LastChangeRecorder();
 
-    void record(const QKeyEvent &event);
-    void dropLast();
-    void clear();
+  void record(const QKeyEvent &event);
+  void dropLast();
+  void clear();
 
-    QString encodedChanges() const;
+  QString encodedChanges() const;
 
-    void replay(const QString &commands, const CompletionList &completions);
-    bool isReplaying() const;
+  void replay(const QString &commands, const CompletionList &completions);
+  bool isReplaying() const;
 
 private:
-    InputModeManager *m_viInputModeManager = nullptr;
+  InputModeManager *m_viInputModeManager = nullptr;
 
-    QList<KeyEvent> m_changeLog;
+  QList<KeyEvent> m_changeLog;
 
-    bool m_isReplaying = false;
+  bool m_isReplaying = false;
 };
-}
+} // namespace KateVi
 
 #endif // KATEVI_LASTCHANGERECORDER_H
