@@ -883,6 +883,18 @@ static QColor blendColors(const QColor &p_color1, const QColor &p_color2, int p_
 }
 
 void VTextEditor::setFontAndPaletteByStyleSheet(const QFont &p_font, const QPalette &p_palette) {
+  // Compute margin background color.
+  const auto &marginFmt = m_config->m_theme->editorStyle(Theme::ContentMargin);
+  auto marginBg = marginFmt.backgroundColor();
+  if (!marginBg.isValid()) {
+    // Auto-derive: tint editor background ~10% toward black (light) or white (dark).
+    const auto baseBg = p_palette.color(QPalette::Base);
+    const auto target = (baseBg.value() > 128) ? Qt::black : Qt::white;
+    marginBg = blendColors(baseBg, target, 26);
+  }
+
+  // The outer vte--VTextEdit background-color paints the non-viewport margin strips
+  // (side margins from maxContentWidth, scrollbar corner).
   QString styles(QStringLiteral("vte--VTextEdit {"
                                 "font-family: \"%1\";"
                                 "font-size: %2pt;"
@@ -893,25 +905,15 @@ void VTextEditor::setFontAndPaletteByStyleSheet(const QFont &p_font, const QPale
                      .arg(p_font.family())
                      .arg(p_font.pointSize())
                      .arg(p_palette.color(QPalette::Text).name())
-                     .arg(p_palette.color(QPalette::Base).name())
+                     .arg(marginBg.name())
                      .arg(p_palette.color(QPalette::HighlightedText).name())
                      .arg(p_palette.color(QPalette::Highlight).name()));
   setStyleSheet(styles);
 
-  // QPalette::Window controls all non-viewport QAbstractScrollArea background areas
-  // (side margins from maxContentWidth, scrollbar corner).
-  auto pal = m_textEdit->palette();
-  const auto &marginFmt = m_config->m_theme->editorStyle(Theme::ContentMargin);
-  auto marginBg = marginFmt.backgroundColor();
-  if (!marginBg.isValid()) {
-    // Auto-derive: tint editor background ~10% toward black (light) or white (dark).
-    const auto baseBg = p_palette.color(QPalette::Base);
-    const auto target = (baseBg.value() > 128) ? Qt::black : Qt::white;
-    marginBg = blendColors(baseBg, target, 26);
-  }
-  pal.setColor(QPalette::Window, marginBg);
-  m_textEdit->setPalette(pal);
-  m_textEdit->setAutoFillBackground(true);
+  // Set the viewport's content background separately.
+  // Using .QWidget selector to match only QWidget itself (not subclasses).
+  m_textEdit->viewport()->setStyleSheet(QStringLiteral(".QWidget { background-color: %1; }")
+                                            .arg(p_palette.color(QPalette::Base).name()));
 }
 
 void VTextEditor::peekText(const QString &p_text, FindFlags p_flags) {
