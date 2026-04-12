@@ -1,30 +1,30 @@
 #include <QApplication>
+#include <QLoggingCategory>
 #include <QMainWindow>
 #include <QSharedPointer>
-#include <QStatusBar>
 #include <QSslSocket>
-#include <QLoggingCategory>
+#include <QStatusBar>
 
 #include "helper.h"
 #include "logger.h"
 
-#include <vtextedit/vtexteditor.h>
-#include <vtextedit/vmarkdowneditor.h>
 #include <vtextedit/markdowneditorconfig.h>
+#include <vtextedit/vmarkdowneditor.h>
+#include <vtextedit/vtexteditor.h>
 
 #include <vtextedit/spellchecker.h>
 
 using namespace vte;
 
-static void setupSpellChecker()
-{
-    SpellChecker::addDictionaryCustomSearchPaths(QStringList(QStringLiteral("D:/tmp/dicts")));
+static void setupSpellChecker() {
+  SpellChecker::addDictionaryCustomSearchPaths(QStringList(QStringLiteral("D:/tmp/dicts")));
 }
 
 /*
 static VTextEditor *setupTextEditor(QWidget *p_parent)
 {
     auto editorConfig = QSharedPointer<TextEditorConfig>::create();
+    editorConfig->m_lineSpacing = 1.5;
     auto editorParas = QSharedPointer<TextEditorParameters>::create();
     editorParas->m_spellCheckEnabled = true;
 
@@ -37,51 +37,50 @@ static VTextEditor *setupTextEditor(QWidget *p_parent)
 }
 */
 
-static VMarkdownEditor *setupMarkdownEditor(QWidget *p_parent)
-{
-    auto editorConfig = QSharedPointer<TextEditorConfig>::create();
-    editorConfig->m_inputMode = InputMode::VscodeMode;
-    auto markdownEditorConfig = QSharedPointer<MarkdownEditorConfig>::create(editorConfig);
-    auto editorParas = QSharedPointer<TextEditorParameters>::create();
-    editorParas->m_spellCheckEnabled = false;
+static VMarkdownEditor *setupMarkdownEditor(QWidget *p_parent) {
+  auto editorConfig = QSharedPointer<TextEditorConfig>::create();
+  editorConfig->m_inputMode = InputMode::VscodeMode;
+  editorConfig->m_lineSpacing = 1.5;
+  auto markdownEditorConfig = QSharedPointer<MarkdownEditorConfig>::create(editorConfig);
+  auto editorParas = QSharedPointer<TextEditorParameters>::create();
+  editorParas->m_spellCheckEnabled = false;
 
-    auto editor = new VMarkdownEditor(markdownEditorConfig, editorParas, p_parent);
-    editor->enableInternalContextMenu();
-    editor->setBasePath(":/demo/data/example_files");
-    editor->setText(Helper::getMarkdownText());
-    return editor;
+  auto editor = new VMarkdownEditor(markdownEditorConfig, editorParas, p_parent);
+  editor->enableInternalContextMenu();
+  editor->setBasePath(":/demo/data/example_files");
+  editor->setText(Helper::getMarkdownText());
+  return editor;
 }
 
-int main(int p_argc, char *p_argv[])
-{
-    QApplication app(p_argc, p_argv);
+int main(int p_argc, char *p_argv[]) {
+  QApplication app(p_argc, p_argv);
 
-    QLoggingCategory::setFilterRules("kf.sonnet.clients.hunspell.debug=true");
-    // QLoggingCategory::setFilterRules("kf.sonnet.core.debug=true");
+  QLoggingCategory::setFilterRules("kf.sonnet.clients.hunspell.debug=true");
+  // QLoggingCategory::setFilterRules("kf.sonnet.core.debug=true");
 
-    qInfo() << "OpenSSL build version:" << QSslSocket::sslLibraryBuildVersionString()
-            << "link version:" << QSslSocket::sslLibraryVersionNumber();
+  qInfo() << "OpenSSL build version:" << QSslSocket::sslLibraryBuildVersionString()
+          << "link version:" << QSslSocket::sslLibraryVersionNumber();
 
-    qInstallMessageHandler(&Logger::log);
+  qInstallMessageHandler(&Logger::log);
 
-    QMainWindow win;
+  QMainWindow win;
 
-    setupSpellChecker();
+  setupSpellChecker();
 
-    VTextEditor::addSyntaxCustomSearchPaths(QStringList(QStringLiteral(":/demo/data")));
+  VTextEditor::addSyntaxCustomSearchPaths(QStringList(QStringLiteral(":/demo/data")));
 
-    auto editor = setupMarkdownEditor(&win);
+  auto editor = setupMarkdownEditor(&win);
 
-    win.setCentralWidget(editor);
+  win.setCentralWidget(editor);
 
-    auto statusWidget = editor->statusWidget();
-    win.statusBar()->addWidget(statusWidget.data());
+  auto statusWidget = editor->statusWidget();
+  win.statusBar()->addWidget(statusWidget.data());
 
-    win.resize(800, 600);
-    win.show();
+  win.resize(800, 600);
+  win.show();
 
-    int ret = app.exec();
-    win.statusBar()->removeWidget(statusWidget.data());
+  int ret = app.exec();
+  win.statusBar()->removeWidget(statusWidget.data());
 
-    return ret;
+  return ret;
 }
