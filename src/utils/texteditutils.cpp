@@ -153,7 +153,7 @@ void TextEditUtils::scrollBlockInPage(QTextEdit *p_edit, int p_blockNumber,
   const int top = contentOffsetAtTop(p_edit);
   const auto blockRect = doc->documentLayout()->blockBoundingRect(block);
 
-  int height = p_edit->rect().height();
+  int height = p_edit->viewport()->rect().height();
   {
     QScrollBar *sbar = p_edit->horizontalScrollBar();
     if (sbar && sbar->isVisible()) {

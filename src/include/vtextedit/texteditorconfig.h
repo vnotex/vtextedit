@@ -54,6 +54,9 @@ public:
 
   // Line spacing multiplier. 1.0 = default. Must be >= 1.0.
   qreal m_lineSpacing = 1.0;
+
+  // Maximum content width in pixels. 0 = disabled (content fills full width).
+  int m_maxContentWidth = 0;
 };
 
 // Set only on construction.

@@ -362,6 +362,8 @@ void VTextEditor::updateFromConfig() {
   }
 
   applyLineSpacing();
+
+  m_textEdit->setMaxContentWidth(m_config->m_maxContentWidth);
 }
 
 void VTextEditor::applyLineSpacing() {
@@ -671,7 +673,8 @@ void VTextEditor::triggerCompletion(bool p_reversed) {
   auto candidates = Completer::generateCompletionCandidates(
       m_completerInterface.data(), prefixRange.first, prefixRange.second, p_reversed);
 
-  const QRect popupRect = m_textEdit->cursorRect();
+  QRect popupRect = m_textEdit->cursorRect();
+  popupRect.translate(m_textEdit->viewport()->pos());
   completer()->triggerCompletion(m_completerInterface.data(), candidates, prefixRange, p_reversed,
                                  popupRect);
 }
@@ -800,7 +803,7 @@ void VTextEditor::scrollToLine(int p_lineNumber, bool p_forceCursor) {
   TextEditUtils::scrollBlockInPage(m_textEdit, p_lineNumber, TextEditUtils::PagePosition::Top, 0);
 
   const auto rect = m_textEdit->cursorRect();
-  if (p_forceCursor || rect.y() < 0 || rect.y() > m_textEdit->rect().height()) {
+  if (p_forceCursor || rect.y() < 0 || rect.y() > m_textEdit->viewport()->rect().height()) {
     // Move the cursor.
     auto cursor = m_textEdit->textCursor();
     auto block = document()->findBlockByNumber(p_lineNumber);
@@ -885,6 +888,11 @@ void VTextEditor::setFontAndPaletteByStyleSheet(const QFont &p_font, const QPale
                      .arg(p_palette.color(QPalette::HighlightedText).name())
                      .arg(p_palette.color(QPalette::Highlight).name()));
   setStyleSheet(styles);
+
+  // Set Window palette role to match Base so viewport margin areas blend with editor background.
+  auto pal = m_textEdit->palette();
+  pal.setColor(QPalette::Window, p_palette.color(QPalette::Base));
+  m_textEdit->setPalette(pal);
 }
 
 void VTextEditor::peekText(const QString &p_text, FindFlags p_flags) {
@@ -1157,7 +1165,7 @@ void VTextEditor::highlightSearch(const QList<QTextCursor> &p_results, int p_cur
     // Zero-length match.
     const auto rect = m_textEdit->cursorRect(p_results[p_currentIdx]);
     QToolTip::hideText();
-    QToolTip::showText(m_textEdit->mapToGlobal(rect.topLeft()), tr("Zero-length match"),
+    QToolTip::showText(m_textEdit->viewport()->mapToGlobal(rect.topLeft()), tr("Zero-length match"),
                        m_textEdit);
   }
 }
@@ -1276,7 +1284,9 @@ void VTextEditor::enableInternalContextMenu() {
   connect(m_textEdit, &vte::VTextEdit::contextMenuEventRequested, this,
           [this](QContextMenuEvent *p_event, bool *p_handled, QScopedPointer<QMenu> *p_menu) {
             *p_handled = true;
-            p_menu->reset(m_textEdit->createStandardContextMenu(p_event->pos()));
+            p_menu->reset(m_textEdit->createStandardContextMenu(
+                p_event->pos() + QPoint(m_textEdit->horizontalScrollBar()->value(),
+                                        m_textEdit->verticalScrollBar()->value())));
             appendSpellCheckMenu(p_event, p_menu->data());
           });
 }

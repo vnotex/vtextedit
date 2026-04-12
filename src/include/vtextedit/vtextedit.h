@@ -127,6 +127,9 @@ public:
 
   void setCenterCursor(CenterCursor p_centerCursor);
 
+  void setMaxContentWidth(int p_width);
+  int maxContentWidth() const;
+
   void setExpandTab(bool p_enable);
 
   bool isTabExpanded() const;
@@ -301,6 +304,11 @@ private:
 
   // keyReleaseEvent count needed to release the leader key.
   int m_leaderKeyReleaseCount = 0;
+
+  void updateContentWidthMargins();
+
+  // Maximum content width in pixels. 0 = disabled.
+  int m_maxContentWidth = 0;
 
   static bool s_forceInputMethodDisabled;
 };

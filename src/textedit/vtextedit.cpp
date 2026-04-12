@@ -140,6 +140,7 @@ void VTextEdit::handleCursorPositionChange() {
 
 void VTextEdit::resizeEvent(QResizeEvent *p_event) {
   QTextEdit::resizeEvent(p_event);
+  updateContentWidthMargins();
   emit resized();
 }
 
@@ -553,6 +554,38 @@ void VTextEdit::setCenterCursor(CenterCursor p_centerCursor) {
     m_centerCursor = p_centerCursor;
     checkCenterCursor();
   }
+}
+
+void VTextEdit::setMaxContentWidth(int p_width) {
+  m_maxContentWidth = p_width;
+  updateContentWidthMargins();
+}
+
+int VTextEdit::maxContentWidth() const { return m_maxContentWidth; }
+
+void VTextEdit::updateContentWidthMargins() {
+  if (m_maxContentWidth <= 0) {
+    // Disabled — reset to zero margins.
+    setViewportMargins(0, 0, 0, 0);
+    return;
+  }
+
+  // Available width = current viewport width + existing left/right margins
+  // (because viewport width is already reduced by any previous margins).
+  const auto margins = viewportMargins();
+  const int availableWidth =
+      viewport()->width() + static_cast<int>(margins.left()) + static_cast<int>(margins.right());
+
+  const int totalMargin = availableWidth - m_maxContentWidth;
+
+  // Apply 20px minimum threshold per side (40px total minimum).
+  if (totalMargin < 40) {
+    setViewportMargins(0, 0, 0, 0);
+    return;
+  }
+
+  const int sideMargin = totalMargin / 2;
+  setViewportMargins(sideMargin, 0, totalMargin - sideMargin, 0);
 }
 
 void VTextEdit::setExpandTab(bool p_enable) { m_expandTab = p_enable; }
