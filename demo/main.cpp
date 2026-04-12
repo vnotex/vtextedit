@@ -40,7 +40,7 @@ static VTextEditor *setupTextEditor(QWidget *p_parent)
 static VMarkdownEditor *setupMarkdownEditor(QWidget *p_parent) {
   auto editorConfig = QSharedPointer<TextEditorConfig>::create();
   editorConfig->m_inputMode = InputMode::VscodeMode;
-  editorConfig->m_lineSpacing = 1.5;
+  editorConfig->m_lineSpacing = 1.25;
   auto markdownEditorConfig = QSharedPointer<MarkdownEditorConfig>::create(editorConfig);
   auto editorParas = QSharedPointer<TextEditorParameters>::create();
   editorParas->m_spellCheckEnabled = false;
