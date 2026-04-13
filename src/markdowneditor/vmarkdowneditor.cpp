@@ -19,6 +19,7 @@
 #include "webcodeblockhighlighter.h"
 
 #include <QDebug>
+#include <QFontMetricsF>
 
 using namespace vte;
 
@@ -139,6 +140,8 @@ void VMarkdownEditor::updateFromConfig() {
 
   updateInplacePreviewSources();
 
+  applyLineSpacing();
+
   updateSpaceWidth();
 }
 
@@ -208,6 +211,20 @@ void VMarkdownEditor::zoom(int p_delta) {
   getHighlighter()->updateStylesFontSize(postFontSize - preFontSize);
 
   updateSpaceWidth();
+  applyLineSpacing();
+}
+
+void VMarkdownEditor::applyLineSpacing() {
+  qreal multiplier = qMax(m_config->m_textEditorConfig->m_lineSpacing, 1.0);
+  QFontMetricsF fmf(m_textEdit->font(), m_textEdit);
+  const qreal leadingSpace = fmf.lineSpacing() * (multiplier - 1.0);
+
+  if (qFuzzyCompare(documentLayout()->getLeadingSpaceOfLine() + 1.0, leadingSpace + 1.0)) {
+    return;
+  }
+
+  documentLayout()->setLeadingSpaceOfLine(leadingSpace);
+  documentLayout()->relayout();
 }
 
 void VMarkdownEditor::updateSpaceWidth() {

@@ -85,6 +85,8 @@ private:
 
   void updateInplacePreviewSources();
 
+  void applyLineSpacing();
+
   void updateSpaceWidth();
 
   QScopedPointer<EditorPegMarkdownHighlighter> m_highlighterInterface;

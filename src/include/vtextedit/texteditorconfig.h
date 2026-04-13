@@ -51,6 +51,9 @@ public:
   // Highlight trailing space and tab.
   // TODO: for current implementation, this feature has perf issue.
   bool m_highlightWhitespace = false;
+
+  // Line spacing multiplier. 1.0 = default. Must be >= 1.0.
+  qreal m_lineSpacing = 1.0;
 };
 
 // Set only on construction.

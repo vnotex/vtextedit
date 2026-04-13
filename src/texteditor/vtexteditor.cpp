@@ -32,6 +32,7 @@
 #include <QPair>
 #include <QRegularExpression>
 #include <QScrollBar>
+#include <QTextBlockFormat>
 #include <QTimer>
 #include <QToolTip>
 
@@ -179,6 +180,8 @@ void VTextEditor::setText(const QString &p_text) {
   if (m_config->m_lineEndingPolicy == LineEndingPolicy::File) {
     m_lineEnding = TextUtils::detectLineEnding(p_text);
   }
+
+  applyLineSpacing();
 }
 
 QString VTextEditor::getText() const {
@@ -357,6 +360,30 @@ void VTextEditor::updateFromConfig() {
     }
     m_textEdit->setTabStopWidthInSpaces(m_config->m_tabStopWidth);
   }
+
+  applyLineSpacing();
+}
+
+void VTextEditor::applyLineSpacing() {
+  auto lineSpacing = qMax(m_config->m_lineSpacing, 1.0);
+
+  QTextBlockFormat format;
+  if (lineSpacing == 1.0) {
+    format.setLineHeight(0, QTextBlockFormat::SingleHeight);
+  } else {
+    format.setLineHeight(lineSpacing * 100, QTextBlockFormat::ProportionalHeight);
+  }
+
+  auto textDocument = document();
+  bool modified = textDocument->isModified();
+
+  QTextCursor cursor(textDocument);
+  cursor.select(QTextCursor::Document);
+  cursor.beginEditBlock();
+  cursor.mergeBlockFormat(format);
+  cursor.endEditBlock();
+
+  textDocument->setModified(modified);
 }
 
 void VTextEditor::updateSpaceWidth() {

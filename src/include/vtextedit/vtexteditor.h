@@ -236,6 +236,8 @@ private:
 
   void updateSpaceWidth();
 
+  void applyLineSpacing();
+
   static bool hasBackReference(const QString &p_regExpText);
 
   static QString resolveBackReferenceInReplaceText(const QString &p_replaceText, QString p_text,
