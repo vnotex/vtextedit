@@ -104,6 +104,7 @@ public:
     Search,
     SearchUnderCursor,
     Preview,
+    ContentMargin,
     MaxEditorStyle
   };
   Q_ENUM(EditorStyle)

@@ -873,6 +873,15 @@ void VTextEditor::setFontPointSizeByStyleSheet(int p_ptSize) {
   ensurePolished();
 }
 
+// Blend p_color1 toward p_color2 by p_ratio (0-255).
+// p_ratio=0 returns p_color1, p_ratio=255 returns p_color2.
+static QColor blendColors(const QColor &p_color1, const QColor &p_color2, int p_ratio) {
+  int r = (p_color1.red() * (255 - p_ratio) + p_color2.red() * p_ratio) / 255;
+  int g = (p_color1.green() * (255 - p_ratio) + p_color2.green() * p_ratio) / 255;
+  int b = (p_color1.blue() * (255 - p_ratio) + p_color2.blue() * p_ratio) / 255;
+  return QColor(r, g, b);
+}
+
 void VTextEditor::setFontAndPaletteByStyleSheet(const QFont &p_font, const QPalette &p_palette) {
   QString styles(QStringLiteral("vte--VTextEdit {"
                                 "font-family: \"%1\";"
@@ -889,10 +898,20 @@ void VTextEditor::setFontAndPaletteByStyleSheet(const QFont &p_font, const QPale
                      .arg(p_palette.color(QPalette::Highlight).name()));
   setStyleSheet(styles);
 
-  // Set Window palette role to match Base so viewport margin areas blend with editor background.
+  // QPalette::Window controls all non-viewport QAbstractScrollArea background areas
+  // (side margins from maxContentWidth, scrollbar corner).
   auto pal = m_textEdit->palette();
-  pal.setColor(QPalette::Window, p_palette.color(QPalette::Base));
+  const auto &marginFmt = m_config->m_theme->editorStyle(Theme::ContentMargin);
+  auto marginBg = marginFmt.backgroundColor();
+  if (!marginBg.isValid()) {
+    // Auto-derive: tint editor background ~10% toward black (light) or white (dark).
+    const auto baseBg = p_palette.color(QPalette::Base);
+    const auto target = (baseBg.value() > 128) ? Qt::black : Qt::white;
+    marginBg = blendColors(baseBg, target, 26);
+  }
+  pal.setColor(QPalette::Window, marginBg);
   m_textEdit->setPalette(pal);
+  m_textEdit->setAutoFillBackground(true);
 }
 
 void VTextEditor::peekText(const QString &p_text, FindFlags p_flags) {

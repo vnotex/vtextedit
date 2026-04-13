@@ -54,6 +54,9 @@
             "//comment" : "Search highlight under cursor",
             "text-color" : "#222222",
             "background-color" : "#66bb6a"
+        },
+        "ContentMargin" : {
+            "//comment" : "Auto-derived from editor background when no color specified"
         }
     },
     "//comment" : "Override the Text style in editor-styles",
