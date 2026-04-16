@@ -887,10 +887,10 @@ void VTextEditor::setFontAndPaletteByStyleSheet(const QFont &p_font, const QPale
   const auto &marginFmt = m_config->m_theme->editorStyle(Theme::ContentMargin);
   auto marginBg = marginFmt.backgroundColor();
   if (!marginBg.isValid()) {
-    // Auto-derive: tint editor background ~10% toward black (light) or white (dark).
+    // Auto-derive: tint editor background ~4% toward black (light) or white (dark).
     const auto baseBg = p_palette.color(QPalette::Base);
     const auto target = (baseBg.value() > 128) ? Qt::black : Qt::white;
-    marginBg = blendColors(baseBg, target, 26);
+    marginBg = blendColors(baseBg, target, 10);
   }
 
   // The outer vte--VTextEdit background-color paints the non-viewport margin strips
