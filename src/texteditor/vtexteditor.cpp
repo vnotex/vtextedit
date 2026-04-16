@@ -1305,9 +1305,7 @@ void VTextEditor::enableInternalContextMenu() {
   connect(m_textEdit, &vte::VTextEdit::contextMenuEventRequested, this,
           [this](QContextMenuEvent *p_event, bool *p_handled, QScopedPointer<QMenu> *p_menu) {
             *p_handled = true;
-            p_menu->reset(m_textEdit->createStandardContextMenu(
-                p_event->pos() + QPoint(m_textEdit->horizontalScrollBar()->value(),
-                                        m_textEdit->verticalScrollBar()->value())));
+            p_menu->reset(m_textEdit->createStandardContextMenu(p_event->pos()));
             appendSpellCheckMenu(p_event, p_menu->data());
           });
 }
