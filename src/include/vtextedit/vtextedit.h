@@ -250,6 +250,8 @@ private:
 
   static QChar matchingClosingBracket(const QChar &p_open);
 
+  void updateContentWidthMargins();
+
   int m_cursorLine = -1;
 
   // Input mode.
@@ -304,8 +306,6 @@ private:
 
   // keyReleaseEvent count needed to release the leader key.
   int m_leaderKeyReleaseCount = 0;
-
-  void updateContentWidthMargins();
 
   // Maximum content width in pixels. 0 = disabled.
   int m_maxContentWidth = 0;
