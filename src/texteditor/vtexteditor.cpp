@@ -384,6 +384,7 @@ void VTextEditor::updateFromConfig() {
         th = KSyntaxHighlighterWrapper::repository()->defaultTheme();
       }
       sh->setTheme(th);
+      sh->clearFormatCache();
       sh->rehighlight();
     }
   }

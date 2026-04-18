@@ -16,6 +16,8 @@ public:
 
   void insert(int p_id, const QTextCharFormat &p_format);
 
+  void clear();
+
 private:
   struct CacheItem {
     bool m_valid = false;

@@ -31,3 +31,9 @@ void FormatCache::insert(int p_id, const QTextCharFormat &p_format) {
   m_cache[p_id].m_valid = true;
   m_cache[p_id].m_textCharFormat = p_format;
 }
+
+void FormatCache::clear() {
+  for (auto &item : m_cache) {
+    item.m_valid = false;
+  }
+}

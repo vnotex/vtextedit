@@ -146,4 +146,6 @@ bool SyntaxHighlighter::isValidSyntax(const QString &p_syntax) {
   return def.isValid();
 }
 
+void SyntaxHighlighter::clearFormatCache() { m_formatCache.clear(); }
+
 bool SyntaxHighlighter::isSyntaxFoldingEnabled() const { return true; }

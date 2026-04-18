@@ -21,6 +21,10 @@ public:
   // @p_theme: a theme file path or a theme name.
   SyntaxHighlighter(QTextDocument *p_doc, const QString &p_theme, const QString &p_syntax);
 
+  // Invalidate cached QTextCharFormat entries so the next rehighlight()
+  // picks up the current KSyntaxHighlighting::Theme colours.
+  void clearFormatCache();
+
   bool isSyntaxFoldingEnabled() const Q_DECL_OVERRIDE;
 
   static bool isValidSyntax(const QString &p_syntax);
