@@ -22,6 +22,9 @@
 #include "syntaxhighlighter.h"
 #include "textfolding.h"
 
+#include <utils/utils.h>
+#include <Repository>
+#include <Theme>
 #include <vtextedit/spellchecker.h>
 #include <vtextedit/texteditutils.h>
 #include <vtextedit/textutils.h>
@@ -364,6 +367,26 @@ void VTextEditor::updateFromConfig() {
   applyLineSpacing();
 
   m_textEdit->setMaxContentWidth(m_config->m_maxContentWidth);
+
+  // Update syntax highlighter theme.
+  {
+    auto *sh = dynamic_cast<SyntaxHighlighter *>(m_highlighter);
+    if (sh) {
+      KSyntaxHighlighting::Theme th;
+      if (!m_config->m_syntaxTheme.isEmpty()) {
+        if (Utils::isFilePath(m_config->m_syntaxTheme)) {
+          th = KSyntaxHighlighterWrapper::repository()->themeFromFile(m_config->m_syntaxTheme);
+        } else {
+          th = KSyntaxHighlighterWrapper::repository()->theme(m_config->m_syntaxTheme);
+        }
+      }
+      if (!th.isValid()) {
+        th = KSyntaxHighlighterWrapper::repository()->defaultTheme();
+      }
+      sh->setTheme(th);
+      sh->rehighlight();
+    }
+  }
 }
 
 void VTextEditor::applyLineSpacing() {
