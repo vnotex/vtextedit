@@ -12,7 +12,7 @@
 
 #include <vtextedit/markdownhighlighterdata.h>
 
-#include "highlightelement.h"
+#include "markdownastwalker.h"
 
 namespace vte {
 namespace md {
@@ -42,25 +42,15 @@ struct MarkdownParseConfig {
 struct MarkdownParseResult {
   MarkdownParseResult(const QSharedPointer<MarkdownParseConfig> &p_config)
       : m_timeStamp(p_config->m_timeStamp), m_numOfBlocks(p_config->m_numOfBlocks),
-        m_offset(p_config->m_offset), m_elements(nullptr) {}
+        m_offset(p_config->m_offset) {}
 
-  ~MarkdownParseResult() { clearElements(); }
-
-  void clearElements() {
-    if (m_elements) {
-      freeHighlightElements(m_elements, NUM_HIGHLIGHT_STYLES);
-      m_elements = nullptr;
-    }
-  }
+  ~MarkdownParseResult() = default;
 
   bool operator<(const MarkdownParseResult &p_other) const { return m_timeStamp < p_other.m_timeStamp; }
 
   QString toString() const { return QStringLiteral("MarkdownParseResult ts %1").arg(m_timeStamp); }
 
-  bool isEmpty() const { return !m_elements; }
-
-  // Parse m_pmhElements.
-  void parse(QAtomicInt &p_stop, bool p_fast);
+  bool isEmpty() const { return m_blocksHighlights.isEmpty(); }
 
   TimeStamp m_timeStamp = 0;
 
@@ -68,7 +58,7 @@ struct MarkdownParseResult {
 
   int m_offset = 0;
 
-  HighlightElement **m_elements = nullptr;
+  QVector<QVector<HLUnit>> m_blocksHighlights;
 
   // All image link regions.
   QVector<ElementRegion> m_imageRegions;
@@ -100,28 +90,6 @@ struct MarkdownParseResult {
 
   // All table border regions.
   QVector<ElementRegion> m_tableBorderRegions;
-
-private:
-  void parseImageRegions(QAtomicInt &p_stop);
-
-  void parseHeaderRegions(QAtomicInt &p_stop);
-
-  void parseFencedCodeBlockRegions(QAtomicInt &p_stop);
-
-  void parseInlineEquationRegions(QAtomicInt &p_stop);
-
-  void parseDisplayFormulaRegions(QAtomicInt &p_stop);
-
-  void parseHRuleRegions(QAtomicInt &p_stop);
-
-  void parseTableRegions(QAtomicInt &p_stop);
-
-  void parseTableHeaderRegions(QAtomicInt &p_stop);
-
-  void parseTableBorderRegions(QAtomicInt &p_stop);
-
-  void parseRegions(QAtomicInt &p_stop, int p_type, QVector<ElementRegion> &p_result,
-                    bool p_sort = false);
 };
 
 class MarkdownParserWorker : public QThread {
@@ -157,7 +125,7 @@ protected:
 
 private:
   QSharedPointer<MarkdownParseResult> parseMarkdown(const QSharedPointer<MarkdownParseConfig> &p_config,
-                                               QAtomicInt &p_stop);
+                                                QAtomicInt &p_stop);
 
   bool isAskedToStop() const { return m_stop.loadAcquire() == 1; }
 
@@ -182,9 +150,6 @@ public:
   void parseAsync(const QSharedPointer<MarkdownParseConfig> &p_config);
 
   static QVector<ElementRegion> parseImageRegions(const QSharedPointer<MarkdownParseConfig> &p_config);
-
-  // Caller must free with freeHighlightElements().
-  static HighlightElement **parseMarkdownToElements(const QSharedPointer<MarkdownParseConfig> &p_config);
 
   static int getNumberOfStyles();
 

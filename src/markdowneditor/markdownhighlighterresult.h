@@ -49,11 +49,6 @@ public:
 
   void setCodeBlockHighlights(int p_index, const QVector<QVector<md::HLUnitStyle>> &p_highlights);
 
-  // Parse highlight elements for all the blocks from parse results.
-  static void parseBlocksHighlights(QVector<QVector<md::HLUnit>> &p_blocksHighlights,
-                                    const MarkdownHighlighter *p_peg,
-                                    const QSharedPointer<md::MarkdownParseResult> &p_result);
-
   TimeStamp m_timeStamp = 0;
 
   int m_numOfBlocks = 0;
@@ -94,11 +89,6 @@ public:
   QVector<md::HLUnitStyle> m_dummyHighlight;
 
 private:
-  // Parse highlight elements for blocks from one parse result.
-  static void parseBlocksHighlightOne(QVector<QVector<md::HLUnit>> &p_blocksHighlights,
-                                      const QTextDocument *p_doc, unsigned long p_pos,
-                                      unsigned long p_end, int p_styleIndex);
-
   // Parse fenced code blocks from parse results.
   void parseFencedCodeBlocks(const MarkdownHighlighter *p_peg,
                              const QSharedPointer<md::MarkdownParseResult> &p_result);

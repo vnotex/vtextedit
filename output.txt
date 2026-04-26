@@ -1,0 +1,151 @@
+********* Start testing of tests::TestCmarkProbe *********
+Config: Using QtTest library 6.9.3, Qt 6.9.3 (x86_64-little_endian-llp64 shared (dynamic) release build; by MSVC 2022), windows 11
+QDEBUG : tests::TestCmarkProbe::initTestCase() cmark version: 0.31.2
+PASS   : tests::TestCmarkProbe::initTestCase()
+QDEBUG : tests::TestCmarkProbe::testPositionModel() === testPositionModel: AST dump ===
+QDEBUG : tests::TestCmarkProbe::testPositionModel() Input: *emph* **strong** ~~strike~~
+
+QDEBUG : tests::TestCmarkProbe::testPositionModel() ENTER document [1:1 - 1:28]
+QDEBUG : tests::TestCmarkProbe::testPositionModel() ENTER paragraph [1:1 - 1:28]
+QDEBUG : tests::TestCmarkProbe::testPositionModel() ENTER emph [1:1 - 1:6]
+QDEBUG : tests::TestCmarkProbe::testPositionModel() EMPH: start_col= 1 end_col= 6
+QDEBUG : tests::TestCmarkProbe::testPositionModel()   If sc=1, delimiters INCLUDED (first * is col 1)
+QDEBUG : tests::TestCmarkProbe::testPositionModel()   If sc=2, delimiters EXCLUDED (content 'e' starts at col 2)
+QDEBUG : tests::TestCmarkProbe::testPositionModel() ENTER text [1:2 - 1:5]
+QDEBUG : tests::TestCmarkProbe::testPositionModel() EXIT  emph [1:1 - 1:6]
+QDEBUG : tests::TestCmarkProbe::testPositionModel() ENTER text [1:7 - 1:7]
+QDEBUG : tests::TestCmarkProbe::testPositionModel() ENTER strong [1:8 - 1:17]
+QDEBUG : tests::TestCmarkProbe::testPositionModel() STRONG: start_col= 8 end_col= 17
+QDEBUG : tests::TestCmarkProbe::testPositionModel()   '**' starts at col 8 (1-indexed byte offset)
+QDEBUG : tests::TestCmarkProbe::testPositionModel()   If sc=8, delimiters INCLUDED
+QDEBUG : tests::TestCmarkProbe::testPositionModel()   If sc=10, delimiters EXCLUDED
+QDEBUG : tests::TestCmarkProbe::testPositionModel() ENTER text [1:10 - 1:15]
+QDEBUG : tests::TestCmarkProbe::testPositionModel() EXIT  strong [1:8 - 1:17]
+QDEBUG : tests::TestCmarkProbe::testPositionModel() ENTER text [1:18 - 1:18]
+QDEBUG : tests::TestCmarkProbe::testPositionModel() ENTER strikethrough [1:19 - 1:28]
+QDEBUG : tests::TestCmarkProbe::testPositionModel() STRIKETHROUGH: start_col= 19 end_col= 28
+QDEBUG : tests::TestCmarkProbe::testPositionModel()   '~~' starts at col 19 (1-indexed byte offset)
+QDEBUG : tests::TestCmarkProbe::testPositionModel()   If sc=19, delimiters INCLUDED
+QDEBUG : tests::TestCmarkProbe::testPositionModel()   If sc=21, delimiters EXCLUDED
+QDEBUG : tests::TestCmarkProbe::testPositionModel() ENTER text [1:21 - 1:26]
+QDEBUG : tests::TestCmarkProbe::testPositionModel() EXIT  strikethrough [1:19 - 1:28]
+QDEBUG : tests::TestCmarkProbe::testPositionModel() EXIT  paragraph [1:1 - 1:28]
+QDEBUG : tests::TestCmarkProbe::testPositionModel() EXIT  document [1:1 - 1:28]
+PASS   : tests::TestCmarkProbe::testPositionModel()
+QDEBUG : tests::TestCmarkProbe::testDelimiterBoundary() === testDelimiterBoundary ===
+QDEBUG : tests::TestCmarkProbe::testDelimiterBoundary() EMPH(in bold-italic) input="***bold-italic***
+" => [1:1 - 1:17] (sc=1 means delimiter included, sc>1 means content-only)
+QDEBUG : tests::TestCmarkProbe::testDelimiterBoundary() LINK input="[link text](url)
+" => [1:1 - 1:16] (sc=1 means delimiter included, sc>1 means content-only)
+QDEBUG : tests::TestCmarkProbe::testDelimiterBoundary() CODE input="`code`
+" => [1:1 - 1:6] (sc=1 means delimiter included, sc>1 means content-only)
+QDEBUG : tests::TestCmarkProbe::testDelimiterBoundary() MARK input="==mark==
+" => [1:1 - 1:8] (sc=1 means delimiter included, sc>1 means content-only)
+QDEBUG : tests::TestCmarkProbe::testDelimiterBoundary() FORMULA_INLINE input="$math$
+" => [1:2 - 1:5] (sc=1 means delimiter included, sc>1 means content-only)
+PASS   : tests::TestCmarkProbe::testDelimiterBoundary()
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() === testExtensionSourcePositions: full AST ===
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER document type=1 [1:1 - 13:25]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER frontmatter type=12 [1:1 - 3:3]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER paragraph type=8 [5:1 - 5:38]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER strikethrough type=25 [5:1 - 5:10]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER text type=17 [5:3 - 5:8]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER text type=17 [5:11 - 5:11]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER mark type=26 [5:12 - 5:19]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER text type=17 [5:14 - 5:17]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER text type=17 [5:20 - 5:20]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER formula_inline type=27 [5:22 - 5:25]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER text type=17 [5:27 - 5:38]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER table type=13 [7:1 - 9:9]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER table_row type=14 [7:1 - 7:11]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER table_cell type=15 [7:2 - 7:5]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER text type=17 [7:2 - 7:4]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER table_cell type=15 [7:7 - 7:10]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER text type=17 [7:7 - 7:9]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER table_row type=14 [8:1 - 8:9]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER table_cell type=15 [8:2 - 8:4]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER table_cell type=15 [8:6 - 8:8]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER table_row type=14 [9:1 - 9:9]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER table_cell type=15 [9:2 - 9:4]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER text type=17 [9:2 - 9:3]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER table_cell type=15 [9:6 - 9:8]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER text type=17 [9:6 - 9:7]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER footnote_definition type=16 [11:1 - 12:0]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER paragraph type=8 [11:7 - 11:18]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER text type=17 [11:7 - 11:18]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER paragraph type=8 [13:1 - 13:25]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER text type=17 [13:1 - 13:10]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER footnote_reference type=30 [13:11 - 13:14]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() ENTER text type=17 [13:15 - 13:25]
+QDEBUG : tests::TestCmarkProbe::testExtensionSourcePositions() Total nodes (enter/leaf): 32 with positions: 32 without: 0
+PASS   : tests::TestCmarkProbe::testExtensionSourcePositions()
+QDEBUG : tests::TestCmarkProbe::testMultiLinePositions() === testMultiLinePositions ===
+QDEBUG : tests::TestCmarkProbe::testMultiLinePositions() document [1:1 - 10:3]
+QDEBUG : tests::TestCmarkProbe::testMultiLinePositions() block_quote [1:1 - 2:11]
+QDEBUG : tests::TestCmarkProbe::testMultiLinePositions()   BLOCK_QUOTE: end_line= 2 start_line= 1
+QDEBUG : tests::TestCmarkProbe::testMultiLinePositions() paragraph [1:3 - 2:11]
+QDEBUG : tests::TestCmarkProbe::testMultiLinePositions() text [1:3 - 1:12]
+QDEBUG : tests::TestCmarkProbe::testMultiLinePositions() softbreak [0:0 - 0:0]
+QDEBUG : tests::TestCmarkProbe::testMultiLinePositions() text [2:3 - 2:11]
+QDEBUG : tests::TestCmarkProbe::testMultiLinePositions() list [4:1 - 7:0]
+QDEBUG : tests::TestCmarkProbe::testMultiLinePositions()   LIST: end_line= 7 start_line= 4
+QDEBUG : tests::TestCmarkProbe::testMultiLinePositions() item [4:1 - 5:11]
+QDEBUG : tests::TestCmarkProbe::testMultiLinePositions() paragraph [4:3 - 5:11]
+QDEBUG : tests::TestCmarkProbe::testMultiLinePositions() text [4:3 - 4:8]
+QDEBUG : tests::TestCmarkProbe::testMultiLinePositions() softbreak [0:0 - 0:0]
+QDEBUG : tests::TestCmarkProbe::testMultiLinePositions() text [5:3 - 5:11]
+QDEBUG : tests::TestCmarkProbe::testMultiLinePositions() item [6:1 - 7:0]
+QDEBUG : tests::TestCmarkProbe::testMultiLinePositions() paragraph [6:3 - 6:8]
+QDEBUG : tests::TestCmarkProbe::testMultiLinePositions() text [6:3 - 6:8]
+QDEBUG : tests::TestCmarkProbe::testMultiLinePositions() code_block [8:1 - 10:3]
+QDEBUG : tests::TestCmarkProbe::testMultiLinePositions()   CODE_BLOCK: end_line= 10 start_line= 8
+PASS   : tests::TestCmarkProbe::testMultiLinePositions()
+QDEBUG : tests::TestCmarkProbe::testUtf8Columns() === testUtf8Columns ===
+QDEBUG : tests::TestCmarkProbe::testUtf8Columns() HEADING (CJK): start_col= 1 end_col= 14
+QDEBUG : tests::TestCmarkProbe::testUtf8Columns()   If end_col=14 -> byte offsets
+QDEBUG : tests::TestCmarkProbe::testUtf8Columns()   If end_col=6 -> codepoint offsets
+QDEBUG : tests::TestCmarkProbe::testUtf8Columns() TEXT (CJK content): start_col= 3 end_col= 14 literal= ????
+QDEBUG : tests::TestCmarkProbe::testUtf8Columns()   '?' starts at byte 3 (1-indexed). If sc=3 -> byte offset
+QDEBUG : tests::TestCmarkProbe::testUtf8Columns()   '?' is codepoint 3 (1-indexed). Ambiguous if sc=3
+QDEBUG : tests::TestCmarkProbe::testUtf8Columns() STRONG (emoji): start_col= 1 end_col= 16
+QDEBUG : tests::TestCmarkProbe::testUtf8Columns()   Total bytes=16. If ec=16 -> byte offsets
+QDEBUG : tests::TestCmarkProbe::testUtf8Columns()   Total codepoints=10. If ec=10 -> codepoint offsets
+QDEBUG : tests::TestCmarkProbe::testUtf8Columns() TEXT (emoji content): start_col= 3 end_col= 14 literal= ??bold??
+QDEBUG : tests::TestCmarkProbe::testUtf8Columns()   After '**??': byte=7, codepoint=4. Check sc value.
+PASS   : tests::TestCmarkProbe::testUtf8Columns()
+QDEBUG : tests::TestCmarkProbe::testHeadingLevel() Heading level 1 at line 1
+QDEBUG : tests::TestCmarkProbe::testHeadingLevel() Heading level 2 at line 2
+QDEBUG : tests::TestCmarkProbe::testHeadingLevel() Heading level 3 at line 3
+QDEBUG : tests::TestCmarkProbe::testHeadingLevel() Heading level 4 at line 4
+QDEBUG : tests::TestCmarkProbe::testHeadingLevel() Heading level 5 at line 5
+QDEBUG : tests::TestCmarkProbe::testHeadingLevel() Heading level 6 at line 6
+PASS   : tests::TestCmarkProbe::testHeadingLevel()
+QDEBUG : tests::TestCmarkProbe::testFenceInfo() CODE_BLOCK fence_info: cpp
+QDEBUG : tests::TestCmarkProbe::testFenceInfo() CODE_BLOCK literal: code
+
+PASS   : tests::TestCmarkProbe::testFenceInfo()
+QDEBUG : tests::TestCmarkProbe::testListType() Found BULLET_LIST
+QDEBUG : tests::TestCmarkProbe::testListType() Found ORDERED_LIST
+PASS   : tests::TestCmarkProbe::testListType()
+QDEBUG : tests::TestCmarkProbe::testTableStructure() === testTableStructure ===
+QDEBUG : tests::TestCmarkProbe::testTableStructure() TABLE found at line 1
+QDEBUG : tests::TestCmarkProbe::testTableStructure() TABLE_ROW # 1 at line 1
+QDEBUG : tests::TestCmarkProbe::testTableStructure() TABLE_ROW # 2 at line 2
+QDEBUG : tests::TestCmarkProbe::testTableStructure() TABLE_ROW # 3 at line 3
+QDEBUG : tests::TestCmarkProbe::testTableStructure() TABLE_ROW # 4 at line 4
+QDEBUG : tests::TestCmarkProbe::testTableStructure() Rows: 4 Cells: 8
+QDEBUG : tests::TestCmarkProbe::testTableStructure() NOTE: cmark includes the separator '|---|---|' as a TABLE_ROW
+PASS   : tests::TestCmarkProbe::testTableStructure()
+QDEBUG : tests::TestCmarkProbe::testFirstTableRowIsHeader() === testFirstTableRowIsHeader ===
+QDEBUG : tests::TestCmarkProbe::testFirstTableRowIsHeader() First TABLE_ROW line: 1
+QDEBUG : tests::TestCmarkProbe::testFirstTableRowIsHeader() Second TABLE_ROW line: 2
+QDEBUG : tests::TestCmarkProbe::testFirstTableRowIsHeader() STRATEGY: First child of TABLE node is always the header row.
+QDEBUG : tests::TestCmarkProbe::testFirstTableRowIsHeader()   The adapter should treat row index 0 as TABLEHEADER.
+PASS   : tests::TestCmarkProbe::testFirstTableRowIsHeader()
+QDEBUG : tests::TestCmarkProbe::testLinkUrl() LINK url: http://example.com
+QDEBUG : tests::TestCmarkProbe::testLinkUrl() LINK position: start_col= 1 end_col= 31
+QDEBUG : tests::TestCmarkProbe::testLinkUrl()   '[' is at col 1. If sc=1 -> includes opening bracket
+PASS   : tests::TestCmarkProbe::testLinkUrl()
+PASS   : tests::TestCmarkProbe::cleanupTestCase()
+Totals: 13 passed, 0 failed, 0 skipped, 0 blacklisted, 4ms
+********* Finished testing of tests::TestCmarkProbe *********

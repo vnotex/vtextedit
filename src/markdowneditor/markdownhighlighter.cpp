@@ -13,6 +13,7 @@
 #include <vtextedit/textutils.h>
 #include <vtextedit/theme.h>
 
+#include "markdownastwalker.h"
 #include "markdownhighlightblockdata.h"
 #include "markdownhighlighterresult.h"
 #include "markdownparser.h"
@@ -332,15 +333,23 @@ void MarkdownHighlighter::startFastParse(int p_position, int p_charsRemoved, int
   m_fastParseBlocks.first = firstBlockNum;
   m_fastParseBlocks.second = lastBlockNum;
 
+  // Call walkAndConvert directly with correct p_startBlock so HLUnits
+  // are at global block indices (firstBlockNum..lastBlockNum), not 0-based.
+  QByteArray utf8Data = text.toUtf8();
+  int docBlockCount = document()->blockCount();
+  auto walkResult = md::walkAndConvert(utf8Data, docBlockCount, offset, firstBlockNum, true);
+
   QSharedPointer<md::MarkdownParseConfig> config(new md::MarkdownParseConfig());
   config->m_timeStamp = m_timeStamp;
-  config->m_data = text.toUtf8();
-  config->m_numOfBlocks = document()->blockCount();
+  config->m_data = utf8Data;
+  config->m_numOfBlocks = docBlockCount;
   config->m_offset = offset;
   config->m_extensions = m_parserExts;
   config->m_fast = true;
 
-  QSharedPointer<md::MarkdownParseResult> parseRes = m_parser->parse(config);
+  QSharedPointer<md::MarkdownParseResult> parseRes(new md::MarkdownParseResult(config));
+  parseRes->m_blocksHighlights = std::move(walkResult.blocksHighlights);
+
   processFastParseResult(parseRes);
 }
 

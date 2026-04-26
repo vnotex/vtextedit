@@ -1,146 +1,9 @@
 #include "markdownparser.h"
 
-#include "cmarkadapter.h"
+#include "markdownastwalker.h"
 
 using namespace vte;
 using namespace vte::md;
-
-void MarkdownParseResult::parse(QAtomicInt &p_stop, bool p_fast) {
-  if (p_fast) {
-    return;
-  }
-
-  parseImageRegions(p_stop);
-
-  parseHeaderRegions(p_stop);
-
-  parseFencedCodeBlockRegions(p_stop);
-
-  parseInlineEquationRegions(p_stop);
-
-  parseDisplayFormulaRegions(p_stop);
-
-  parseHRuleRegions(p_stop);
-
-  parseTableRegions(p_stop);
-
-  parseTableHeaderRegions(p_stop);
-
-  parseTableBorderRegions(p_stop);
-}
-
-void MarkdownParseResult::parseImageRegions(QAtomicInt &p_stop) {
-  parseRegions(p_stop, 3, m_imageRegions, false);
-}
-
-void MarkdownParseResult::parseHeaderRegions(QAtomicInt &p_stop) {
-  // From Qt5.7, the capacity is preserved.
-  m_headerRegions.clear();
-  if (isEmpty()) {
-    return;
-  }
-
-  int hx[6] = {12, 13, 14, 15, 16, 17};
-  for (int i = 0; i < 6; ++i) {
-    HighlightElement *elem = m_elements[hx[i]];
-    while (elem != NULL) {
-      if (elem->end <= elem->pos) {
-        elem = elem->next;
-        continue;
-      }
-
-      if (p_stop.loadAcquire() == 1) {
-        return;
-      }
-
-      m_headerRegions.push_back(ElementRegion(m_offset + elem->pos, m_offset + elem->end));
-      elem = elem->next;
-    }
-  }
-
-  if (p_stop.loadAcquire() == 1) {
-    return;
-  }
-
-  std::sort(m_headerRegions.begin(), m_headerRegions.end());
-}
-
-void MarkdownParseResult::parseFencedCodeBlockRegions(QAtomicInt &p_stop) {
-  m_codeBlockRegions.clear();
-  if (isEmpty()) {
-    return;
-  }
-
-  HighlightElement *elem = m_elements[23];
-  while (elem != NULL) {
-    if (elem->end <= elem->pos) {
-      elem = elem->next;
-      continue;
-    }
-
-    if (p_stop.loadAcquire() == 1) {
-      return;
-    }
-
-    if (!m_codeBlockRegions.contains(m_offset + elem->pos)) {
-      m_codeBlockRegions.insert(m_offset + elem->pos,
-                                ElementRegion(m_offset + elem->pos, m_offset + elem->end));
-    }
-
-    elem = elem->next;
-  }
-}
-
-void MarkdownParseResult::parseInlineEquationRegions(QAtomicInt &p_stop) {
-  parseRegions(p_stop, 28, m_inlineEquationRegions, false);
-}
-
-void MarkdownParseResult::parseDisplayFormulaRegions(QAtomicInt &p_stop) {
-  parseRegions(p_stop, 27, m_displayFormulaRegions, true);
-}
-
-void MarkdownParseResult::parseHRuleRegions(QAtomicInt &p_stop) {
-  parseRegions(p_stop, 21, m_hruleRegions, false);
-}
-
-void MarkdownParseResult::parseTableRegions(QAtomicInt &p_stop) {
-  parseRegions(p_stop, 30, m_tableRegions, true);
-}
-
-void MarkdownParseResult::parseTableHeaderRegions(QAtomicInt &p_stop) {
-  parseRegions(p_stop, 31, m_tableHeaderRegions, true);
-}
-
-void MarkdownParseResult::parseTableBorderRegions(QAtomicInt &p_stop) {
-  parseRegions(p_stop, 32, m_tableBorderRegions, true);
-}
-
-void MarkdownParseResult::parseRegions(QAtomicInt &p_stop, int p_type,
-                                  QVector<ElementRegion> &p_result, bool p_sort) {
-  p_result.clear();
-  if (isEmpty()) {
-    return;
-  }
-
-  HighlightElement *elem = m_elements[p_type];
-  while (elem != NULL) {
-    if (elem->end <= elem->pos) {
-      elem = elem->next;
-      continue;
-    }
-
-    if (p_stop.loadAcquire() == 1) {
-      return;
-    }
-
-    p_result.push_back(ElementRegion(m_offset + elem->pos, m_offset + elem->end));
-    elem = elem->next;
-  }
-
-  if (p_sort && p_stop.loadAcquire() != 1) {
-    std::sort(p_result.begin(), p_result.end());
-  }
-}
 
 MarkdownParserWorker::MarkdownParserWorker(QObject *p_parent) : QThread(p_parent) {}
 
@@ -181,13 +44,26 @@ MarkdownParserWorker::parseMarkdown(const QSharedPointer<MarkdownParseConfig> &p
     return result;
   }
 
-  result->m_elements = MarkdownParser::parseMarkdownToElements(p_config);
+  auto walkResult = walkAndConvert(p_config->m_data, p_config->m_numOfBlocks,
+                                   p_config->m_offset, 0, p_config->m_fast);
 
   if (p_stop.loadAcquire() == 1) {
     return result;
   }
 
-  result->parse(p_stop, p_config->m_fast);
+  // Move walk results into parse result.
+  result->m_blocksHighlights = std::move(walkResult.blocksHighlights);
+  if (!p_config->m_fast) {
+    result->m_imageRegions = std::move(walkResult.imageRegions);
+    result->m_headerRegions = std::move(walkResult.headerRegions);
+    result->m_codeBlockRegions = std::move(walkResult.codeBlockRegions);
+    result->m_inlineEquationRegions = std::move(walkResult.inlineEquationRegions);
+    result->m_displayFormulaRegions = std::move(walkResult.displayFormulaRegions);
+    result->m_hruleRegions = std::move(walkResult.hruleRegions);
+    result->m_tableRegions = std::move(walkResult.tableRegions);
+    result->m_tableHeaderRegions = std::move(walkResult.tableHeaderRegions);
+    result->m_tableBorderRegions = std::move(walkResult.tableBorderRegions);
+  }
 
   return result;
 }
@@ -233,10 +109,21 @@ QSharedPointer<MarkdownParseResult> MarkdownParser::parse(const QSharedPointer<M
     return result;
   }
 
-  result->m_elements = MarkdownParser::parseMarkdownToElements(p_config);
+  auto walkResult = walkAndConvert(p_config->m_data, p_config->m_numOfBlocks,
+                                   p_config->m_offset, 0, p_config->m_fast);
 
-  QAtomicInt stop(0);
-  result->parse(stop, p_config->m_fast);
+  result->m_blocksHighlights = std::move(walkResult.blocksHighlights);
+  if (!p_config->m_fast) {
+    result->m_imageRegions = std::move(walkResult.imageRegions);
+    result->m_headerRegions = std::move(walkResult.headerRegions);
+    result->m_codeBlockRegions = std::move(walkResult.codeBlockRegions);
+    result->m_inlineEquationRegions = std::move(walkResult.inlineEquationRegions);
+    result->m_displayFormulaRegions = std::move(walkResult.displayFormulaRegions);
+    result->m_hruleRegions = std::move(walkResult.hruleRegions);
+    result->m_tableRegions = std::move(walkResult.tableRegions);
+    result->m_tableHeaderRegions = std::move(walkResult.tableHeaderRegions);
+    result->m_tableBorderRegions = std::move(walkResult.tableBorderRegions);
+  }
 
   return result;
 }
@@ -298,35 +185,13 @@ void MarkdownParser::scheduleWork(MarkdownParserWorker *p_worker,
 
 QVector<ElementRegion>
 MarkdownParser::parseImageRegions(const QSharedPointer<MarkdownParseConfig> &p_config) {
-  QVector<ElementRegion> regs;
-  HighlightElement **res = MarkdownParser::parseMarkdownToElements(p_config);
-  if (!res) {
-    return regs;
-  }
-
-  int offset = p_config->m_offset;
-  HighlightElement *elem = res[3];
-  while (elem != NULL) {
-    if (elem->end <= elem->pos) {
-      elem = elem->next;
-      continue;
-    }
-
-    regs.push_back(ElementRegion(offset + elem->pos, offset + elem->end));
-    elem = elem->next;
-  }
-
-  freeHighlightElements(res, NUM_HIGHLIGHT_STYLES);
-
-  return regs;
-}
-
-HighlightElement **MarkdownParser::parseMarkdownToElements(const QSharedPointer<MarkdownParseConfig> &p_config) {
   if (p_config->m_data.isEmpty()) {
-    return nullptr;
+    return {};
   }
 
-  return parseCmark(p_config->m_data);
+  auto walkResult = walkAndConvert(p_config->m_data, p_config->m_numOfBlocks,
+                                   p_config->m_offset, 0, false);
+  return walkResult.imageRegions;
 }
 
-int MarkdownParser::getNumberOfStyles() { return NUM_HIGHLIGHT_STYLES; }
+int MarkdownParser::getNumberOfStyles() { return 33; }

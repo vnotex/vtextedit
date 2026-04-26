@@ -1,7 +1,5 @@
 #include "markdownhighlighterresult.h"
 
-#include "highlightelement.h"
-
 #include <QDebug>
 #include <QRegularExpression>
 #include <QTextBlock>
@@ -15,7 +13,8 @@ using namespace vte;
 MarkdownHighlighterFastResult::MarkdownHighlighterFastResult(
     const MarkdownHighlighter *p_peg, const QSharedPointer<md::MarkdownParseResult> &p_result)
     : m_timeStamp(p_result->m_timeStamp) {
-  MarkdownHighlighterResult::parseBlocksHighlights(m_blocksHighlights, p_peg, p_result);
+  Q_UNUSED(p_peg);
+  m_blocksHighlights = p_result->m_blocksHighlights;
 }
 
 MarkdownHighlighterResult::MarkdownHighlighterResult(const MarkdownHighlighter *p_peg,
@@ -29,7 +28,7 @@ MarkdownHighlighterResult::MarkdownHighlighterResult(const MarkdownHighlighter *
   Q_UNUSED(p_curTimeStamp);
   Q_UNUSED(p_lastContentsChange);
 
-  parseBlocksHighlights(m_blocksHighlights, p_peg, p_result);
+  m_blocksHighlights = p_result->m_blocksHighlights;
 
   // Implicit sharing.
   m_imageRegions = p_result->m_imageRegions;
@@ -43,94 +42,6 @@ MarkdownHighlighterResult::MarkdownHighlighterResult(const MarkdownHighlighter *
   // line to fill the m_hruleBlocks. parseHRuleBlocks(p_peg, p_result);
 
   parseTableBlocks(p_result);
-}
-
-void MarkdownHighlighterResult::parseBlocksHighlights(
-    QVector<QVector<md::HLUnit>> &p_blocksHighlights, const MarkdownHighlighter *p_peg,
-    const QSharedPointer<md::MarkdownParseResult> &p_result) {
-  if (p_result->isEmpty()) {
-    p_blocksHighlights.clear();
-    p_blocksHighlights.resize(p_result->m_numOfBlocks);
-    return;
-  }
-
-  p_blocksHighlights.resize(p_result->m_numOfBlocks);
-
-  int offset = p_result->m_offset;
-  const auto doc = p_peg->document();
-  auto pmhResult = p_result->m_elements;
-  const auto numOfStyles = md::MarkdownParser::getNumberOfStyles();
-  for (int i = 0; i < numOfStyles; ++i) {
-    HighlightElement *elem_cursor = pmhResult[i];
-    while (elem_cursor != NULL) {
-      // elem_cursor->pos and elem_cursor->end is the start
-      // and end position of the element in document.
-      if (elem_cursor->end <= elem_cursor->pos) {
-        elem_cursor = elem_cursor->next;
-        continue;
-      }
-
-      parseBlocksHighlightOne(p_blocksHighlights, doc, offset + elem_cursor->pos,
-                              offset + elem_cursor->end, i);
-      elem_cursor = elem_cursor->next;
-    }
-  }
-
-  // Sort p_blocksHighlights.
-  for (int i = 0; i < p_blocksHighlights.size(); ++i) {
-    if (p_blocksHighlights[i].size() > 1) {
-      std::sort(p_blocksHighlights[i].begin(), p_blocksHighlights[i].end(), md::HLUnitLess());
-    }
-  }
-}
-
-void MarkdownHighlighterResult::parseBlocksHighlightOne(
-    QVector<QVector<md::HLUnit>> &p_blocksHighlights, const QTextDocument *p_doc,
-    unsigned long p_pos, unsigned long p_end, int p_styleIndex) {
-  // When the the highlight element is at the end of document, @p_end will
-  // equals to the characterCount.
-  unsigned int nrChar = (unsigned int)p_doc->characterCount();
-  if (p_end >= nrChar && nrChar > 0) {
-    p_end = nrChar - 1;
-  }
-
-  QTextBlock block = p_doc->findBlock(p_pos);
-  int startBlockNum = block.blockNumber();
-  int endBlockNum = p_doc->findBlock(p_end - 1).blockNumber();
-  if (endBlockNum >= p_blocksHighlights.size()) {
-    endBlockNum = p_blocksHighlights.size() - 1;
-  }
-
-  while (block.isValid()) {
-    int blockNum = block.blockNumber();
-    if (blockNum > endBlockNum) {
-      break;
-    }
-
-    int blockStartPos = block.position();
-    md::HLUnit unit;
-    if (blockNum == startBlockNum) {
-      unit.start = p_pos - blockStartPos;
-      unit.length =
-          (startBlockNum == endBlockNum) ? (p_end - p_pos) : (block.length() - unit.start);
-    } else if (blockNum == endBlockNum) {
-      unit.start = 0;
-      unit.length = p_end - blockStartPos;
-    } else {
-      unit.start = 0;
-      unit.length = block.length();
-    }
-
-    unit.styleIndex = p_styleIndex;
-
-    Q_ASSERT(unit.length > 0);
-
-    if (unit.length > 0) {
-      p_blocksHighlights[blockNum].append(unit);
-    }
-
-    block = block.next();
-  }
 }
 
 #if 0

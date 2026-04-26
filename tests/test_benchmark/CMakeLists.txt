@@ -11,6 +11,7 @@ set(LIBS_FOLDER ../../libs)
 
 add_executable(test_benchmark
     ${MARKDOWNEDITOR_FOLDER}/markdownparser.cpp ${MARKDOWNEDITOR_FOLDER}/markdownparser.h
+    ${MARKDOWNEDITOR_FOLDER}/markdownastwalker.cpp ${MARKDOWNEDITOR_FOLDER}/markdownastwalker.h
     ${MARKDOWNEDITOR_FOLDER}/cmarkadapter.cpp ${MARKDOWNEDITOR_FOLDER}/cmarkadapter.h
     ${MARKDOWNEDITOR_FOLDER}/highlightelement.h
     test_benchmark.cpp test_benchmark.h
