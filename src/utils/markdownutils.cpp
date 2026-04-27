@@ -11,7 +11,6 @@
 #include <QTextDocument>
 #include <QUrl>
 
-#include <markdowneditor/markdownparser.h>
 #include <vtextedit/texteditutils.h>
 #include <vtextedit/textutils.h>
 #include <vtextedit/vtextedit.h>
@@ -74,13 +73,7 @@ bool MarkdownUtils::isFencedCodeBlockStartMark(const QString &p_text) {
 }
 
 bool MarkdownUtils::hasImageLink(const QString &p_text) {
-  QRegularExpression regExp(QStringLiteral("\\!\\[([^\\[\\]]*)\\]"
-                                           "\\(\\s*"
-                                           "([^\\)\"'\\s]+)"
-                                           "(\\s*(\"[^\"\\)\\n\\r]*\")|('[^'\\)\\n\\r]*'))?"
-                                           "\\s*\\)"));
-  auto match = regExp.match(p_text);
-  return match.hasMatch();
+  return p_text.contains(QStringLiteral("!["));
 }
 
 QString MarkdownUtils::fetchImageLinkUrl(const QString &p_text) {
@@ -1081,12 +1074,6 @@ QVector<MarkdownLink> MarkdownUtils::fetchImagesFromMarkdownText(const QString &
 
   std::sort(images.begin(), images.end(), markdownLinkCmp);
   return images;
-}
-
-QVector<md::ElementRegion> MarkdownUtils::fetchImageRegionsViaParser(const QString &p_content) {
-  auto parserConfig = QSharedPointer<md::MarkdownParseConfig>::create();
-  parserConfig->m_data = p_content.toUtf8();
-  return md::MarkdownParser::parseImageRegions(parserConfig);
 }
 
 QString MarkdownUtils::relativePath(const QString &p_dir, const QString &p_path) {

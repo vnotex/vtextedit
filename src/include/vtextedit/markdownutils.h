@@ -15,10 +15,6 @@ class QTextBlock;
 namespace vte {
 class VTextEdit;
 
-namespace md {
-struct ElementRegion;
-}
-
 struct VTEXTEDIT_EXPORT MarkdownImageInfo {
   QString m_url;          // URL from cmark_node_get_url() (clean, no =WxH)
   QString m_alt;          // Alt text from IMAGE node child text nodes
@@ -115,9 +111,6 @@ public:
                                                            MarkdownLink::TypeFlags p_flags);
 
   static QVector<MarkdownImageInfo> fetchImageInfoViaCmark(const QString &p_content);
-
-  // Use MarkdownParser to parse @p_content and return the image regions.
-  static QVector<md::ElementRegion> fetchImageRegionsViaParser(const QString &p_content);
 
   struct HeaderMatch {
     bool m_matched = false;
