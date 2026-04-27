@@ -18,8 +18,6 @@
 #include "markdownhighlighterresult.h"
 #include "markdownparser.h"
 
-#include "highlightelement.h"
-
 // Extension flags (replacing pmh_EXT_* constants).
 // These are kept for config compatibility but cmark enables all extensions by default.
 enum {
@@ -592,8 +590,7 @@ void MarkdownHighlighter::setTheme(const QSharedPointer<Theme> &p_theme) {
 
   // Init m_styles from theme.
   m_styles.clear();
-  m_styles.resize(NUM_HIGHLIGHT_STYLES);
-  Q_ASSERT(NUM_HIGHLIGHT_STYLES <= Theme::MarkdownSyntaxStyle::MaxMarkdownSyntaxStyle);
+  m_styles.resize(Theme::MarkdownSyntaxStyle::MaxMarkdownSyntaxStyle);
 
   auto syntaxStyles = m_theme->markdownSyntaxStyles();
   if (!syntaxStyles) {

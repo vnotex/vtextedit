@@ -7,11 +7,11 @@
 #include <QTextBlock>
 #include <QTextDocument>
 
-#include "cmarkadapter.h"
-#include "highlightelement.h"
-#include <vtextedit/markdownhighlighterdata.h>
+#include "markdownastwalker.h"
 
 using namespace tests;
+
+static const int NUM_HIGHLIGHT_STYLES = 33;
 
 static const QStringList s_fixtureNames = {
     QStringLiteral("block_elements.md"),
@@ -32,14 +32,36 @@ static QString readFixture(const QString &p_name)
   return QString::fromUtf8(f.readAll());
 }
 
-static QString serializeElements(HighlightElement **p_result)
+// Helper: count blocks (newlines + 1) in UTF-8 text.
+static int countBlocks(const QByteArray &p_utf8)
 {
+  int n = 1;
+  for (int i = 0; i < p_utf8.size(); ++i) {
+    if (p_utf8[i] == '\n') ++n;
+  }
+  return n;
+}
+
+// Serialize ASTWalkResult to elements golden format: "style:pos:end\n" lines.
+// This reconstructs doc-absolute positions from block-relative HLUnits.
+static QString serializeElements(const vte::md::ASTWalkResult &p_result,
+                                 const QString &p_text)
+{
+  // Build block start positions from text.
+  QVector<int> blockStarts;
+  blockStarts.append(0);
+  for (int i = 0; i < p_text.size(); ++i) {
+    if (p_text[i] == '\n') blockStarts.append(i + 1);
+  }
+
   QStringList lines;
-  for (int i = 0; i < NUM_HIGHLIGHT_STYLES; ++i) {
-    HighlightElement *elem = p_result[i];
-    while (elem) {
-      lines.append(QStringLiteral("%1:%2:%3").arg(i).arg(elem->pos).arg(elem->end));
-      elem = elem->next;
+  for (int blockNum = 0; blockNum < p_result.blocksHighlights.size(); ++blockNum) {
+    for (const auto &unit : p_result.blocksHighlights[blockNum]) {
+      unsigned long absStart =
+          (blockNum < blockStarts.size() ? blockStarts[blockNum] : 0) + unit.start;
+      unsigned long absEnd = absStart + unit.length;
+      lines.append(
+          QStringLiteral("%1:%2:%3").arg(unit.styleIndex).arg(absStart).arg(absEnd));
     }
   }
   std::sort(lines.begin(), lines.end(), [](const QString &a, const QString &b) {
@@ -55,81 +77,17 @@ static QString serializeElements(HighlightElement **p_result)
   return lines.join('\n') + '\n';
 }
 
-static void parseBlocksHighlightOne(QVector<QVector<vte::md::HLUnit>> &p_blocksHighlights,
-                                    const QTextDocument *p_doc, unsigned long p_pos,
-                                    unsigned long p_end, int p_styleIndex)
+static QString serializeBlocksHighlights(
+    const QVector<QVector<vte::md::HLUnit>> &p_blocksHighlights)
 {
-  unsigned int nrChar = (unsigned int)p_doc->characterCount();
-  if (p_end >= nrChar && nrChar > 0) {
-    p_end = nrChar - 1;
-  }
-
-  QTextBlock block = p_doc->findBlock(p_pos);
-  int startBlockNum = block.blockNumber();
-  int endBlockNum = p_doc->findBlock(p_end - 1).blockNumber();
-  if (endBlockNum >= p_blocksHighlights.size()) {
-    endBlockNum = p_blocksHighlights.size() - 1;
-  }
-
-  while (block.isValid()) {
-    int blockNum = block.blockNumber();
-    if (blockNum > endBlockNum) {
-      break;
-    }
-
-    int blockStartPos = block.position();
-    vte::md::HLUnit unit;
-    if (blockNum == startBlockNum) {
-      unit.start = p_pos - blockStartPos;
-      unit.length =
-          (startBlockNum == endBlockNum) ? (p_end - p_pos) : (block.length() - unit.start);
-    } else if (blockNum == endBlockNum) {
-      unit.start = 0;
-      unit.length = p_end - blockStartPos;
-    } else {
-      unit.start = 0;
-      unit.length = block.length();
-    }
-
-    unit.styleIndex = p_styleIndex;
-
-    if (unit.length > 0) {
-      p_blocksHighlights[blockNum].append(unit);
-    }
-
-    block = block.next();
-  }
-}
-
-static QString serializeBlocksHighlights(HighlightElement **p_result, const QString &p_text)
-{
-  QTextDocument doc(p_text);
-  QVector<QVector<vte::md::HLUnit>> blocksHighlights(doc.blockCount());
-
-  for (int i = 0; i < NUM_HIGHLIGHT_STYLES; ++i) {
-    HighlightElement *elem = p_result[i];
-    while (elem) {
-      if (elem->end > elem->pos) {
-        parseBlocksHighlightOne(blocksHighlights, &doc, elem->pos, elem->end, i);
-      }
-      elem = elem->next;
-    }
-  }
-
-  // Sort each block's units by (start, length desc).
-  for (auto &blockUnits : blocksHighlights) {
-    std::sort(blockUnits.begin(), blockUnits.end(),
-              [](const vte::md::HLUnit &a, const vte::md::HLUnit &b) {
-                if (a.start != b.start) return a.start < b.start;
-                return a.length > b.length;
-              });
-  }
-
   QStringList lines;
-  for (int blockNum = 0; blockNum < blocksHighlights.size(); ++blockNum) {
-    for (const auto &unit : blocksHighlights[blockNum]) {
-      lines.append(
-          QStringLiteral("%1:%2:%3:%4").arg(blockNum).arg(unit.start).arg(unit.length).arg(unit.styleIndex));
+  for (int blockNum = 0; blockNum < p_blocksHighlights.size(); ++blockNum) {
+    for (const auto &unit : p_blocksHighlights[blockNum]) {
+      lines.append(QStringLiteral("%1:%2:%3:%4")
+                       .arg(blockNum)
+                       .arg(unit.start)
+                       .arg(unit.length)
+                       .arg(unit.styleIndex));
     }
   }
   return lines.join('\n') + '\n';
@@ -165,19 +123,18 @@ void TestGoldenMaster::generateGolden()
       QSKIP(qPrintable(QStringLiteral("Fixture not found: ") + name));
     }
 
-    HighlightElement **result = parseCmark(text.toUtf8());
-    QVERIFY2(result != nullptr, qPrintable(QStringLiteral("parseCmark failed for ") + name));
+    QByteArray utf8 = text.toUtf8();
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
 
-    QString elemSerialized = serializeElements(result);
-    QString blocksSerialized = serializeBlocksHighlights(result, text);
+    QString elemSerialized = serializeElements(result, text);
+    QString blocksSerialized = serializeBlocksHighlights(result.blocksHighlights);
 
     QString baseName = name;
     baseName.replace(QStringLiteral(".md"), QString());
 
     QVERIFY(writeGoldenFile(goldenDir.filePath(baseName + ".elements.golden"), elemSerialized));
     QVERIFY(writeGoldenFile(goldenDir.filePath(baseName + ".blocks.golden"), blocksSerialized));
-
-    freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
   }
 }
 
@@ -199,19 +156,18 @@ void TestGoldenMaster::verifyGolden()
     QString text = readFixture(name);
     QVERIFY(!text.isEmpty());
 
-    HighlightElement **result = parseCmark(text.toUtf8());
-    QVERIFY2(result != nullptr, qPrintable(QStringLiteral("parseCmark failed for ") + name));
+    QByteArray utf8 = text.toUtf8();
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
 
-    QString elemActual = serializeElements(result);
-    QString blocksActual = serializeBlocksHighlights(result, text);
+    QString elemActual = serializeElements(result, text);
+    QString blocksActual = serializeBlocksHighlights(result.blocksHighlights);
 
     QString elemExpected = readGoldenFile(elemGoldenPath);
     QString blocksExpected = readGoldenFile(blocksGoldenPath);
 
     QCOMPARE(elemActual, elemExpected);
     QCOMPARE(blocksActual, blocksExpected);
-
-    freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
   }
 }
 

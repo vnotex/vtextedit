@@ -3,7 +3,7 @@
 #include <cmark.h>
 
 #include "cmarkadapter.h"
-#include "highlightelement.h"
+#include "markdownastwalker.h"
 
 #include <QDebug>
 #include <cstring>
@@ -20,6 +20,28 @@ static cmark_node *parseDoc(const char *p_text)
 static const char *typeName(cmark_node *p_node)
 {
   return cmark_node_get_type_string(p_node);
+}
+
+// Helper: count blocks (newlines + 1) in UTF-8 text.
+static int countBlocks(const QByteArray &p_utf8)
+{
+  int n = 1;
+  for (int i = 0; i < p_utf8.size(); ++i) {
+    if (p_utf8[i] == '\n') ++n;
+  }
+  return n;
+}
+
+// Helper: count HLUnits with given style across all blocks.
+static int countElements(const vte::md::ASTWalkResult &p_result, int p_style)
+{
+  int count = 0;
+  for (const auto &block : p_result.blocksHighlights) {
+    for (const auto &unit : block) {
+      if (unit.styleIndex == (unsigned int)p_style) ++count;
+    }
+  }
+  return count;
 }
 
 void TestCmarkProbe::initTestCase()
@@ -661,35 +683,44 @@ void TestCmarkProbe::testWalkerSimple()
   // Parse "# Hello\n\n*world*\n"
   const char *text = "# Hello\n\n*world*\n";
   QByteArray utf8(text);
-  LineOffsetTable offsets(utf8);
+  int numBlocks = countBlocks(utf8);
 
-  cmark_node *doc = cmark_parse_document(text, strlen(text), CMARK_OPT_DEFAULT);
-  QVERIFY(doc != nullptr);
-
-  auto *result = new HighlightElement *[NUM_HIGHLIGHT_STYLES]();
-
-  walkCmarkTree(doc, offsets, result, NUM_HIGHLIGHT_STYLES);
+  auto result = vte::md::walkAndConvert(utf8, numBlocks);
 
   // H1 (style 12) should have 1 element.
-  QVERIFY2(result[12] != nullptr, "H1 element not found");
-  QVERIFY(result[12]->next == nullptr); // Only one H1.
+  QCOMPARE(countElements(result, 12), 1);
 
   // EMPH (style 7) should have 1 element.
-  QVERIFY2(result[7] != nullptr, "EMPH element not found");
-  QVERIFY(result[7]->next == nullptr); // Only one EMPH.
+  QCOMPARE(countElements(result, 7), 1);
 
-  // H1 should start at pos 0 ("# Hello\n" starts at byte 0).
-  QCOMPARE(static_cast<int>(result[12]->pos), 0);
+  // H1 should be in headerRegions starting at pos 0.
+  QVERIFY(!result.headerRegions.isEmpty());
+  QCOMPARE(result.headerRegions[0].m_startPos, 0);
 
   // EMPH "*world*" starts at line 3, col 1 (byte 0 of line 3).
   // Lines: "# Hello\n" (8 bytes, 8 QChars), "\n" (1 byte, 1 QChar), "*world*\n"
   // Line 3 starts at QChar 9.
-  QCOMPARE(static_cast<int>(result[7]->pos), 9);
-  // "*world*" is 7 bytes → end at QChar 9+7=16.
-  QCOMPARE(static_cast<int>(result[7]->end), 16);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
-  cmark_node_free(doc);
+  // Find the EMPH HLUnit and compute its absolute position.
+  QVector<int> blockStarts;
+  blockStarts.append(0);
+  QString qText = QString::fromUtf8(text);
+  for (int i = 0; i < qText.size(); ++i) {
+    if (qText[i] == '\n') blockStarts.append(i + 1);
+  }
+  bool foundEmph = false;
+  for (int blockNum = 0; blockNum < result.blocksHighlights.size(); ++blockNum) {
+    for (const auto &unit : result.blocksHighlights[blockNum]) {
+      if (unit.styleIndex == 7) {
+        int absStart = (blockNum < blockStarts.size() ? blockStarts[blockNum] : 0) + unit.start;
+        int absEnd = absStart + unit.length;
+        QCOMPARE(absStart, 9);
+        // "*world*" is 7 bytes → end at QChar 9+7=16.
+        QCOMPARE(absEnd, 16);
+        foundEmph = true;
+      }
+    }
+  }
+  QVERIFY2(foundEmph, "EMPH element not found");
 }
 
 void TestCmarkProbe::testWalkerTable()
@@ -700,44 +731,37 @@ void TestCmarkProbe::testWalkerTable()
       "| a | b |\n";
 
   QByteArray utf8(text);
-  LineOffsetTable offsets(utf8);
+  int numBlocks = countBlocks(utf8);
 
-  cmark_node *doc = cmark_parse_document(text, strlen(text), CMARK_OPT_DEFAULT);
-  QVERIFY(doc != nullptr);
+  auto result = vte::md::walkAndConvert(utf8, numBlocks);
 
-  auto *result = new HighlightElement *[NUM_HIGHLIGHT_STYLES]();
-
-  walkCmarkTree(doc, offsets, result, NUM_HIGHLIGHT_STYLES);
-
-  // TABLE (style 30) should have 1 element.
-  QVERIFY2(result[30] != nullptr, "TABLE element not found");
-  QVERIFY(result[30]->next == nullptr); // Only one TABLE.
+  // TABLE (style 30) — walker produces 1 HLUnit per block line (3 lines = 3 units).
+  QCOMPARE(countElements(result, 30), 3);
 
   // TABLEHEADER (style 31) should have 1 element (the header row).
-  QVERIFY2(result[31] != nullptr, "TABLEHEADER element not found");
-  QVERIFY(result[31]->next == nullptr); // Only one header row.
+  QCOMPARE(countElements(result, 31), 1);
 
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
-  cmark_node_free(doc);
+  // Verify table regions exist (1 logical table).
+  QVERIFY(!result.tableRegions.isEmpty());
+  QVERIFY(!result.tableHeaderRegions.isEmpty());
 }
 
 void TestCmarkProbe::testParseCmark()
 {
   const char *text = "# Hello\n\n*world*\n\n```cpp\ncode\n```\n";
   QByteArray utf8(text);
-  HighlightElement **result = parseCmark(utf8);
-  QVERIFY(result != nullptr);
+  int numBlocks = countBlocks(utf8);
+
+  auto result = vte::md::walkAndConvert(utf8, numBlocks);
 
   // H1 (12) should have 1 element
-  QVERIFY(result[12] != nullptr);
+  QCOMPARE(countElements(result, 12), 1);
 
   // EMPH (7) should have 1 element
-  QVERIFY(result[7] != nullptr);
+  QCOMPARE(countElements(result, 7), 1);
 
-  // FENCEDCODEBLOCK (23) should have 1 element
-  QVERIFY(result[23] != nullptr);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+  // FENCEDCODEBLOCK (23) — walker produces 1 HLUnit per block line (3 lines = 3 units).
+  QCOMPARE(countElements(result, 23), 3);
 }
 
 QTEST_MAIN(tests::TestCmarkProbe)

@@ -1,7 +1,6 @@
 #include "test_benchmark.h"
 
-#include <cmarkadapter.h>
-#include <highlightelement.h>
+#include <markdownastwalker.h>
 
 #include <QDir>
 #include <QElapsedTimer>
@@ -12,6 +11,8 @@
 #include <algorithm>
 
 using namespace tests;
+
+static const int NUM_HIGHLIGHT_STYLES = 33;
 
 static const char *styleNames[NUM_HIGHLIGHT_STYLES] = {
     "LINK",            // 0
@@ -58,6 +59,16 @@ static QString readFixture(const QString &p_name)
     return QString::fromUtf8(f.readAll());
 }
 
+// Helper: count blocks (newlines + 1) in UTF-8 text.
+static int countBlocks(const QByteArray &p_utf8)
+{
+    int n = 1;
+    for (int i = 0; i < p_utf8.size(); ++i) {
+        if (p_utf8[i] == '\n') ++n;
+    }
+    return n;
+}
+
 void TestBenchmark::initTestCase()
 {
 }
@@ -93,6 +104,7 @@ void TestBenchmark::benchmarkParse()
     }
 
     QByteArray utf8 = doc.toUtf8();
+    int numBlocks = countBlocks(utf8);
     int docLines = doc.count('\n');
     int docBytes = utf8.size();
 
@@ -100,17 +112,15 @@ void TestBenchmark::benchmarkParse()
     int bucketCounts[NUM_HIGHLIGHT_STYLES] = {};
     int totalElements = 0;
     {
-        HighlightElement **result = parseCmark(utf8);
-        QVERIFY(result != nullptr);
-        for (int i = 0; i < NUM_HIGHLIGHT_STYLES; i++) {
-            HighlightElement *e = result[i];
-            while (e) {
-                bucketCounts[i]++;
+        auto result = vte::md::walkAndConvert(utf8, numBlocks);
+        for (const auto &block : result.blocksHighlights) {
+            for (const auto &unit : block) {
+                if (unit.styleIndex < (unsigned int)NUM_HIGHLIGHT_STYLES) {
+                    bucketCounts[unit.styleIndex]++;
+                }
                 totalElements++;
-                e = e->next;
             }
         }
-        freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
     }
 
     // Run 100 iterations, measure times.
@@ -120,10 +130,14 @@ void TestBenchmark::benchmarkParse()
     for (int iter = 0; iter < iterations; iter++) {
         QElapsedTimer timer;
         timer.start();
-        HighlightElement **result = parseCmark(utf8);
+        auto result = vte::md::walkAndConvert(utf8, numBlocks);
         qint64 elapsed = timer.elapsed();
-        QVERIFY(result != nullptr);
-        freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+        // Verify non-empty result.
+        bool hasAny = false;
+        for (const auto &block : result.blocksHighlights) {
+            if (!block.isEmpty()) { hasAny = true; break; }
+        }
+        QVERIFY(hasAny);
         times.append(elapsed);
     }
 

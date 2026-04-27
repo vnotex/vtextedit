@@ -11,6 +11,7 @@ set(SRC_FOLDER ../../src)
 add_executable(test_cmark_probe
     test_cmark_probe.cpp test_cmark_probe.h
     ${SRC_FOLDER}/markdowneditor/cmarkadapter.cpp
+    ${SRC_FOLDER}/markdowneditor/markdownastwalker.cpp ${SRC_FOLDER}/markdowneditor/markdownastwalker.h
 )
 target_include_directories(test_cmark_probe PRIVATE
     ${LIBS_FOLDER}/cmark/src

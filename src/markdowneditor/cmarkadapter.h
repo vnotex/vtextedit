@@ -6,8 +6,6 @@
 
 #include <cmark.h>
 
-struct HighlightElement;
-
 class LineOffsetTable {
 public:
   explicit LineOffsetTable(const QByteArray &p_utf8Text);
@@ -38,22 +36,5 @@ private:
 // Map a cmark node type to a MarkdownSyntaxStyle ordinal (matching pmh_element_type).
 // Returns -1 if the node type should be skipped.
 int mapCmarkNodeToStyle(cmark_node_type p_type, cmark_node *p_node);
-
-// Walk the cmark AST rooted at p_doc, converting positions via p_offsets,
-// and fill the p_result array (indexed by style ordinal) with linked lists
-// of HighlightElement.
-// p_result must be a pre-allocated array of size p_numTypes, initialized to nullptr.
-void walkCmarkTree(cmark_node *p_doc,
-                   const LineOffsetTable &p_offsets,
-                   HighlightElement **p_result,
-                   int p_numTypes);
-
-// Free all elements in the p_result array and the array itself.
-void freeHighlightElements(HighlightElement **p_result, int p_numTypes);
-
-// Parse markdown text with cmark, returning HighlightElement** array.
-// Caller must free with freeHighlightElements().
-// Returns nullptr if cancelled or empty input.
-HighlightElement **parseCmark(const QByteArray &p_utf8Text);
 
 #endif

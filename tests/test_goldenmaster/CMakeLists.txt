@@ -13,7 +13,6 @@ add_executable(test_goldenmaster
     ${MARKDOWNEDITOR_FOLDER}/markdownparser.cpp ${MARKDOWNEDITOR_FOLDER}/markdownparser.h
     ${MARKDOWNEDITOR_FOLDER}/markdownastwalker.cpp ${MARKDOWNEDITOR_FOLDER}/markdownastwalker.h
     ${MARKDOWNEDITOR_FOLDER}/cmarkadapter.cpp ${MARKDOWNEDITOR_FOLDER}/cmarkadapter.h
-    ${MARKDOWNEDITOR_FOLDER}/highlightelement.h
     test_goldenmaster.cpp test_goldenmaster.h
 )
 target_include_directories(test_goldenmaster PRIVATE

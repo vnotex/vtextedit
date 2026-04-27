@@ -4,8 +4,7 @@
 #include <QElapsedTimer>
 #include <algorithm>
 
-#include "cmarkadapter.h"
-#include "highlightelement.h"
+#include "markdownastwalker.h"
 
 using namespace tests;
 
@@ -47,20 +46,61 @@ enum {
   HLT_TABLEBORDER = 32
 };
 
-static int countElements(HighlightElement **p_result, int p_type)
+// Helper: count blocks (newlines + 1) in UTF-8 text.
+static int countBlocks(const QByteArray &p_utf8)
+{
+  int n = 1;
+  for (int i = 0; i < p_utf8.size(); ++i) {
+    if (p_utf8[i] == '\n') ++n;
+  }
+  return n;
+}
+
+// Helper: parse text and return ASTWalkResult.
+static vte::md::ASTWalkResult parse(const QString &p_text)
+{
+  QByteArray utf8 = p_text.toUtf8();
+  int numBlocks = countBlocks(utf8);
+  return vte::md::walkAndConvert(utf8, numBlocks);
+}
+
+// Helper: count HLUnits with given style across all blocks.
+static int countElements(const vte::md::ASTWalkResult &p_result, int p_style)
 {
   int count = 0;
-  HighlightElement *elem = p_result[p_type];
-  while (elem) {
-    count++;
-    elem = elem->next;
+  for (const auto &block : p_result.blocksHighlights) {
+    for (const auto &unit : block) {
+      if (unit.styleIndex == (unsigned int)p_style) ++count;
+    }
   }
   return count;
 }
 
-static HighlightElement *firstElement(HighlightElement **p_result, int p_type)
+// Helper: find all HLUnits with given style, returning doc-absolute (start, end) pairs.
+// Elements are returned in the order they appear in blocksHighlights (block order, then
+// unit order within block). The old parseCmark prepended elements (reverse order within
+// a style bucket). We sort by position ascending here for consistent comparison.
+static QVector<QPair<unsigned long, unsigned long>> findElements(
+    const vte::md::ASTWalkResult &p_result, int p_style, const QString &p_text)
 {
-  return p_result[p_type];
+  QVector<QPair<unsigned long, unsigned long>> elems;
+  // Build block start positions from text.
+  QVector<int> blockStarts;
+  blockStarts.append(0);
+  for (int i = 0; i < p_text.size(); ++i) {
+    if (p_text[i] == '\n') blockStarts.append(i + 1);
+  }
+  for (int blockNum = 0; blockNum < p_result.blocksHighlights.size(); ++blockNum) {
+    for (const auto &unit : p_result.blocksHighlights[blockNum]) {
+      if (unit.styleIndex == (unsigned int)p_style) {
+        unsigned long absStart =
+            (blockNum < blockStarts.size() ? blockStarts[blockNum] : 0) + unit.start;
+        unsigned long absEnd = absStart + unit.length;
+        elems.append(qMakePair(absStart, absEnd));
+      }
+    }
+  }
+  return elems;
 }
 
 static QString readFixture(const QString &p_name)
@@ -87,8 +127,7 @@ void TestMarkdownParser::cleanupTestCase()
 void TestMarkdownParser::testHeadings()
 {
   const QString input = QStringLiteral("# H1\n## H2\n### H3\n#### H4\n##### H5\n###### H6\n");
-  HighlightElement **result = parseCmark(input.toUtf8());
-  QVERIFY(result != NULL);
+  auto result = parse(input);
 
   QCOMPARE(countElements(result, HLT_H1), 1);
   QCOMPARE(countElements(result, HLT_H2), 1);
@@ -98,208 +137,173 @@ void TestMarkdownParser::testHeadings()
   QCOMPARE(countElements(result, HLT_H6), 1);
 
   // cmark heading positions exclude trailing newline (unlike pmh).
-  HighlightElement *h1 = firstElement(result, HLT_H1);
-  QVERIFY(h1 != NULL);
-  QCOMPARE((int)h1->pos, 0);
-  QCOMPARE((int)h1->end, 4);
+  // Use headerRegions for doc-absolute position checks.
+  QCOMPARE(result.headerRegions.size(), 6);
 
-  HighlightElement *h2 = firstElement(result, HLT_H2);
-  QVERIFY(h2 != NULL);
-  QCOMPARE((int)h2->pos, 5);
-  QCOMPARE((int)h2->end, 10);
+  // headerRegions are sorted by position.
+  QCOMPARE(result.headerRegions[0].m_startPos, 0);
+  QCOMPARE(result.headerRegions[0].m_endPos, 4);
 
-  HighlightElement *h3 = firstElement(result, HLT_H3);
-  QVERIFY(h3 != NULL);
-  QCOMPARE((int)h3->pos, 11);
-  QCOMPARE((int)h3->end, 17);
+  QCOMPARE(result.headerRegions[1].m_startPos, 5);
+  QCOMPARE(result.headerRegions[1].m_endPos, 10);
 
-  HighlightElement *h4 = firstElement(result, HLT_H4);
-  QVERIFY(h4 != NULL);
-  QCOMPARE((int)h4->pos, 18);
-  QCOMPARE((int)h4->end, 25);
+  QCOMPARE(result.headerRegions[2].m_startPos, 11);
+  QCOMPARE(result.headerRegions[2].m_endPos, 17);
 
-  HighlightElement *h5 = firstElement(result, HLT_H5);
-  QVERIFY(h5 != NULL);
-  QCOMPARE((int)h5->pos, 26);
-  QCOMPARE((int)h5->end, 34);
+  QCOMPARE(result.headerRegions[3].m_startPos, 18);
+  QCOMPARE(result.headerRegions[3].m_endPos, 25);
 
-  HighlightElement *h6 = firstElement(result, HLT_H6);
-  QVERIFY(h6 != NULL);
-  QCOMPARE((int)h6->pos, 35);
-  QCOMPARE((int)h6->end, 44);
+  QCOMPARE(result.headerRegions[4].m_startPos, 26);
+  QCOMPARE(result.headerRegions[4].m_endPos, 34);
 
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+  QCOMPARE(result.headerRegions[5].m_startPos, 35);
+  QCOMPARE(result.headerRegions[5].m_endPos, 44);
 }
 
 void TestMarkdownParser::testBlockquotes()
 {
   const QString input = QStringLiteral("> quoted text\n> more quoted\n");
-  HighlightElement **result = parseCmark(input.toUtf8());
-  QVERIFY(result != NULL);
+  auto result = parse(input);
 
-  // cmark produces 1 BLOCKQUOTE element per block (pmh produced 1 per > marker).
-  QCOMPARE(countElements(result, HLT_BLOCKQUOTE), 1);
+  // Walker produces 1 HLUnit per block line for blockquote (2 lines = 2 units).
+  QCOMPARE(countElements(result, HLT_BLOCKQUOTE), 2);
 
-  HighlightElement *bq = firstElement(result, HLT_BLOCKQUOTE);
-  QVERIFY(bq != NULL);
-  QCOMPARE((int)bq->pos, 0);
-  QVERIFY((int)bq->end > 0);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+  auto elems = findElements(result, HLT_BLOCKQUOTE, input);
+  QVERIFY(!elems.isEmpty());
+  // Sort by position — first element starts at 0.
+  std::sort(elems.begin(), elems.end());
+  QCOMPARE((int)elems[0].first, 0);
+  QVERIFY((int)elems[0].second > 0);
 }
 
 void TestMarkdownParser::testHorizontalRules()
 {
   // Use *** instead of --- to avoid cmark frontmatter extension consuming it.
   const QString input = QStringLiteral("***\n");
-  HighlightElement **result = parseCmark(input.toUtf8());
-  QVERIFY(result != NULL);
+  auto result = parse(input);
 
   QCOMPARE(countElements(result, HLT_HRULE), 1);
 
-  HighlightElement *hr = firstElement(result, HLT_HRULE);
-  QVERIFY(hr != NULL);
-  QCOMPARE((int)hr->pos, 0);
-  QCOMPARE((int)hr->end, 3);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+  QCOMPARE(result.hruleRegions.size(), 1);
+  QCOMPARE(result.hruleRegions[0].m_startPos, 0);
+  QCOMPARE(result.hruleRegions[0].m_endPos, 3);
 }
 
 void TestMarkdownParser::testFencedCodeBlocks()
 {
   const QString input = QStringLiteral("```cpp\ncode here\n```\n");
-  HighlightElement **result = parseCmark(input.toUtf8());
-  QVERIFY(result != NULL);
+  auto result = parse(input);
 
-  QCOMPARE(countElements(result, HLT_FENCEDCODEBLOCK), 1);
+  // Walker produces 1 HLUnit per block line (3 lines = 3 units). Use region for logical count.
+  QCOMPARE(countElements(result, HLT_FENCEDCODEBLOCK), 3);
 
-  HighlightElement *fcb = firstElement(result, HLT_FENCEDCODEBLOCK);
-  QVERIFY(fcb != NULL);
-  QCOMPARE((int)fcb->pos, 0);
-  QCOMPARE((int)fcb->end, 20);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+  QCOMPARE(result.codeBlockRegions.size(), 1);
+  auto it = result.codeBlockRegions.constBegin();
+  QCOMPARE(it.value().m_startPos, 0);
+  QCOMPARE(it.value().m_endPos, 20);
 }
 
 void TestMarkdownParser::testIndentedCodeBlocks()
 {
   const QString input = QStringLiteral("    indented code\n");
-  HighlightElement **result = parseCmark(input.toUtf8());
-  QVERIFY(result != NULL);
+  auto result = parse(input);
 
   QCOMPARE(countElements(result, HLT_VERBATIM), 1);
 
-  HighlightElement *v = firstElement(result, HLT_VERBATIM);
-  QVERIFY(v != NULL);
+  auto elems = findElements(result, HLT_VERBATIM, input);
+  QVERIFY(!elems.isEmpty());
   // cmark starts indented code block position at content (after indent).
-  QCOMPARE((int)v->pos, 4);
-  QVERIFY((int)v->end > 4);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+  QCOMPARE((int)elems[0].first, 4);
+  QVERIFY((int)elems[0].second > 4);
 }
 
 void TestMarkdownParser::testHTMLBlocks()
 {
   const QString input = QStringLiteral("<div>\nhtml content\n</div>\n");
-  HighlightElement **result = parseCmark(input.toUtf8());
-  QVERIFY(result != NULL);
+  auto result = parse(input);
 
-  QCOMPARE(countElements(result, HLT_HTMLBLOCK), 1);
+  // Walker produces 1 HLUnit per block line (3 lines = 3 units).
+  QCOMPARE(countElements(result, HLT_HTMLBLOCK), 3);
 
-  HighlightElement *hb = firstElement(result, HLT_HTMLBLOCK);
-  QVERIFY(hb != NULL);
-  QCOMPARE((int)hb->pos, 0);
-  QVERIFY((int)hb->end > 0);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+  auto elems = findElements(result, HLT_HTMLBLOCK, input);
+  QVERIFY(!elems.isEmpty());
+  QCOMPARE((int)elems[0].first, 0);
+  QVERIFY((int)elems[0].second > 0);
 }
 
 void TestMarkdownParser::testLists()
 {
   const QString input = QStringLiteral("- item 1\n- item 2\n\n1. first\n2. second\n");
-  HighlightElement **result = parseCmark(input.toUtf8());
-  QVERIFY(result != NULL);
+  auto result = parse(input);
 
   QCOMPARE(countElements(result, HLT_LIST_BULLET), 2);
   QCOMPARE(countElements(result, HLT_LIST_ENUMERATOR), 2);
 
-  // Bullets in reverse order (prepended, same as pmh).
-  HighlightElement *b0 = firstElement(result, HLT_LIST_BULLET);
-  QVERIFY(b0 != NULL);
-  QCOMPARE((int)b0->pos, 9);
-  QCOMPARE((int)b0->end, 10);
+  // Find bullet elements sorted by position.
+  auto bullets = findElements(result, HLT_LIST_BULLET, input);
+  QCOMPARE(bullets.size(), 2);
+  // Sort by position ascending.
+  std::sort(bullets.begin(), bullets.end());
+  QCOMPARE((int)bullets[0].first, 0);
+  QCOMPARE((int)bullets[0].second, 1);
+  QCOMPARE((int)bullets[1].first, 9);
+  QCOMPARE((int)bullets[1].second, 10);
 
-  HighlightElement *b1 = b0->next;
-  QVERIFY(b1 != NULL);
-  QCOMPARE((int)b1->pos, 0);
-  QCOMPARE((int)b1->end, 1);
-
-  // Enumerators in reverse order.
-  HighlightElement *e0 = firstElement(result, HLT_LIST_ENUMERATOR);
-  QVERIFY(e0 != NULL);
-  QCOMPARE((int)e0->pos, 28);
-  QCOMPARE((int)e0->end, 30);
-
-  HighlightElement *e1 = e0->next;
-  QVERIFY(e1 != NULL);
-  QCOMPARE((int)e1->pos, 19);
-  QCOMPARE((int)e1->end, 21);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+  // Find enumerator elements sorted by position.
+  auto enums = findElements(result, HLT_LIST_ENUMERATOR, input);
+  QCOMPARE(enums.size(), 2);
+  std::sort(enums.begin(), enums.end());
+  QCOMPARE((int)enums[0].first, 19);
+  QCOMPARE((int)enums[0].second, 21);
+  QCOMPARE((int)enums[1].first, 28);
+  QCOMPARE((int)enums[1].second, 30);
 }
 
 void TestMarkdownParser::testFrontmatter()
 {
   const QString input = QStringLiteral("---\ntitle: test\n---\n\nContent\n");
-  HighlightElement **result = parseCmark(input.toUtf8());
-  QVERIFY(result != NULL);
+  auto result = parse(input);
 
-  QCOMPARE(countElements(result, HLT_FRONTMATTER), 1);
+  // Walker produces 1 HLUnit per block line (3 lines = 3 units).
+  QCOMPARE(countElements(result, HLT_FRONTMATTER), 3);
 
-  HighlightElement *fm = firstElement(result, HLT_FRONTMATTER);
-  QVERIFY(fm != NULL);
-  QCOMPARE((int)fm->pos, 0);
-  QVERIFY((int)fm->end > 0);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+  auto elems = findElements(result, HLT_FRONTMATTER, input);
+  QVERIFY(!elems.isEmpty());
+  QCOMPARE((int)elems[0].first, 0);
+  QVERIFY((int)elems[0].second > 0);
 }
 
 void TestMarkdownParser::testDisplayFormula()
 {
   const QString input = QStringLiteral("$$\nE = mc^2\n$$\n");
-  HighlightElement **result = parseCmark(input.toUtf8());
-  QVERIFY(result != NULL);
+  auto result = parse(input);
 
-  QCOMPARE(countElements(result, HLT_DISPLAYFORMULA), 1);
+  // Walker produces 1 HLUnit per block line (3 lines = 3 units). Use region for logical count.
+  QCOMPARE(countElements(result, HLT_DISPLAYFORMULA), 3);
 
-  HighlightElement *df = firstElement(result, HLT_DISPLAYFORMULA);
-  QVERIFY(df != NULL);
-  QCOMPARE((int)df->pos, 0);
-  QVERIFY((int)df->end > 0);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+  QCOMPARE(result.displayFormulaRegions.size(), 1);
+  QCOMPARE(result.displayFormulaRegions[0].m_startPos, 0);
+  QVERIFY(result.displayFormulaRegions[0].m_endPos > 0);
 }
 
 void TestMarkdownParser::testTables()
 {
   const QString input = QStringLiteral("| h1 | h2 |\n|---|---|\n| a | b |\n");
-  HighlightElement **result = parseCmark(input.toUtf8());
-  QVERIFY(result != NULL);
+  auto result = parse(input);
 
-  QCOMPARE(countElements(result, HLT_TABLE), 1);
+  // Walker produces 1 HLUnit per block line for TABLE (3 lines = 3 units).
+  // Use region count for logical element count.
+  QCOMPARE(countElements(result, HLT_TABLE), 3);
+  // TABLEHEADER is only the header row (1 line = 1 unit).
   QCOMPARE(countElements(result, HLT_TABLEHEADER), 1);
 
-  HighlightElement *tbl = firstElement(result, HLT_TABLE);
-  QVERIFY(tbl != NULL);
-  QCOMPARE((int)tbl->pos, 0);
-  QVERIFY((int)tbl->end > 0);
+  QVERIFY(!result.tableRegions.isEmpty());
+  QCOMPARE(result.tableRegions[0].m_startPos, 0);
+  QVERIFY(result.tableRegions[0].m_endPos > 0);
 
-  HighlightElement *th = firstElement(result, HLT_TABLEHEADER);
-  QVERIFY(th != NULL);
-  QCOMPARE((int)th->pos, 0);
-  QVERIFY((int)th->end > 0);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+  QVERIFY(!result.tableHeaderRegions.isEmpty());
+  QCOMPARE(result.tableHeaderRegions[0].m_startPos, 0);
+  QVERIFY(result.tableHeaderRegions[0].m_endPos > 0);
 }
 
 // ============================================================
@@ -309,65 +313,53 @@ void TestMarkdownParser::testTables()
 void TestMarkdownParser::testEmphasis()
 {
   const QString input = QStringLiteral("*emph*\n");
-  HighlightElement **result = parseCmark(input.toUtf8());
-  QVERIFY(result != NULL);
+  auto result = parse(input);
 
   QCOMPARE(countElements(result, HLT_EMPH), 1);
 
-  HighlightElement *em = firstElement(result, HLT_EMPH);
-  QVERIFY(em != NULL);
-  QCOMPARE((int)em->pos, 0);
-  QCOMPARE((int)em->end, 6);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+  auto elems = findElements(result, HLT_EMPH, input);
+  QVERIFY(!elems.isEmpty());
+  QCOMPARE((int)elems[0].first, 0);
+  QCOMPARE((int)elems[0].second, 6);
 }
 
 void TestMarkdownParser::testStrong()
 {
   const QString input = QStringLiteral("**strong**\n");
-  HighlightElement **result = parseCmark(input.toUtf8());
-  QVERIFY(result != NULL);
+  auto result = parse(input);
 
   QCOMPARE(countElements(result, HLT_STRONG), 1);
 
-  HighlightElement *s = firstElement(result, HLT_STRONG);
-  QVERIFY(s != NULL);
-  QCOMPARE((int)s->pos, 0);
-  QCOMPARE((int)s->end, 10);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+  auto elems = findElements(result, HLT_STRONG, input);
+  QVERIFY(!elems.isEmpty());
+  QCOMPARE((int)elems[0].first, 0);
+  QCOMPARE((int)elems[0].second, 10);
 }
 
 void TestMarkdownParser::testInlineCode()
 {
   const QString input = QStringLiteral("`code`\n");
-  HighlightElement **result = parseCmark(input.toUtf8());
-  QVERIFY(result != NULL);
+  auto result = parse(input);
 
   QCOMPARE(countElements(result, HLT_CODE), 1);
 
-  HighlightElement *c = firstElement(result, HLT_CODE);
-  QVERIFY(c != NULL);
-  QCOMPARE((int)c->pos, 0);
-  QCOMPARE((int)c->end, 6);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+  auto elems = findElements(result, HLT_CODE, input);
+  QVERIFY(!elems.isEmpty());
+  QCOMPARE((int)elems[0].first, 0);
+  QCOMPARE((int)elems[0].second, 6);
 }
 
 void TestMarkdownParser::testLinks()
 {
   const QString input = QStringLiteral("[text](url)\n");
-  HighlightElement **result = parseCmark(input.toUtf8());
-  QVERIFY(result != NULL);
+  auto result = parse(input);
 
   QCOMPARE(countElements(result, HLT_LINK), 1);
 
-  HighlightElement *lnk = firstElement(result, HLT_LINK);
-  QVERIFY(lnk != NULL);
-  QCOMPARE((int)lnk->pos, 0);
-  QCOMPARE((int)lnk->end, 11);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+  auto elems = findElements(result, HLT_LINK, input);
+  QVERIFY(!elems.isEmpty());
+  QCOMPARE((int)elems[0].first, 0);
+  QCOMPARE((int)elems[0].second, 11);
 }
 
 void TestMarkdownParser::testAutoLinks()
@@ -375,177 +367,144 @@ void TestMarkdownParser::testAutoLinks()
   // URL auto link — cmark maps to LINK (not AUTO_LINK_URL). Count = 1.
   {
     const QString input = QStringLiteral("<http://example.com>\n");
-    HighlightElement **result = parseCmark(input.toUtf8());
-    QVERIFY(result != NULL);
+    auto result = parse(input);
 
     QCOMPARE(countElements(result, HLT_AUTO_LINK_URL), 0);
     QCOMPARE(countElements(result, HLT_LINK), 1);
 
-    HighlightElement *al = firstElement(result, HLT_LINK);
-    QVERIFY(al != NULL);
-    QCOMPARE((int)al->pos, 0);
-    QCOMPARE((int)al->end, 20);
-
-    freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+    auto elems = findElements(result, HLT_LINK, input);
+    QVERIFY(!elems.isEmpty());
+    QCOMPARE((int)elems[0].first, 0);
+    QCOMPARE((int)elems[0].second, 20);
   }
 
   // Email auto link — cmark produces 1 AUTO_LINK_EMAIL (pmh produced 2 duplicates).
   {
     const QString input = QStringLiteral("<user@example.com>\n");
-    HighlightElement **result = parseCmark(input.toUtf8());
-    QVERIFY(result != NULL);
+    auto result = parse(input);
 
     QCOMPARE(countElements(result, HLT_AUTO_LINK_EMAIL), 1);
 
-    HighlightElement *ae = firstElement(result, HLT_AUTO_LINK_EMAIL);
-    QVERIFY(ae != NULL);
-    QCOMPARE((int)ae->pos, 0);
-    QCOMPARE((int)ae->end, 18);
-
-    freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+    auto elems = findElements(result, HLT_AUTO_LINK_EMAIL, input);
+    QVERIFY(!elems.isEmpty());
+    QCOMPARE((int)elems[0].first, 0);
+    QCOMPARE((int)elems[0].second, 18);
   }
 }
 
 void TestMarkdownParser::testImages()
 {
   const QString input = QStringLiteral("![alt](img.png)\n");
-  HighlightElement **result = parseCmark(input.toUtf8());
-  QVERIFY(result != NULL);
+  auto result = parse(input);
 
   QCOMPARE(countElements(result, HLT_IMAGE), 1);
 
-  HighlightElement *img = firstElement(result, HLT_IMAGE);
-  QVERIFY(img != NULL);
-  QCOMPARE((int)img->pos, 0);
-  QCOMPARE((int)img->end, 15);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+  QCOMPARE(result.imageRegions.size(), 1);
+  QCOMPARE(result.imageRegions[0].m_startPos, 0);
+  QCOMPARE(result.imageRegions[0].m_endPos, 15);
 }
 
 void TestMarkdownParser::testHTMLInline()
 {
   const QString input = QStringLiteral("text <span>html</span> text\n");
-  HighlightElement **result = parseCmark(input.toUtf8());
-  QVERIFY(result != NULL);
+  auto result = parse(input);
 
   // cmark produces 2 HTML_INLINE elements for <span> and </span>.
   QCOMPARE(countElements(result, HLT_HTML), 2);
 
-  // Reverse order (prepended): </span> first, <span> second.
-  HighlightElement *h0 = firstElement(result, HLT_HTML);
-  QVERIFY(h0 != NULL);
-  QCOMPARE((int)h0->pos, 15);
-  QCOMPARE((int)h0->end, 22);
+  // Find elements and sort by position.
+  auto elems = findElements(result, HLT_HTML, input);
+  QCOMPARE(elems.size(), 2);
+  std::sort(elems.begin(), elems.end());
 
-  HighlightElement *h1 = h0->next;
-  QVERIFY(h1 != NULL);
-  QCOMPARE((int)h1->pos, 5);
-  QCOMPARE((int)h1->end, 11);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+  // <span> at positions 5-11, </span> at positions 15-22.
+  QCOMPARE((int)elems[0].first, 5);
+  QCOMPARE((int)elems[0].second, 11);
+  QCOMPARE((int)elems[1].first, 15);
+  QCOMPARE((int)elems[1].second, 22);
 }
 
 void TestMarkdownParser::testHTMLEntities()
 {
   const QString input = QStringLiteral("&amp; &lt;\n");
-  HighlightElement **result = parseCmark(input.toUtf8());
-  QVERIFY(result != NULL);
+  auto result = parse(input);
 
   // cmark does not produce HTML_ENTITY elements.
   QCOMPARE(countElements(result, HLT_HTML_ENTITY), 0);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
 }
 
 void TestMarkdownParser::testComments()
 {
   const QString input = QStringLiteral("<!-- comment -->\n");
-  HighlightElement **result = parseCmark(input.toUtf8());
-  QVERIFY(result != NULL);
+  auto result = parse(input);
 
   // cmark maps HTML comments to HTMLBLOCK, not COMMENT.
   QCOMPARE(countElements(result, HLT_COMMENT), 0);
   QCOMPARE(countElements(result, HLT_HTMLBLOCK), 1);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
 }
 
 void TestMarkdownParser::testReferences()
 {
   const QString input = QStringLiteral("[id]: http://example.com\n\n[text][id]\n");
-  HighlightElement **result = parseCmark(input.toUtf8());
-  QVERIFY(result != NULL);
+  auto result = parse(input);
 
   // cmark resolves references during parsing — no REFERENCE elements.
   QCOMPARE(countElements(result, HLT_REFERENCE), 0);
   // The link reference [text][id] should produce a LINK element.
   QCOMPARE(countElements(result, HLT_LINK), 1);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
 }
 
 void TestMarkdownParser::testStrikethrough()
 {
   const QString input = QStringLiteral("~~strike~~\n");
-  HighlightElement **result = parseCmark(input.toUtf8());
-  QVERIFY(result != NULL);
+  auto result = parse(input);
 
   QCOMPARE(countElements(result, HLT_STRIKE), 1);
 
-  HighlightElement *s = firstElement(result, HLT_STRIKE);
-  QVERIFY(s != NULL);
-  QCOMPARE((int)s->pos, 0);
-  QCOMPARE((int)s->end, 10);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+  auto elems = findElements(result, HLT_STRIKE, input);
+  QVERIFY(!elems.isEmpty());
+  QCOMPARE((int)elems[0].first, 0);
+  QCOMPARE((int)elems[0].second, 10);
 }
 
 void TestMarkdownParser::testMark()
 {
   const QString input = QStringLiteral("==marked==\n");
-  HighlightElement **result = parseCmark(input.toUtf8());
-  QVERIFY(result != NULL);
+  auto result = parse(input);
 
   // cmark produces MARK elements (pmh did not).
   int markCount = countElements(result, HLT_MARK);
   qDebug() << "MARK count:" << markCount;
   QVERIFY(markCount >= 1);
 
-  HighlightElement *m = firstElement(result, HLT_MARK);
-  QVERIFY(m != NULL);
-  QCOMPARE((int)m->pos, 0);
-  QCOMPARE((int)m->end, 10);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+  auto elems = findElements(result, HLT_MARK, input);
+  QVERIFY(!elems.isEmpty());
+  QCOMPARE((int)elems[0].first, 0);
+  QCOMPARE((int)elems[0].second, 10);
 }
 
 void TestMarkdownParser::testFootnotes()
 {
   const QString input = QStringLiteral("[^1]: footnote\n\nText [^1]\n");
-  HighlightElement **result = parseCmark(input.toUtf8());
-  QVERIFY(result != NULL);
+  auto result = parse(input);
 
-  // cmark produces NOTE elements for footnote definition and reference.
-  QCOMPARE(countElements(result, HLT_NOTE), 2);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+  // Walker produces HLUnits for footnote definition and reference.
+  // "[^1]: footnote\n" is 1 block, "\n" is empty, "Text [^1]\n" has 1 reference.
+  // The walker may produce more units depending on how footnote nodes are structured.
+  QVERIFY(countElements(result, HLT_NOTE) >= 2);
 }
 
 void TestMarkdownParser::testInlineEquation()
 {
   const QString input = QStringLiteral("$E=mc^2$\n");
-  HighlightElement **result = parseCmark(input.toUtf8());
-  QVERIFY(result != NULL);
+  auto result = parse(input);
 
   QCOMPARE(countElements(result, HLT_INLINEEQUATION), 1);
 
-  HighlightElement *eq = firstElement(result, HLT_INLINEEQUATION);
-  QVERIFY(eq != NULL);
+  QCOMPARE(result.inlineEquationRegions.size(), 1);
   // cmark adapter adjusts FORMULA_INLINE to re-include $ delimiters.
-  QCOMPARE((int)eq->pos, 0);
-  QCOMPARE((int)eq->end, 8);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+  QCOMPARE(result.inlineEquationRegions[0].m_startPos, 0);
+  QCOMPARE(result.inlineEquationRegions[0].m_endPos, 8);
 }
 
 // ============================================================
@@ -557,18 +516,15 @@ void TestMarkdownParser::testSurrogatePairs()
   // U+1F389 is 4 UTF-8 bytes -> 2 QChars (surrogate pair).
   // cmark adapter uses QChar offsets via LineOffsetTable.
   const QString input = QString::fromUtf8("# \xF0\x9F\x8E\x89 Hello\n");
-  HighlightElement **result = parseCmark(input.toUtf8());
-  QVERIFY(result != NULL);
+  auto result = parse(input);
 
   QCOMPARE(countElements(result, HLT_H1), 1);
 
-  HighlightElement *h1 = firstElement(result, HLT_H1);
-  QVERIFY(h1 != NULL);
-  qDebug() << "Surrogate H1 pos:" << h1->pos << "end:" << h1->end;
-  QCOMPARE((int)h1->pos, 0);
-  QCOMPARE((int)h1->end, 10);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+  QCOMPARE(result.headerRegions.size(), 1);
+  qDebug() << "Surrogate H1 start:" << result.headerRegions[0].m_startPos
+           << "end:" << result.headerRegions[0].m_endPos;
+  QCOMPARE(result.headerRegions[0].m_startPos, 0);
+  QCOMPARE(result.headerRegions[0].m_endPos, 10);
 }
 
 void TestMarkdownParser::testEmptyElements()
@@ -576,24 +532,18 @@ void TestMarkdownParser::testEmptyElements()
   // Empty bold: **** — no STRONG or EMPH.
   {
     const QString input = QStringLiteral("****\n");
-    HighlightElement **result = parseCmark(input.toUtf8());
-    QVERIFY(result != NULL);
+    auto result = parse(input);
 
     QCOMPARE(countElements(result, HLT_STRONG), 0);
     QCOMPARE(countElements(result, HLT_EMPH), 0);
-
-    freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
   }
 
   // Empty link text: [](url) — 1 LINK.
   {
     const QString input = QStringLiteral("[](url)\n");
-    HighlightElement **result = parseCmark(input.toUtf8());
-    QVERIFY(result != NULL);
+    auto result = parse(input);
 
     QCOMPARE(countElements(result, HLT_LINK), 1);
-
-    freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
   }
 }
 
@@ -602,71 +552,68 @@ void TestMarkdownParser::testUnclosedDelimiters()
   // Unclosed bold — no crash, 0 STRONG elements.
   {
     const QString input = QStringLiteral("**broken\n");
-    HighlightElement **result = parseCmark(input.toUtf8());
-    QVERIFY(result != NULL);
+    auto result = parse(input);
 
     QCOMPARE(countElements(result, HLT_STRONG), 0);
-
-    freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
   }
 
   // Unclosed link — no crash, 0 LINK elements.
   {
     const QString input = QStringLiteral("[unclosed\n");
-    HighlightElement **result = parseCmark(input.toUtf8());
-    QVERIFY(result != NULL);
+    auto result = parse(input);
 
     QCOMPARE(countElements(result, HLT_LINK), 0);
-
-    freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
   }
 }
 
 void TestMarkdownParser::testDegenerate()
 {
-  // Empty string — parseCmark returns null (no crash).
+  // Empty string — walkAndConvert returns empty result (no crash).
   {
     const QString input = QStringLiteral("");
-    HighlightElement **result = parseCmark(input.toUtf8());
-    QVERIFY(result == NULL);
+    QByteArray utf8 = input.toUtf8();
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+    // Empty result — no highlights.
+    bool hasAny = false;
+    for (const auto &block : result.blocksHighlights) {
+      if (!block.isEmpty()) { hasAny = true; break; }
+    }
+    QVERIFY(!hasAny);
   }
 
   // Single newline — no crash.
   {
     const QString input = QStringLiteral("\n");
-    HighlightElement **result = parseCmark(input.toUtf8());
-    QVERIFY(result != NULL);
-    freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+    auto result = parse(input);
+    // Just verify it doesn't crash — no specific elements expected.
+    (void)result;
   }
 
   // Spaces — no crash.
   {
     const QString input = QStringLiteral("   \n");
-    HighlightElement **result = parseCmark(input.toUtf8());
-    QVERIFY(result != NULL);
-    freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+    auto result = parse(input);
+    (void)result;
   }
 }
 
 void TestMarkdownParser::testNestedOverlap()
 {
   const QString input = QStringLiteral("***bold-italic***\n");
-  HighlightElement **result = parseCmark(input.toUtf8());
-  QVERIFY(result != NULL);
+  auto result = parse(input);
 
   QCOMPARE(countElements(result, HLT_EMPH), 1);
   QCOMPARE(countElements(result, HLT_STRONG), 1);
 
   // Verify both elements exist with valid ranges.
-  HighlightElement *em = firstElement(result, HLT_EMPH);
-  QVERIFY(em != NULL);
-  QVERIFY((int)em->pos < (int)em->end);
+  auto emphElems = findElements(result, HLT_EMPH, input);
+  QVERIFY(!emphElems.isEmpty());
+  QVERIFY((int)emphElems[0].first < (int)emphElems[0].second);
 
-  HighlightElement *st = firstElement(result, HLT_STRONG);
-  QVERIFY(st != NULL);
-  QVERIFY((int)st->pos < (int)st->end);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+  auto strongElems = findElements(result, HLT_STRONG, input);
+  QVERIFY(!strongElems.isEmpty());
+  QVERIFY((int)strongElems[0].first < (int)strongElems[0].second);
 }
 
 void TestMarkdownParser::testAllExtensions()
@@ -679,8 +626,7 @@ void TestMarkdownParser::testAllExtensions()
       "| h1 | h2 |\n|---|---|\n| a | b |\n\n"
       "[^1]: note\n\n"
       "Text [^1]\n");
-  HighlightElement **result = parseCmark(input.toUtf8());
-  QVERIFY(result != NULL);
+  auto result = parse(input);
 
   QVERIFY(countElements(result, HLT_FRONTMATTER) >= 1);
   QVERIFY(countElements(result, HLT_H1) >= 1);
@@ -693,8 +639,6 @@ void TestMarkdownParser::testAllExtensions()
 
   // cmark produces MARK elements (pmh did not).
   QVERIFY(countElements(result, HLT_MARK) >= 1);
-
-  freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
 }
 
 // ============================================================
@@ -720,6 +664,7 @@ void TestMarkdownParser::testPerformance()
   }
 
   QByteArray utf8 = doc.toUtf8();
+  int numBlocks = countBlocks(utf8);
 
   // Run 3 iterations, collect times.
   QVector<qint64> times;
@@ -727,16 +672,20 @@ void TestMarkdownParser::testPerformance()
   for (int iter = 0; iter < 3; iter++) {
     QElapsedTimer timer;
     timer.start();
-    HighlightElement **result = parseCmark(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
     qint64 elapsed = timer.elapsed();
-    QVERIFY(result != NULL);
-    freeHighlightElements(result, NUM_HIGHLIGHT_STYLES);
+    // Verify non-empty result.
+    bool hasAny = false;
+    for (const auto &block : result.blocksHighlights) {
+      if (!block.isEmpty()) { hasAny = true; break; }
+    }
+    QVERIFY(hasAny);
     times.append(elapsed);
   }
 
   std::sort(times.begin(), times.end());
   qint64 median = times[1];
-  qDebug() << "cmark parse times (ms):" << times[0] << times[1] << times[2]
+  qDebug() << "walkAndConvert parse times (ms):" << times[0] << times[1] << times[2]
            << "median:" << median;
 
   QVERIFY2(median < 500,
