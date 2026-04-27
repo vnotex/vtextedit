@@ -31,3 +31,4 @@ target_link_libraries(test_textfolding PRIVATE
     Qt::Test
     Qt::Widgets
 )
+add_test(NAME test_textfolding COMMAND test_textfolding)

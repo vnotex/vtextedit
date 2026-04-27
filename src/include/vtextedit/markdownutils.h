@@ -14,7 +14,7 @@ class QTextBlock;
 namespace vte {
 class VTextEdit;
 
-namespace peg {
+namespace md {
 struct ElementRegion;
 }
 
@@ -105,8 +105,8 @@ public:
                                                            const QString &p_contentBasePath,
                                                            MarkdownLink::TypeFlags p_flags);
 
-  // Use PegParser to parse @p_content and return the image regions.
-  static QVector<peg::ElementRegion> fetchImageRegionsViaParser(const QString &p_content);
+  // Use MarkdownParser to parse @p_content and return the image regions.
+  static QVector<md::ElementRegion> fetchImageRegionsViaParser(const QString &p_content);
 
   struct HeaderMatch {
     bool m_matched = false;

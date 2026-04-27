@@ -6,8 +6,8 @@
 #include <QHash>
 
 namespace vte {
-class PegMarkdownHighlighter;
-class EditorPegMarkdownHighlighter;
+class MarkdownHighlighter;
+class EditorMarkdownHighlighter;
 class DocumentResourceMgr;
 class TextDocumentLayout;
 class EditorPreviewMgr;
@@ -37,7 +37,7 @@ public:
 
   TextDocumentLayout *documentLayout() const;
 
-  PegMarkdownHighlighter *getHighlighter() const;
+  MarkdownHighlighter *getHighlighter() const;
 
   PreviewMgr *getPreviewMgr() const;
 
@@ -89,7 +89,7 @@ private:
 
   void updateSpaceWidth();
 
-  QScopedPointer<EditorPegMarkdownHighlighter> m_highlighterInterface;
+  QScopedPointer<EditorMarkdownHighlighter> m_highlighterInterface;
 
   QScopedPointer<DocumentResourceMgr> m_resourceMgr;
 

@@ -13,7 +13,7 @@
 
 #include <vtextedit/global.h>
 #include <vtextedit/orderedintset.h>
-#include <vtextedit/pegmarkdownhighlighterdata.h>
+#include <vtextedit/markdownhighlighterdata.h>
 #include <vtextedit/previewdata.h>
 
 class QTextDocument;
@@ -103,7 +103,7 @@ public:
   static int calculateBlockMargin(const QTextBlock &p_block, int p_tabStopDistance);
 
 public slots:
-  void updateImageLinks(const QVector<peg::ElementRegion> &p_regions);
+  void updateImageLinks(const QVector<md::ElementRegion> &p_regions);
 
   void updateCodeBlocks(const QVector<QSharedPointer<PreviewItem>> &p_items);
 
@@ -188,10 +188,10 @@ private:
     int m_height = -1;
   };
 
-  void previewImageLinks(TimeStamp p_timeStamp, const QVector<peg::ElementRegion> &p_regions);
+  void previewImageLinks(TimeStamp p_timeStamp, const QVector<md::ElementRegion> &p_regions);
 
   // According to @p_regions, fetch the image link Url.
-  void fetchImageLinksFromRegions(const QVector<peg::ElementRegion> &p_regions,
+  void fetchImageLinksFromRegions(const QVector<md::ElementRegion> &p_regions,
                                   QVector<ImageLink> &p_imageLinks);
 
   // Fetch the image's full path and size.

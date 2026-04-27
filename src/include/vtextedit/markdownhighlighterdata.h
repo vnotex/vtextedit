@@ -1,5 +1,5 @@
-#ifndef PEGMARKDOWNHIGHLIGHTERDATA_H
-#define PEGMARKDOWNHIGHLIGHTERDATA_H
+#ifndef MARKDOWNHIGHLIGHTERDATA_H
+#define MARKDOWNHIGHLIGHTERDATA_H
 
 #include <QTextCharFormat>
 
@@ -7,7 +7,7 @@
 #include <vtextedit/global.h>
 
 namespace vte {
-namespace peg {
+namespace md {
 class HighlighterConfig {
 public:
   // Whether enable math extension.
@@ -219,7 +219,7 @@ struct VTEXTEDIT_EXPORT TableBlock {
   // Global position of the table borders in ascending order.
   QVector<int> m_borders;
 };
-} // namespace peg
+} // namespace md
 } // namespace vte
 
-#endif // PEGMARKDOWNHIGHLIGHTERDATA_H
+#endif // MARKDOWNHIGHLIGHTERDATA_H

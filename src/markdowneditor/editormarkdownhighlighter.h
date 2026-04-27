@@ -1,14 +1,14 @@
-#ifndef EDITORPEGMARKDOWNHIGHLIGHTER_H
-#define EDITORPEGMARKDOWNHIGHLIGHTER_H
+#ifndef EDITORMARKDOWNHIGHLIGHTER_H
+#define EDITORMARKDOWNHIGHLIGHTER_H
 
-#include <vtextedit/pegmarkdownhighlighter.h>
+#include <vtextedit/markdownhighlighter.h>
 
 namespace vte {
 class VTextEditor;
 
-class EditorPegMarkdownHighlighter : public PegMarkdownHighlighterInterface {
+class EditorMarkdownHighlighter : public MarkdownHighlighterInterface {
 public:
-  explicit EditorPegMarkdownHighlighter(VTextEditor *p_editor);
+  explicit EditorMarkdownHighlighter(VTextEditor *p_editor);
 
   QTextCursor textCursor() const Q_DECL_OVERRIDE;
 
@@ -23,4 +23,4 @@ private:
 };
 } // namespace vte
 
-#endif // EDITORPEGMARKDOWNHIGHLIGHTER_H
+#endif // EDITORMARKDOWNHIGHLIGHTER_H

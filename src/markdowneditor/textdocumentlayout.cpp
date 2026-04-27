@@ -14,7 +14,7 @@
 #include <vtextedit/textblockdata.h>
 
 #include "documentresourcemgr.h"
-#include "peghighlightblockdata.h"
+#include "markdownhighlightblockdata.h"
 
 using namespace vte;
 
@@ -1064,5 +1064,5 @@ void TextDocumentLayout::setLeadingSpaceOfLine(qreal p_leading) {
 }
 
 bool TextDocumentLayout::shouldBlockWrapLine(const QTextBlock &p_block) const {
-  return PegHighlightBlockData::get(p_block)->getWrapLineEnabled();
+  return MarkdownHighlightBlockData::get(p_block)->getWrapLineEnabled();
 }

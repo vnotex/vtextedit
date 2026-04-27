@@ -138,7 +138,7 @@ bool WebCodeBlockHighlighter::parseSpanElement(QXmlStreamReader &p_reader,
           p_offset = pos + tokenText.size();
           if (!p_classList.isEmpty()) {
             // Translate class to styles.
-            p_styles[p_idx].push_back(peg::HLUnitStyle());
+            p_styles[p_idx].push_back(md::HLUnitStyle());
             auto &unit = p_styles[p_idx].back();
             unit.start = pos;
             unit.length = tokenText.size();

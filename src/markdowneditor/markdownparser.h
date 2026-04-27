@@ -1,5 +1,5 @@
-#ifndef PEGPARSER_H
-#define PEGPARSER_H
+#ifndef MARKDOWNPARSER_H
+#define MARKDOWNPARSER_H
 
 #include <QObject>
 
@@ -10,15 +10,13 @@
 
 #include <vtextedit/global.h>
 
-#include <vtextedit/pegmarkdownhighlighterdata.h>
+#include <vtextedit/markdownhighlighterdata.h>
 
-extern "C" {
-#include <pmh_parser.h>
-}
+#include "highlightelement.h"
 
 namespace vte {
-namespace peg {
-struct PegParseConfig {
+namespace md {
+struct MarkdownParseConfig {
   TimeStamp m_timeStamp = 0;
 
   QByteArray m_data;
@@ -28,38 +26,38 @@ struct PegParseConfig {
   // Offset of m_data in the document.
   int m_offset = 0;
 
-  int m_extensions = pmh_EXT_NONE;
+  int m_extensions = 0;
 
   // Fast parse.
   bool m_fast = false;
 
   QString toString() const {
-    return QStringLiteral("PegParseConfig ts %1 data %2 blocks %3")
+    return QStringLiteral("MarkdownParseConfig ts %1 data %2 blocks %3")
         .arg(m_timeStamp)
         .arg(m_data.size())
         .arg(m_numOfBlocks);
   }
 };
 
-struct PegParseResult {
-  PegParseResult(const QSharedPointer<PegParseConfig> &p_config)
+struct MarkdownParseResult {
+  MarkdownParseResult(const QSharedPointer<MarkdownParseConfig> &p_config)
       : m_timeStamp(p_config->m_timeStamp), m_numOfBlocks(p_config->m_numOfBlocks),
-        m_offset(p_config->m_offset), m_pmhElements(NULL) {}
+        m_offset(p_config->m_offset), m_elements(nullptr) {}
 
-  ~PegParseResult() { clearPmhElements(); }
+  ~MarkdownParseResult() { clearElements(); }
 
-  void clearPmhElements() {
-    if (m_pmhElements) {
-      pmh_free_elements(m_pmhElements);
-      m_pmhElements = NULL;
+  void clearElements() {
+    if (m_elements) {
+      freeHighlightElements(m_elements, NUM_HIGHLIGHT_STYLES);
+      m_elements = nullptr;
     }
   }
 
-  bool operator<(const PegParseResult &p_other) const { return m_timeStamp < p_other.m_timeStamp; }
+  bool operator<(const MarkdownParseResult &p_other) const { return m_timeStamp < p_other.m_timeStamp; }
 
-  QString toString() const { return QStringLiteral("PegParseResult ts %1").arg(m_timeStamp); }
+  QString toString() const { return QStringLiteral("MarkdownParseResult ts %1").arg(m_timeStamp); }
 
-  bool isEmpty() const { return !m_pmhElements; }
+  bool isEmpty() const { return !m_elements; }
 
   // Parse m_pmhElements.
   void parse(QAtomicInt &p_stop, bool p_fast);
@@ -70,7 +68,7 @@ struct PegParseResult {
 
   int m_offset = 0;
 
-  pmh_element **m_pmhElements = nullptr;
+  HighlightElement **m_elements = nullptr;
 
   // All image link regions.
   QVector<ElementRegion> m_imageRegions;
@@ -122,18 +120,18 @@ private:
 
   void parseTableBorderRegions(QAtomicInt &p_stop);
 
-  void parseRegions(QAtomicInt &p_stop, pmh_element_type p_type, QVector<ElementRegion> &p_result,
+  void parseRegions(QAtomicInt &p_stop, int p_type, QVector<ElementRegion> &p_result,
                     bool p_sort = false);
 };
 
-class PegParserWorker : public QThread {
+class MarkdownParserWorker : public QThread {
   Q_OBJECT
 public:
   enum WorkerState { Idle, Busy, Cancelled, Finished };
 
-  explicit PegParserWorker(QObject *p_parent = nullptr);
+  explicit MarkdownParserWorker(QObject *p_parent = nullptr);
 
-  void prepareParse(const QSharedPointer<PegParseConfig> &p_config);
+  void prepareParse(const QSharedPointer<MarkdownParseConfig> &p_config);
 
   void reset();
 
@@ -147,9 +145,9 @@ public:
     return m_parseConfig->m_timeStamp;
   }
 
-  const QSharedPointer<PegParseConfig> &parseConfig() const { return m_parseConfig; }
+  const QSharedPointer<MarkdownParseConfig> &parseConfig() const { return m_parseConfig; }
 
-  const QSharedPointer<PegParseResult> &parseResult() const { return m_parseResult; }
+  const QSharedPointer<MarkdownParseResult> &parseResult() const { return m_parseResult; }
 
 public slots:
   void stop();
@@ -158,7 +156,7 @@ protected:
   void run() Q_DECL_OVERRIDE;
 
 private:
-  QSharedPointer<PegParseResult> parseMarkdown(const QSharedPointer<PegParseConfig> &p_config,
+  QSharedPointer<MarkdownParseResult> parseMarkdown(const QSharedPointer<MarkdownParseConfig> &p_config,
                                                QAtomicInt &p_stop);
 
   bool isAskedToStop() const { return m_stop.loadAcquire() == 1; }
@@ -167,34 +165,34 @@ private:
 
   int m_state = WorkerState::Idle;
 
-  QSharedPointer<PegParseConfig> m_parseConfig;
+  QSharedPointer<MarkdownParseConfig> m_parseConfig;
 
-  QSharedPointer<PegParseResult> m_parseResult;
+  QSharedPointer<MarkdownParseResult> m_parseResult;
 };
 
-class PegParser : public QObject {
+class MarkdownParser : public QObject {
   Q_OBJECT
 public:
-  explicit PegParser(QObject *p_parent = nullptr);
+  explicit MarkdownParser(QObject *p_parent = nullptr);
 
-  ~PegParser();
+  ~MarkdownParser();
 
-  QSharedPointer<PegParseResult> parse(const QSharedPointer<PegParseConfig> &p_config);
+  QSharedPointer<MarkdownParseResult> parse(const QSharedPointer<MarkdownParseConfig> &p_config);
 
-  void parseAsync(const QSharedPointer<PegParseConfig> &p_config);
+  void parseAsync(const QSharedPointer<MarkdownParseConfig> &p_config);
 
-  static QVector<ElementRegion> parseImageRegions(const QSharedPointer<PegParseConfig> &p_config);
+  static QVector<ElementRegion> parseImageRegions(const QSharedPointer<MarkdownParseConfig> &p_config);
 
-  // MUST pmh_free_elements() the result.
-  static pmh_element **parseMarkdownToElements(const QSharedPointer<PegParseConfig> &p_config);
+  // Caller must free with freeHighlightElements().
+  static HighlightElement **parseMarkdownToElements(const QSharedPointer<MarkdownParseConfig> &p_config);
 
   static int getNumberOfStyles();
 
 signals:
-  void parseResultReady(const QSharedPointer<PegParseResult> &p_result);
+  void parseResultReady(const QSharedPointer<MarkdownParseResult> &p_result);
 
 private slots:
-  void handleWorkerFinished(PegParserWorker *p_worker);
+  void handleWorkerFinished(MarkdownParserWorker *p_worker);
 
 private:
   void init();
@@ -203,15 +201,15 @@ private:
 
   void pickWorker();
 
-  void scheduleWork(PegParserWorker *p_worker, const QSharedPointer<PegParseConfig> &p_config);
+  void scheduleWork(MarkdownParserWorker *p_worker, const QSharedPointer<MarkdownParseConfig> &p_config);
 
   // Maintain a fixed number of workers to pick work.
-  QVector<PegParserWorker *> m_workers;
+  QVector<MarkdownParserWorker *> m_workers;
 
-  QSharedPointer<PegParseConfig> m_pendingWork;
+  QSharedPointer<MarkdownParseConfig> m_pendingWork;
 };
 
-} // namespace peg
+} // namespace md
 } // namespace vte
 
-#endif // PEGPARSER_H
+#endif // MARKDOWNPARSER_H

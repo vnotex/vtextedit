@@ -7,3 +7,6 @@
 [submodule "src/libs/sonnet"]
 	path = libs/sonnet
 	url = https://github.com/vnotex/sonnet.git
+[submodule "libs/cmark"]
+	path = libs/cmark
+	url = https://github.com/vnotex/cmark.git

@@ -10,7 +10,7 @@
 #include <State>
 
 namespace vte {
-class PegHighlightBlockData;
+class MarkdownHighlightBlockData;
 struct BlockLayoutData;
 class BlockPreviewData;
 struct BlockSpellCheckData;
@@ -52,8 +52,8 @@ public:
   bool isMarkedAsFoldingStart() const;
   void setMarkedAsFoldingStart(bool p_set);
 
-  const QSharedPointer<PegHighlightBlockData> &getPegHighlightBlockData() const;
-  void setPegHighlightBlockData(const QSharedPointer<PegHighlightBlockData> &p_data);
+  const QSharedPointer<MarkdownHighlightBlockData> &getMarkdownHighlightBlockData() const;
+  void setMarkdownHighlightBlockData(const QSharedPointer<MarkdownHighlightBlockData> &p_data);
 
   const QSharedPointer<BlockLayoutData> &getBlockLayoutData() const;
   void setBlockLayoutData(const QSharedPointer<BlockLayoutData> &p_data);
@@ -90,8 +90,8 @@ private:
   // Whether marked as syntax folding start.
   bool m_markedAsFoldingStart = false;
 
-  // Data for PegMarkdownHighlighter.
-  QSharedPointer<PegHighlightBlockData> m_pegHighlightData;
+  // Data for MarkdownHighlighter.
+  QSharedPointer<MarkdownHighlightBlockData> m_markdownHighlightData;
 
   // Layout data of this block when using TextDocumentLayout.
   QSharedPointer<BlockLayoutData> m_blockLayoutData;

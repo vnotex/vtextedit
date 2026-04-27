@@ -1,4 +1,4 @@
-#include <vtextedit/pegmarkdownhighlighter.h>
+#include <vtextedit/markdownhighlighter.h>
 
 #include <QDebug>
 #include <QScrollBar>
@@ -13,39 +13,54 @@
 #include <vtextedit/textutils.h>
 #include <vtextedit/theme.h>
 
-#include "peghighlightblockdata.h"
-#include "peghighlighterresult.h"
-#include "pegparser.h"
+#include "markdownhighlightblockdata.h"
+#include "markdownhighlighterresult.h"
+#include "markdownparser.h"
+
+#include "highlightelement.h"
+
+// Extension flags (replacing pmh_EXT_* constants).
+// These are kept for config compatibility but cmark enables all extensions by default.
+enum {
+  EXT_NONE = 0,
+  EXT_NOTES = 0x01,
+  EXT_STRIKE = 0x02,
+  EXT_FRONTMATTER = 0x04,
+  EXT_MARK = 0x08,
+  EXT_TABLE = 0x10,
+  EXT_MATH = 0x20,
+  EXT_MATH_RAW = 0x40,
+};
 
 #define LARGE_BLOCK_NUMBER 1000
 
 using namespace vte;
 
-PegMarkdownHighlighter::PegMarkdownHighlighter(
-    PegMarkdownHighlighterInterface *p_interface, QTextDocument *p_doc,
+MarkdownHighlighter::MarkdownHighlighter(
+    MarkdownHighlighterInterface *p_interface, QTextDocument *p_doc,
     const QSharedPointer<Theme> &p_theme, CodeBlockHighlighter *p_codeBlockHighlighter,
-    const QSharedPointer<peg::HighlighterConfig> &p_config)
+    const QSharedPointer<md::HighlighterConfig> &p_config)
     : VSyntaxHighlighter(p_doc), m_interface(p_interface), m_config(p_config),
       m_codeBlockHighlighter(p_codeBlockHighlighter),
-      m_parserExts(pmh_EXT_NOTES | pmh_EXT_STRIKE | pmh_EXT_FRONTMATTER | pmh_EXT_MARK |
-                   pmh_EXT_TABLE) {
+      m_parserExts(EXT_NOTES | EXT_STRIKE | EXT_FRONTMATTER | EXT_MARK |
+                   EXT_TABLE) {
   setTheme(p_theme);
 
   if (p_config->m_mathExtEnabled) {
-    m_parserExts |= (pmh_EXT_MATH | pmh_EXT_MATH_RAW);
+    m_parserExts |= (EXT_MATH | EXT_MATH_RAW);
   }
 
-  m_parser = new peg::PegParser(this);
-  connect(m_parser, &peg::PegParser::parseResultReady, this,
-          &PegMarkdownHighlighter::handleParseResult);
+  m_parser = new md::MarkdownParser(this);
+  connect(m_parser, &md::MarkdownParser::parseResultReady, this,
+          &MarkdownHighlighter::handleParseResult);
 
-  m_result.reset(new PegHighlighterResult());
-  m_fastResult.reset(new PegHighlighterFastResult());
+  m_result.reset(new MarkdownHighlighterResult());
+  m_fastResult.reset(new MarkdownHighlighterFastResult());
 
   m_parseTimer = new QTimer(this);
   m_parseTimer->setSingleShot(true);
   m_parseTimer->setInterval(m_parseInterval);
-  connect(m_parseTimer, &QTimer::timeout, this, &PegMarkdownHighlighter::startParse);
+  connect(m_parseTimer, &QTimer::timeout, this, &MarkdownHighlighter::startParse);
 
   m_fastParseTimer = new QTimer(this);
   m_fastParseTimer->setSingleShot(true);
@@ -58,7 +73,7 @@ PegMarkdownHighlighter::PegMarkdownHighlighter(
   m_rehighlightTimer = new QTimer(this);
   m_rehighlightTimer->setSingleShot(true);
   m_rehighlightTimer->setInterval(10);
-  connect(m_rehighlightTimer, &QTimer::timeout, this, &PegMarkdownHighlighter::rehighlightBlocks);
+  connect(m_rehighlightTimer, &QTimer::timeout, this, &MarkdownHighlighter::rehighlightBlocks);
 
   m_scrollRehighlightTimer = new QTimer(this);
   m_scrollRehighlightTimer->setSingleShot(true);
@@ -73,32 +88,32 @@ PegMarkdownHighlighter::PegMarkdownHighlighter(
 
   m_contentChangeTime.start();
   connect(document(), &QTextDocument::contentsChange, this,
-          &PegMarkdownHighlighter::handleContentsChange);
+          &MarkdownHighlighter::handleContentsChange);
 
   connect(m_codeBlockHighlighter, &CodeBlockHighlighter::codeBlockHighlightCompleted, this,
-          &PegMarkdownHighlighter::handleCodeBlockHighlightResult);
+          &MarkdownHighlighter::handleCodeBlockHighlightResult);
 }
 
 // Just use parse results to highlight block.
 // Do not maintain block data and state here.
-void PegMarkdownHighlighter::highlightBlock(const QString &p_text) {
-  QSharedPointer<PegHighlighterResult> result(m_result);
+void MarkdownHighlighter::highlightBlock(const QString &p_text) {
+  QSharedPointer<MarkdownHighlighterResult> result(m_result);
 
   QTextBlock block = currentBlock();
   int blockNum = block.blockNumber();
 
   const auto cstate = currentBlockState();
-  bool isCodeBlock = cstate == peg::HighlightBlockState::CodeBlock;
+  bool isCodeBlock = cstate == md::HighlightBlockState::CodeBlock;
   bool isNewBlock = block.userData() == NULL;
-  auto highlightData = PegHighlightBlockData::get(block);
+  auto highlightData = MarkdownHighlightBlockData::get(block);
 
   // Fast parse can not cross multiple empty lines in code block, which
   // cause the wrong parse results.
   if (isNewBlock) {
     int pstate = previousBlockState();
-    if (pstate == peg::HighlightBlockState::CodeBlock ||
-        pstate == peg::HighlightBlockState::CodeBlockStart) {
-      setCurrentBlockState(peg::HighlightBlockState::CodeBlock);
+    if (pstate == md::HighlightBlockState::CodeBlock ||
+        pstate == md::HighlightBlockState::CodeBlockStart) {
+      setCurrentBlockState(md::HighlightBlockState::CodeBlock);
       isCodeBlock = true;
     }
   }
@@ -156,9 +171,9 @@ void PegMarkdownHighlighter::highlightBlock(const QString &p_text) {
   }
 
   // Do spell check.
-  const bool needSpellCheck = cstate != peg::HighlightBlockState::CodeBlockStart &&
-                              cstate != peg::HighlightBlockState::CodeBlock &&
-                              cstate != peg::HighlightBlockState::CodeBlockEnd;
+  const bool needSpellCheck = cstate != md::HighlightBlockState::CodeBlockStart &&
+                              cstate != md::HighlightBlockState::CodeBlock &&
+                              cstate != md::HighlightBlockState::CodeBlockEnd;
   if (needSpellCheck && !p_text.isEmpty() && m_spellCheckEnabled) {
     auto data = TextBlockData::get(block);
     bool ret = SpellCheckHighlightHelper::checkBlock(block, p_text, m_autoDetectLanguageEnabled);
@@ -180,8 +195,8 @@ static bool containSpecialChar(const QString &p_str) {
   return fi == '#' || la == '`' || la == '$' || la == '~' || la == '*' || la == '_';
 }
 
-bool PegMarkdownHighlighter::preHighlightSingleFormatBlock(
-    const QVector<QVector<peg::HLUnit>> &p_highlights, int p_blockNum, const QString &p_text,
+bool MarkdownHighlighter::preHighlightSingleFormatBlock(
+    const QVector<QVector<md::HLUnit>> &p_highlights, int p_blockNum, const QString &p_text,
     bool p_forced) {
   int sz = p_text.size();
   if (sz == 0) {
@@ -208,8 +223,8 @@ bool PegMarkdownHighlighter::preHighlightSingleFormatBlock(
   return false;
 }
 
-void PegMarkdownHighlighter::highlightBlockOne(const QVector<QVector<peg::HLUnit>> &p_highlights,
-                                               int p_blockNum, QVector<peg::HLUnit> &p_cache) {
+void MarkdownHighlighter::highlightBlockOne(const QVector<QVector<md::HLUnit>> &p_highlights,
+                                               int p_blockNum, QVector<md::HLUnit> &p_cache) {
   p_cache.clear();
   if (p_highlights.size() > p_blockNum) {
     // units are sorted by start position and length.
@@ -221,7 +236,7 @@ void PegMarkdownHighlighter::highlightBlockOne(const QVector<QVector<peg::HLUnit
   }
 }
 
-void PegMarkdownHighlighter::highlightBlockOne(const QVector<peg::HLUnit> &p_units) {
+void MarkdownHighlighter::highlightBlockOne(const QVector<md::HLUnit> &p_units) {
   for (int i = 0; i < p_units.size(); ++i) {
     const auto &unit = p_units[i];
     if (i == 0) {
@@ -250,7 +265,7 @@ void PegMarkdownHighlighter::highlightBlockOne(const QVector<peg::HLUnit> &p_uni
 #define KEY_PRESS_INTERVAL 50
 
 // highlightBlock() will be called before this function.
-void PegMarkdownHighlighter::handleContentsChange(int p_position, int p_charsRemoved,
+void MarkdownHighlighter::handleContentsChange(int p_position, int p_charsRemoved,
                                                   int p_charsAdded) {
   Q_UNUSED(p_position);
 
@@ -275,8 +290,8 @@ void PegMarkdownHighlighter::handleContentsChange(int p_position, int p_charsRem
   m_parseTimer->start(m_timeStamp == 2 ? 0 : m_parseInterval);
 }
 
-void PegMarkdownHighlighter::startParse() {
-  QSharedPointer<peg::PegParseConfig> config(new peg::PegParseConfig());
+void MarkdownHighlighter::startParse() {
+  QSharedPointer<md::MarkdownParseConfig> config(new md::MarkdownParseConfig());
   config->m_timeStamp = m_timeStamp;
   config->m_data = document()->toPlainText().toUtf8();
   config->m_numOfBlocks = document()->blockCount();
@@ -285,7 +300,7 @@ void PegMarkdownHighlighter::startParse() {
   m_parser->parseAsync(config);
 }
 
-void PegMarkdownHighlighter::startFastParse(int p_position, int p_charsRemoved, int p_charsAdded) {
+void MarkdownHighlighter::startFastParse(int p_position, int p_charsRemoved, int p_charsAdded) {
   // Get affected block range.
   int firstBlockNum, lastBlockNum;
   getFastParseBlockRange(p_position, p_charsRemoved, p_charsAdded, firstBlockNum, lastBlockNum);
@@ -317,7 +332,7 @@ void PegMarkdownHighlighter::startFastParse(int p_position, int p_charsRemoved, 
   m_fastParseBlocks.first = firstBlockNum;
   m_fastParseBlocks.second = lastBlockNum;
 
-  QSharedPointer<peg::PegParseConfig> config(new peg::PegParseConfig());
+  QSharedPointer<md::MarkdownParseConfig> config(new md::MarkdownParseConfig());
   config->m_timeStamp = m_timeStamp;
   config->m_data = text.toUtf8();
   config->m_numOfBlocks = document()->blockCount();
@@ -325,13 +340,13 @@ void PegMarkdownHighlighter::startFastParse(int p_position, int p_charsRemoved, 
   config->m_extensions = m_parserExts;
   config->m_fast = true;
 
-  QSharedPointer<peg::PegParseResult> parseRes = m_parser->parse(config);
+  QSharedPointer<md::MarkdownParseResult> parseRes = m_parser->parse(config);
   processFastParseResult(parseRes);
 }
 
-void PegMarkdownHighlighter::processFastParseResult(
-    const QSharedPointer<peg::PegParseResult> &p_result) {
-  m_fastResult.reset(new PegHighlighterFastResult(this, p_result));
+void MarkdownHighlighter::processFastParseResult(
+    const QSharedPointer<md::MarkdownParseResult> &p_result) {
+  m_fastResult.reset(new MarkdownHighlighterFastResult(this, p_result));
 
   // Add additional single format blocks.
   appendSingleFormatBlocks(m_fastResult->m_blocksHighlights);
@@ -347,7 +362,7 @@ void PegMarkdownHighlighter::processFastParseResult(
   }
 }
 
-void PegMarkdownHighlighter::updateHighlight() {
+void MarkdownHighlighter::updateHighlight() {
   m_parseTimer->stop();
   if (m_result->matched(m_timeStamp)) {
     // No need to parse again. Already the latest.
@@ -359,8 +374,8 @@ void PegMarkdownHighlighter::updateHighlight() {
   }
 }
 
-void PegMarkdownHighlighter::handleParseResult(
-    const QSharedPointer<peg::PegParseResult> &p_result) {
+void MarkdownHighlighter::handleParseResult(
+    const QSharedPointer<md::MarkdownParseResult> &p_result) {
   if (!m_result.isNull() && p_result->m_timeStamp != m_timeStamp) {
     // Directly skip non-matched results to avoid highlight noise.
     return;
@@ -368,7 +383,7 @@ void PegMarkdownHighlighter::handleParseResult(
 
   clearFastParseResult();
 
-  m_result.reset(new PegHighlighterResult(this, p_result, m_timeStamp, m_lastContentsChange));
+  m_result.reset(new MarkdownHighlighterResult(this, p_result, m_timeStamp, m_lastContentsChange));
 
   m_result->m_codeBlockTimeStamp = nextCodeBlockTimeStamp();
 
@@ -396,14 +411,14 @@ void PegMarkdownHighlighter::handleParseResult(
   }
 }
 
-void PegMarkdownHighlighter::clearFastParseResult() {
+void MarkdownHighlighter::clearFastParseResult() {
   m_fastParseBlocks.first = -1;
   m_fastParseBlocks.second = -1;
   m_fastResult->clear();
 }
 
-void PegMarkdownHighlighter::appendSingleFormatBlocks(
-    const QVector<QVector<peg::HLUnit>> &p_highlights) {
+void MarkdownHighlighter::appendSingleFormatBlocks(
+    const QVector<QVector<md::HLUnit>> &p_highlights) {
   auto doc = document();
   for (int i = 0; i < p_highlights.size(); ++i) {
     const auto &units = p_highlights[i];
@@ -419,20 +434,20 @@ void PegMarkdownHighlighter::appendSingleFormatBlocks(
   }
 }
 
-void PegMarkdownHighlighter::clearAllBlocksUserDataAndState(
-    const QSharedPointer<PegHighlighterResult> &p_result) {
+void MarkdownHighlighter::clearAllBlocksUserDataAndState(
+    const QSharedPointer<MarkdownHighlighterResult> &p_result) {
   QTextBlock block = document()->firstBlock();
   while (block.isValid()) {
     clearBlockUserData(p_result, block);
 
-    block.setUserState(peg::HighlightBlockState::Normal);
+    block.setUserState(md::HighlightBlockState::Normal);
 
     block = block.next();
   }
 }
 
-void PegMarkdownHighlighter::clearBlockUserData(
-    const QSharedPointer<PegHighlighterResult> &p_result, QTextBlock &p_block) {
+void MarkdownHighlighter::clearBlockUserData(
+    const QSharedPointer<MarkdownHighlighterResult> &p_result, QTextBlock &p_block) {
   Q_UNUSED(p_result);
   const int blockNum = p_block.blockNumber();
   auto data = TextBlockData::get(p_block);
@@ -440,7 +455,7 @@ void PegMarkdownHighlighter::clearBlockUserData(
     return;
   }
 
-  PegHighlightBlockData::get(p_block)->clearOnResultReady();
+  MarkdownHighlightBlockData::get(p_block)->clearOnResultReady();
 
   if (BlockPreviewData::get(p_block)->getPreviewData().isEmpty()) {
     m_possiblePreviewBlocks.remove(blockNum);
@@ -449,12 +464,12 @@ void PegMarkdownHighlighter::clearBlockUserData(
   }
 }
 
-void PegMarkdownHighlighter::updateAllBlocksUserDataAndState(
-    const QSharedPointer<PegHighlighterResult> &p_result) {
+void MarkdownHighlighter::updateAllBlocksUserDataAndState(
+    const QSharedPointer<MarkdownHighlighterResult> &p_result) {
   auto doc = document();
 
   // Code blocks.
-  const QHash<int, peg::HighlightBlockState> &cbStates = p_result->m_codeBlocksState;
+  const QHash<int, md::HighlightBlockState> &cbStates = p_result->m_codeBlocksState;
   for (auto it = cbStates.begin(); it != cbStates.end(); ++it) {
     QTextBlock block = doc->findBlockByNumber(it.key());
     if (!block.isValid()) {
@@ -471,14 +486,14 @@ void PegMarkdownHighlighter::updateAllBlocksUserDataAndState(
     }
 
     while (block.isValid() && block.position() < tbb.m_endPos) {
-      PegHighlightBlockData::get(block)->setWrapLineEnabled(false);
+      MarkdownHighlightBlockData::get(block)->setWrapLineEnabled(false);
       block = block.next();
     }
   }
 }
 
-void PegMarkdownHighlighter::updateCodeBlocks(
-    const QSharedPointer<PegHighlighterResult> &p_result) {
+void MarkdownHighlighter::updateCodeBlocks(
+    const QSharedPointer<MarkdownHighlighterResult> &p_result) {
   // Only need to receive code block highlights when it is empty.
   if (m_config->m_codeBlockHighlightEnabled && m_codeBlockHighlighter) {
     int cbSz = p_result->m_codeBlocks.size();
@@ -497,7 +512,7 @@ void PegMarkdownHighlighter::updateCodeBlocks(
   emit codeBlocksUpdated(p_result->m_timeStamp, p_result->m_codeBlocks);
 }
 
-void PegMarkdownHighlighter::rehighlightBlocks() {
+void MarkdownHighlighter::rehighlightBlocks() {
   if (m_result->m_numOfBlocks <= LARGE_BLOCK_NUMBER) {
     rehighlightBlockRange(0, m_result->m_numOfBlocks - 1);
   } else {
@@ -510,11 +525,11 @@ void PegMarkdownHighlighter::rehighlightBlocks() {
   }
 }
 
-void PegMarkdownHighlighter::rehighlightBlocksLater() { m_rehighlightTimer->start(); }
+void MarkdownHighlighter::rehighlightBlocksLater() { m_rehighlightTimer->start(); }
 
-void PegMarkdownHighlighter::highlightCodeBlock(
-    const QSharedPointer<PegHighlighterResult> &p_result, int p_blockNum,
-    QVector<peg::HLUnitStyle> &p_cache) {
+void MarkdownHighlighter::highlightCodeBlock(
+    const QSharedPointer<MarkdownHighlighterResult> &p_result, int p_blockNum,
+    QVector<md::HLUnitStyle> &p_cache) {
   p_cache.clear();
   const auto &units = p_result->getCodeBlockHighlight(p_blockNum);
   if (!units.isEmpty()) {
@@ -523,7 +538,7 @@ void PegMarkdownHighlighter::highlightCodeBlock(
   }
 }
 
-void PegMarkdownHighlighter::highlightCodeBlock(const QVector<peg::HLUnitStyle> &p_units) {
+void MarkdownHighlighter::highlightCodeBlock(const QVector<md::HLUnitStyle> &p_units) {
   if (p_units.isEmpty()) {
     return;
   }
@@ -550,13 +565,13 @@ void PegMarkdownHighlighter::highlightCodeBlock(const QVector<peg::HLUnitStyle> 
   }
 }
 
-TimeStamp PegMarkdownHighlighter::nextCodeBlockTimeStamp() { return ++m_codeBlockTimeStamp; }
+TimeStamp MarkdownHighlighter::nextCodeBlockTimeStamp() { return ++m_codeBlockTimeStamp; }
 
-bool PegMarkdownHighlighter::isFastParseBlock(int p_blockNum) const {
+bool MarkdownHighlighter::isFastParseBlock(int p_blockNum) const {
   return p_blockNum >= m_fastParseBlocks.first && p_blockNum <= m_fastParseBlocks.second;
 }
 
-void PegMarkdownHighlighter::setTheme(const QSharedPointer<Theme> &p_theme) {
+void MarkdownHighlighter::setTheme(const QSharedPointer<Theme> &p_theme) {
   if (m_theme == p_theme) {
     return;
   }
@@ -568,8 +583,8 @@ void PegMarkdownHighlighter::setTheme(const QSharedPointer<Theme> &p_theme) {
 
   // Init m_styles from theme.
   m_styles.clear();
-  m_styles.resize(pmh_NUM_LANG_TYPES);
-  Q_ASSERT(pmh_NUM_LANG_TYPES <= Theme::MarkdownSyntaxStyle::MaxMarkdownSyntaxStyle);
+  m_styles.resize(NUM_HIGHLIGHT_STYLES);
+  Q_ASSERT(NUM_HIGHLIGHT_STYLES <= Theme::MarkdownSyntaxStyle::MaxMarkdownSyntaxStyle);
 
   auto syntaxStyles = m_theme->markdownSyntaxStyles();
   if (!syntaxStyles) {
@@ -582,7 +597,7 @@ void PegMarkdownHighlighter::setTheme(const QSharedPointer<Theme> &p_theme) {
   }
 }
 
-bool PegMarkdownHighlighter::rehighlightBlockRange(int p_first, int p_last) {
+bool MarkdownHighlighter::rehighlightBlockRange(int p_first, int p_last) {
   bool highlighted = false;
   const auto &cbStates = m_result->m_codeBlocksState;
   const auto &hls = m_result->m_blocksHighlights;
@@ -597,7 +612,7 @@ bool PegMarkdownHighlighter::rehighlightBlockRange(int p_first, int p_last) {
 
     bool needHL = false;
     bool updateTS = false;
-    auto highlightData = PegHighlightBlockData::get(block);
+    auto highlightData = MarkdownHighlightBlockData::get(block);
     if (highlightData->getHighlightTimeStamp() != m_result->m_timeStamp) {
       needHL = true;
       // Try to find cache.
@@ -613,7 +628,7 @@ bool PegMarkdownHighlighter::rehighlightBlockRange(int p_first, int p_last) {
       // FIXME: what about a previous code block turn into a non-code block? For
       // now, they can be distinguished by block highlights.
       auto it = cbStates.find(blockNum);
-      if (it != cbStates.end() && it.value() == peg::HighlightBlockState::CodeBlock) {
+      if (it != cbStates.end() && it.value() == md::HighlightBlockState::CodeBlock) {
         if (highlightData->getCodeBlockHighlightTimeStamp() != m_result->m_codeBlockTimeStamp &&
             m_result->m_codeBlockHighlightReceived) {
           needHL = true;
@@ -642,8 +657,8 @@ bool PegMarkdownHighlighter::rehighlightBlockRange(int p_first, int p_last) {
   return highlighted;
 }
 
-bool PegMarkdownHighlighter::isEmptyCodeBlockHighlights(
-    const QVector<QVector<peg::HLUnitStyle>> &p_highlights) {
+bool MarkdownHighlighter::isEmptyCodeBlockHighlights(
+    const QVector<QVector<md::HLUnitStyle>> &p_highlights) {
   if (p_highlights.isEmpty()) {
     return true;
   }
@@ -659,7 +674,7 @@ bool PegMarkdownHighlighter::isEmptyCodeBlockHighlights(
   return empty;
 }
 
-void PegMarkdownHighlighter::completeHighlight(QSharedPointer<PegHighlighterResult> p_result) {
+void MarkdownHighlighter::completeHighlight(QSharedPointer<MarkdownHighlighterResult> p_result) {
   m_notifyHighlightComplete = true;
 
   if (isMathEnabled()) {
@@ -672,9 +687,9 @@ void PegMarkdownHighlighter::completeHighlight(QSharedPointer<PegHighlighterResu
   emit headersUpdated(p_result->m_headerRegions);
 }
 
-bool PegMarkdownHighlighter::isMathEnabled() const { return m_parserExts & pmh_EXT_MATH; }
+bool MarkdownHighlighter::isMathEnabled() const { return m_parserExts & EXT_MATH; }
 
-void PegMarkdownHighlighter::rehighlightSensitiveBlocks() {
+void MarkdownHighlighter::rehighlightSensitiveBlocks() {
   QTextBlock cb = m_interface->textCursor().block();
 
   auto range = m_interface->visibleBlockRange();
@@ -694,21 +709,21 @@ void PegMarkdownHighlighter::rehighlightSensitiveBlocks() {
   }
 }
 
-const QSet<int> &PegMarkdownHighlighter::getPossiblePreviewBlocks() const {
+const QSet<int> &MarkdownHighlighter::getPossiblePreviewBlocks() const {
   return m_possiblePreviewBlocks;
 }
 
-void PegMarkdownHighlighter::clearPossiblePreviewBlocks(const QVector<int> &p_blocksToClear) {
+void MarkdownHighlighter::clearPossiblePreviewBlocks(const QVector<int> &p_blocksToClear) {
   for (auto i : p_blocksToClear) {
     m_possiblePreviewBlocks.remove(i);
   }
 }
 
-void PegMarkdownHighlighter::addPossiblePreviewBlock(int p_blockNumber) {
+void MarkdownHighlighter::addPossiblePreviewBlock(int p_blockNumber) {
   m_possiblePreviewBlocks.insert(p_blockNumber);
 }
 
-void PegMarkdownHighlighter::getFastParseBlockRange(int p_position, int p_charsRemoved,
+void MarkdownHighlighter::getFastParseBlockRange(int p_position, int p_charsRemoved,
                                                     int p_charsAdded, int &p_firstBlock,
                                                     int &p_lastBlock) const {
   const int maxNumOfBlocks = 15;
@@ -738,8 +753,8 @@ void PegMarkdownHighlighter::getFastParseBlockRange(int p_position, int p_charsR
 
     // Check code block.
     int state = firstBlock.userState();
-    if (state == peg::HighlightBlockState::CodeBlock ||
-        state == peg::HighlightBlockState::CodeBlockEnd) {
+    if (state == md::HighlightBlockState::CodeBlock ||
+        state == md::HighlightBlockState::CodeBlockEnd) {
       goto goup;
     }
 
@@ -752,8 +767,8 @@ void PegMarkdownHighlighter::getFastParseBlockRange(int p_position, int p_charsR
       // If previous block is empty, then we could stop now.
       if (TextEditUtils::isEmptyBlock(preBlock)) {
         int preState = preBlock.userState();
-        if (preState != peg::HighlightBlockState::CodeBlockStart &&
-            preState != peg::HighlightBlockState::CodeBlock) {
+        if (preState != md::HighlightBlockState::CodeBlockStart &&
+            preState != md::HighlightBlockState::CodeBlock) {
           break;
         }
       }
@@ -774,13 +789,13 @@ void PegMarkdownHighlighter::getFastParseBlockRange(int p_position, int p_charsR
 
     // Check code block.
     switch (lastBlock.userState()) {
-    case peg::HighlightBlockState::CodeBlockStart:
+    case md::HighlightBlockState::CodeBlockStart:
       Q_FALLTHROUGH();
-    case peg::HighlightBlockState::CodeBlock:
+    case md::HighlightBlockState::CodeBlock:
       inCodeBlock = true;
       goto godown;
 
-    case peg::HighlightBlockState::CodeBlockEnd:
+    case md::HighlightBlockState::CodeBlockEnd:
       inCodeBlock = false;
       break;
 
@@ -791,9 +806,9 @@ void PegMarkdownHighlighter::getFastParseBlockRange(int p_position, int p_charsR
     // Empty block.
     if (TextEditUtils::isEmptyBlock(nextBlock) && !inCodeBlock) {
       int nstate = nextBlock.userState();
-      if (nstate != peg::HighlightBlockState::CodeBlockStart &&
-          nstate != peg::HighlightBlockState::CodeBlock &&
-          nstate != peg::HighlightBlockState::CodeBlockEnd) {
+      if (nstate != md::HighlightBlockState::CodeBlockStart &&
+          nstate != md::HighlightBlockState::CodeBlock &&
+          nstate != md::HighlightBlockState::CodeBlockEnd) {
         break;
       }
     }
@@ -812,27 +827,27 @@ void PegMarkdownHighlighter::getFastParseBlockRange(int p_position, int p_charsR
   }
 }
 
-const QVector<peg::ElementRegion> &PegMarkdownHighlighter::getHeaderRegions() const {
+const QVector<md::ElementRegion> &MarkdownHighlighter::getHeaderRegions() const {
   return m_result->m_headerRegions;
 }
 
-const QVector<peg::ElementRegion> &PegMarkdownHighlighter::getImageRegions() const {
+const QVector<md::ElementRegion> &MarkdownHighlighter::getImageRegions() const {
   return m_result->m_imageRegions;
 }
 
-const QVector<peg::FencedCodeBlock> &PegMarkdownHighlighter::getCodeBlocks() const {
+const QVector<md::FencedCodeBlock> &MarkdownHighlighter::getCodeBlocks() const {
   return m_result->m_codeBlocks;
 }
 
-void PegMarkdownHighlighter::handleCodeBlockHighlightResult(
+void MarkdownHighlighter::handleCodeBlockHighlightResult(
     const CodeBlockHighlighter::HighlightResult &p_result) {
-  QSharedPointer<PegHighlighterResult> result(m_result);
+  QSharedPointer<MarkdownHighlighterResult> result(m_result);
   if (!result->matched(p_result.m_timeStamp) || result->m_numOfCodeBlockHighlightsToRecv <= 0) {
     return;
   }
 
   if (!p_result.isEmpty()) {
-    // Set it to PegHighlighterResult.
+    // Set it to MarkdownHighlighterResult.
     result->setCodeBlockHighlights(p_result.m_index, p_result.m_highlights);
   }
 
@@ -843,13 +858,13 @@ void PegMarkdownHighlighter::handleCodeBlockHighlightResult(
   }
 }
 
-const QTextCharFormat &PegMarkdownHighlighter::codeBlockStyle() const {
+const QTextCharFormat &MarkdownHighlighter::codeBlockStyle() const {
   return m_styles[Theme::MarkdownSyntaxStyle::FENCEDCODEBLOCK];
 }
 
-void PegMarkdownHighlighter::formatCodeBlockLeadingSpaces(const QString &p_text) {
+void MarkdownHighlighter::formatCodeBlockLeadingSpaces(const QString &p_text) {
   // Brush the indentation spaces.
-  if (currentBlockState() == peg::HighlightBlockState::CodeBlock) {
+  if (currentBlockState() == md::HighlightBlockState::CodeBlock) {
     int spaces = TextUtils::fetchIndentation(p_text);
     if (spaces > 0) {
       setFormat(0, spaces, codeBlockStyle());
@@ -857,7 +872,7 @@ void PegMarkdownHighlighter::formatCodeBlockLeadingSpaces(const QString &p_text)
   }
 }
 
-void PegMarkdownHighlighter::updateStylesFontSize(int p_delta) {
+void MarkdownHighlighter::updateStylesFontSize(int p_delta) {
   if (p_delta == 0) {
     return;
   }

@@ -53,7 +53,7 @@ void PreviewMgr::setPreviewEnabled(bool p_enabled) {
   }
 }
 
-void PreviewMgr::updateImageLinks(const QVector<peg::ElementRegion> &p_regions) {
+void PreviewMgr::updateImageLinks(const QVector<md::ElementRegion> &p_regions) {
   auto &data = m_previewData[Source::ImageLink];
   if (!data.m_enabled) {
     return;
@@ -64,7 +64,7 @@ void PreviewMgr::updateImageLinks(const QVector<peg::ElementRegion> &p_regions) 
 }
 
 void PreviewMgr::previewImageLinks(TimeStamp p_timeStamp,
-                                   const QVector<peg::ElementRegion> &p_regions) {
+                                   const QVector<md::ElementRegion> &p_regions) {
   QVector<ImageLink> imageLinks;
   fetchImageLinksFromRegions(p_regions, imageLinks);
 
@@ -79,7 +79,7 @@ void PreviewMgr::previewImageLinks(TimeStamp p_timeStamp,
   relayout(affectedBlocks);
 }
 
-void PreviewMgr::fetchImageLinksFromRegions(const QVector<peg::ElementRegion> &p_regions,
+void PreviewMgr::fetchImageLinksFromRegions(const QVector<md::ElementRegion> &p_regions,
                                             QVector<ImageLink> &p_imageLinks) {
   p_imageLinks.clear();
   if (p_regions.isEmpty()) {

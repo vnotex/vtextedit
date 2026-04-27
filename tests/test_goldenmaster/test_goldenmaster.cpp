@@ -9,7 +9,7 @@
 
 #include "cmarkadapter.h"
 #include "highlightelement.h"
-#include <vtextedit/pegmarkdownhighlighterdata.h>
+#include <vtextedit/markdownhighlighterdata.h>
 
 using namespace tests;
 
@@ -55,7 +55,7 @@ static QString serializeElements(HighlightElement **p_result)
   return lines.join('\n') + '\n';
 }
 
-static void parseBlocksHighlightOne(QVector<QVector<vte::peg::HLUnit>> &p_blocksHighlights,
+static void parseBlocksHighlightOne(QVector<QVector<vte::md::HLUnit>> &p_blocksHighlights,
                                     const QTextDocument *p_doc, unsigned long p_pos,
                                     unsigned long p_end, int p_styleIndex)
 {
@@ -78,7 +78,7 @@ static void parseBlocksHighlightOne(QVector<QVector<vte::peg::HLUnit>> &p_blocks
     }
 
     int blockStartPos = block.position();
-    vte::peg::HLUnit unit;
+    vte::md::HLUnit unit;
     if (blockNum == startBlockNum) {
       unit.start = p_pos - blockStartPos;
       unit.length =
@@ -104,7 +104,7 @@ static void parseBlocksHighlightOne(QVector<QVector<vte::peg::HLUnit>> &p_blocks
 static QString serializeBlocksHighlights(HighlightElement **p_result, const QString &p_text)
 {
   QTextDocument doc(p_text);
-  QVector<QVector<vte::peg::HLUnit>> blocksHighlights(doc.blockCount());
+  QVector<QVector<vte::md::HLUnit>> blocksHighlights(doc.blockCount());
 
   for (int i = 0; i < NUM_HIGHLIGHT_STYLES; ++i) {
     HighlightElement *elem = p_result[i];
@@ -119,7 +119,7 @@ static QString serializeBlocksHighlights(HighlightElement **p_result, const QStr
   // Sort each block's units by (start, length desc).
   for (auto &blockUnits : blocksHighlights) {
     std::sort(blockUnits.begin(), blockUnits.end(),
-              [](const vte::peg::HLUnit &a, const vte::peg::HLUnit &b) {
+              [](const vte::md::HLUnit &a, const vte::md::HLUnit &b) {
                 if (a.start != b.start) return a.start < b.start;
                 return a.length > b.length;
               });

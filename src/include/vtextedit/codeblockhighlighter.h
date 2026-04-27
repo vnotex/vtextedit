@@ -5,14 +5,14 @@
 
 #include <vtextedit/global.h>
 #include <vtextedit/lrucache.h>
-#include <vtextedit/pegmarkdownhighlighterdata.h>
+#include <vtextedit/markdownhighlighterdata.h>
 
 namespace vte {
 // Class to help highlighting code block.
 class CodeBlockHighlighter : public QObject {
   Q_OBJECT
 public:
-  typedef QVector<QVector<peg::HLUnitStyle>> HighlightStyles;
+  typedef QVector<QVector<md::HLUnitStyle>> HighlightStyles;
   struct HighlightResult {
     HighlightResult() = default;
 
@@ -53,7 +53,7 @@ public:
 
   virtual ~CodeBlockHighlighter() {}
 
-  void highlight(TimeStamp p_timeStamp, const QVector<peg::FencedCodeBlock> &p_codeBlocks);
+  void highlight(TimeStamp p_timeStamp, const QVector<md::FencedCodeBlock> &p_codeBlocks);
 
 protected:
   // @p_idx Index in m_codeBlocks.
@@ -63,7 +63,7 @@ protected:
 
   TimeStamp m_timeStamp = 0;
 
-  QVector<peg::FencedCodeBlock> m_codeBlocks;
+  QVector<md::FencedCodeBlock> m_codeBlocks;
 
 signals:
   void codeBlockHighlightCompleted(const CodeBlockHighlighter::HighlightResult &p_result);

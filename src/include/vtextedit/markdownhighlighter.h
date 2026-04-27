@@ -1,29 +1,29 @@
-#ifndef PEGMARKDOWNHIGHLIGHTER_H
-#define PEGMARKDOWNHIGHLIGHTER_H
+#ifndef MARKDOWNHIGHLIGHTER_H
+#define MARKDOWNHIGHLIGHTER_H
 
 #include <QElapsedTimer>
 #include <QTextCharFormat>
 
 #include <vtextedit/codeblockhighlighter.h>
-#include <vtextedit/pegmarkdownhighlighterdata.h>
+#include <vtextedit/markdownhighlighterdata.h>
 #include <vtextedit/vsyntaxhighlighter.h>
 
 class QScrollBar;
 
 namespace vte {
-namespace peg {
-class PegParser;
-struct PegParseResult;
-} // namespace peg
+namespace md {
+class MarkdownParser;
+struct MarkdownParseResult;
+} // namespace md
 
-class PegHighlighterResult;
-class PegHighlighterFastResult;
+class MarkdownHighlighterResult;
+class MarkdownHighlighterFastResult;
 class Theme;
-class PegHighlightBlockData;
+class MarkdownHighlightBlockData;
 
-class PegMarkdownHighlighterInterface {
+class MarkdownHighlighterInterface {
 public:
-  virtual ~PegMarkdownHighlighterInterface() {}
+  virtual ~MarkdownHighlighterInterface() {}
 
   virtual QTextCursor textCursor() const = 0;
 
@@ -40,14 +40,14 @@ struct ContentsChange {
   int m_charsAdded = 0;
 };
 
-// Markdown syntax highlighter via Peg-Markdown-Highlight.
-class VTEXTEDIT_EXPORT PegMarkdownHighlighter : public VSyntaxHighlighter {
+// Markdown syntax highlighter.
+class VTEXTEDIT_EXPORT MarkdownHighlighter : public VSyntaxHighlighter {
   Q_OBJECT
 public:
-  PegMarkdownHighlighter(PegMarkdownHighlighterInterface *p_interface, QTextDocument *p_doc,
+  MarkdownHighlighter(MarkdownHighlighterInterface *p_interface, QTextDocument *p_doc,
                          const QSharedPointer<Theme> &p_theme,
                          CodeBlockHighlighter *p_codeBlockHighlighter,
-                         const QSharedPointer<peg::HighlighterConfig> &p_config);
+                         const QSharedPointer<md::HighlighterConfig> &p_config);
 
   void setTheme(const QSharedPointer<Theme> &p_theme);
 
@@ -57,11 +57,11 @@ public:
 
   void addPossiblePreviewBlock(int p_blockNumber);
 
-  const QVector<peg::ElementRegion> &getHeaderRegions() const;
+  const QVector<md::ElementRegion> &getHeaderRegions() const;
 
-  const QVector<peg::ElementRegion> &getImageRegions() const;
+  const QVector<md::ElementRegion> &getImageRegions() const;
 
-  const QVector<peg::FencedCodeBlock> &getCodeBlocks() const;
+  const QVector<md::FencedCodeBlock> &getCodeBlocks() const;
 
   void updateStylesFontSize(int p_delta);
 
@@ -80,25 +80,25 @@ signals:
   void highlightCompleted();
 
   // QVector is implicitly shared.
-  void codeBlocksUpdated(TimeStamp p_timeStamp, const QVector<peg::FencedCodeBlock> &p_codeBlocks);
+  void codeBlocksUpdated(TimeStamp p_timeStamp, const QVector<md::FencedCodeBlock> &p_codeBlocks);
 
   // Emitted when image regions have been fetched from a new parsing result.
-  void imageLinksUpdated(const QVector<peg::ElementRegion> &p_imageRegions);
+  void imageLinksUpdated(const QVector<md::ElementRegion> &p_imageRegions);
 
   // Emitted when header regions have been fetched from a new parsing result.
-  void headersUpdated(const QVector<peg::ElementRegion> &p_headerRegions);
+  void headersUpdated(const QVector<md::ElementRegion> &p_headerRegions);
 
   // Emitted when table blocks updated.
-  void tableBlocksUpdated(const QVector<peg::TableBlock> &p_tableBlocks);
+  void tableBlocksUpdated(const QVector<md::TableBlock> &p_tableBlocks);
 
   // Emitted when math blocks updated.
-  void mathBlocksUpdated(const QVector<peg::MathBlock> &p_mathBlocks);
+  void mathBlocksUpdated(const QVector<md::MathBlock> &p_mathBlocks);
 
 protected:
   void highlightBlock(const QString &p_text) Q_DECL_OVERRIDE;
 
 private slots:
-  void handleParseResult(const QSharedPointer<peg::PegParseResult> &p_result);
+  void handleParseResult(const QSharedPointer<md::MarkdownParseResult> &p_result);
 
   void startParse();
 
@@ -108,13 +108,13 @@ private slots:
 
 private:
   // To avoid line height jitter and code block mess.
-  bool preHighlightSingleFormatBlock(const QVector<QVector<peg::HLUnit>> &p_highlights,
+  bool preHighlightSingleFormatBlock(const QVector<QVector<md::HLUnit>> &p_highlights,
                                      int p_blockNum, const QString &p_text, bool p_forced);
 
-  void highlightBlockOne(const QVector<QVector<peg::HLUnit>> &p_highlights, int p_blockNum,
-                         QVector<peg::HLUnit> &p_cache);
+  void highlightBlockOne(const QVector<QVector<md::HLUnit>> &p_highlights, int p_blockNum,
+                         QVector<md::HLUnit> &p_cache);
 
-  void highlightBlockOne(const QVector<peg::HLUnit> &p_units);
+  void highlightBlockOne(const QVector<md::HLUnit> &p_units);
 
   bool isFastParseBlock(int p_blockNum) const;
 
@@ -122,16 +122,16 @@ private:
 
   TimeStamp nextCodeBlockTimeStamp();
 
-  void appendSingleFormatBlocks(const QVector<QVector<peg::HLUnit>> &p_highlights);
+  void appendSingleFormatBlocks(const QVector<QVector<md::HLUnit>> &p_highlights);
 
-  void clearAllBlocksUserDataAndState(const QSharedPointer<PegHighlighterResult> &p_result);
+  void clearAllBlocksUserDataAndState(const QSharedPointer<MarkdownHighlighterResult> &p_result);
 
-  void clearBlockUserData(const QSharedPointer<PegHighlighterResult> &p_result,
+  void clearBlockUserData(const QSharedPointer<MarkdownHighlighterResult> &p_result,
                           QTextBlock &p_block);
 
-  void updateAllBlocksUserDataAndState(const QSharedPointer<PegHighlighterResult> &p_result);
+  void updateAllBlocksUserDataAndState(const QSharedPointer<MarkdownHighlighterResult> &p_result);
 
-  void updateCodeBlocks(const QSharedPointer<PegHighlighterResult> &p_result);
+  void updateCodeBlocks(const QSharedPointer<MarkdownHighlighterResult> &p_result);
 
   void rehighlightBlocks();
 
@@ -139,7 +139,7 @@ private:
 
   bool rehighlightBlockRange(int p_first, int p_last);
 
-  void completeHighlight(QSharedPointer<PegHighlighterResult> p_result);
+  void completeHighlight(QSharedPointer<MarkdownHighlighterResult> p_result);
 
   bool isMathEnabled() const;
 
@@ -148,21 +148,21 @@ private:
   void getFastParseBlockRange(int p_position, int p_charsRemoved, int p_charsAdded,
                               int &p_firstBlock, int &p_lastBlock) const;
 
-  void processFastParseResult(const QSharedPointer<peg::PegParseResult> &p_result);
+  void processFastParseResult(const QSharedPointer<md::MarkdownParseResult> &p_result);
 
   // Highlight fenced code block according to CodeBlockHighlighter result.
-  void highlightCodeBlock(const QSharedPointer<PegHighlighterResult> &p_result, int p_blockNum,
-                          QVector<peg::HLUnitStyle> &p_cache);
+  void highlightCodeBlock(const QSharedPointer<MarkdownHighlighterResult> &p_result, int p_blockNum,
+                          QVector<md::HLUnitStyle> &p_cache);
 
-  void highlightCodeBlock(const QVector<peg::HLUnitStyle> &p_units);
+  void highlightCodeBlock(const QVector<md::HLUnitStyle> &p_units);
 
   void formatCodeBlockLeadingSpaces(const QString &p_text);
 
-  static bool isEmptyCodeBlockHighlights(const QVector<QVector<peg::HLUnitStyle>> &p_highlights);
+  static bool isEmptyCodeBlockHighlights(const QVector<QVector<md::HLUnitStyle>> &p_highlights);
 
-  PegMarkdownHighlighterInterface *m_interface = nullptr;
+  MarkdownHighlighterInterface *m_interface = nullptr;
 
-  QSharedPointer<peg::HighlighterConfig> m_config;
+  QSharedPointer<md::HighlighterConfig> m_config;
 
   // Managed by QObject.
   CodeBlockHighlighter *m_codeBlockHighlighter = nullptr;
@@ -172,7 +172,7 @@ private:
 
   TimeStamp m_codeBlockTimeStamp = 0;
 
-  // Extensions for peg parser.
+  // Extensions for markdown parser.
   // Init it in the CPP to avoid including extra header.
   int m_parserExts = 0;
 
@@ -190,11 +190,11 @@ private:
   QTimer *m_fastParseTimer = nullptr;
 
   // Managed by QObject.
-  peg::PegParser *m_parser = nullptr;
+  md::MarkdownParser *m_parser = nullptr;
 
-  QSharedPointer<PegHighlighterResult> m_result;
+  QSharedPointer<MarkdownHighlighterResult> m_result;
 
-  QSharedPointer<PegHighlighterFastResult> m_fastResult;
+  QSharedPointer<MarkdownHighlighterFastResult> m_fastResult;
 
   // Block range of fast parse, inclusive.
   QPair<int, int> m_fastParseBlocks = {-1, -1};
@@ -226,4 +226,4 @@ private:
 };
 } // namespace vte
 
-#endif // PEGMARKDOWNHIGHLIGHTER_H
+#endif // MARKDOWNHIGHLIGHTER_H

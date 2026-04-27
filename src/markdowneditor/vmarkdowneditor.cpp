@@ -4,7 +4,7 @@
 #include <inputmode/inputmodemgr.h>
 #include <vtextedit/markdowneditorconfig.h>
 #include <vtextedit/markdownutils.h>
-#include <vtextedit/pegmarkdownhighlighter.h>
+#include <vtextedit/markdownhighlighter.h>
 #include <vtextedit/textblockdata.h>
 #include <vtextedit/texteditutils.h>
 #include <vtextedit/textutils.h>
@@ -12,7 +12,7 @@
 #include <vtextedit/vtextedit.h>
 
 #include "documentresourcemgr.h"
-#include "editorpegmarkdownhighlighter.h"
+#include "editormarkdownhighlighter.h"
 #include "editorpreviewmgr.h"
 #include "ksyntaxcodeblockhighlighter.h"
 #include "textdocumentlayout.h"
@@ -58,7 +58,7 @@ void VMarkdownEditor::setSyntax(const QString &p_syntax) {
 QString VMarkdownEditor::getSyntax() const { return QStringLiteral("richmarkdown"); }
 
 void VMarkdownEditor::setupSyntaxHighlighter() {
-  m_highlighterInterface.reset(new EditorPegMarkdownHighlighter(this));
+  m_highlighterInterface.reset(new EditorMarkdownHighlighter(this));
   CodeBlockHighlighter *codeBlockHighlighter = nullptr;
   if (m_config->m_webCodeBlockHighlighterEnabled) {
     m_webCodeBlockHighlighter = new WebCodeBlockHighlighter(this);
@@ -71,12 +71,12 @@ void VMarkdownEditor::setupSyntaxHighlighter() {
     codeBlockHighlighter =
         new KSyntaxCodeBlockHighlighter(m_config->m_textEditorConfig->m_syntaxTheme, this);
   }
-  auto highlighterConfig = QSharedPointer<peg::HighlighterConfig>::create();
+  auto highlighterConfig = QSharedPointer<md::HighlighterConfig>::create();
   highlighterConfig->m_mathExtEnabled = true;
-  m_highlighter = new PegMarkdownHighlighter(m_highlighterInterface.data(), document(), theme(),
+  m_highlighter = new MarkdownHighlighter(m_highlighterInterface.data(), document(), theme(),
                                              codeBlockHighlighter, highlighterConfig);
   updateSpellCheck();
-  connect(getHighlighter(), &PegMarkdownHighlighter::highlightCompleted, this, [this]() {
+  connect(getHighlighter(), &MarkdownHighlighter::highlightCompleted, this, [this]() {
     m_textEdit->updateCursorWidth();
     m_textEdit->ensureCursorVisible();
     m_textEdit->checkCenterCursor();
@@ -103,10 +103,10 @@ void VMarkdownEditor::setupPreviewMgr() {
   m_previewMgrInterface.reset(new EditorPreviewMgr(this));
   m_previewMgr = new PreviewMgr(m_previewMgrInterface.data(), this);
   m_previewMgr->setPreviewEnabled(true);
-  connect(getHighlighter(), &PegMarkdownHighlighter::imageLinksUpdated, m_previewMgr,
+  connect(getHighlighter(), &MarkdownHighlighter::imageLinksUpdated, m_previewMgr,
           &PreviewMgr::updateImageLinks);
   connect(m_previewMgr, &PreviewMgr::requestUpdateImageLinks, getHighlighter(),
-          &PegMarkdownHighlighter::updateHighlight);
+          &MarkdownHighlighter::updateHighlight);
 }
 
 DocumentResourceMgr *VMarkdownEditor::getDocumentResourceMgr() const {
@@ -117,8 +117,8 @@ const QPixmap *VMarkdownEditor::findImageFromDocumentResourceMgr(const QString &
   return m_resourceMgr->findImage(p_name);
 }
 
-PegMarkdownHighlighter *VMarkdownEditor::getHighlighter() const {
-  return static_cast<PegMarkdownHighlighter *>(m_highlighter);
+MarkdownHighlighter *VMarkdownEditor::getHighlighter() const {
+  return static_cast<MarkdownHighlighter *>(m_highlighter);
 }
 
 PreviewMgr *VMarkdownEditor::getPreviewMgr() const { return m_previewMgr; }

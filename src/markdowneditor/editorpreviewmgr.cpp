@@ -7,7 +7,7 @@
 #include <vtextedit/vtextedit.h>
 
 #include "textdocumentlayout.h"
-#include <vtextedit/pegmarkdownhighlighter.h>
+#include <vtextedit/markdownhighlighter.h>
 
 using namespace vte;
 

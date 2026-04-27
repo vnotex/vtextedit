@@ -32,7 +32,7 @@ private:
       m_highlights.clear();
     }
 
-    void addHighlightUnit(const peg::HLUnitStyle &p_unit) {
+    void addHighlightUnit(const md::HLUnitStyle &p_unit) {
       if (m_highlights.isEmpty()) {
         m_highlights.resize(m_lineCount);
       }

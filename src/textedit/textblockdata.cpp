@@ -75,12 +75,12 @@ bool TextBlockData::isMarkedAsFoldingStart() const { return m_markedAsFoldingSta
 
 void TextBlockData::setMarkedAsFoldingStart(bool p_set) { m_markedAsFoldingStart = p_set; }
 
-const QSharedPointer<PegHighlightBlockData> &TextBlockData::getPegHighlightBlockData() const {
-  return m_pegHighlightData;
+const QSharedPointer<MarkdownHighlightBlockData> &TextBlockData::getMarkdownHighlightBlockData() const {
+  return m_markdownHighlightData;
 }
 
-void TextBlockData::setPegHighlightBlockData(const QSharedPointer<PegHighlightBlockData> &p_data) {
-  m_pegHighlightData = p_data;
+void TextBlockData::setMarkdownHighlightBlockData(const QSharedPointer<MarkdownHighlightBlockData> &p_data) {
+  m_markdownHighlightData = p_data;
 }
 
 const QSharedPointer<BlockLayoutData> &TextBlockData::getBlockLayoutData() const {

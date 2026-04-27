@@ -32,3 +32,4 @@ if((QT_DEFAULT_MAJOR_VERSION GREATER 5))
         Qt::Core5Compat
     )
 endif()
+add_test(NAME test_utils COMMAND test_utils)

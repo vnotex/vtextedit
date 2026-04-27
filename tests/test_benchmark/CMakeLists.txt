@@ -10,7 +10,7 @@ set(MARKDOWNEDITOR_FOLDER ${SRC_FOLDER}/markdowneditor)
 set(LIBS_FOLDER ../../libs)
 
 add_executable(test_benchmark
-    ${MARKDOWNEDITOR_FOLDER}/pegparser.cpp ${MARKDOWNEDITOR_FOLDER}/pegparser.h
+    ${MARKDOWNEDITOR_FOLDER}/markdownparser.cpp ${MARKDOWNEDITOR_FOLDER}/markdownparser.h
     ${MARKDOWNEDITOR_FOLDER}/cmarkadapter.cpp ${MARKDOWNEDITOR_FOLDER}/cmarkadapter.h
     ${MARKDOWNEDITOR_FOLDER}/highlightelement.h
     test_benchmark.cpp test_benchmark.h
@@ -24,7 +24,7 @@ target_include_directories(test_benchmark PRIVATE
 )
 target_compile_definitions(test_benchmark PRIVATE
     VTEXTEDIT_STATIC_DEFINE
-    FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../test_pegparser/fixtures"
+    FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../test_markdownparser/fixtures"
     EVIDENCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../.sisyphus/evidence"
 )
 target_link_libraries(test_benchmark PRIVATE

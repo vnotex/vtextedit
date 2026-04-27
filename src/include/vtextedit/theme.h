@@ -109,7 +109,7 @@ public:
   };
   Q_ENUM(EditorStyle)
 
-  // Used by PegMarkdownHighlighter.
+  // Used by MarkdownHighlighter.
   // Should be exactly aligned with pmh_element_type defined in
   // pmh_definitions.h.
   enum MarkdownSyntaxStyle {

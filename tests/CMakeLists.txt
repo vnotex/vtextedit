@@ -1,6 +1,6 @@
 add_subdirectory(test_textfolding)
 add_subdirectory(test_utils)
-add_subdirectory(test_pegparser)
+add_subdirectory(test_markdownparser)
 add_subdirectory(test_cmark_probe)
 add_subdirectory(test_goldenmaster)
 add_subdirectory(test_benchmark)

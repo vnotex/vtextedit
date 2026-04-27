@@ -6,7 +6,7 @@ CodeBlockHighlighter::CodeBlockHighlighter(QObject *p_parent)
     : QObject(p_parent), m_cache(50, CacheEntry()) {}
 
 void CodeBlockHighlighter::highlight(TimeStamp p_timeStamp,
-                                     const QVector<peg::FencedCodeBlock> &p_codeBlocks) {
+                                     const QVector<md::FencedCodeBlock> &p_codeBlocks) {
   m_timeStamp = p_timeStamp;
   // It is OK since QVector is implicitly shared.
   m_codeBlocks = p_codeBlocks;

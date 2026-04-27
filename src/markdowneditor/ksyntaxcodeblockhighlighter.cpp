@@ -106,7 +106,7 @@ void KSyntaxCodeBlockHighlighter::applyFormat(int p_offset, int p_length,
     return;
   }
 
-  peg::HLUnitStyle unit;
+  md::HLUnitStyle unit;
   unit.start = p_offset + m_currentInfo.m_indentation;
   unit.length = p_length;
   if (m_formatCache.contains(p_format.id())) {

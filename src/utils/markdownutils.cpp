@@ -9,7 +9,7 @@
 #include <QTextDocument>
 #include <QUrl>
 
-#include <markdowneditor/pegparser.h>
+#include <markdowneditor/markdownparser.h>
 #include <vtextedit/texteditutils.h>
 #include <vtextedit/textutils.h>
 #include <vtextedit/vtextedit.h>
@@ -987,10 +987,10 @@ QVector<MarkdownLink> MarkdownUtils::fetchImagesFromMarkdownText(const QString &
   return images;
 }
 
-QVector<peg::ElementRegion> MarkdownUtils::fetchImageRegionsViaParser(const QString &p_content) {
-  auto parserConfig = QSharedPointer<peg::PegParseConfig>::create();
+QVector<md::ElementRegion> MarkdownUtils::fetchImageRegionsViaParser(const QString &p_content) {
+  auto parserConfig = QSharedPointer<md::MarkdownParseConfig>::create();
   parserConfig->m_data = p_content.toUtf8();
-  return peg::PegParser::parseImageRegions(parserConfig);
+  return md::MarkdownParser::parseImageRegions(parserConfig);
 }
 
 QString MarkdownUtils::relativePath(const QString &p_dir, const QString &p_path) {
