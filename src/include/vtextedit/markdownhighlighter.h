@@ -94,6 +94,9 @@ signals:
   // Emitted when math blocks updated.
   void mathBlocksUpdated(const QVector<md::MathBlock> &p_mathBlocks);
 
+  // Emitted when folding regions have been computed from a new parsing result.
+  void foldingRegionsUpdated(const QVector<md::FoldingRegion> &p_foldingRegions);
+
 protected:
   void highlightBlock(const QString &p_text) Q_DECL_OVERRIDE;
 

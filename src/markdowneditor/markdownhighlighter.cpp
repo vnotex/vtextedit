@@ -691,6 +691,7 @@ void MarkdownHighlighter::completeHighlight(QSharedPointer<MarkdownHighlighterRe
 
   emit imageLinksUpdated(p_result->m_imageRegions);
   emit headersUpdated(p_result->m_headerRegions);
+  emit foldingRegionsUpdated(p_result->m_foldingRegions);
 }
 
 bool MarkdownHighlighter::isMathEnabled() const { return m_parserExts & EXT_MATH; }

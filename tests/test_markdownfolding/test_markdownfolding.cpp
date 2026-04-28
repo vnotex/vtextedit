@@ -365,4 +365,47 @@ void TestMarkdownFolding::testHeadingSectionInsideBlockquote()
   QVERIFY(bq != nullptr);
 }
 
+// Integration: heading section computation feeds into provider.
+void TestMarkdownFolding::testEndToEndFolding()
+{
+  // Simulate full pipeline: raw heading regions -> computeHeadingSections -> provider.
+  const int numBlocks = 20;
+  QVector<md::FoldingRegion> regions;
+  // Raw heading lines (as produced by AST walker).
+  regions.append({0, 0, md::Heading, 1});    // H1
+  regions.append({3, 3, md::Heading, 2});    // H2
+  regions.append({10, 10, md::Heading, 1});  // H1
+  // A code block inside the first section.
+  regions.append({5, 7, md::FencedCode, 0});
+
+  // Run heading section computation.
+  md::computeHeadingSections(regions, numBlocks);
+
+  // Verify heading sections were computed correctly.
+  // H1 at 0 -> section [0, 9] (before next H1 at 10)
+  // H2 at 3 -> section [3, 9] (before next same-or-higher at 10)
+  // H1 at 10 -> section [10, 19] (end of doc)
+  // Code block [5, 7] unchanged.
+
+  // Apply to provider.
+  m_provider->updateFoldingRegions(regions);
+
+  // Verify all 4 ranges were created (3 headings + 1 code block).
+  // Check heading at block 0.
+  auto ranges0 = m_textFolding->foldingRangesStartingOnBlock(0);
+  QCOMPARE(ranges0.size(), 1);
+
+  // Check heading at block 3.
+  auto ranges3 = m_textFolding->foldingRangesStartingOnBlock(3);
+  QCOMPARE(ranges3.size(), 1);
+
+  // Check code block at block 5.
+  auto ranges5 = m_textFolding->foldingRangesStartingOnBlock(5);
+  QCOMPARE(ranges5.size(), 1);
+
+  // Check heading at block 10.
+  auto ranges10 = m_textFolding->foldingRangesStartingOnBlock(10);
+  QCOMPARE(ranges10.size(), 1);
+}
+
 QTEST_MAIN(tests::TestMarkdownFolding)

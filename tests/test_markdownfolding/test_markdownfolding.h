@@ -41,6 +41,8 @@ private slots:
   void testHeadingSectionAtEnd();
   void testHeadingSectionInsideBlockquote();
 
+  void testEndToEndFolding();
+
   void cleanupTestCase();
 
   void cleanup();

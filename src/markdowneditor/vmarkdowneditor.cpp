@@ -16,6 +16,7 @@
 #include "editorpreviewmgr.h"
 #include "ksyntaxcodeblockhighlighter.h"
 #include "textdocumentlayout.h"
+#include "markdownfoldingprovider.h"
 #include "webcodeblockhighlighter.h"
 
 #include <QDebug>
@@ -32,6 +33,13 @@ VMarkdownEditor::VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_c
   setupSyntaxHighlighter();
 
   setupPreviewMgr();
+
+  // Setup folding provider.
+  m_foldingProvider.reset(new MarkdownFoldingProvider(getTextFolding(), document()));
+  connect(getHighlighter(), &MarkdownHighlighter::foldingRegionsUpdated,
+          this, [this](const QVector<md::FoldingRegion> &p_regions) {
+            m_foldingProvider->updateFoldingRegions(p_regions);
+          });
 
   // Unnecessary for now.
   // m_textEdit->installEventFilter(this);

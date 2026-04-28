@@ -14,6 +14,7 @@ class EditorPreviewMgr;
 class PreviewMgr;
 class MarkdownEditorConfig;
 class WebCodeBlockHighlighter;
+class MarkdownFoldingProvider;
 
 class VTEXTEDIT_EXPORT VMarkdownEditor : public VTextEditor {
   Q_OBJECT
@@ -101,6 +102,8 @@ private:
   QSharedPointer<MarkdownEditorConfig> m_config;
 
   bool m_inplacePreviewEnabled = true;
+
+  QScopedPointer<MarkdownFoldingProvider> m_foldingProvider;
 
   // Managed by QObject.
   WebCodeBlockHighlighter *m_webCodeBlockHighlighter = nullptr;
