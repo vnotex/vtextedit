@@ -86,6 +86,9 @@ public:
   // Sorted by start position ascendingly.
   QVector<md::TableBlock> m_tableBlocks;
 
+  // Folding regions (heading sections, code blocks, blockquotes, etc.).
+  QVector<md::FoldingRegion> m_foldingRegions;
+
   QVector<md::HLUnitStyle> m_dummyHighlight;
 
 private:
@@ -103,6 +106,9 @@ private:
 
   // Parse table blocks from parse results.
   void parseTableBlocks(const QSharedPointer<md::MarkdownParseResult> &p_result);
+
+  // Parse folding regions from parse results and compute heading sections.
+  void parseFoldingRegions(int p_numOfBlocks);
 
 #if 0
         void parseBlocksElementRegionOne(QHash<int, QVector<md::ElementRegion>> &p_regs,

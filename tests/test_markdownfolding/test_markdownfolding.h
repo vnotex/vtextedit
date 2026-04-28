@@ -33,6 +33,14 @@ private slots:
 
   void testClearOnDisable();
 
+  // Heading section tests.
+  void testHeadingSectionBasic();
+  void testHeadingSectionMultiple();
+  void testHeadingSectionNested();
+  void testHeadingSectionTooSmall();
+  void testHeadingSectionAtEnd();
+  void testHeadingSectionInsideBlockquote();
+
   void cleanupTestCase();
 
   void cleanup();

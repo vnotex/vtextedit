@@ -63,6 +63,7 @@ MarkdownParserWorker::parseMarkdown(const QSharedPointer<MarkdownParseConfig> &p
     result->m_tableRegions = std::move(walkResult.tableRegions);
     result->m_tableHeaderRegions = std::move(walkResult.tableHeaderRegions);
     result->m_tableBorderRegions = std::move(walkResult.tableBorderRegions);
+    result->m_foldingRegions = std::move(walkResult.foldingRegions);
   }
 
   return result;
@@ -123,6 +124,7 @@ QSharedPointer<MarkdownParseResult> MarkdownParser::parse(const QSharedPointer<M
     result->m_tableRegions = std::move(walkResult.tableRegions);
     result->m_tableHeaderRegions = std::move(walkResult.tableHeaderRegions);
     result->m_tableBorderRegions = std::move(walkResult.tableBorderRegions);
+    result->m_foldingRegions = std::move(walkResult.foldingRegions);
   }
 
   return result;

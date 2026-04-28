@@ -90,6 +90,9 @@ struct MarkdownParseResult {
 
   // All table border regions.
   QVector<ElementRegion> m_tableBorderRegions;
+
+  // Folding regions (headings, code blocks, blockquotes, etc.).
+  QVector<FoldingRegion> m_foldingRegions;
 };
 
 class MarkdownParserWorker : public QThread {

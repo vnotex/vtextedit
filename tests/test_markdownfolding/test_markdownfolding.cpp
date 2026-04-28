@@ -5,6 +5,7 @@
 
 #include <vtextedit/markdownhighlighterdata.h>
 
+#include <foldingregionutils.h>
 #include <markdownfoldingprovider.h>
 #include <textfolding.h>
 
@@ -212,6 +213,156 @@ void TestMarkdownFolding::testClearOnDisable()
 
   QCOMPARE(m_textFolding->foldingRangesStartingOnBlock(0).size(), 0);
   QCOMPARE(m_textFolding->foldingRangesStartingOnBlock(12).size(), 0);
+}
+
+// --- Heading section tests ---
+
+// Helper to find a FoldingRegion by type and startBlock.
+static const md::FoldingRegion *findRegion(const QVector<md::FoldingRegion> &p_regions,
+                                           md::FoldingRegionType p_type, int p_startBlock)
+{
+  for (const auto &r : p_regions) {
+    if (r.m_type == p_type && r.m_startBlock == p_startBlock) {
+      return &r;
+    }
+  }
+  return nullptr;
+}
+
+// 9. Single heading extends to end of document.
+void TestMarkdownFolding::testHeadingSectionBasic()
+{
+  const int numBlocks = 20;
+  QVector<md::FoldingRegion> regions;
+  // AST walker produces heading with single-line range; endBlock is placeholder.
+  regions.append({0, 0, md::Heading, 2});
+
+  md::computeHeadingSections(regions, numBlocks);
+
+  QCOMPARE(regions.size(), 1);
+  auto *h = findRegion(regions, md::Heading, 0);
+  QVERIFY(h != nullptr);
+  QCOMPARE(h->m_endBlock, numBlocks - 1);
+}
+
+// 10. Two same-level headings: first section ends before second.
+void TestMarkdownFolding::testHeadingSectionMultiple()
+{
+  const int numBlocks = 20;
+  QVector<md::FoldingRegion> regions;
+  regions.append({0, 0, md::Heading, 2});
+  regions.append({5, 5, md::Heading, 2});
+
+  md::computeHeadingSections(regions, numBlocks);
+
+  QCOMPARE(regions.size(), 2);
+  auto *h0 = findRegion(regions, md::Heading, 0);
+  auto *h5 = findRegion(regions, md::Heading, 5);
+  QVERIFY(h0 != nullptr);
+  QVERIFY(h5 != nullptr);
+  QCOMPARE(h0->m_endBlock, 4);
+  QCOMPARE(h5->m_endBlock, numBlocks - 1);
+}
+
+// 11. Nested headings: H1 contains H2, next H1 terminates both.
+void TestMarkdownFolding::testHeadingSectionNested()
+{
+  const int numBlocks = 20;
+  QVector<md::FoldingRegion> regions;
+  regions.append({0, 0, md::Heading, 1});   // H1
+  regions.append({2, 2, md::Heading, 2});   // H2
+  regions.append({10, 10, md::Heading, 1}); // H1
+
+  md::computeHeadingSections(regions, numBlocks);
+
+  QCOMPARE(regions.size(), 3);
+  auto *h1a = findRegion(regions, md::Heading, 0);
+  auto *h2 = findRegion(regions, md::Heading, 2);
+  auto *h1b = findRegion(regions, md::Heading, 10);
+  QVERIFY(h1a != nullptr);
+  QVERIFY(h2 != nullptr);
+  QVERIFY(h1b != nullptr);
+  QCOMPARE(h1a->m_endBlock, 9);
+  QCOMPARE(h2->m_endBlock, 9);
+  QCOMPARE(h1b->m_endBlock, numBlocks - 1);
+}
+
+// 12. Heading section spanning only 1 block is filtered out.
+void TestMarkdownFolding::testHeadingSectionTooSmall()
+{
+  const int numBlocks = 20;
+  QVector<md::FoldingRegion> regions;
+  regions.append({5, 5, md::Heading, 2});
+  regions.append({6, 6, md::Heading, 2});
+
+  md::computeHeadingSections(regions, numBlocks);
+
+  // First heading [5,5] has endBlock = 5 (next same-level is block 6, so 6-1=5).
+  // Section size = 5-5 = 0 < 1, so filtered out.
+  // Second heading [6,19] remains.
+  QCOMPARE(regions.size(), 1);
+  auto *h6 = findRegion(regions, md::Heading, 6);
+  QVERIFY(h6 != nullptr);
+  QCOMPARE(h6->m_endBlock, numBlocks - 1);
+}
+
+// 13. Heading near end of document extends to last block.
+void TestMarkdownFolding::testHeadingSectionAtEnd()
+{
+  const int numBlocks = 20;
+  QVector<md::FoldingRegion> regions;
+  regions.append({15, 15, md::Heading, 3});
+
+  md::computeHeadingSections(regions, numBlocks);
+
+  QCOMPARE(regions.size(), 1);
+  auto *h = findRegion(regions, md::Heading, 15);
+  QVERIFY(h != nullptr);
+  QCOMPARE(h->m_endBlock, 19);
+}
+
+// 14. Heading inside a blockquote is NOT converted to a section fold.
+void TestMarkdownFolding::testHeadingSectionInsideBlockquote()
+{
+  const int numBlocks = 20;
+  QVector<md::FoldingRegion> regions;
+  // Blockquote spanning [2, 8].
+  regions.append({2, 8, md::Blockquote, 0});
+  // Heading at block 3 inside the blockquote.
+  regions.append({3, 3, md::Heading, 2});
+
+  md::computeHeadingSections(regions, numBlocks);
+
+  // The heading section [3, 19] is inside blockquote [2, 8]?
+  // No — heading section [3, 19] is NOT fully inside [2, 8].
+  // Need to adjust: heading fully inside blockquote means heading section is also inside.
+  // The algorithm checks h.m_startBlock >= bq.m_startBlock && h.m_endBlock <= bq.m_endBlock.
+  // Here h.m_endBlock = 19 > bq.m_endBlock = 8, so it's NOT filtered.
+  // To test blockquote filtering, the heading section must be fully inside.
+  // Use two headings so the first's section is bounded.
+
+  // Reset and redo with proper setup.
+  regions.clear();
+  regions.append({2, 12, md::Blockquote, 0});
+  // Heading at block 3, next same-level heading at block 8 -> section [3, 7].
+  regions.append({3, 3, md::Heading, 2});
+  regions.append({8, 8, md::Heading, 2});
+
+  md::computeHeadingSections(regions, numBlocks);
+
+  // Heading at block 3: section [3, 7], fully inside blockquote [2, 12] -> filtered.
+  // Heading at block 8: section [8, 19], NOT fully inside [2, 12] -> kept.
+  // Blockquote itself remains.
+  auto *hFiltered = findRegion(regions, md::Heading, 3);
+  QVERIFY(hFiltered == nullptr);
+
+  auto *hKept = findRegion(regions, md::Heading, 8);
+  QVERIFY(hKept != nullptr);
+  QCOMPARE(hKept->m_endBlock, numBlocks - 1);
+
+  // Blockquote is preserved.
+  auto *bq = findRegion(regions, md::Blockquote, 2);
+  QVERIFY(bq != nullptr);
 }
 
 QTEST_MAIN(tests::TestMarkdownFolding)

@@ -1,5 +1,7 @@
 #include "markdownhighlighterresult.h"
 
+#include "foldingregionutils.h"
+
 #include <QDebug>
 #include <QRegularExpression>
 #include <QTextBlock>
@@ -33,6 +35,7 @@ MarkdownHighlighterResult::MarkdownHighlighterResult(const MarkdownHighlighter *
   // Implicit sharing.
   m_imageRegions = p_result->m_imageRegions;
   m_headerRegions = p_result->m_headerRegions;
+  m_foldingRegions = p_result->m_foldingRegions;
 
   parseFencedCodeBlocks(p_peg, p_result);
 
@@ -42,6 +45,8 @@ MarkdownHighlighterResult::MarkdownHighlighterResult(const MarkdownHighlighter *
   // line to fill the m_hruleBlocks. parseHRuleBlocks(p_peg, p_result);
 
   parseTableBlocks(p_result);
+
+  parseFoldingRegions(m_numOfBlocks);
 }
 
 #if 0
@@ -373,4 +378,8 @@ void MarkdownHighlighterResult::setCodeBlockHighlights(
     int p_index, const QVector<QVector<md::HLUnitStyle>> &p_highlights) {
   Q_ASSERT(p_index >= 0 && p_index < m_codeBlocks.size());
   m_codeBlocks[p_index].m_highlights = p_highlights;
+}
+
+void MarkdownHighlighterResult::parseFoldingRegions(int p_numOfBlocks) {
+  md::computeHeadingSections(m_foldingRegions, p_numOfBlocks);
 }
