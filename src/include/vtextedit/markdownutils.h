@@ -5,6 +5,7 @@
 
 #include <QPixmap>
 #include <QString>
+#include <QVector>
 
 #include <functional>
 
@@ -17,6 +18,15 @@ class VTextEdit;
 namespace md {
 struct ElementRegion;
 }
+
+struct VTEXTEDIT_EXPORT MarkdownImageInfo {
+  QString m_url;          // URL from cmark_node_get_url() (clean, no =WxH)
+  QString m_alt;          // Alt text from IMAGE node child text nodes
+  QString m_title;        // Title from cmark_node_get_title()
+  int m_urlPos = -1;      // QChar position of URL in source text (-1 if not found)
+  int m_regionStart = -1; // QChar position of start of ![
+  int m_regionEnd = -1;   // QChar position past closing )
+};
 
 struct VTEXTEDIT_EXPORT MarkdownLink {
   enum TypeFlag {
@@ -103,6 +113,8 @@ public:
   static QVector<MarkdownLink> fetchImagesFromMarkdownText(const QString &p_content,
                                                            const QString &p_contentBasePath,
                                                            MarkdownLink::TypeFlags p_flags);
+
+  static QVector<MarkdownImageInfo> fetchImageInfoViaCmark(const QString &p_content);
 
   // Use MarkdownParser to parse @p_content and return the image regions.
   static QVector<md::ElementRegion> fetchImageRegionsViaParser(const QString &p_content);
