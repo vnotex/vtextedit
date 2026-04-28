@@ -66,6 +66,7 @@ add_library(VTextEdit SHARED
     markdowneditor/documentresourcemgr.cpp markdowneditor/documentresourcemgr.h
     markdowneditor/editormarkdownhighlighter.cpp markdowneditor/editormarkdownhighlighter.h
     markdowneditor/editorpreviewmgr.cpp markdowneditor/editorpreviewmgr.h
+    markdowneditor/markdownfoldingprovider.cpp markdowneditor/markdownfoldingprovider.h
     markdowneditor/ksyntaxcodeblockhighlighter.cpp markdowneditor/ksyntaxcodeblockhighlighter.h
     markdowneditor/markdowneditorconfig.cpp
     markdowneditor/markdownhighlightblockdata.h
