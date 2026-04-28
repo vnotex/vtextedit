@@ -179,13 +179,6 @@ void VTextEditor::setupTextEdit() {
 }
 
 void VTextEditor::setText(const QString &p_text) {
-  // Clear folding ranges before replacing content. setPlainText() calls
-  // QTextDocument::clear() which emits contentsChange while the old block
-  // structure is already destroyed. TextFolding's handler would then access
-  // stale QTextBlock references stored in FoldingRange, causing a crash.
-  if (m_folding) {
-    m_folding->clear();
-  }
   m_textEdit->setPlainText(p_text);
   if (m_config->m_lineEndingPolicy == LineEndingPolicy::File) {
     m_lineEnding = TextUtils::detectLineEnding(p_text);

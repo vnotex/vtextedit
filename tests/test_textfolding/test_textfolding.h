@@ -22,6 +22,10 @@ namespace tests
 
         void testRemoveFoldingRange();
 
+        void testDocumentReplacement();
+
+        void testDocumentClear();
+
         void cleanupTestCase();
 
         // Will be executed before any test function.

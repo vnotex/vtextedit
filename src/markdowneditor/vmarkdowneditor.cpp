@@ -11,6 +11,8 @@
 #include <vtextedit/theme.h>
 #include <vtextedit/vtextedit.h>
 
+#include <texteditor/textfolding.h>
+
 #include "documentresourcemgr.h"
 #include "editormarkdownhighlighter.h"
 #include "editorpreviewmgr.h"
@@ -39,6 +41,15 @@ VMarkdownEditor::VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_c
   connect(getHighlighter(), &MarkdownHighlighter::foldingRegionsUpdated,
           this, [this](const QVector<md::FoldingRegion> &p_regions) {
             m_foldingProvider->updateFoldingRegions(p_regions);
+          });
+
+  // Reset provider state when TextFolding is externally cleared
+  // (e.g., during document replacement detected by hardClear).
+  connect(getTextFolding(), &TextFolding::foldingRangesChanged,
+          this, [this]() {
+            if (getTextFolding()->isEmpty()) {
+              m_foldingProvider->resetState();
+            }
           });
 
   // Unnecessary for now.

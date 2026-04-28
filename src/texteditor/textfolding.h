@@ -44,6 +44,8 @@ public:
 
   bool hasFoldedFolding() const;
 
+  bool isEmpty() const;
+
   qint64 newFoldingRange(const TextBlockRange &p_range, FoldingRangeFlags p_flags);
 
   QVector<QPair<qint64, TextFolding::FoldingRangeFlags>>
@@ -152,6 +154,8 @@ private:
       const TextFolding::FoldingRange::Vector &p_foldedChildren) const;
 
   bool checkAndUpdateFoldings(TextFolding::FoldingRange::Vector &p_ranges);
+
+  void hardClear();
 
   QString debugDump(const TextFolding::FoldingRange::Vector &p_ranges, bool p_recursive) const;
 

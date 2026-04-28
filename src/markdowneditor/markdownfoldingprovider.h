@@ -25,6 +25,8 @@ public:
 
   void clear();
 
+  void resetState();
+
 private:
   TextFolding *m_textFolding = nullptr;
 

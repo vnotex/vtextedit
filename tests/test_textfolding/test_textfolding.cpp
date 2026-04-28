@@ -329,4 +329,48 @@ void TestTextFolding::testRemoveFoldingRange()
     }
 }
 
+void TestTextFolding::testDocumentReplacement()
+{
+    // Add folding ranges.
+    auto id1 = insertNewFoldingRange(10, 20, TextFolding::Persistent);
+    QVERIFY(id1 != TextFolding::InvalidRangeId);
+    auto id2 = insertNewFoldingRange(30, 40, TextFolding::Persistent | TextFolding::Folded);
+    QVERIFY(id2 != TextFolding::InvalidRangeId);
+    QVERIFY(!m_textFolding->isEmpty());
+
+    // Replace document content (simulates setPlainText).
+    // This should trigger hardClear via contentsChange detection.
+    m_doc->setPlainText(utils::getCppText());
+
+    // All folding ranges should be cleared without crash.
+    QVERIFY(m_textFolding->isEmpty());
+    QVERIFY(m_textFolding->m_foldingRanges.isEmpty());
+    QVERIFY(m_textFolding->m_foldedFoldingRanges.isEmpty());
+    QVERIFY(m_textFolding->m_idToFoldingRange.isEmpty());
+
+    // All blocks should be visible.
+    QVERIFY(checkTextBlocksVisible(m_doc, 0, m_doc->blockCount() - 1));
+
+    // New folding ranges can be created on the new document.
+    auto id3 = insertNewFoldingRange(5, 15, TextFolding::Persistent);
+    QVERIFY(id3 != TextFolding::InvalidRangeId);
+    QVERIFY(!m_textFolding->isEmpty());
+}
+
+void TestTextFolding::testDocumentClear()
+{
+    auto id1 = insertNewFoldingRange(10, 20, TextFolding::Persistent | TextFolding::Folded);
+    QVERIFY(id1 != TextFolding::InvalidRangeId);
+    QVERIFY(checkTextBlocksInvisible(m_doc, 11, 20));
+
+    // Clear the document entirely.
+    m_doc->clear();
+
+    // Folding ranges should be hard-cleared without crash.
+    QVERIFY(m_textFolding->isEmpty());
+    QVERIFY(m_textFolding->m_foldingRanges.isEmpty());
+    QVERIFY(m_textFolding->m_foldedFoldingRanges.isEmpty());
+    QVERIFY(m_textFolding->m_idToFoldingRange.isEmpty());
+}
+
 QTEST_MAIN(tests::TestTextFolding)

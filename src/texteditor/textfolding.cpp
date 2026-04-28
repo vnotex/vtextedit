@@ -45,9 +45,16 @@ QString TextFolding::FoldingRange::toString() const {
 TextFolding::TextFolding(QTextDocument *p_document) : QObject(p_document), m_document(p_document) {
   connect(m_document, &QTextDocument::contentsChange, this,
           [this](int p_position, int p_charsRemoved, int p_charsAdded) {
-            Q_UNUSED(p_position);
             if (p_charsRemoved > 0 || p_charsAdded > 0) {
-              checkAndUpdateFoldings();
+              // Detect full document replacement (e.g., setPlainText / clear).
+              // All previously stored QTextBlock references are stale and must
+              // not be accessed.  Hard-clear instead of checkAndUpdateFoldings.
+              if (!m_foldingRanges.isEmpty() && p_position == 0 && p_charsRemoved > 0
+                  && p_charsAdded + 1 >= m_document->characterCount()) {
+                hardClear();
+              } else {
+                checkAndUpdateFoldings();
+              }
             }
           });
 }
@@ -77,6 +84,22 @@ void TextFolding::clear() {
 }
 
 bool TextFolding::hasFoldedFolding() const { return !m_foldedFoldingRanges.isEmpty(); }
+
+bool TextFolding::isEmpty() const { return m_foldingRanges.isEmpty(); }
+
+void TextFolding::hardClear() {
+  if (m_foldingRanges.isEmpty()) {
+    return;
+  }
+
+  m_nextId = 0;
+  m_idToFoldingRange.clear();
+  m_foldedFoldingRanges.clear();
+  qDeleteAll(m_foldingRanges);
+  m_foldingRanges.clear();
+
+  emit foldingRangesChanged();
+}
 
 qint64 TextFolding::newFoldingRange(const TextBlockRange &p_range, FoldingRangeFlags p_flags) {
 #if TFDebug

@@ -87,4 +87,10 @@ void MarkdownFoldingProvider::clear()
   m_previousRegions.clear();
 }
 
+void MarkdownFoldingProvider::resetState()
+{
+  m_regionIdMap.clear();
+  m_previousRegions.clear();
+}
+
 } // namespace vte
