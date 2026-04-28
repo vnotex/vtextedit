@@ -53,6 +53,8 @@ public:
 
   bool toggleRange(qint64 p_id);
 
+  bool removeFoldingRange(qint64 p_id);
+
   QString debugDump() const;
 
   void setExtraSelectionMgr(ExtraSelectionMgr *p_mgr);

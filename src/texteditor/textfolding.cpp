@@ -401,6 +401,18 @@ bool TextFolding::toggleRange(qint64 p_id) {
   return true;
 }
 
+bool TextFolding::removeFoldingRange(qint64 p_id) {
+  auto range = m_idToFoldingRange.value(p_id, nullptr);
+  if (!range) {
+    return false;
+  }
+
+  unfoldRange(range, true);
+  m_idToFoldingRange.remove(p_id);
+  emit foldingRangesChanged();
+  return true;
+}
+
 void TextFolding::foldRange(FoldingRange *p_range) {
   Q_ASSERT(p_range);
   if (p_range->isFolded()) {

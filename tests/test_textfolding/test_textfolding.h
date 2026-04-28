@@ -20,6 +20,8 @@ namespace tests
 
         void textFoldRange();
 
+        void testRemoveFoldingRange();
+
         void cleanupTestCase();
 
         // Will be executed before any test function.

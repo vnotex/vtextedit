@@ -267,4 +267,66 @@ void TestTextFolding::textFoldRange()
     }
 }
 
+void TestTextFolding::testRemoveFoldingRange()
+{
+    // 1. Create persistent range, remove by ID, verify gone.
+    {
+        auto id = insertNewFoldingRange(10, 20, TextFolding::Persistent);
+        QVERIFY(id != TextFolding::InvalidRangeId);
+        QVERIFY(m_textFolding->m_idToFoldingRange.contains(id));
+
+        QVERIFY(m_textFolding->removeFoldingRange(id));
+        QVERIFY(!m_textFolding->m_idToFoldingRange.contains(id));
+        QVERIFY(m_textFolding->m_foldingRanges.isEmpty());
+    }
+
+    // 2. Create persistent folded range, remove, verify blocks visible again.
+    {
+        auto id = insertNewFoldingRange(30, 40, TextFolding::Persistent | TextFolding::Folded);
+        QVERIFY(id != TextFolding::InvalidRangeId);
+        QVERIFY(checkTextBlocksInvisible(m_doc, 31, 40));
+
+        QVERIFY(m_textFolding->removeFoldingRange(id));
+        QVERIFY(checkTextBlocksVisible(m_doc, 30, 40));
+        QVERIFY(!m_textFolding->m_idToFoldingRange.contains(id));
+    }
+
+    // 3. Remove non-existent ID returns false.
+    {
+        QVERIFY(!m_textFolding->removeFoldingRange(9999));
+    }
+
+    // 4. Nested ranges: remove parent, children reparented to grandparent.
+    {
+        auto parentId = insertNewFoldingRange(10, 40, TextFolding::Persistent);
+        auto childId = insertNewFoldingRange(15, 20, TextFolding::Persistent);
+        QVERIFY(parentId != TextFolding::InvalidRangeId);
+        QVERIFY(childId != TextFolding::InvalidRangeId);
+
+        // Child is nested under parent.
+        auto childRange = m_textFolding->m_idToFoldingRange.value(childId);
+        QVERIFY(childRange);
+        QVERIFY(childRange->m_parent != nullptr);
+
+        QVERIFY(m_textFolding->removeFoldingRange(parentId));
+        QVERIFY(!m_textFolding->m_idToFoldingRange.contains(parentId));
+        // Child still exists and reparented to root (null parent).
+        QVERIFY(m_textFolding->m_idToFoldingRange.contains(childId));
+        childRange = m_textFolding->m_idToFoldingRange.value(childId);
+        QVERIFY(childRange->m_parent == nullptr);
+    }
+
+    // 5. Fold then remove: verify unfolded and removed.
+    {
+        auto id = insertNewFoldingRange(10, 20, TextFolding::Persistent);
+        QVERIFY(id != TextFolding::InvalidRangeId);
+        m_textFolding->toggleRange(id);
+        QVERIFY(checkTextBlocksInvisible(m_doc, 11, 20));
+
+        QVERIFY(m_textFolding->removeFoldingRange(id));
+        QVERIFY(checkTextBlocksVisible(m_doc, 10, 20));
+        QVERIFY(!m_textFolding->m_idToFoldingRange.contains(id));
+    }
+}
+
 QTEST_MAIN(tests::TestTextFolding)
