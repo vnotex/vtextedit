@@ -43,6 +43,8 @@ private slots:
 
   void testEndToEndFolding();
 
+  void testFoldingBlockHeights();
+
   void cleanupTestCase();
 
   void cleanup();

@@ -9,6 +9,10 @@
 #include <markdownfoldingprovider.h>
 #include <textfolding.h>
 
+#include "documentresourcemgr.h"
+#include "textdocumentlayout.h"
+#include "textdocumentlayoutdata.h"
+
 using namespace tests;
 using namespace vte;
 
@@ -406,6 +410,72 @@ void TestMarkdownFolding::testEndToEndFolding()
   // Check heading at block 10.
   auto ranges10 = m_textFolding->foldingRangesStartingOnBlock(10);
   QCOMPARE(ranges10.size(), 1);
+}
+
+// 16. Folding sets hidden blocks to zero-height rects; unfolding restores them.
+void TestMarkdownFolding::testFoldingBlockHeights()
+{
+  // Use a standalone document + layout for this test (not the shared m_doc).
+  QTextDocument doc(generateLines(25));
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+
+  TextFolding folding(&doc);
+
+  // Force initial layout by querying document size.
+  qreal preFoldHeight = layout->documentSize().height();
+  QVERIFY(preFoldHeight > 0);
+
+  // Verify all blocks have positive height before folding.
+  for (int i = 0; i < 25; ++i) {
+    auto block = doc.findBlockByNumber(i);
+    auto info = BlockLayoutData::get(block);
+    QVERIFY2(info->m_rect.height() > 0,
+             qPrintable(QStringLiteral("Block %1 has zero height before fold").arg(i)));
+  }
+
+  // Create a persistent fold range spanning blocks 2-10.
+  QTextBlock startBlock = doc.findBlockByNumber(2);
+  QTextBlock endBlock = doc.findBlockByNumber(10);
+  TextBlockRange range(startBlock, endBlock);
+  auto id = folding.newFoldingRange(range, TextFolding::Persistent);
+  QVERIFY(id != TextFolding::InvalidRangeId);
+
+  // Fold it.
+  folding.toggleRange(id);
+
+  // Hidden blocks (3-10) should have zero-height rects.
+  for (int i = 3; i <= 10; ++i) {
+    auto block = doc.findBlockByNumber(i);
+    auto info = BlockLayoutData::get(block);
+    QCOMPARE(info->m_rect.height(), 0.0);
+  }
+
+  // Fold-header block (2) should still have positive height.
+  {
+    auto headerInfo = BlockLayoutData::get(doc.findBlockByNumber(2));
+    QVERIFY(headerInfo->m_rect.height() > 0);
+  }
+
+  // Document height should have decreased.
+  qreal foldedHeight = layout->documentSize().height();
+  QVERIFY(foldedHeight < preFoldHeight);
+
+  // Unfold.
+  folding.toggleRange(id);
+
+  // All blocks in the range should be restored to positive height.
+  for (int i = 2; i <= 10; ++i) {
+    auto block = doc.findBlockByNumber(i);
+    auto info = BlockLayoutData::get(block);
+    QVERIFY2(info->m_rect.height() > 0,
+             qPrintable(QStringLiteral("Block %1 has zero height after unfold").arg(i)));
+  }
+
+  // Document height should be restored.
+  qreal unfoldedHeight = layout->documentSize().height();
+  QVERIFY(unfoldedHeight > foldedHeight);
 }
 
 QTEST_MAIN(tests::TestMarkdownFolding)
