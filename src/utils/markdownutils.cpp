@@ -22,18 +22,6 @@ const QString MarkdownUtils::c_fencedCodeBlockStartRegExp =
 const QString MarkdownUtils::c_fencedCodeBlockEndRegExp =
     QStringLiteral("^(\\s*)([`~])\\2{2}\\s*$");
 
-const QString MarkdownUtils::c_imageTitleRegExp = QStringLiteral("[^\\[\\]]*");
-
-const QString MarkdownUtils::c_imageAltRegExp = QStringLiteral("[^\"'()]*");
-
-const QString MarkdownUtils::c_imageLinkRegExp =
-    QStringLiteral("\\!\\[([^\\[\\]]*)\\]"
-                   "\\(\\s*"
-                   "([^\\)\"'\\s]+)"
-                   "(\\s*(\"[^\"\\)\\n\\r]*\")|('[^'\\)\\n\\r]*'))?"
-                   "(\\s*=(\\d*)x(\\d*))?"
-                   "\\s*\\)");
-
 const QString MarkdownUtils::c_linkRegExp =
     QStringLiteral("\\[([^\\[\\]]*)\\]"
                    "\\(\\s*"
@@ -84,15 +72,21 @@ bool MarkdownUtils::isFencedCodeBlockStartMark(const QString &p_text) {
 }
 
 bool MarkdownUtils::hasImageLink(const QString &p_text) {
-  QRegularExpression regExp(vte::MarkdownUtils::c_imageLinkRegExp);
+  QRegularExpression regExp(QStringLiteral("\\!\\[([^\\[\\]]*)\\]"
+                                           "\\(\\s*"
+                                           "([^\\)\"'\\s]+)"
+                                           "(\\s*(\"[^\"\\)\\n\\r]*\")|('[^'\\)\\n\\r]*'))?"
+                                           "\\s*\\)"));
   auto match = regExp.match(p_text);
   return match.hasMatch();
 }
 
-QString MarkdownUtils::fetchImageLinkUrl(const QString &p_text, int &p_width, int &p_height) {
-  QRegularExpression regExp(c_imageLinkRegExp);
-
-  p_width = p_height = -1;
+QString MarkdownUtils::fetchImageLinkUrl(const QString &p_text) {
+  QRegularExpression regExp(QStringLiteral("\\!\\[([^\\[\\]]*)\\]"
+                                           "\\(\\s*"
+                                           "([^\\)\"'\\s]+)"
+                                           "(\\s*(\"[^\"\\)\\n\\r]*\")|('[^'\\)\\n\\r]*'))?"
+                                           "\\s*\\)"));
 
   int index = p_text.indexOf(regExp);
   if (index == -1) {
@@ -103,22 +97,6 @@ QString MarkdownUtils::fetchImageLinkUrl(const QString &p_text, int &p_width, in
   int lastIndex = p_text.lastIndexOf(regExp, -1, &match);
   if (lastIndex != index) {
     return QString();
-  }
-
-  QString tmp(match.captured(7));
-  if (!tmp.isEmpty()) {
-    p_width = tmp.toInt();
-    if (p_width <= 0) {
-      p_width = -1;
-    }
-  }
-
-  tmp = match.captured(8);
-  if (!tmp.isEmpty()) {
-    p_height = tmp.toInt();
-    if (p_height <= 0) {
-      p_height = -1;
-    }
   }
 
   return match.captured(2).trimmed();
@@ -907,24 +885,13 @@ void MarkdownUtils::typeLink(VTextEdit *p_edit, const QString &p_linkText,
 }
 
 QString MarkdownUtils::generateImageLink(const QString &p_title, const QString &p_url,
-                                         const QString &p_altText, int p_width, int p_height) {
-  QString scale;
-  if (p_width > 0) {
-    if (p_height > 0) {
-      scale = QStringLiteral(" =%1x%2").arg(p_width).arg(p_height);
-    } else {
-      scale = QStringLiteral(" =%1x").arg(p_width);
-    }
-  } else if (p_height > 0) {
-    scale = QStringLiteral(" =x%1").arg(p_height);
-  }
-
+                                         const QString &p_altText) {
   QString altText;
   if (!p_altText.isEmpty()) {
     altText = QStringLiteral(" \"%1\"").arg(p_altText);
   }
 
-  return QStringLiteral("![%1](%2%3%4)").arg(p_title, p_url, altText, scale);
+  return QStringLiteral("![%1](%2%3)").arg(p_title, p_url, altText);
 }
 
 static bool markdownLinkCmp(const MarkdownLink &p_a, const MarkdownLink &p_b) {
@@ -937,7 +904,12 @@ QVector<MarkdownLink> MarkdownUtils::fetchImagesFromMarkdownText(const QString &
   QVector<MarkdownLink> images;
 
   const auto regions = fetchImageRegionsViaParser(p_content);
-  QRegularExpression regExp(QRegularExpression::anchoredPattern(c_imageLinkRegExp));
+  QRegularExpression regExp(QRegularExpression::anchoredPattern(
+      QStringLiteral("\\!\\[([^\\[\\]]*)\\]"
+                     "\\(\\s*"
+                     "([^\\)\"'\\s]+)"
+                     "(\\s*(\"[^\"\\)\\n\\r]*\")|('[^'\\)\\n\\r]*'))?"
+                     "\\s*\\)")));
   for (const auto &reg : regions) {
     QString linkText = p_content.mid(reg.m_startPos, reg.m_endPos - reg.m_startPos);
     auto match = regExp.match(linkText);

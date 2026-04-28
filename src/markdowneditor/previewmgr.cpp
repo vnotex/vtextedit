@@ -148,7 +148,7 @@ void PreviewMgr::fetchImageLinksFromRegions(const QVector<md::ElementRegion> &p_
 QTextDocument *PreviewMgr::document() const { return m_interface->document(); }
 
 void PreviewMgr::fetchImageLink(const QString &p_text, ImageLink &p_info) {
-  QString shortUrl = MarkdownUtils::fetchImageLinkUrl(p_text, p_info.m_width, p_info.m_height);
+  QString shortUrl = MarkdownUtils::fetchImageLinkUrl(p_text);
 
   // If it is using `\` instead of `/`, skip it to align with read mode.
   if (shortUrl.contains(QLatin1Char('\\'))) {
@@ -211,9 +211,7 @@ void PreviewMgr::updateBlockPreview(TimeStamp p_timeStamp, const QVector<ImageLi
 
 QString PreviewMgr::imageResourceName(const ImageLink &p_link) {
   // Add size info to the name.
-  QString name = QStringLiteral("%1_%2_%3")
-                     .arg(p_link.m_linkShortUrl, QString::number(p_link.m_width),
-                          QString::number(p_link.m_height));
+  QString name = p_link.m_linkShortUrl;
   auto resourceMgr = m_interface->documentResourceMgr();
   if (resourceMgr->containsImage(name)) {
     return name;
@@ -242,13 +240,13 @@ QString PreviewMgr::imageResourceName(const ImageLink &p_link) {
     // qrc:// files will touch this path.
     downloader()->requestAsync(imgPath);
 
-    QSharedPointer<UrlImageData> urlData(new UrlImageData(name, p_link.m_width, p_link.m_height));
+    QSharedPointer<UrlImageData> urlData(new UrlImageData(name));
     m_urlMap.insert(imgPath, urlData);
     return QString();
   }
 
-  resourceMgr->addImage(name, MarkdownUtils::scaleImage(image, p_link.m_width, p_link.m_height,
-                                                        m_interface->scaleFactor()));
+  resourceMgr->addImage(name, MarkdownUtils::scaleImage(image, 0, 0,
+                                                         m_interface->scaleFactor()));
   return name;
 }
 
@@ -349,7 +347,7 @@ void PreviewMgr::imageDownloaded(const NetworkReply &p_data, const QString &p_ur
   image.loadFromData(p_data.m_data);
   if (!image.isNull()) {
     resourceMgr->addImage(data->m_name,
-                          MarkdownUtils::scaleImage(image, data->m_width, data->m_height,
+                          MarkdownUtils::scaleImage(image, 0, 0,
                                                     m_interface->scaleFactor()));
     emit requestUpdateImageLinks();
   }

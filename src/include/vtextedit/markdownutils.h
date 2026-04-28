@@ -54,7 +54,7 @@ public:
   static bool hasImageLink(const QString &p_text);
 
   // Fetch the image link's URL if there is only one link.
-  static QString fetchImageLinkUrl(const QString &p_text, int &p_width, int &p_height);
+  static QString fetchImageLinkUrl(const QString &p_text);
 
   // Return the absolute path of @p_url according to @p_basePath.
   static QString linkUrlToPath(const QString &p_basePath, const QString &p_url);
@@ -91,9 +91,8 @@ public:
 
   static void typeLink(VTextEdit *p_edit, const QString &p_linkText, const QString &p_linkUrl);
 
-  // @p_width/@p_height: 0 for no override.
   static QString generateImageLink(const QString &p_title, const QString &p_url,
-                                   const QString &p_altText, int p_width = 0, int p_height = 0);
+                                   const QString &p_altText);
 
   // @p_content: Markdwon text content.
   // @p_contentBasePath: base path used to resolve image link and check if it is
@@ -135,25 +134,6 @@ public:
   static const QString c_fencedCodeBlockStartRegExp;
 
   static const QString c_fencedCodeBlockEndRegExp;
-
-  // Regular expression for image link.
-  // ![image title]( http://github.com/tamlok/vnote.jpg "alt text" =200x100)
-  // Captured texts (need to be trimmed):
-  // 1. Image Alt Text (Title);
-  // 2. Image URL;
-  // 3. Image Optional Title with double quotes or quotes;
-  // 4. Unused;
-  // 5. Unused;
-  // 6. Width and height text;
-  // 7. Width;
-  // 8. Height;
-  static const QString c_imageLinkRegExp;
-
-  // Regular expression for image title.
-  static const QString c_imageTitleRegExp;
-
-  // Regular expression for image alt text.
-  static const QString c_imageAltRegExp;
 
   // Regular expression for link.
   // [link text]( http://github.com/tamlok "alt text")

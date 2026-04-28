@@ -141,8 +141,7 @@ private:
 
     ImageLink(int p_startPos, int p_endPos, int p_blockPos, int p_blockNumber, int p_padding)
         : m_startPos(p_startPos), m_endPos(p_endPos), m_blockPos(p_blockPos),
-          m_blockNumber(p_blockNumber), m_padding(p_padding), m_isBlockwise(false), m_width(-1),
-          m_height(-1) {}
+          m_blockNumber(p_blockNumber), m_padding(p_padding), m_isBlockwise(false) {}
 
     friend QDebug operator<<(QDebug p_debug, const ImageLink &p_link) {
       p_debug << "ImageLink [" << p_link.m_startPos << p_link.m_endPos << ")"
@@ -171,21 +170,12 @@ private:
 
     // Whether it is an image block.
     bool m_isBlockwise = false;
-
-    // Image width, -1 for not specified.
-    int m_width = -1;
-
-    // Image height, -1 for not specified.
-    int m_height = -1;
   };
 
   struct UrlImageData {
-    UrlImageData(const QString &p_name, int p_width, int p_height)
-        : m_name(p_name), m_width(p_width), m_height(p_height) {}
+    UrlImageData(const QString &p_name) : m_name(p_name) {}
 
     QString m_name;
-    int m_width = -1;
-    int m_height = -1;
   };
 
   void previewImageLinks(TimeStamp p_timeStamp, const QVector<md::ElementRegion> &p_regions);
