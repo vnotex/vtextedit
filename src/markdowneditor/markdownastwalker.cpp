@@ -184,13 +184,13 @@ static void addFoldingRegion(ASTWalkResult &p_result, int p_style,
     region.m_type = FoldingRegionType::Heading;
     region.m_level = p_style - STYLE_H1 + 1;
   } else if (p_style == STYLE_FENCEDCODEBLOCK) {
-    region.m_type = FoldingRegionType::FencedCodeBlock;
+    region.m_type = FoldingRegionType::FencedCode;
   } else if (p_style == STYLE_BLOCKQUOTE) {
     region.m_type = FoldingRegionType::Blockquote;
   } else if (p_style == STYLE_TABLE) {
     region.m_type = FoldingRegionType::Table;
   } else if (p_style == STYLE_DISPLAYFORMULA) {
-    region.m_type = FoldingRegionType::MathBlock;
+    region.m_type = FoldingRegionType::Math;
   } else if (p_style == STYLE_FRONTMATTER) {
     region.m_type = FoldingRegionType::FrontMatter;
   } else {

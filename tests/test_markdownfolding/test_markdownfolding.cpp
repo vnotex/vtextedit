@@ -54,7 +54,7 @@ void TestMarkdownFolding::testApplyFoldingRegions()
   // Heading section [0, 9].
   regions.append({0, 9, md::Heading, 1});
   // Code block [3, 7] nested inside heading.
-  regions.append({3, 7, md::FencedCodeBlock, 0});
+  regions.append({3, 7, md::FencedCode, 0});
 
   m_provider->updateFoldingRegions(regions);
 
@@ -74,7 +74,7 @@ void TestMarkdownFolding::testDiffPreservesFoldState()
 {
   QVector<md::FoldingRegion> regions;
   regions.append({0, 9, md::Heading, 1});
-  regions.append({3, 7, md::FencedCodeBlock, 0});
+  regions.append({3, 7, md::FencedCode, 0});
 
   m_provider->updateFoldingRegions(regions);
 
@@ -106,7 +106,7 @@ void TestMarkdownFolding::testDiffRemovesStaleRanges()
   QVector<md::FoldingRegion> regions;
   regions.append({0, 9, md::Heading, 1});
   regions.append({12, 19, md::Heading, 2});
-  regions.append({22, 29, md::FencedCodeBlock, 0});
+  regions.append({22, 29, md::FencedCode, 0});
 
   m_provider->updateFoldingRegions(regions);
 
@@ -118,7 +118,7 @@ void TestMarkdownFolding::testDiffRemovesStaleRanges()
   // Re-apply with only 2 regions — remove the middle one.
   QVector<md::FoldingRegion> newRegions;
   newRegions.append({0, 9, md::Heading, 1});
-  newRegions.append({22, 29, md::FencedCodeBlock, 0});
+  newRegions.append({22, 29, md::FencedCode, 0});
 
   m_provider->updateFoldingRegions(newRegions);
 
@@ -144,7 +144,7 @@ void TestMarkdownFolding::testDiffAddsNewRanges()
   QVector<md::FoldingRegion> newRegions;
   newRegions.append({0, 9, md::Heading, 1});
   newRegions.append({12, 19, md::Heading, 2});
-  newRegions.append({22, 29, md::FencedCodeBlock, 0});
+  newRegions.append({22, 29, md::FencedCode, 0});
 
   m_provider->updateFoldingRegions(newRegions);
 
@@ -160,7 +160,7 @@ void TestMarkdownFolding::testSkipsSmallRanges()
   // Single-block region: startBlock == endBlock.
   regions.append({5, 5, md::Heading, 1});
   // Also test endBlock < startBlock + 1 (adjacent).
-  regions.append({10, 10, md::FencedCodeBlock, 0});
+  regions.append({10, 10, md::FencedCode, 0});
 
   m_provider->updateFoldingRegions(regions);
 
@@ -173,7 +173,7 @@ void TestMarkdownFolding::testNesting()
 {
   QVector<md::FoldingRegion> regions;
   regions.append({0, 20, md::Heading, 1});
-  regions.append({5, 10, md::FencedCodeBlock, 0});
+  regions.append({5, 10, md::FencedCode, 0});
 
   m_provider->updateFoldingRegions(regions);
 

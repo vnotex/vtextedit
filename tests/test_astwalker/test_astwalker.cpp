@@ -198,7 +198,7 @@ void TestASTWalker::testFoldingRegionsCodeBlock()
 
   bool found = false;
   for (const auto &r : result.foldingRegions) {
-    if (r.m_type == vte::md::FencedCodeBlock) {
+    if (r.m_type == vte::md::FencedCode) {
       QCOMPARE(r.m_startBlock, 0);
       QCOMPARE(r.m_endBlock, 2);
       QCOMPARE(r.m_level, 0);
@@ -261,7 +261,7 @@ void TestASTWalker::testFoldingRegionsMathBlock()
 
   bool found = false;
   for (const auto &r : result.foldingRegions) {
-    if (r.m_type == vte::md::MathBlock) {
+    if (r.m_type == vte::md::Math) {
       QCOMPARE(r.m_startBlock, 0);
       QCOMPARE(r.m_endBlock, 2);
       QCOMPARE(r.m_level, 0);
@@ -323,7 +323,7 @@ void TestASTWalker::testFoldingRegionsMixed()
     if (r.m_type == vte::md::Heading && r.m_startBlock == 0) {
       hasHeading = true;
     }
-    if (r.m_type == vte::md::FencedCodeBlock && r.m_startBlock == 2) {
+    if (r.m_type == vte::md::FencedCode && r.m_startBlock == 2) {
       hasCode = true;
     }
     if (r.m_type == vte::md::Blockquote && r.m_startBlock == 6) {

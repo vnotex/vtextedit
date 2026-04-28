@@ -18,6 +18,7 @@ add_executable(test_markdownfolding
 )
 target_include_directories(test_markdownfolding PRIVATE
     ..
+    ${SRC_FOLDER}
     ${SRC_FOLDER}/include
     ${EDITOR_FOLDER}
     ${MDEDITOR_FOLDER}

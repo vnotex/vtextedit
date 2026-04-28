@@ -8,7 +8,7 @@
 #include <vtextedit/markdownhighlighterdata.h>
 #include <vtextedit/textrange.h>
 
-#include <textfolding.h>
+#include <texteditor/textfolding.h>
 
 namespace vte {
 

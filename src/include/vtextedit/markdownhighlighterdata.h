@@ -219,7 +219,7 @@ struct VTEXTEDIT_EXPORT TableBlock {
   // Global position of the table borders in ascending order.
   QVector<int> m_borders;
 };
-enum FoldingRegionType { Heading, FencedCodeBlock, Blockquote, Table, MathBlock, FrontMatter };
+enum FoldingRegionType { Heading, FencedCode, Blockquote, Table, Math, FrontMatter };
 
 struct VTEXTEDIT_EXPORT FoldingRegion {
   int m_startBlock = -1;
