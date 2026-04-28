@@ -174,6 +174,31 @@ static void addRegion(ASTWalkResult &p_result, int p_style,
   }
 }
 
+static void addFoldingRegion(ASTWalkResult &p_result, int p_style,
+                             int p_startBlock, int p_endBlock)
+{
+  FoldingRegion region;
+  region.m_startBlock = p_startBlock;
+  region.m_endBlock = p_endBlock;
+  if (p_style >= STYLE_H1 && p_style <= STYLE_H1 + 5) {
+    region.m_type = FoldingRegionType::Heading;
+    region.m_level = p_style - STYLE_H1 + 1;
+  } else if (p_style == STYLE_FENCEDCODEBLOCK) {
+    region.m_type = FoldingRegionType::FencedCodeBlock;
+  } else if (p_style == STYLE_BLOCKQUOTE) {
+    region.m_type = FoldingRegionType::Blockquote;
+  } else if (p_style == STYLE_TABLE) {
+    region.m_type = FoldingRegionType::Table;
+  } else if (p_style == STYLE_DISPLAYFORMULA) {
+    region.m_type = FoldingRegionType::MathBlock;
+  } else if (p_style == STYLE_FRONTMATTER) {
+    region.m_type = FoldingRegionType::FrontMatter;
+  } else {
+    return;
+  }
+  p_result.foldingRegions.append(region);
+}
+
 static void handleListDirect(cmark_node *p_listNode,
                              const LineOffsetTable &p_offsets,
                              ASTWalkResult &p_result,
@@ -297,6 +322,10 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks,
       int absStart = p_offset + docStart;
       int absEnd = p_offset + docEnd;
       addRegion(result, style, absStart, absEnd);
+
+      int startBlock = p_startBlock + (sl - 1);
+      int endBlock = p_startBlock + (el - 1);
+      addFoldingRegion(result, style, startBlock, endBlock);
     }
   }
 
@@ -315,6 +344,10 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks,
     std::sort(result.displayFormulaRegions.begin(), result.displayFormulaRegions.end());
     std::sort(result.tableRegions.begin(), result.tableRegions.end());
     std::sort(result.tableHeaderRegions.begin(), result.tableHeaderRegions.end());
+    std::sort(result.foldingRegions.begin(), result.foldingRegions.end(),
+              [](const FoldingRegion &a, const FoldingRegion &b) {
+                return a.m_startBlock < b.m_startBlock;
+              });
   }
 
   cmark_node_free(doc);

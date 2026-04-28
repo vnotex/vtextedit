@@ -10,6 +10,13 @@ class TestASTWalker : public QObject {
 private slots:
   void verifyBlocksHighlights();
   void verifyRegions();
+  void testFoldingRegionsHeadings();
+  void testFoldingRegionsCodeBlock();
+  void testFoldingRegionsBlockquote();
+  void testFoldingRegionsTable();
+  void testFoldingRegionsMathBlock();
+  void testFoldingRegionsFrontMatter();
+  void testFoldingRegionsMixed();
 };
 
 } // namespace tests

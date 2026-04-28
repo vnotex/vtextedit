@@ -21,6 +21,7 @@ struct ASTWalkResult {
   QVector<ElementRegion> tableRegions;
   QVector<ElementRegion> tableHeaderRegions;
   QVector<ElementRegion> tableBorderRegions;
+  QVector<FoldingRegion> foldingRegions;
 };
 
 // Single-pass AST walker. Parses markdown with cmark, walks AST once,
