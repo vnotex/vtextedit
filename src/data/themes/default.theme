@@ -40,6 +40,9 @@
         "FoldingHighlight" : {
             "text-color" : "#ffa9c4f5"
         },
+        "FoldedFoldingRangeLine" : {
+            "background-color" : "#befbdd"
+        },
         "IncrementalSearch" : {
             "//comment" : "Incremental search highlight",
             "text-color" : "#222222",

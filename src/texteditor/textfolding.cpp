@@ -725,6 +725,9 @@ void TextFolding::setEnabled(bool p_enable) {
 }
 
 void TextFolding::setFoldedFoldingRangeLineBackgroundColor(const QColor &p_color) {
+  if (!p_color.isValid()) {
+    return;
+  }
   m_foldedFoldingRangeLineBackground = p_color;
   m_extraSelectionMgr->setExtraSelectionFormat(m_extraSelectionType, QColor(),
                                                m_foldedFoldingRangeLineBackground, true);
