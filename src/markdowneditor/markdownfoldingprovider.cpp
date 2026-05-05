@@ -53,8 +53,9 @@ void MarkdownFoldingProvider::updateFoldingRegions(const QVector<md::FoldingRegi
     if (!newPairs.contains(pair)) {
       auto it = m_regionIdMap.find(pair);
       if (it != m_regionIdMap.end()) {
-        m_textFolding->removeFoldingRange(it.value());
+        qint64 id = it.value();
         m_regionIdMap.erase(it);
+        m_textFolding->removeFoldingRange(id);
       }
     }
   }
@@ -80,11 +81,16 @@ void MarkdownFoldingProvider::updateFoldingRegions(const QVector<md::FoldingRegi
 
 void MarkdownFoldingProvider::clear()
 {
-  for (auto it = m_regionIdMap.begin(); it != m_regionIdMap.end(); ++it) {
-    m_textFolding->removeFoldingRange(it.value());
+  QVector<qint64> ids;
+  ids.reserve(m_regionIdMap.size());
+  for (auto it = m_regionIdMap.cbegin(); it != m_regionIdMap.cend(); ++it) {
+    ids.append(it.value());
   }
   m_regionIdMap.clear();
   m_previousRegions.clear();
+  for (qint64 id : ids) {
+    m_textFolding->removeFoldingRange(id);
+  }
 }
 
 void MarkdownFoldingProvider::resetState()
