@@ -3,6 +3,10 @@
 
 #include <algorithm>
 
+#ifdef VTE_DEBUG_HIGHLIGHT
+#include <QDebug>
+#endif
+
 #include <cmark.h>
 #include <node.h>
 
@@ -51,7 +55,7 @@ static int numberWidth(int p_num)
 
 static void addHLUnit(ASTWalkResult &p_result, const LineOffsetTable &p_offsets,
                       int p_docStart, int p_docEnd, int p_style,
-                      int p_startBlock, int p_numBlocks, int p_offset)
+                      int p_startBlock, int p_numBlocks)
 {
   // Compute 0-indexed line indices from document-local positions.
   // We need to figure out which lines this element spans.
@@ -103,6 +107,10 @@ static void addHLUnit(ASTWalkResult &p_result, const LineOffsetTable &p_offsets,
       unit.length = p_docEnd - p_docStart;
       unit.styleIndex = p_style;
       p_result.blocksHighlights[blockNum].append(unit);
+#ifdef VTE_DEBUG_HIGHLIGHT
+      qDebug() << "addHLUnit: blockNum=" << blockNum << "start=" << unit.start
+               << "length=" << unit.length << "style=" << unit.styleIndex;
+#endif
     }
   } else {
     for (int lineIdx = startLineIdx; lineIdx <= endLineIdx; ++lineIdx) {
@@ -247,6 +255,19 @@ static void handleListDirect(cmark_node *p_listNode,
   }
 }
 
+static cmark_node *findAncestorParagraph(cmark_node *p_node)
+{
+  cmark_node *cur = cmark_node_parent(p_node);
+  while (cur) {
+    cmark_node_type t = cmark_node_get_type(cur);
+    if (t == CMARK_NODE_PARAGRAPH || t == CMARK_NODE_HEADING) {
+      return cur;
+    }
+    cur = cmark_node_parent(cur);
+  }
+  return nullptr;
+}
+
 ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks,
                              int p_offset, int p_startBlock, bool p_fast)
 {
@@ -259,7 +280,7 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks,
 
   cmark_node *doc = cmark_parse_document(p_utf8Text.constData(),
                                          p_utf8Text.size(),
-                                         CMARK_OPT_DEFAULT);
+                                          CMARK_OPT_DEFAULT);
   if (!doc) {
     return result;
   }
@@ -305,6 +326,43 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks,
       continue;
     }
 
+    // Correct for cmark's erroneous block_offset on lazy continuation lines.
+    // cmark adds paragraph->start_column - 1 to ALL inline columns, but on lazy
+    // continuation lines (no leading indentation stripped), this offset was never
+    // subtracted from the content, causing over-reported positions.
+    cmark_node *para = findAncestorParagraph(node);
+    if (para) {
+      int blockOffset = cmark_node_get_start_column(para) - 1;
+      if (blockOffset > 0) {
+        int paraStartLine = cmark_node_get_start_line(para);
+        // Correct start column if on a lazy continuation line
+        if (sl > paraStartLine) {
+          int leadingSpaces = offsets.lineLeadingSpaces(sl - 1);
+          if (leadingSpaces < blockOffset) {
+            sc -= blockOffset;
+#ifdef VTE_DEBUG_HIGHLIGHT
+            qDebug() << "  LAZY FIX sc: line=" << sl << "blockOffset=" << blockOffset
+                     << "leadingSpaces=" << leadingSpaces << "corrected sc=" << sc;
+#endif
+          }
+        }
+        // Correct end column if on a lazy continuation line
+        if (el > paraStartLine) {
+          int leadingSpaces = offsets.lineLeadingSpaces(el - 1);
+          if (leadingSpaces < blockOffset) {
+            ec -= blockOffset;
+#ifdef VTE_DEBUG_HIGHLIGHT
+            qDebug() << "  LAZY FIX ec: line=" << el << "blockOffset=" << blockOffset
+                     << "leadingSpaces=" << leadingSpaces << "corrected ec=" << ec;
+#endif
+          }
+        }
+        // Guard against negative/invalid columns
+        sc = qMax(1, sc);
+        ec = qMax(sc, ec);
+      }
+    }
+
     int docStart = offsets.toDocPosition(sl, sc);
     int docEnd = offsets.toDocPosition(el, ec) + 1;
 
@@ -313,9 +371,16 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks,
       docEnd += 1;
     }
 
+#ifdef VTE_DEBUG_HIGHLIGHT
+    qDebug() << "WALKER inline: type=" << cmark_node_get_type_string(node)
+             << "sl=" << sl << "sc=" << sc << "el=" << el << "ec=" << ec
+             << "docStart=" << docStart << "docEnd=" << docEnd
+             << "startBlock=" << p_startBlock;
+#endif
+
     // Add per-block HLUnits.
     addHLUnit(result, offsets, docStart, docEnd, style,
-              p_startBlock, p_numBlocks, p_offset);
+              p_startBlock, p_numBlocks);
 
     // Collect regions (only when not fast-parsing).
     if (!p_fast) {

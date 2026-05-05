@@ -33,6 +33,8 @@ namespace tests
         // Walker tests
         void testWalkerSimple();
         void testWalkerTable();
+        void testWalkerListItemInlines();
+        void testWalkerLazyContinuation();
 
         void testParseCmark();
     };

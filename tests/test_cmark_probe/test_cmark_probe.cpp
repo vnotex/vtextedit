@@ -764,4 +764,353 @@ void TestCmarkProbe::testParseCmark()
   QCOMPARE(countElements(result, 23), 3);
 }
 
+void TestCmarkProbe::testWalkerListItemInlines()
+{
+  // Test inline element positions inside list items.
+  // This is TDD RED: tests expose expected positions; failures indicate offset bug.
+
+  // Helper lambda to find first HLUnit with given style.
+  auto findUnit = [](const vte::md::ASTWalkResult &r, int style) -> QPair<bool, vte::md::HLUnit> {
+    for (int b = 0; b < r.blocksHighlights.size(); ++b) {
+      for (const auto &u : r.blocksHighlights[b]) {
+        if (u.styleIndex == (unsigned int)style) {
+          return qMakePair(true, u);
+        }
+      }
+    }
+    vte::md::HLUnit empty;
+    return qMakePair(false, empty);
+  };
+
+  // Helper lambda to find first HLUnit with given style in a specific block.
+  auto findUnitInBlock = [](const vte::md::ASTWalkResult &r, int block, int style) -> QPair<bool, vte::md::HLUnit> {
+    if (block < 0 || block >= r.blocksHighlights.size()) {
+      vte::md::HLUnit empty;
+      return qMakePair(false, empty);
+    }
+    for (const auto &u : r.blocksHighlights[block]) {
+      if (u.styleIndex == (unsigned int)style) {
+        return qMakePair(true, u);
+      }
+    }
+    vte::md::HLUnit empty;
+    return qMakePair(false, empty);
+  };
+
+  const int CODE = 4;
+  const int EMPH = 7;
+
+  // --- Case 1: ASCII, first-line code span ---
+  {
+    const char *text = "- list with `code span`\n";
+    QByteArray utf8(text);
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+
+    auto pair = findUnit(result, CODE);
+    QVERIFY2(pair.first, "Case 1: CODE element not found");
+    qDebug() << "Case 1: CODE start=" << pair.second.start
+             << "length=" << pair.second.length;
+    // "`code span`" starts at QChar 12 within block 0, length 11
+    QCOMPARE((int)pair.second.start, 12);
+    QCOMPARE((int)pair.second.length, 11);
+  }
+
+  // --- Case 2: ASCII, first-line emphasis ---
+  {
+    const char *text = "- list with *emphasis*\n";
+    QByteArray utf8(text);
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+
+    auto pair = findUnit(result, EMPH);
+    QVERIFY2(pair.first, "Case 2: EMPH element not found");
+    qDebug() << "Case 2: EMPH start=" << pair.second.start
+             << "length=" << pair.second.length;
+    // "*emphasis*" starts at QChar 12 within block 0, length 10
+    QCOMPARE((int)pair.second.start, 12);
+    QCOMPARE((int)pair.second.length, 10);
+  }
+
+  // --- Case 3: ASCII, continuation line code span ---
+  {
+    const char *text = "- first line\n  `code on continuation`\n";
+    QByteArray utf8(text);
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+
+    // CODE is on line 1 (block 1)
+    auto pair = findUnitInBlock(result, 1, CODE);
+    QVERIFY2(pair.first, "Case 3: CODE element not found in block 1");
+    qDebug() << "Case 3: CODE start=" << pair.second.start
+             << "length=" << pair.second.length;
+    // "  `code on continuation`" → backtick at QChar 2 within block 1, length 22
+    QCOMPARE((int)pair.second.start, 2);
+    QCOMPARE((int)pair.second.length, 22);
+  }
+
+  // --- Case 4: CJK, first-line code span ---
+  {
+    // "- 你好 `code`\n"
+    const char *text = "- \xe4\xbd\xa0\xe5\xa5\xbd `code`\n";
+    QByteArray utf8(text);
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+
+    auto pair = findUnit(result, CODE);
+    QVERIFY2(pair.first, "Case 4: CODE element not found");
+    qDebug() << "Case 4: CODE start=" << pair.second.start
+             << "length=" << pair.second.length;
+    // "- 你好 `code`" → QChars: '-'(0),' '(1),'你'(2),'好'(3),' '(4),'`'(5)...
+    // CODE starts at QChar 5, length 6
+    QCOMPARE((int)pair.second.start, 5);
+    QCOMPARE((int)pair.second.length, 6);
+  }
+
+  // --- Case 5: CJK, continuation line code span ---
+  {
+    // "- 你好世界\n  `code`\n"
+    const char *text = "- \xe4\xbd\xa0\xe5\xa5\xbd\xe4\xb8\x96\xe7\x95\x8c\n  `code`\n";
+    QByteArray utf8(text);
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+
+    // CODE is on line 1 (block 1)
+    auto pair = findUnitInBlock(result, 1, CODE);
+    QVERIFY2(pair.first, "Case 5: CODE element not found in block 1");
+    qDebug() << "Case 5: CODE start=" << pair.second.start
+             << "length=" << pair.second.length;
+    // Line 1: "  `code`\n" → backtick at QChar 2, length 6
+    QCOMPARE((int)pair.second.start, 2);
+    QCOMPARE((int)pair.second.length, 6);
+  }
+
+  // --- Case 6: Nested list, CJK + code span ---
+  {
+    // "- outer\n    1. 你好 `code`\n"
+    const char *text = "- outer\n    1. \xe4\xbd\xa0\xe5\xa5\xbd `code`\n";
+    QByteArray utf8(text);
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+
+    // CODE is on line 1 (block 1)
+    auto pair = findUnitInBlock(result, 1, CODE);
+    QVERIFY2(pair.first, "Case 6: CODE element not found in block 1");
+    qDebug() << "Case 6: CODE start=" << pair.second.start
+             << "length=" << pair.second.length;
+    // Line 1: "    1. 你好 `code`" → QChars: 7 ASCII + 你(1) + 好(1) + ' '(1) + '`'(1)...
+    // CODE "`code`" starts at QChar 10, length 6
+    QCOMPARE((int)pair.second.start, 10);
+    QCOMPARE((int)pair.second.length, 6);
+  }
+
+  // --- Case 7: Mixed CJK + ASCII emphasis ---
+  {
+    // "- 你好 *emphasis* world\n"
+    const char *text = "- \xe4\xbd\xa0\xe5\xa5\xbd *emphasis* world\n";
+    QByteArray utf8(text);
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+
+    auto pair = findUnit(result, EMPH);
+    QVERIFY2(pair.first, "Case 7: EMPH element not found");
+    qDebug() << "Case 7: EMPH start=" << pair.second.start
+             << "length=" << pair.second.length;
+    // "- 你好 *emphasis*" → '-'(0),' '(1),'你'(2),'好'(3),' '(4),'*'(5)...
+    // EMPH "*emphasis*" starts at QChar 5, length 10
+    QCOMPARE((int)pair.second.start, 5);
+    QCOMPARE((int)pair.second.length, 10);
+  }
+
+  // --- Case 8: Multiple inlines on same list line ---
+  {
+    // "- `a` and *b*\n"
+    const char *text = "- `a` and *b*\n";
+    QByteArray utf8(text);
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+
+    auto codePair = findUnit(result, CODE);
+    QVERIFY2(codePair.first, "Case 8: CODE element not found");
+    qDebug() << "Case 8: CODE start=" << codePair.second.start
+             << "length=" << codePair.second.length;
+    // "`a`" starts at QChar 2, length 3
+    QCOMPARE((int)codePair.second.start, 2);
+    QCOMPARE((int)codePair.second.length, 3);
+
+    auto emphPair = findUnit(result, EMPH);
+    QVERIFY2(emphPair.first, "Case 8: EMPH element not found");
+    qDebug() << "Case 8: EMPH start=" << emphPair.second.start
+             << "length=" << emphPair.second.length;
+    // "*b*" starts at QChar 10, length 3
+    QCOMPARE((int)emphPair.second.start, 10);
+    QCOMPARE((int)emphPair.second.length, 3);
+  }
+
+  // --- Case 9: Multiline code span in list item (SOURCEPOS test) ---
+  {
+    // "- start `code\n  end` after\n"
+    const char *text = "- start `code\n  end` after\n";
+    QByteArray utf8(text);
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+
+    // Code span crosses lines; check if CODE unit is found in block 0 or 1
+    auto pair0 = findUnitInBlock(result, 0, CODE);
+    auto pair1 = findUnitInBlock(result, 1, CODE);
+    qDebug() << "Case 9: block0 CODE found=" << pair0.first
+             << "block1 CODE found=" << pair1.first;
+    if (pair0.first) {
+      qDebug() << "  block0 CODE start=" << pair0.second.start
+               << "length=" << pair0.second.length;
+    }
+    if (pair1.first) {
+      qDebug() << "  block1 CODE start=" << pair1.second.start
+               << "length=" << pair1.second.length;
+    }
+    // At least one block should contain the CODE unit
+    QVERIFY2(pair0.first || pair1.first, "Case 9: CODE element not found in any block");
+  }
+}
+
+void TestCmarkProbe::testWalkerLazyContinuation()
+{
+  // Test inline element positions on LAZY continuation lines in list items.
+  // Lazy continuation = no leading indent on continuation line.
+  // Bug: cmark adds block_offset to columns on lazy lines where whitespace
+  // was never stripped, causing over-reported positions.
+
+  // Helper lambda to find first HLUnit with given style in a specific block.
+  auto findUnitInBlock = [](const vte::md::ASTWalkResult &r, int block, int style) -> QPair<bool, vte::md::HLUnit> {
+    if (block < 0 || block >= r.blocksHighlights.size()) {
+      vte::md::HLUnit empty;
+      return qMakePair(false, empty);
+    }
+    for (const auto &u : r.blocksHighlights[block]) {
+      if (u.styleIndex == (unsigned int)style) {
+        return qMakePair(true, u);
+      }
+    }
+    vte::md::HLUnit empty;
+    return qMakePair(false, empty);
+  };
+
+  const int CODE = 4;
+  const int EMPH = 7;
+
+  // --- Case L1: Lazy continuation with code span (ASCII) ---
+  {
+    // "- first line\n`code on lazy`\n"
+    const char *text = "- first line\n`code on lazy`\n";
+    QByteArray utf8(text);
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+
+    auto pair = findUnitInBlock(result, 1, CODE);
+    QVERIFY2(pair.first, "Case L1: CODE element not found in block 1");
+    qDebug() << "Case L1: CODE start=" << pair.second.start
+             << "length=" << pair.second.length;
+    // Line 1: "`code on lazy`" starts at QChar 0, length 14
+    QCOMPARE((int)pair.second.start, 0);
+    QCOMPARE((int)pair.second.length, 14);
+  }
+
+  // --- Case L2: CJK first line + lazy continuation with code ---
+  {
+    // "- 你好世界\n`code`\n"
+    const char *text = "- \xe4\xbd\xa0\xe5\xa5\xbd\xe4\xb8\x96\xe7\x95\x8c\n`code`\n";
+    QByteArray utf8(text);
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+
+    auto pair = findUnitInBlock(result, 1, CODE);
+    QVERIFY2(pair.first, "Case L2: CODE element not found in block 1");
+    qDebug() << "Case L2: CODE start=" << pair.second.start
+             << "length=" << pair.second.length;
+    // Line 1: "`code`" starts at QChar 0, length 6
+    QCOMPARE((int)pair.second.start, 0);
+    QCOMPARE((int)pair.second.length, 6);
+  }
+
+  // --- Case L3: Lazy line with CJK before code span ---
+  {
+    // "- first line\n你好 `code` world\n"
+    const char *text = "- first line\n\xe4\xbd\xa0\xe5\xa5\xbd `code` world\n";
+    QByteArray utf8(text);
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+
+    auto pair = findUnitInBlock(result, 1, CODE);
+    QVERIFY2(pair.first, "Case L3: CODE element not found in block 1");
+    qDebug() << "Case L3: CODE start=" << pair.second.start
+             << "length=" << pair.second.length;
+    // Line 1: "你好 `code` world" → 你(0)好(1)space(2)`(3)c(4)o(5)d(6)e(7)`(8)
+    // CODE "`code`" starts at QChar 3, length 6
+    QCOMPARE((int)pair.second.start, 3);
+    QCOMPARE((int)pair.second.length, 6);
+  }
+
+  // --- Case L4: Lazy continuation with emphasis ---
+  {
+    // "- first line\n*emphasis on lazy*\n"
+    const char *text = "- first line\n*emphasis on lazy*\n";
+    QByteArray utf8(text);
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+
+    auto pair = findUnitInBlock(result, 1, EMPH);
+    QVERIFY2(pair.first, "Case L4: EMPH element not found in block 1");
+    qDebug() << "Case L4: EMPH start=" << pair.second.start
+             << "length=" << pair.second.length;
+    // Line 1: "*emphasis on lazy*" starts at QChar 0, length 18
+    QCOMPARE((int)pair.second.start, 0);
+    QCOMPARE((int)pair.second.length, 18);
+  }
+
+  // --- Case L5: Ordered list lazy continuation with code ---
+  {
+    // "1. first line\nlazy `code`\n"
+    const char *text = "1. first line\nlazy `code`\n";
+    QByteArray utf8(text);
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+
+    auto pair = findUnitInBlock(result, 1, CODE);
+    QVERIFY2(pair.first, "Case L5: CODE element not found in block 1");
+    qDebug() << "Case L5: CODE start=" << pair.second.start
+             << "length=" << pair.second.length;
+    // Line 1: "lazy `code`" → l(0)a(1)z(2)y(3)space(4)`(5)c(6)o(7)d(8)e(9)`(10)
+    // CODE "`code`" starts at QChar 5, length 6
+    QCOMPARE((int)pair.second.start, 5);
+    QCOMPARE((int)pair.second.length, 6);
+  }
+
+  // --- Case L6: User reproduction - CJK first line, lazy with Markdown`code`end ---
+  {
+    // "- 段落和换行\nMarkdown`code`end\n"
+    const char *text = "- \xe6\xae\xb5\xe8\x90\xbd\xe5\x92\x8c\xe6\x8d\xa2\xe8\xa1\x8c\nMarkdown`code`end\n";
+    QByteArray utf8(text);
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+
+    auto pair = findUnitInBlock(result, 1, CODE);
+    QVERIFY2(pair.first, "Case L6: CODE element not found in block 1");
+    qDebug() << "Case L6: CODE start=" << pair.second.start
+             << "length=" << pair.second.length;
+    // Line 1: "Markdown`code`end" → M(0)a(1)r(2)k(3)d(4)o(5)w(6)n(7)`(8)c(9)o(10)d(11)e(12)`(13)
+    // CODE "`code`" starts at QChar 8, length 6
+    QCOMPARE((int)pair.second.start, 8);
+    QCOMPARE((int)pair.second.length, 6);
+  }
+
+  // --- Probe: lineLeadingSpaces utility ---
+  {
+    QByteArray probeText("- hello\nworld\n  indented\n");
+    LineOffsetTable probeTable(probeText);
+    QCOMPARE(probeTable.lineLeadingSpaces(0), 0);  // '-' not a space
+    QCOMPARE(probeTable.lineLeadingSpaces(1), 0);  // 'w' not a space
+    QCOMPARE(probeTable.lineLeadingSpaces(2), 2);  // 2 spaces
+  }
+}
+
 QTEST_MAIN(tests::TestCmarkProbe)

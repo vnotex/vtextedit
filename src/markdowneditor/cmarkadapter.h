@@ -20,6 +20,9 @@ public:
   // Return the number of lines in the table.
   int lineCount() const;
 
+  // Return the count of leading space (0x20) bytes at the start of the given 0-indexed line.
+  int lineLeadingSpaces(int p_lineIdx) const;
+
 private:
   // Per-line: byte offset of line start in the full UTF-8 buffer.
   QVector<int> m_lineByteOffsets;
@@ -31,6 +34,9 @@ private:
   // m_byteToQChar[lineIdx] is a vector where index = byte offset within line,
   // value = cumulative QChar count at that byte.
   QVector<QVector<int>> m_byteToQChar;
+
+  const unsigned char *m_data = nullptr;
+  int m_dataLen = 0;
 };
 
 // Map a cmark node type to a MarkdownSyntaxStyle ordinal (matching pmh_element_type).

@@ -2,6 +2,10 @@
 
 #include <node.h>
 
+#ifdef VTE_DEBUG_HIGHLIGHT
+#include <QDebug>
+#endif
+
 // MarkdownSyntaxStyle ordinals (must match pmh_element_type / Theme::MarkdownSyntaxStyle).
 enum {
   STYLE_LINK = 0,
@@ -54,6 +58,8 @@ LineOffsetTable::LineOffsetTable(const QByteArray &p_utf8Text)
   const unsigned char *data =
       reinterpret_cast<const unsigned char *>(p_utf8Text.constData());
   const int len = p_utf8Text.size();
+  m_data = data;
+  m_dataLen = len;
 
   // First pass: find line starts (byte offsets).
   m_lineByteOffsets.append(0); // Line 0 starts at byte 0.
@@ -129,7 +135,12 @@ int LineOffsetTable::toDocPosition(int p_line, int p_col) const
     return lineStartQChar + (byteMap.isEmpty() ? 0 : byteMap.last());
   }
 
-  return lineStartQChar + byteMap[byteCol];
+  int result = lineStartQChar + byteMap[byteCol];
+#ifdef VTE_DEBUG_HIGHLIGHT
+  qDebug() << "toDocPosition: line=" << p_line << "col=" << p_col
+           << "result=" << result;
+#endif
+  return result;
 }
 
 int LineOffsetTable::lineStartQCharOffset(int p_lineIdx) const
@@ -143,6 +154,26 @@ int LineOffsetTable::lineStartQCharOffset(int p_lineIdx) const
 int LineOffsetTable::lineCount() const
 {
   return m_lineQCharOffsets.size();
+}
+
+int LineOffsetTable::lineLeadingSpaces(int p_lineIdx) const
+{
+  if (!m_data || p_lineIdx < 0 || p_lineIdx >= m_lineByteOffsets.size()) {
+    return 0;
+  }
+  int lineStart = m_lineByteOffsets[p_lineIdx];
+  int lineEnd = (p_lineIdx + 1 < m_lineByteOffsets.size())
+                    ? m_lineByteOffsets[p_lineIdx + 1]
+                    : m_dataLen;
+  int count = 0;
+  for (int i = lineStart; i < lineEnd; ++i) {
+    if (m_data[i] == 0x20) {
+      ++count;
+    } else {
+      break;
+    }
+  }
+  return count;
 }
 
 // ---------------------------------------------------------------------------
