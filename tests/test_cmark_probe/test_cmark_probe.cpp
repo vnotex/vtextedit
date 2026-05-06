@@ -1113,4 +1113,152 @@ void TestCmarkProbe::testWalkerLazyContinuation()
   }
 }
 
+void TestCmarkProbe::testWalkerCJKNestedLists()
+{
+  // Validate ALL highlight elements in a CJK markdown document with nested lists.
+  // Text-extraction approach: extract highlighted substring, compare to expected content.
+  const char *text =
+      "# \xe5\xb8\xb8\xe7\x94\xa8\xe8\xaf\xad\xe6\xb3\x95\n"
+      "## \xe5\x8c\xba\xe5\x9d\x97\xe5\x85\x83\xe7\xb4\xa0\n"
+      "- \xe6\xae\xb5\xe8\x90\xbd\xe5\x92\x8c\xe6\x8d\xa2\xe8\xa1\x8c  \n"
+      "\xe4\xb8\x80\xe4\xb8\xaa\xe6\xae\xb5\xe8\x90\xbd\xe6\x98\xaf\xe7\x94\xb1\xe4\xb8\x80\xe4\xb8\xaa\xe4\xbb\xa5\xe4\xb8\x8a\xe7\x9b\xb8\xe8\xbf\x9e\xe6\x8e\xa5\xe7\x9a\x84\xe8\xa1\x8c\xe5\x8f\xa5\xe7\xbb\x84\xe6\x88\x90\xef\xbc\x8c\xe8\x80\x8c\xe4\xb8\x80\xe4\xb8\xaa\xe4\xbb\xa5\xe4\xb8\x8a\xe7\x9a\x84\xe7\xa9\xba\xe8\xa1\x8c\xe5\x88\x99\xe4\xbc\x9a\xe5\x88\x87\xe5\x88\x86\xe5\x87\xba\xe4\xb8\x8d\xe5\x90\x8c\xe7\x9a\x84\xe6\xae\xb5\xe8\x90\xbd\xe3\x80\x82  \n"
+      "Markdown\xe5\x85\x81\xe8\xae\xb8\xe6\xae\xb5\xe8\x90\xbd\xe5\x86\x85\xe7\x9a\x84\xe5\xbc\xba\xe8\xbf\xab\xe6\x96\xad\xe8\xa1\x8c\xef\xbc\x8c\xe6\x97\xa0\xe9\x9c\x80\xe6\x8f\x92\xe5\x85\xa5`<br/>`\xe6\xa0\x87\xe7\xad\xbe\xef\xbc\x88\xe5\xa6\x82\xe6\x9e\x9c\xe8\xa6\x81\xe6\x8f\x92\xe5\x85\xa5\xe8\xaf\xa5\xe6\xa0\x87\xe7\xad\xbe\xef\xbc\x8c\xe5\x8f\xaf\xe4\xbb\xa5\xe5\x9c\xa8\xe8\xa1\x8c\xe5\xb0\xbe\xe5\x8a\xa0\xe4\xb8\x8a\xe4\xb8\xa4\xe4\xb8\xaa\xe4\xbb\xa5\xe4\xb8\x8a\xe7\x9a\x84\xe7\xa9\xba\xe7\x99\xbd\xef\xbc\x8c\xe7\x84\xb6\xe5\x90\x8e\xe6\x8c\x89`Enter`\xef\xbc\x89\xe3\x80\x82\n"
+      "- \xe6\xa0\x87\xe9\xa2\x98\n"
+      "    1. Setext\xe5\xbd\xa2\xe5\xbc\x8f  \n"
+      "        \xe7\x94\xa8\xe5\x9c\xa8\xe6\x96\x87\xe5\xad\x97\xe4\xb8\x8b\xe4\xb8\x80\xe8\xa1\x8c\xe7\xb4\xa7\xe8\xb7\x9f\xe7\x9d\x80\xe5\xba\x95\xe7\xba\xbf\xe7\x9a\x84\xe5\xbd\xa2\xe5\xbc\x8f\xef\xbc\x8c`=`\xe4\xb8\xba\xe4\xb8\x80\xe7\xba\xa7\xe6\xa0\x87\xe9\xa2\x98\xef\xbc\x8c`-`\xe4\xb8\xba\xe4\xba\x8c\xe7\xba\xa7\xe6\xa0\x87\xe9\xa2\x98\xe3\x80\x82\xe6\xa0\x87\xe8\xae\xb0\xe7\x9a\x84\xe6\x95\xb0\xe9\x87\x8f\xe5\x8f\xaf\xe4\xbb\xa5\xe4\xbb\xbb\xe6\x84\x8f\xe3\x80\x82`haha`, `very doddg`\n"
+      "    2. Atx\xe5\xbd\xa2\xe5\xbc\x8f  \n"
+      "        \xe5\x9c\xa8\xe8\xa1\x8c\xe9\xa6\x96\xe6\x8f\x92\xe5\x85\xa5""1\xe5\x88\xb0""6\xe4\xb8\xaa`#`\xef\xbc\x8c\xe5\xaf\xb9\xe5\xba\x94\xe6\xa0\x87\xe9\xa2\x98\xe7\x9a\x84""1\xe5\x88\xb0""6\xe7\xba\xa7\xe3\x80\x82\xe4\xb9\x9f\xe5\x8f\xaf\xe4\xbb\xa5\xe5\x8f\xaf\xe9\x80\x89\xe5\x9c\xb0\xe5\x9c\xa8\xe8\xa1\x8c\xe5\xb0\xbe\xe4\xb9\x9f\xe6\xb7\xbb\xe5\x8a\xa0`#`\xef\xbc\x8c\xe4\xbd\x86\xe7\xba\xaf\xe7\xb2\xb9\xe6\x98\xaf\xe4\xb8\xba\xe4\xba\x86\xe7\xbe\x8e\xe8\xa7\x82\xef\xbc\x8c\xe8\x80\x8c\xe4\xb8\x94\xe6\x95\xb0\xe9\x87\x8f\xe5\xaf\xb9\xe6\xa0\x87\xe9\xa2\x98\xe7\xad\x89\xe7\xba\xa7\xe6\xb2\xa1\xe6\x9c\x89\xe5\xbd\xb1\xe5\x93\x8d\xe3\x80\x82 \n";
+
+  QByteArray utf8(text);
+  int numBlocks = countBlocks(utf8);
+  auto result = vte::md::walkAndConvert(utf8, numBlocks);
+
+  // Convert to QString for substring extraction.
+  QString qtext = QString::fromUtf8(utf8);
+  // Build block start offsets (QChar positions where each block begins).
+  QVector<int> blockStarts;
+  blockStarts.append(0);
+  for (int i = 0; i < qtext.size(); ++i) {
+    if (qtext[i] == '\n') blockStarts.append(i + 1);
+  }
+
+  // Helper: extract highlighted text for a HLUnit in a given block.
+  auto extractText = [&](int block, const vte::md::HLUnit &unit) -> QString {
+    int blockStart = blockStarts[block];
+    return qtext.mid(blockStart + unit.start, unit.length);
+  };
+
+  // Helper: find ALL HLUnits with given style in a block.
+  auto findAllInBlock = [](const vte::md::ASTWalkResult &r, int block, int style) -> QVector<vte::md::HLUnit> {
+    QVector<vte::md::HLUnit> units;
+    if (block < 0 || block >= r.blocksHighlights.size()) return units;
+    for (const auto &u : r.blocksHighlights[block]) {
+      if (u.styleIndex == (unsigned int)style) units.append(u);
+    }
+    return units;
+  };
+
+  const int CODE = 4;
+  const int LIST_BULLET = 9;
+  const int LIST_ENUMERATOR = 10;
+  const int H1 = 12;
+  const int H2 = 13;
+
+  // --- Block 0: H1 "# 常用语法" ---
+  {
+    auto units = findAllInBlock(result, 0, H1);
+    QVERIFY2(!units.isEmpty(), "Block 0: H1 not found");
+    QString highlighted = extractText(0, units[0]);
+    qDebug() << "Block 0 H1:" << highlighted << "start=" << units[0].start << "len=" << units[0].length;
+    QVERIFY2(highlighted.startsWith("# "), qPrintable("H1 should start with '# ', got: " + highlighted));
+  }
+
+  // --- Block 1: H2 "## 区块元素" ---
+  {
+    auto units = findAllInBlock(result, 1, H2);
+    QVERIFY2(!units.isEmpty(), "Block 1: H2 not found");
+    QString highlighted = extractText(1, units[0]);
+    qDebug() << "Block 1 H2:" << highlighted << "start=" << units[0].start << "len=" << units[0].length;
+    QVERIFY2(highlighted.startsWith("## "), qPrintable("H2 should start with '## ', got: " + highlighted));
+  }
+
+  // --- Block 2: LIST_BULLET for "- 段落和换行" ---
+  {
+    auto units = findAllInBlock(result, 2, LIST_BULLET);
+    QVERIFY2(!units.isEmpty(), "Block 2: LIST_BULLET not found");
+    QString highlighted = extractText(2, units[0]);
+    qDebug() << "Block 2 LIST_BULLET:" << highlighted << "start=" << units[0].start << "len=" << units[0].length;
+    QCOMPARE(highlighted, QStringLiteral("-"));
+  }
+
+  // --- Block 4: CODE spans "`<br/>`" and "`Enter`" (lazy continuation) ---
+  {
+    auto units = findAllInBlock(result, 4, CODE);
+    QVERIFY2(units.size() >= 2, qPrintable(QString("Block 4: expected 2 CODE spans, found %1").arg(units.size())));
+    QString code1 = extractText(4, units[0]);
+    QString code2 = extractText(4, units[1]);
+    qDebug() << "Block 4 CODE[0]:" << code1 << "start=" << units[0].start << "len=" << units[0].length;
+    qDebug() << "Block 4 CODE[1]:" << code2 << "start=" << units[1].start << "len=" << units[1].length;
+    QCOMPARE(code1, QStringLiteral("`<br/>`"));
+    QCOMPARE(code2, QStringLiteral("`Enter`"));
+  }
+
+  // --- Block 5: LIST_BULLET for "- 标题" ---
+  {
+    auto units = findAllInBlock(result, 5, LIST_BULLET);
+    QVERIFY2(!units.isEmpty(), "Block 5: LIST_BULLET not found");
+    QString highlighted = extractText(5, units[0]);
+    qDebug() << "Block 5 LIST_BULLET:" << highlighted << "start=" << units[0].start << "len=" << units[0].length;
+    QCOMPARE(highlighted, QStringLiteral("-"));
+  }
+
+  // --- Block 6: LIST_ENUMERATOR for "1." ---
+  {
+    auto units = findAllInBlock(result, 6, LIST_ENUMERATOR);
+    QVERIFY2(!units.isEmpty(), "Block 6: LIST_ENUMERATOR not found");
+    QString highlighted = extractText(6, units[0]);
+    qDebug() << "Block 6 LIST_ENUMERATOR:" << highlighted << "start=" << units[0].start << "len=" << units[0].length;
+    QCOMPARE(highlighted, QStringLiteral("1."));
+  }
+
+  // --- Block 7: CODE spans "`=`", "`-`", "`haha`", "`very doddg`" (indented continuation) ---
+  {
+    auto units = findAllInBlock(result, 7, CODE);
+    QVERIFY2(units.size() >= 4, qPrintable(QString("Block 7: expected 4 CODE spans, found %1").arg(units.size())));
+    QString code1 = extractText(7, units[0]);
+    QString code2 = extractText(7, units[1]);
+    QString code3 = extractText(7, units[2]);
+    QString code4 = extractText(7, units[3]);
+    qDebug() << "Block 7 CODE[0]:" << code1 << "start=" << units[0].start << "len=" << units[0].length;
+    qDebug() << "Block 7 CODE[1]:" << code2 << "start=" << units[1].start << "len=" << units[1].length;
+    qDebug() << "Block 7 CODE[2]:" << code3 << "start=" << units[2].start << "len=" << units[2].length;
+    qDebug() << "Block 7 CODE[3]:" << code4 << "start=" << units[3].start << "len=" << units[3].length;
+    QCOMPARE(code1, QStringLiteral("`=`"));
+    QCOMPARE(code2, QStringLiteral("`-`"));
+    QCOMPARE(code3, QStringLiteral("`haha`"));
+    QCOMPARE(code4, QStringLiteral("`very doddg`"));
+  }
+
+  // --- Block 8: LIST_ENUMERATOR for "2." ---
+  {
+    auto units = findAllInBlock(result, 8, LIST_ENUMERATOR);
+    QVERIFY2(!units.isEmpty(), "Block 8: LIST_ENUMERATOR not found");
+    QString highlighted = extractText(8, units[0]);
+    qDebug() << "Block 8 LIST_ENUMERATOR:" << highlighted << "start=" << units[0].start << "len=" << units[0].length;
+    QCOMPARE(highlighted, QStringLiteral("2."));
+  }
+
+  // --- Block 9: CODE spans "`#`" (x2) (indented continuation) ---
+  {
+    auto units = findAllInBlock(result, 9, CODE);
+    QVERIFY2(units.size() >= 2, qPrintable(QString("Block 9: expected 2 CODE spans, found %1").arg(units.size())));
+    QString code1 = extractText(9, units[0]);
+    QString code2 = extractText(9, units[1]);
+    qDebug() << "Block 9 CODE[0]:" << code1 << "start=" << units[0].start << "len=" << units[0].length;
+    qDebug() << "Block 9 CODE[1]:" << code2 << "start=" << units[1].start << "len=" << units[1].length;
+    QCOMPARE(code1, QStringLiteral("`#`"));
+    QCOMPARE(code2, QStringLiteral("`#`"));
+  }
+}
+
 QTEST_MAIN(tests::TestCmarkProbe)
