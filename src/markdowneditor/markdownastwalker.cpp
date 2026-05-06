@@ -127,11 +127,17 @@ static void addHLUnit(ASTWalkResult &p_result, const LineOffsetTable &p_offsets,
         unit.start = p_docStart - lineStartQChar;
         unit.length = nextLineStartQChar - p_docStart;
       } else if (lineIdx == endLineIdx) {
-        unit.start = 0;
-        unit.length = p_docEnd - lineStartQChar;
+        // Skip leading indentation for TABLE styles so only table content gets monospace font.
+        int ls = (p_style == STYLE_TABLE || p_style == STYLE_TABLEHEADER)
+                     ? p_offsets.lineLeadingSpaces(lineIdx) : 0;
+        unit.start = ls;
+        unit.length = p_docEnd - lineStartQChar - ls;
       } else {
-        unit.start = 0;
-        unit.length = nextLineStartQChar - lineStartQChar;
+        // Skip leading indentation for TABLE styles so only table content gets monospace font.
+        int ls = (p_style == STYLE_TABLE || p_style == STYLE_TABLEHEADER)
+                     ? p_offsets.lineLeadingSpaces(lineIdx) : 0;
+        unit.start = ls;
+        unit.length = nextLineStartQChar - lineStartQChar - ls;
       }
       unit.styleIndex = p_style;
       if (unit.length > 0) {
