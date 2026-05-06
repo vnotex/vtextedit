@@ -344,6 +344,12 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks,
             qDebug() << "  LAZY FIX sc: line=" << sl << "blockOffset=" << blockOffset
                      << "leadingSpaces=" << leadingSpaces << "corrected sc=" << sc;
 #endif
+          } else if (leadingSpaces > blockOffset) {
+            sc += (leadingSpaces - blockOffset);
+#ifdef VTE_DEBUG_HIGHLIGHT
+            qDebug() << "  INDENT FIX sc: line=" << sl << "blockOffset=" << blockOffset
+                     << "leadingSpaces=" << leadingSpaces << "corrected sc=" << sc;
+#endif
           }
         }
         // Correct end column if on a lazy continuation line
@@ -353,6 +359,12 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks,
             ec -= blockOffset;
 #ifdef VTE_DEBUG_HIGHLIGHT
             qDebug() << "  LAZY FIX ec: line=" << el << "blockOffset=" << blockOffset
+                     << "leadingSpaces=" << leadingSpaces << "corrected ec=" << ec;
+#endif
+          } else if (leadingSpaces > blockOffset) {
+            ec += (leadingSpaces - blockOffset);
+#ifdef VTE_DEBUG_HIGHLIGHT
+            qDebug() << "  INDENT FIX ec: line=" << el << "blockOffset=" << blockOffset
                      << "leadingSpaces=" << leadingSpaces << "corrected ec=" << ec;
 #endif
           }
