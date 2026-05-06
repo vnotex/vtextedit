@@ -1,4 +1,4 @@
-<!-- Tests: TABLE, TABLEHEADER -->
+<!-- Tests: TABLE, TABLEHEADER, DISPLAYFORMULA -->
 
 | Name | Value |
 |------|-------|
@@ -15,3 +15,9 @@
     | col1 | col2 |
     |------|------|
     | val1 | val2 |
+
+- formula
+
+    $$
+    E = mc^2
+    $$
