@@ -170,6 +170,10 @@ signals:
   // @p_handled: whether it is handled.
   void insertFromMimeDataRequested(const QMimeData *p_source, bool *p_handled);
 
+  // Emit when createMimeDataFromSelection() is called.
+  // Listeners can augment @p_source with additional MIME data via setData().
+  void createMimeDataFromSelectionRequested(QMimeData *p_source);
+
   // Emit when contextMenuEvent() is called.
   // @p_handled: whether it is handled.
   // @p_menu: the menu to show if handled.
@@ -196,6 +200,8 @@ protected:
   bool canInsertFromMimeData(const QMimeData *p_source) const Q_DECL_OVERRIDE;
 
   void insertFromMimeData(const QMimeData *p_source) Q_DECL_OVERRIDE;
+
+  QMimeData *createMimeDataFromSelection() const Q_DECL_OVERRIDE;
 
   void contextMenuEvent(QContextMenuEvent *p_event) Q_DECL_OVERRIDE;
 

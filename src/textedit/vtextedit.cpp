@@ -703,6 +703,12 @@ void VTextEdit::insertFromMimeDataOfBase(const QMimeData *p_source) {
   QTextEdit::insertFromMimeData(p_source);
 }
 
+QMimeData *VTextEdit::createMimeDataFromSelection() const {
+  auto *mimeData = QTextEdit::createMimeDataFromSelection();
+  emit const_cast<VTextEdit *>(this)->createMimeDataFromSelectionRequested(mimeData);
+  return mimeData;
+}
+
 void VTextEdit::contextMenuEvent(QContextMenuEvent *p_event) {
   bool handled = false;
   QScopedPointer<QMenu> menu;
