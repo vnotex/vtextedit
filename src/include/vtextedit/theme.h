@@ -162,6 +162,8 @@ public:
 
   static QSharedPointer<Theme> createThemeFromFile(const QString &p_filePath);
 
+  static QSharedPointer<Theme> createThemeFromContent(const QString &p_jsonContent);
+
 private:
   void load(const QJsonObject &p_obj);
 

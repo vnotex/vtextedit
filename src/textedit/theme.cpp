@@ -80,6 +80,21 @@ QSharedPointer<Theme> Theme::createThemeFromFile(const QString &p_filePath) {
   return theme;
 }
 
+QSharedPointer<Theme> Theme::createThemeFromContent(const QString &p_jsonContent) {
+  QSharedPointer<Theme> theme;
+
+  QJsonParseError parseError;
+  auto jsonDoc = QJsonDocument::fromJson(p_jsonContent.toUtf8(), &parseError);
+  if (parseError.error != QJsonParseError::NoError) {
+    qWarning() << "failed to parse theme content:" << parseError.errorString();
+    return theme;
+  }
+
+  theme.reset(new Theme());
+  theme->load(jsonDoc.object());
+  return theme;
+}
+
 void Theme::load(const QJsonObject &p_obj) {
   loadMetadata(p_obj);
 
