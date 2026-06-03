@@ -342,11 +342,19 @@ IndicatorsBorder::Indicators IndicatorsBorder::positionToIndicator(const QPoint 
 }
 
 void IndicatorsBorder::wheelEvent(QWheelEvent *p_event) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
   auto globalPos = p_event->globalPosition();
   globalPos.rx() += borderWidth();
   QWheelEvent forwardEvent(p_event->position(), globalPos, p_event->pixelDelta(),
                            p_event->angleDelta(), p_event->buttons(), p_event->modifiers(),
                            p_event->phase(), p_event->inverted(), p_event->source());
+#else
+  auto globalPos = p_event->globalPosF();
+  globalPos.rx() += borderWidth();
+  QWheelEvent forwardEvent(QPointF(p_event->pos()), globalPos, p_event->pixelDelta(),
+                           p_event->angleDelta(), p_event->buttons(), p_event->modifiers(),
+                           p_event->phase(), p_event->inverted(), p_event->source());
+#endif
   m_interface->forwardWheelEvent(&forwardEvent);
   p_event->accept();
 }
