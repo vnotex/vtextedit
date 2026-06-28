@@ -148,6 +148,15 @@ void VMarkdownEditor::setConfig(const QSharedPointer<MarkdownEditorConfig> &p_co
 
   VTextEditor::setConfig(p_config->m_textEditorConfig);
 
+  // The base VTextEditor::updateFromConfig only re-applies the syntax theme to a
+  // SyntaxHighlighter; the MarkdownHighlighter is not one, so its styles stay
+  // locked to the theme set at construction. Re-apply the new theme explicitly
+  // and rehighlight so a theme switch refreshes editor colors.
+  if (auto *hl = getHighlighter()) {
+    hl->setTheme(theme());
+    hl->rehighlight();
+  }
+
   updateFromConfig();
 }
 
