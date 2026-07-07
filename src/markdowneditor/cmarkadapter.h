@@ -14,6 +14,13 @@ public:
   // to document-absolute QChar offset.
   int toDocPosition(int p_line, int p_col) const;
 
+  // Return the number of QChars occupied by the character whose LAST byte is at
+  // the given cmark 1-indexed byte column (line = 1-indexed). This is 2 for a
+  // 4-byte UTF-8 char (astral / surrogate pair) and 1 otherwise. Returns 1 when
+  // the column is past the line's content, so callers converting an inclusive
+  // end column to an exclusive QChar end preserve their existing behavior there.
+  int qcharWidthAtEndColumn(int p_line, int p_col) const;
+
   // Return the QChar offset of the start of the given 0-indexed line.
   int lineStartQCharOffset(int p_lineIdx) const;
 

@@ -384,7 +384,14 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks,
     }
 
     int docStart = offsets.toDocPosition(sl, sc);
-    int docEnd = offsets.toDocPosition(el, ec) + 1;
+    // cmark's end_column is the (1-indexed, byte-based) column of the LAST BYTE of
+    // the last character (inclusive). Convert to an exclusive QChar end by adding
+    // that character's QChar width. A blind "+ 1" under-counts by 1 for 4-byte
+    // UTF-8 chars (e.g. emoji), landing in the MIDDLE of a surrogate pair and
+    // splitting it into two lone surrogates that render as tofu. For BMP chars
+    // (incl. CJK) and past-content end columns the width is 1, so behavior there
+    // is unchanged.
+    int docEnd = offsets.toDocPosition(el, ec) + offsets.qcharWidthAtEndColumn(el, ec);
 
     if (type == CMARK_NODE_FORMULA_INLINE) {
       docStart -= 1;

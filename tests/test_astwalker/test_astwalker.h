@@ -17,6 +17,7 @@ private slots:
   void testFoldingRegionsMathBlock();
   void testFoldingRegionsFrontMatter();
   void testFoldingRegionsMixed();
+  void testHLUnitEndingInEmoji();
 };
 
 } // namespace tests

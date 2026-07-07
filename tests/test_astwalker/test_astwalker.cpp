@@ -335,4 +335,54 @@ void TestASTWalker::testFoldingRegionsMixed()
   QVERIFY(hasBlockquote);
 }
 
+// Regression: a styled span whose LAST character is a 4-byte UTF-8 char (an emoji,
+// i.e. a UTF-16 surrogate pair) must not have its end position land in the MIDDLE of
+// that surrogate pair. cmark reports end_column at the last BYTE of the last char;
+// converting it with toDocPosition(el, ec) + 1 under-counted by 1 QChar for astral
+// chars, slicing the emoji and rendering it as two "tofu" boxes in the editor.
+void TestASTWalker::testHLUnitEndingInEmoji()
+{
+  const unsigned int STYLE_H1 = 12;
+  const unsigned int STYLE_H2 = 13;
+
+  // Helper: return the first HLUnit with the given style across all blocks.
+  auto findUnit = [](const vte::md::ASTWalkResult &r,
+                     unsigned int style) -> QPair<bool, vte::md::HLUnit> {
+    for (const auto &block : r.blocksHighlights) {
+      for (const auto &unit : block) {
+        if (unit.styleIndex == style) {
+          return qMakePair(true, unit);
+        }
+      }
+    }
+    return qMakePair(false, vte::md::HLUnit());
+  };
+
+  // Case 1 — the exact bug report: "## 教学原则 💎💎".
+  // QChars: "## "(3) + 教学原则(4) + " "(1) + 💎(2) + 💎(2) = 12.
+  // Each 💎 (U+1F48E) is F0 9F 92 8E; 教学原则 are 3-byte CJK.
+  {
+    QByteArray md("## \xe6\x95\x99\xe5\xad\xa6\xe5\x8e\x9f\xe5\x88\x99"
+                  " \xf0\x9f\x92\x8e\xf0\x9f\x92\x8e\n");
+    auto result = vte::md::walkAndConvert(md, 2);
+    auto found = findUnit(result, STYLE_H2);
+    QVERIFY2(found.first, "H2 HLUnit not found");
+    QCOMPARE((int)found.second.start, 0);
+    // Must be 12 (whole heading). The bug produced 11, ending between the two
+    // surrogates of the trailing 💎.
+    QCOMPARE((int)found.second.length, 12);
+  }
+
+  // Case 2 — a single trailing emoji also splits: "# 💎".
+  // QChars: "# "(2) + 💎(2) = 4.
+  {
+    QByteArray md("# \xf0\x9f\x92\x8e\n");
+    auto result = vte::md::walkAndConvert(md, 2);
+    auto found = findUnit(result, STYLE_H1);
+    QVERIFY2(found.first, "H1 HLUnit not found");
+    QCOMPARE((int)found.second.start, 0);
+    QCOMPARE((int)found.second.length, 4);
+  }
+}
+
 QTEST_MAIN(tests::TestASTWalker)

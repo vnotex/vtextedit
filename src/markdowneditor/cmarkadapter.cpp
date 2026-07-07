@@ -143,6 +143,29 @@ int LineOffsetTable::toDocPosition(int p_line, int p_col) const
   return result;
 }
 
+int LineOffsetTable::qcharWidthAtEndColumn(int p_line, int p_col) const
+{
+  // cmark end_column is 1-indexed and points at the LAST byte of the last
+  // character. m_byteToQChar maps a byte offset to the cumulative QChar count at
+  // the START of the character containing that byte, and the entry one past the
+  // character's last byte holds the next character's start. The difference is the
+  // character's QChar width (2 for a surrogate pair, 1 otherwise).
+  int lineIdx = p_line - 1;
+  if (lineIdx < 0 || lineIdx >= m_byteToQChar.size()) {
+    return 1;
+  }
+
+  const QVector<int> &byteMap = m_byteToQChar[lineIdx];
+  int byteCol = p_col - 1; // 0-indexed last byte of the character.
+  // Need both this byte and the following boundary to be within the line.
+  if (byteCol < 0 || byteCol + 1 >= byteMap.size()) {
+    return 1; // Past line content (e.g. end_column == lineLen + 1): keep +1.
+  }
+
+  int width = byteMap[byteCol + 1] - byteMap[byteCol];
+  return width > 0 ? width : 1;
+}
+
 int LineOffsetTable::lineStartQCharOffset(int p_lineIdx) const
 {
   if (p_lineIdx < 0 || p_lineIdx >= m_lineQCharOffsets.size()) {
