@@ -1113,6 +1113,311 @@ void TestCmarkProbe::testWalkerLazyContinuation()
   }
 }
 
+void TestCmarkProbe::testWalkerBlockquoteInlines()
+{
+  // Regression: inline elements (code/strong) on block-quote CONTINUATION lines.
+  // cmark strips the "> " marker on EVERY line of a block quote and folds its
+  // width into block_offset, so the columns it reports are already correct.
+  // The walker previously misclassified these lines as lazy list continuations
+  // (LineOffsetTable::lineLeadingSpaces() == 0, because ">" is not a space) and
+  // subtracted block_offset a second time, shifting the highlight left by 2
+  // columns. See the cmark --sourcepos ground truth in the commit that added
+  // this test.
+
+  auto blockStartsOf = [](const QString &qtext) -> QVector<int> {
+    QVector<int> starts;
+    starts.append(0);
+    for (int i = 0; i < qtext.size(); ++i) {
+      if (qtext[i] == '\n') starts.append(i + 1);
+    }
+    return starts;
+  };
+
+  auto findAllInBlock = [](const vte::md::ASTWalkResult &r, int block,
+                           int style) -> QVector<vte::md::HLUnit> {
+    QVector<vte::md::HLUnit> units;
+    if (block < 0 || block >= r.blocksHighlights.size()) return units;
+    for (const auto &u : r.blocksHighlights[block]) {
+      if (u.styleIndex == (unsigned int)style) units.append(u);
+    }
+    return units;
+  };
+
+  const int CODE = 4;
+  const int STRONG = 8;
+
+  // --- Case B1: code span on a "> " continuation line (the core regression) ---
+  {
+    const char *text =
+        "> first line `codeA` here\n"
+        "> second line `codeB` more\n";
+    QByteArray utf8(text);
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+    QString qtext = QString::fromUtf8(utf8);
+    QVector<int> blockStarts = blockStartsOf(qtext);
+
+    // Block 0 (paragraph first line): `codeA` — correct even before the fix.
+    auto b0 = findAllInBlock(result, 0, CODE);
+    QVERIFY2(!b0.isEmpty(), "Case B1: CODE not found in block 0");
+    QCOMPARE(qtext.mid(blockStarts[0] + b0[0].start, b0[0].length),
+             QStringLiteral("`codeA`"));
+
+    // Block 1 (continuation line, "> " marker): `codeB` — regressed before fix.
+    auto b1 = findAllInBlock(result, 1, CODE);
+    QVERIFY2(!b1.isEmpty(), "Case B1: CODE not found in block 1");
+    qDebug() << "Case B1: block1 CODE start=" << b1[0].start
+             << "length=" << b1[0].length;
+    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length),
+             QStringLiteral("`codeB`"));
+  }
+
+  // --- Case B2: user reproduction — strong + code on continuation lines ---
+  {
+    const char *text =
+        "> **Current as of 2026-07** topology. The old\n"
+        "> **Griffin and the default** `griffinXXXX.org` tenant\n"
+        "> (e.g. the `prime-tsgs/devdocs` page) still stale\n";
+    QByteArray utf8(text);
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+    QString qtext = QString::fromUtf8(utf8);
+    QVector<int> blockStarts = blockStartsOf(qtext);
+
+    // Block 1: strong "**Griffin and the default**" then code "`griffinXXXX.org`".
+    auto strong1 = findAllInBlock(result, 1, STRONG);
+    QVERIFY2(!strong1.isEmpty(), "Case B2: STRONG not found in block 1");
+    QCOMPARE(qtext.mid(blockStarts[1] + strong1[0].start, strong1[0].length),
+             QStringLiteral("**Griffin and the default**"));
+
+    auto code1 = findAllInBlock(result, 1, CODE);
+    QVERIFY2(!code1.isEmpty(), "Case B2: CODE not found in block 1");
+    QCOMPARE(qtext.mid(blockStarts[1] + code1[0].start, code1[0].length),
+             QStringLiteral("`griffinXXXX.org`"));
+
+    // Block 2: code "`prime-tsgs/devdocs`".
+    auto code2 = findAllInBlock(result, 2, CODE);
+    QVERIFY2(!code2.isEmpty(), "Case B2: CODE not found in block 2");
+    QCOMPARE(qtext.mid(blockStarts[2] + code2[0].start, code2[0].length),
+             QStringLiteral("`prime-tsgs/devdocs`"));
+  }
+
+  // --- Case B3: LAZY blockquote continuation (no ">" on line 2) still corrected ---
+  {
+    // A block-quote paragraph may continue lazily WITHOUT a "> " marker. cmark
+    // strips nothing on that line yet still adds block_offset, so it IS
+    // over-reported and the correction MUST still apply. Verifies the per-line
+    // marker check does not blanket-disable the fix for block quotes.
+    const char *text =
+        "> first `codeA`\n"
+        "lazy `codeB` tail\n";
+    QByteArray utf8(text);
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+    QString qtext = QString::fromUtf8(utf8);
+    QVector<int> blockStarts = blockStartsOf(qtext);
+
+    auto b1 = findAllInBlock(result, 1, CODE);
+    QVERIFY2(!b1.isEmpty(), "Case B3: CODE not found in block 1");
+    qDebug() << "Case B3: block1 CODE start=" << b1[0].start
+             << "length=" << b1[0].length;
+    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length),
+             QStringLiteral("`codeB`"));
+  }
+
+  // --- Case N1: list-inside-blockquote, LAZY list continuation still marked ">" ---
+  {
+    // "> - first line\n> lazy `code`" — line 2 carries the outer ">" (stripped)
+    // but omits the inner list padding (lazy). block_offset covers both, so only
+    // the unstripped list padding must be subtracted: cmark 2:10 -> real 2:8.
+    const char *text =
+        "> - first line\n"
+        "> lazy `code`\n";
+    QByteArray utf8(text);
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+    QString qtext = QString::fromUtf8(utf8);
+    QVector<int> blockStarts = blockStartsOf(qtext);
+
+    auto b1 = findAllInBlock(result, 1, CODE);
+    QVERIFY2(!b1.isEmpty(), "Case N1: CODE not found in block 1");
+    qDebug() << "Case N1: block1 CODE start=" << b1[0].start
+             << "length=" << b1[0].length;
+    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length),
+             QStringLiteral("`code`"));
+  }
+
+  // --- Case N2: blockquote-inside-list, 4-space list padding before ">" ---
+  {
+    // "10. > first line\n    > second `code`" — line 2 strips 4 list-padding
+    // spaces + "> " (== block_offset 6), so cmark 2:14 is already correct.
+    const char *text =
+        "10. > first line\n"
+        "    > second `code`\n";
+    QByteArray utf8(text);
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+    QString qtext = QString::fromUtf8(utf8);
+    QVector<int> blockStarts = blockStartsOf(qtext);
+
+    auto b1 = findAllInBlock(result, 1, CODE);
+    QVERIFY2(!b1.isEmpty(), "Case N2: CODE not found in block 1");
+    qDebug() << "Case N2: block1 CODE start=" << b1[0].start
+             << "length=" << b1[0].length;
+    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length),
+             QStringLiteral("`code`"));
+  }
+
+  // --- Case N3: nested blockquote, inner ">" omitted lazily on line 2 ---
+  {
+    // "> > first line\n> lazy `code`" — only the outer ">" is stripped on line 2;
+    // the inner ">" is lazy. cmark 2:10 -> real 2:8.
+    const char *text =
+        "> > first line\n"
+        "> lazy `code`\n";
+    QByteArray utf8(text);
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+    QString qtext = QString::fromUtf8(utf8);
+    QVector<int> blockStarts = blockStartsOf(qtext);
+
+    auto b1 = findAllInBlock(result, 1, CODE);
+    QVERIFY2(!b1.isEmpty(), "Case N3: CODE not found in block 1");
+    qDebug() << "Case N3: block1 CODE start=" << b1[0].start
+             << "length=" << b1[0].length;
+    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length),
+             QStringLiteral("`code`"));
+  }
+
+  // --- Case R1: block-quote continuation with EXTRA spaces after ">" ---
+  {
+    // ">    second" — cmark strips "> " at block level then skips the remaining
+    // leading spaces during inline parsing, so the full "> + spaces" run (width
+    // 5) is prefix. cmark UNDER-reports code at 2:10 while the real backtick is
+    // at 2:13; the correction must add (strip 5 - blockOffset 2) = +3.
+    const char *text =
+        "> first\n"
+        ">    second `code`\n";
+    QByteArray utf8(text);
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+    QString qtext = QString::fromUtf8(utf8);
+    QVector<int> blockStarts = blockStartsOf(qtext);
+
+    auto b1 = findAllInBlock(result, 1, CODE);
+    QVERIFY2(!b1.isEmpty(), "Case R1: CODE not found in block 1");
+    qDebug() << "Case R1: block1 CODE start=" << b1[0].start
+             << "length=" << b1[0].length;
+    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length),
+             QStringLiteral("`code`"));
+  }
+
+  // --- Case OV1: over-indented list continuation where ">" is CONTENT, not a marker ---
+  {
+    // "- first\n      > literal `code`" — the paragraph is a list item (blockOffset
+    // 2). On line 2 the ">" begins at column 6 (>= blockOffset), so cmark keeps it
+    // as literal text and strips only the 6 leading spaces. cmark reports code at
+    // 2:13; real backtick is at 2:17 → correction adds (strip 6 - blockOffset 2)
+    // = +4. The ">" must NOT be counted as a stripped marker here.
+    const char *text =
+        "- first\n"
+        "      > literal `code`\n";
+    QByteArray utf8(text);
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+    QString qtext = QString::fromUtf8(utf8);
+    QVector<int> blockStarts = blockStartsOf(qtext);
+
+    auto b1 = findAllInBlock(result, 1, CODE);
+    QVERIFY2(!b1.isEmpty(), "Case OV1: CODE not found in block 1");
+    qDebug() << "Case OV1: block1 CODE start=" << b1[0].start
+             << "length=" << b1[0].length;
+    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length),
+             QStringLiteral("`code`"));
+  }
+
+  // --- Case USER: code span INSIDE strong on a block-quote continuation line ---
+  {
+    // The reported reproduction: "`griffinXXXX.org`" nested in "**...**". The left
+    // shift truncated BOTH ends, dropping the trailing "g" and closing backtick
+    // ('".org` tenant" — g should be inline code too'). The whole span, including
+    // the final "g", must be highlighted.
+    const char *text =
+        "> Intro line here\n"
+        "> **default `griffinXXXX.org` tenant REMOVED.** end\n";
+    QByteArray utf8(text);
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+    QString qtext = QString::fromUtf8(utf8);
+    QVector<int> blockStarts = blockStartsOf(qtext);
+
+    auto code = findAllInBlock(result, 1, CODE);
+    QVERIFY2(!code.isEmpty(), "Case USER: CODE not found in block 1");
+    QString hl = qtext.mid(blockStarts[1] + code[0].start, code[0].length);
+    qDebug() << "Case USER: CODE" << hl << "start=" << code[0].start
+             << "length=" << code[0].length;
+    // Full span incl. both backticks and the trailing "g" of ".org".
+    QCOMPARE(hl, QStringLiteral("`griffinXXXX.org`"));
+    QVERIFY2(hl.endsWith("org`"), "Case USER: trailing 'g' + closing backtick must be inside the code span");
+  }
+
+  // --- Case A: indented block-quote continuation marker ("  >", offset == bO) ---
+  {
+    // "> first\n  > second `code`" — cmark accepts the 2-space-indented ">" as a
+    // continuation marker (strip 4), reporting code at 2:10 for a real backtick at
+    // 2:12. Requires counting a ">" that begins exactly at blockOffset.
+    const char *text =
+        "> first\n"
+        "  > second `code`\n";
+    QByteArray utf8(text);
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+    QString qtext = QString::fromUtf8(utf8);
+    QVector<int> blockStarts = blockStartsOf(qtext);
+
+    auto b1 = findAllInBlock(result, 1, CODE);
+    QVERIFY2(!b1.isEmpty(), "Case A: CODE not found in block 1");
+    qDebug() << "Case A: block1 CODE start=" << b1[0].start << "length=" << b1[0].length;
+    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length),
+             QStringLiteral("`code`"));
+  }
+
+  // --- Case R4: block-quote nested in list, continuation ">" at offset == bO ---
+  {
+    // "10. > first\n      > second `code`" — 4-space list padding + 2 more spaces
+    // then ">" (a valid marker); strip 8, blockOffset 6. cmark reports 2:14 for a
+    // real backtick at 2:16.
+    const char *text =
+        "10. > first\n"
+        "      > second `code`\n";
+    QByteArray utf8(text);
+    int numBlocks = countBlocks(utf8);
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+    QString qtext = QString::fromUtf8(utf8);
+    QVector<int> blockStarts = blockStartsOf(qtext);
+
+    auto b1 = findAllInBlock(result, 1, CODE);
+    QVERIFY2(!b1.isEmpty(), "Case R4: CODE not found in block 1");
+    qDebug() << "Case R4: block1 CODE start=" << b1[0].start << "length=" << b1[0].length;
+    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length),
+             QStringLiteral("`code`"));
+  }
+
+  // --- Probe: lineStrippedPrefixWidth utility ---
+  {
+    QByteArray probeText("> quoted\n  > deep\n    code\n> > x\n>    x\n      > y\n");
+    LineOffsetTable t(probeText);
+    QCOMPARE(t.lineStrippedPrefixWidth(0, 2), 2);  // "> "     marker + space
+    QCOMPARE(t.lineStrippedPrefixWidth(1, 4), 4);  // "  > "   2 spaces + marker + space
+    QCOMPARE(t.lineStrippedPrefixWidth(1, 2), 4);  // ">" at offset 2 == blockOffset: counted
+    QCOMPARE(t.lineStrippedPrefixWidth(1, 1), 2);  // ">" at offset 2 > blockOffset 1: rejected
+    QCOMPARE(t.lineStrippedPrefixWidth(2, 8), 4);  // "    "   pure spaces (no marker)
+    QCOMPARE(t.lineStrippedPrefixWidth(3, 4), 4);  // "> > "   two nested markers
+    QCOMPARE(t.lineStrippedPrefixWidth(4, 2), 5);  // "> " + skipped content spaces
+    QCOMPARE(t.lineStrippedPrefixWidth(5, 2), 6);  // over-indented ">" is content: spaces only
+  }
+}
+
 void TestCmarkProbe::testWalkerCJKNestedLists()
 {
   // Validate ALL highlight elements in a CJK markdown document with nested lists.

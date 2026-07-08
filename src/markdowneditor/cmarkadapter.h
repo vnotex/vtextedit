@@ -30,6 +30,25 @@ public:
   // Return the count of leading space (0x20) bytes at the start of the given 0-indexed line.
   int lineLeadingSpaces(int p_lineIdx) const;
 
+  // Return the width (in columns/bytes) of the block-container prefix cmark
+  // strips/skips from the start of the given 0-indexed line: the leading run of
+  // spaces, followed by block-quote '>' markers that BEGIN no further than
+  // p_blockOffset columns into the line (each marker also absorbing the spaces
+  // after it). A '>' that begins beyond p_blockOffset is content (e.g. an
+  // over-indented ">" inside a list item), not a stripped marker, so it is
+  // excluded. cmark removes this prefix at the block level and skips remaining
+  // leading spaces during inline parsing, then folds the paragraph's first-line
+  // prefix width into block_offset; subtracting the per-line prefix here undoes
+  // cmark's over/under-reporting of inline columns on continuation lines. For a
+  // pure-space line (no countable '>') the result equals lineLeadingSpaces(), so
+  // list-item continuation behavior (including over-indentation) is unchanged; '>'
+  // markers (invisible to lineLeadingSpaces) are what block quotes need.
+  // p_blockOffset is the paragraph's block_offset (start_column - 1). (Deeply
+  // indented continuation markers beyond block_offset — e.g. a block quote nested
+  // in a list with extra indent — are approximated; a fully faithful result would
+  // require replicating cmark's per-container prefix walk.)
+  int lineStrippedPrefixWidth(int p_lineIdx, int p_blockOffset) const;
+
 private:
   // Per-line: byte offset of line start in the full UTF-8 buffer.
   QVector<int> m_lineByteOffsets;

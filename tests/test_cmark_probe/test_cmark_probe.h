@@ -35,6 +35,7 @@ namespace tests
         void testWalkerTable();
         void testWalkerListItemInlines();
         void testWalkerLazyContinuation();
+        void testWalkerBlockquoteInlines();
         void testWalkerCJKNestedLists();
 
         void testParseCmark();

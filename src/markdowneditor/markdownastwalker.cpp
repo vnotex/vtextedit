@@ -334,48 +334,43 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks,
       continue;
     }
 
-    // Correct for cmark's erroneous block_offset on lazy continuation lines.
-    // cmark adds paragraph->start_column - 1 to ALL inline columns, but on lazy
-    // continuation lines (no leading indentation stripped), this offset was never
-    // subtracted from the content, causing over-reported positions.
+    // Correct for cmark's block_offset accounting on continuation lines.
+    // cmark adds the paragraph's first-line prefix width (block_offset =
+    // start_column - 1) to ALL inline columns, but on any later line only the
+    // container prefix actually present on THAT line was stripped/skipped from
+    // the content. The true column is therefore
+    //   cmark_col - blockOffset + strippedPrefixWidth(line).
+    // strippedPrefixWidth counts the leading run of spaces and block-quote '>'
+    // markers (markers only while they begin within blockOffset columns). For a
+    // pure-space line it equals the leading-space count, so list lazy / aligned /
+    // over-indented continuations behave exactly as before; block-quote '>'
+    // markers (invisible to a space-only count) are what was missing, which
+    // shifted inline highlights inside block quotes.
     cmark_node *para = findAncestorParagraph(node);
     if (para) {
       int blockOffset = cmark_node_get_start_column(para) - 1;
       if (blockOffset > 0) {
         int paraStartLine = cmark_node_get_start_line(para);
-        // Correct start column if on a lazy continuation line
+        int stripSc = -1;
         if (sl > paraStartLine) {
-          int leadingSpaces = offsets.lineLeadingSpaces(sl - 1);
-          if (leadingSpaces < blockOffset) {
-            sc -= blockOffset;
+          stripSc = offsets.lineStrippedPrefixWidth(sl - 1, blockOffset);
+          sc += stripSc - blockOffset;
 #ifdef VTE_DEBUG_HIGHLIGHT
-            qDebug() << "  LAZY FIX sc: line=" << sl << "blockOffset=" << blockOffset
-                     << "leadingSpaces=" << leadingSpaces << "corrected sc=" << sc;
+          qDebug() << "  CONT FIX sc: line=" << sl << "blockOffset=" << blockOffset
+                   << "strip=" << stripSc << "corrected sc=" << sc;
 #endif
-          } else if (leadingSpaces > blockOffset) {
-            sc += (leadingSpaces - blockOffset);
-#ifdef VTE_DEBUG_HIGHLIGHT
-            qDebug() << "  INDENT FIX sc: line=" << sl << "blockOffset=" << blockOffset
-                     << "leadingSpaces=" << leadingSpaces << "corrected sc=" << sc;
-#endif
-          }
         }
-        // Correct end column if on a lazy continuation line
         if (el > paraStartLine) {
-          int leadingSpaces = offsets.lineLeadingSpaces(el - 1);
-          if (leadingSpaces < blockOffset) {
-            ec -= blockOffset;
+          // Most inline spans are single-line (el == sl); reuse the start-line
+          // prefix width instead of rescanning the identical line for the end.
+          int strip = (el == sl && stripSc >= 0)
+                          ? stripSc
+                          : offsets.lineStrippedPrefixWidth(el - 1, blockOffset);
+          ec += strip - blockOffset;
 #ifdef VTE_DEBUG_HIGHLIGHT
-            qDebug() << "  LAZY FIX ec: line=" << el << "blockOffset=" << blockOffset
-                     << "leadingSpaces=" << leadingSpaces << "corrected ec=" << ec;
+          qDebug() << "  CONT FIX ec: line=" << el << "blockOffset=" << blockOffset
+                   << "strip=" << strip << "corrected ec=" << ec;
 #endif
-          } else if (leadingSpaces > blockOffset) {
-            ec += (leadingSpaces - blockOffset);
-#ifdef VTE_DEBUG_HIGHLIGHT
-            qDebug() << "  INDENT FIX ec: line=" << el << "blockOffset=" << blockOffset
-                     << "leadingSpaces=" << leadingSpaces << "corrected ec=" << ec;
-#endif
-          }
         }
         // Guard against negative/invalid columns
         sc = qMax(1, sc);

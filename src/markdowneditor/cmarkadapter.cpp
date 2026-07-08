@@ -199,6 +199,36 @@ int LineOffsetTable::lineLeadingSpaces(int p_lineIdx) const
   return count;
 }
 
+int LineOffsetTable::lineStrippedPrefixWidth(int p_lineIdx, int p_blockOffset) const
+{
+  if (!m_data || p_lineIdx < 0 || p_lineIdx >= m_lineByteOffsets.size()) {
+    return 0;
+  }
+  int lineStart = m_lineByteOffsets[p_lineIdx];
+  int lineEnd = (p_lineIdx + 1 < m_lineByteOffsets.size())
+                    ? m_lineByteOffsets[p_lineIdx + 1]
+                    : m_dataLen;
+  int i = lineStart;
+  // Leading indentation: list-continuation padding and/or block-quote indent.
+  // These are always stripped or skipped by cmark before the first content column.
+  while (i < lineEnd && m_data[i] == 0x20) {
+    ++i;
+  }
+  // Block-quote '>' markers, but only while a marker BEGINS no further than
+  // block_offset columns into the line. A '>' that begins beyond block_offset is
+  // content (e.g. an over-indented ">" inside a list item, which cmark keeps as
+  // literal text), not a stripped marker. A '>' beginning exactly at block_offset
+  // is always a real marker (relative indent 0), so the bound is inclusive. Each
+  // counted '>' also absorbs the spaces cmark skips after it.
+  while (i < lineEnd && m_data[i] == '>' && (i - lineStart) <= p_blockOffset) {
+    ++i;
+    while (i < lineEnd && m_data[i] == 0x20) {
+      ++i;
+    }
+  }
+  return i - lineStart;
+}
+
 // ---------------------------------------------------------------------------
 // mapCmarkNodeToStyle
 // ---------------------------------------------------------------------------
