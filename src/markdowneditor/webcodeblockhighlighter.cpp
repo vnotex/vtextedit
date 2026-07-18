@@ -40,20 +40,25 @@ void WebCodeBlockHighlighter::handleExternalCodeBlockHighlightData(int p_idx, Ti
   HighlightResult hiRes(p_timeStamp, p_idx);
   hiRes.m_highlights.resize(lines.size());
 
-  auto htmlLines = p_html.split(QLatin1Char('\n'));
-
-  int lineIdx = 1;
-  int lineOffset = 0;
-
-  for (int htmlLineIdx = 0; htmlLineIdx < htmlLines.size(); ++htmlLineIdx) {
-    parseXmlAndMatch(htmlLines[htmlLineIdx], lines, hiRes.m_highlights, lineIdx, lineOffset);
-  }
+  parseHtmlToStyles(p_html, lines, 1, hiRes.m_highlights);
 
   if (m_timeStamp != p_timeStamp) {
     return;
   }
 
   finishHighlightOne(hiRes);
+}
+
+void WebCodeBlockHighlighter::parseHtmlToStyles(const QString &p_html, const QStringList &p_lines,
+                                                int p_startLineIdx, HighlightStyles &p_styles) {
+  auto htmlLines = p_html.split(QLatin1Char('\n'));
+
+  int lineIdx = p_startLineIdx;
+  int lineOffset = 0;
+
+  for (int htmlLineIdx = 0; htmlLineIdx < htmlLines.size(); ++htmlLineIdx) {
+    parseXmlAndMatch(htmlLines[htmlLineIdx], p_lines, p_styles, lineIdx, lineOffset);
+  }
 }
 
 void WebCodeBlockHighlighter::parseXmlAndMatch(const QString &p_html, const QStringList &p_lines,

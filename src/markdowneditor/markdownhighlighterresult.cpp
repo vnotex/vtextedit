@@ -380,6 +380,15 @@ void MarkdownHighlighterResult::setCodeBlockHighlights(
   m_codeBlocks[p_index].m_highlights = p_highlights;
 }
 
+const QVector<md::HLUnitStyle> &
+MarkdownHighlighterResult::getMathHighlight(int p_blockNumber) const {
+  auto it = m_mathBlockHighlights.find(p_blockNumber);
+  if (it != m_mathBlockHighlights.end()) {
+    return it.value();
+  }
+  return m_dummyHighlight;
+}
+
 void MarkdownHighlighterResult::parseFoldingRegions(int p_numOfBlocks) {
   md::computeHeadingSections(m_foldingRegions, p_numOfBlocks);
 }

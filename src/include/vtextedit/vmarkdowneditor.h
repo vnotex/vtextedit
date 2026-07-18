@@ -14,6 +14,7 @@ class EditorPreviewMgr;
 class PreviewMgr;
 class MarkdownEditorConfig;
 class WebCodeBlockHighlighter;
+class MathBlockHighlighter;
 class MarkdownFoldingProvider;
 
 class VTEXTEDIT_EXPORT VMarkdownEditor : public VTextEditor {
@@ -57,9 +58,15 @@ public slots:
   void handleExternalCodeBlockHighlightData(int p_idx, TimeStamp p_timeStamp,
                                             const QString &p_html);
 
+  // Used for display math ($$...$$) source highlight.
+  void handleExternalMathHighlightData(int p_idx, TimeStamp p_timeStamp, const QString &p_html);
+
 signals:
   // Used when using WebCodeBlockHighlighter.
   void externalCodeBlockHighlightRequested(int p_idx, TimeStamp p_timeStamp, const QString &p_text);
+
+  // Used for display math ($$...$$) source highlight.
+  void externalMathHighlightRequested(int p_idx, TimeStamp p_timeStamp, const QString &p_text);
 
 protected:
   bool eventFilter(QObject *p_obj, QEvent *p_event) Q_DECL_OVERRIDE;
@@ -107,6 +114,9 @@ private:
 
   // Managed by QObject.
   WebCodeBlockHighlighter *m_webCodeBlockHighlighter = nullptr;
+
+  // Managed by QObject.
+  MathBlockHighlighter *m_mathBlockHighlighter = nullptr;
 };
 } // namespace vte
 

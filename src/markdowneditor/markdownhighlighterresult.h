@@ -1,6 +1,7 @@
 #ifndef MARKDOWNHIGHLIGHTERRESULT_H
 #define MARKDOWNHIGHLIGHTERRESULT_H
 
+#include <QHash>
 #include <QSet>
 #include <QVector>
 
@@ -49,6 +50,10 @@ public:
 
   void setCodeBlockHighlights(int p_index, const QVector<QVector<md::HLUnitStyle>> &p_highlights);
 
+  // Return the display math source highlight for @p_blockNumber, or an empty
+  // vector if there is none.
+  const QVector<md::HLUnitStyle> &getMathHighlight(int p_blockNumber) const;
+
   TimeStamp m_timeStamp = 0;
 
   int m_numOfBlocks = 0;
@@ -79,6 +84,20 @@ public:
 
   // All math blocks.
   QVector<md::MathBlock> m_mathBlocks;
+
+  // Block numbers belonging to a display math ($$...$$) source range.
+  QSet<int> m_mathBlockNumbers;
+
+  // Display math source highlight, indexed by block number.
+  QHash<int, QVector<md::HLUnitStyle>> m_mathBlockHighlights;
+
+  // Time stamp for display math source highlight.
+  TimeStamp m_mathTimeStamp = 0;
+
+  // Whether the display math highlight results of this result have been received.
+  bool m_mathHighlightReceived = false;
+
+  int m_numOfMathHighlightsToRecv = 0;
 
   QSet<int> m_hruleBlocks;
 

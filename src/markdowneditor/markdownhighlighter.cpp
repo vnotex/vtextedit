@@ -17,6 +17,7 @@
 #include "markdownhighlightblockdata.h"
 #include "markdownhighlighterresult.h"
 #include "markdownparser.h"
+#include "mathblockhighlighter.h"
 
 // Extension flags (replacing pmh_EXT_* constants).
 // These are kept for config compatibility but cmark enables all extensions by default.
@@ -38,9 +39,11 @@ using namespace vte;
 MarkdownHighlighter::MarkdownHighlighter(
     MarkdownHighlighterInterface *p_interface, QTextDocument *p_doc,
     const QSharedPointer<Theme> &p_theme, CodeBlockHighlighter *p_codeBlockHighlighter,
-    const QSharedPointer<md::HighlighterConfig> &p_config)
+    const QSharedPointer<md::HighlighterConfig> &p_config,
+    MathBlockHighlighter *p_mathBlockHighlighter)
     : VSyntaxHighlighter(p_doc), m_interface(p_interface), m_config(p_config),
       m_codeBlockHighlighter(p_codeBlockHighlighter),
+      m_mathBlockHighlighter(p_mathBlockHighlighter),
       m_parserExts(EXT_NOTES | EXT_STRIKE | EXT_FRONTMATTER | EXT_MARK |
                    EXT_TABLE) {
   setTheme(p_theme);
@@ -91,6 +94,14 @@ MarkdownHighlighter::MarkdownHighlighter(
 
   connect(m_codeBlockHighlighter, &CodeBlockHighlighter::codeBlockHighlightCompleted, this,
           &MarkdownHighlighter::handleCodeBlockHighlightResult);
+
+  if (m_mathBlockHighlighter) {
+    connect(m_mathBlockHighlighter, &MathBlockHighlighter::mathHighlightCompleted, this,
+            [this](const MathBlockHighlighter::HighlightResult &p_result) {
+              applyMathHighlightResult(p_result.m_timeStamp, p_result.m_startBlock,
+                                       p_result.m_highlights);
+            });
+  }
 }
 
 // Just use parse results to highlight block.
@@ -167,6 +178,17 @@ void MarkdownHighlighter::highlightBlock(const QString &p_text) {
       highlightCodeBlock(result, blockNum, highlightData->getCodeBlockHighlight());
       highlightData->setCodeBlockHighlightTimeStamp(result->m_codeBlockTimeStamp);
     }
+  } else if (result->m_mathHighlightReceived && result->m_mathBlockNumbers.contains(blockNum)) {
+    // Overlay display math ($$...$$) LaTeX source highlight.
+    const auto &mathUnits = result->getMathHighlight(blockNum);
+    highlightData->getMathHighlight() = mathUnits;
+    highlightData->setMathHighlightTimeStamp(result->m_mathTimeStamp);
+    highlightMathBlock(mathUnits);
+  } else if (!highlightData->getMathHighlight().isEmpty()) {
+    // The block is no longer display math. Drop the stale math cache so that a
+    // future re-classification with identical token ranges is not mistaken for
+    // "already applied" by isMathHighlightMatched() and skipped.
+    highlightData->clearMathHighlight();
   }
 
   // Do spell check.
@@ -374,6 +396,7 @@ void MarkdownHighlighter::updateHighlight() {
   if (m_result->matched(m_timeStamp)) {
     // No need to parse again. Already the latest.
     updateCodeBlocks(m_result);
+    updateMathBlocks(m_result);
     rehighlightBlocksLater();
     completeHighlight(m_result);
   } else {
@@ -404,6 +427,8 @@ void MarkdownHighlighter::handleParseResult(
     updateAllBlocksUserDataAndState(m_result);
 
     updateCodeBlocks(m_result);
+
+    updateMathBlocks(m_result);
   }
 
   if (m_result->m_timeStamp == 2) {
@@ -519,6 +544,91 @@ void MarkdownHighlighter::updateCodeBlocks(
   emit codeBlocksUpdated(p_result->m_timeStamp, p_result->m_codeBlocks);
 }
 
+void MarkdownHighlighter::updateMathBlocks(
+    const QSharedPointer<MarkdownHighlighterResult> &p_result) {
+  if (isMathEnabled() && m_config->m_mathHighlightEnabled && m_mathBlockHighlighter) {
+    auto doc = document();
+
+    // Collect display math blocks ($$...$$) only.
+    //
+    // Phase 1 restriction: only handle top-level formulas whose source text
+    // exactly equals the physical document block lines. parseMathBlock strips
+    // any leading indentation (list-contained / indented formulas), which would
+    // make the Prism token offsets no longer align with the block offsets, so
+    // such formulas are skipped rather than mis-highlighted.
+    QVector<md::MathBlock> displays;
+    for (const auto &mb : p_result->m_mathBlocks) {
+      if (!mb.m_previewedAsBlock) {
+        continue;
+      }
+
+      const int endBlock = mb.m_blockNumber;
+      const int lineCount = mb.m_text.count(QLatin1Char('\n')) + 1;
+      const int startBlock = endBlock - (lineCount - 1);
+      if (startBlock < 0) {
+        continue;
+      }
+
+      QString physical;
+      bool ok = true;
+      for (int b = startBlock; b <= endBlock; ++b) {
+        QTextBlock block = doc->findBlockByNumber(b);
+        if (!block.isValid()) {
+          ok = false;
+          break;
+        }
+        if (b == startBlock) {
+          physical = block.text();
+        } else {
+          physical += QLatin1Char('\n') + block.text();
+        }
+      }
+      if (!ok || physical != mb.m_text) {
+        continue;
+      }
+
+      for (int b = startBlock; b <= endBlock; ++b) {
+        p_result->m_mathBlockNumbers.insert(b);
+      }
+      displays.append(mb);
+    }
+
+    if (!displays.isEmpty()) {
+      p_result->m_numOfMathHighlightsToRecv = displays.size();
+      m_mathBlockHighlighter->highlight(p_result->m_timeStamp, displays);
+      return;
+    }
+  }
+
+  p_result->m_mathHighlightReceived = true;
+}
+
+void MarkdownHighlighter::applyMathHighlightResult(
+    TimeStamp p_timeStamp, int p_startBlock,
+    const QVector<QVector<md::HLUnitStyle>> &p_highlights) {
+  QSharedPointer<MarkdownHighlighterResult> result(m_result);
+  if (!result->matched(p_timeStamp) || result->m_numOfMathHighlightsToRecv <= 0) {
+    return;
+  }
+
+  for (int i = 0; i < p_highlights.size(); ++i) {
+    if (p_highlights[i].isEmpty()) {
+      continue;
+    }
+    const int blockNum = p_startBlock + i;
+    if (blockNum < 0) {
+      continue;
+    }
+    result->m_mathBlockHighlights.insert(blockNum, p_highlights[i]);
+  }
+
+  if (--result->m_numOfMathHighlightsToRecv <= 0) {
+    result->m_mathTimeStamp = nextCodeBlockTimeStamp();
+    result->m_mathHighlightReceived = true;
+    rehighlightBlocksLater();
+  }
+}
+
 void MarkdownHighlighter::rehighlightBlocks() {
   if (m_result->m_numOfBlocks <= LARGE_BLOCK_NUMBER) {
     rehighlightBlockRange(0, m_result->m_numOfBlocks - 1);
@@ -568,6 +678,16 @@ void MarkdownHighlighter::highlightCodeBlock(const QVector<md::HLUnitStyle> &p_u
       }
     }
 
+    setFormat(unit.start, unit.length, newFormat);
+  }
+}
+
+void MarkdownHighlighter::highlightMathBlock(const QVector<md::HLUnitStyle> &p_units) {
+  for (const auto &unit : p_units) {
+    // Merge the LaTeX token format over the existing markdown formatting so we
+    // do not clobber the base math styling.
+    QTextCharFormat newFormat = format(unit.start);
+    newFormat.merge(unit.format);
     setFormat(unit.start, unit.length, newFormat);
   }
 }
@@ -648,6 +768,21 @@ bool MarkdownHighlighter::rehighlightBlockRange(int p_first, int p_last) {
       }
     }
 
+    if (!needHL) {
+      // Display math source highlight: rehighlight when the math styles have
+      // been (re)received for this block.
+      if (m_result->m_mathHighlightReceived && m_result->m_mathBlockNumbers.contains(blockNum)) {
+        if (highlightData->getMathHighlightTimeStamp() != m_result->m_mathTimeStamp) {
+          const auto &mathHighlights = m_result->getMathHighlight(blockNum);
+          if (highlightData->isMathHighlightMatched(mathHighlights)) {
+            updateTS = true;
+          } else {
+            needHL = true;
+          }
+        }
+      }
+    }
+
     if (needHL) {
       highlighted = true;
       rehighlightBlock(block);
@@ -655,6 +790,7 @@ bool MarkdownHighlighter::rehighlightBlockRange(int p_first, int p_last) {
     } else if (updateTS) {
       highlightData->setHighlightTimeStamp(m_result->m_timeStamp);
       highlightData->setCodeBlockHighlightTimeStamp(m_result->m_codeBlockTimeStamp);
+      highlightData->setMathHighlightTimeStamp(m_result->m_mathTimeStamp);
     }
 
     block = block.next();

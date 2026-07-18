@@ -64,6 +64,33 @@ public:
     return true;
   }
 
+  TimeStamp getMathHighlightTimeStamp() const { return m_mathHighlightTimeStamp; }
+
+  void setMathHighlightTimeStamp(TimeStamp p_ts) { m_mathHighlightTimeStamp = p_ts; }
+
+  const QVector<md::HLUnitStyle> &getMathHighlight() const { return m_mathHighlight; }
+
+  QVector<md::HLUnitStyle> &getMathHighlight() { return m_mathHighlight; }
+
+  void clearMathHighlight() {
+    m_mathHighlightTimeStamp = 0;
+    m_mathHighlight.clear();
+  }
+
+  bool isMathHighlightMatched(const QVector<md::HLUnitStyle> &p_highlight) const {
+    if (p_highlight.size() != m_mathHighlight.size()) {
+      return false;
+    }
+
+    for (int i = 0; i < p_highlight.size(); ++i) {
+      if (!(p_highlight[i] == m_mathHighlight[i])) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
   int getCodeBlockIndentation() const { return m_codeBlockIndentation; }
 
   void setCodeBlockIndentation(int p_indentation) { m_codeBlockIndentation = p_indentation; }
@@ -98,6 +125,11 @@ private:
   TimeStamp m_codeBlockHighlightTimeStamp = 0;
 
   QVector<md::HLUnitStyle> m_codeBlockHighlight;
+
+  // Highlight cache for the display math source of this block.
+  TimeStamp m_mathHighlightTimeStamp = 0;
+
+  QVector<md::HLUnitStyle> m_mathHighlight;
 
   // Indentation of the this code block if this block is a fenced code block.
   int m_codeBlockIndentation = -1;

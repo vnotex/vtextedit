@@ -81,6 +81,7 @@ add_library(VTextEdit SHARED
     markdowneditor/textdocumentlayoutdata.h
     markdowneditor/vmarkdowneditor.cpp
     markdowneditor/webcodeblockhighlighter.cpp markdowneditor/webcodeblockhighlighter.h
+    markdowneditor/mathblockhighlighter.cpp markdowneditor/mathblockhighlighter.h
     spellcheck/spellchecker.cpp
     spellcheck/spellcheckhighlighthelper.cpp spellcheck/spellcheckhighlighthelper.h
     textedit/autoindenthelper.cpp textedit/autoindenthelper.h

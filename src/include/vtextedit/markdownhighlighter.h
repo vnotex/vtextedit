@@ -20,6 +20,7 @@ class MarkdownHighlighterResult;
 class MarkdownHighlighterFastResult;
 class Theme;
 class MarkdownHighlightBlockData;
+class MathBlockHighlighter;
 
 class MarkdownHighlighterInterface {
 public:
@@ -47,7 +48,8 @@ public:
   MarkdownHighlighter(MarkdownHighlighterInterface *p_interface, QTextDocument *p_doc,
                          const QSharedPointer<Theme> &p_theme,
                          CodeBlockHighlighter *p_codeBlockHighlighter,
-                         const QSharedPointer<md::HighlighterConfig> &p_config);
+                         const QSharedPointer<md::HighlighterConfig> &p_config,
+                         MathBlockHighlighter *p_mathBlockHighlighter = nullptr);
 
   void setTheme(const QSharedPointer<Theme> &p_theme);
 
@@ -136,6 +138,13 @@ private:
 
   void updateCodeBlocks(const QSharedPointer<MarkdownHighlighterResult> &p_result);
 
+  // Request display math ($$...$$) source highlight for the parse result.
+  void updateMathBlocks(const QSharedPointer<MarkdownHighlighterResult> &p_result);
+
+  // Store a display math highlight result into the current parse result.
+  void applyMathHighlightResult(TimeStamp p_timeStamp, int p_startBlock,
+                                const QVector<QVector<md::HLUnitStyle>> &p_highlights);
+
   void rehighlightBlocks();
 
   void rehighlightBlocksLater();
@@ -159,6 +168,10 @@ private:
 
   void highlightCodeBlock(const QVector<md::HLUnitStyle> &p_units);
 
+  // Overlay display math LaTeX token styles onto the current block, merging over
+  // the existing markdown formatting.
+  void highlightMathBlock(const QVector<md::HLUnitStyle> &p_units);
+
   void formatCodeBlockLeadingSpaces(const QString &p_text);
 
   static bool isEmptyCodeBlockHighlights(const QVector<QVector<md::HLUnitStyle>> &p_highlights);
@@ -169,6 +182,9 @@ private:
 
   // Managed by QObject.
   CodeBlockHighlighter *m_codeBlockHighlighter = nullptr;
+
+  // Managed by QObject. Nullable.
+  MathBlockHighlighter *m_mathBlockHighlighter = nullptr;
 
   // Increased sequence on contents change.
   TimeStamp m_timeStamp = 0;

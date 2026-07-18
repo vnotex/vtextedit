@@ -17,6 +17,7 @@
 #include "editormarkdownhighlighter.h"
 #include "editorpreviewmgr.h"
 #include "ksyntaxcodeblockhighlighter.h"
+#include "mathblockhighlighter.h"
 #include "textdocumentlayout.h"
 #include "markdownfoldingprovider.h"
 #include "webcodeblockhighlighter.h"
@@ -92,8 +93,14 @@ void VMarkdownEditor::setupSyntaxHighlighter() {
   }
   auto highlighterConfig = QSharedPointer<md::HighlighterConfig>::create();
   highlighterConfig->m_mathExtEnabled = true;
+
+  m_mathBlockHighlighter = new MathBlockHighlighter(this);
+  connect(m_mathBlockHighlighter, &MathBlockHighlighter::externalMathHighlightRequested, this,
+          &VMarkdownEditor::externalMathHighlightRequested);
+
   m_highlighter = new MarkdownHighlighter(m_highlighterInterface.data(), document(), theme(),
-                                             codeBlockHighlighter, highlighterConfig);
+                                             codeBlockHighlighter, highlighterConfig,
+                                             m_mathBlockHighlighter);
   updateSpellCheck();
   connect(getHighlighter(), &MarkdownHighlighter::highlightCompleted, this, [this]() {
     m_textEdit->updateCursorWidth();
@@ -472,4 +479,10 @@ void VMarkdownEditor::handleExternalCodeBlockHighlightData(int p_idx, TimeStamp 
 void VMarkdownEditor::setExternalCodeBlockHighlihgtStyles(
     const ExternalCodeBlockHighlightStyles &p_styles) {
   WebCodeBlockHighlighter::setExternalCodeBlockHighlihgtStyles(p_styles);
+}
+
+void VMarkdownEditor::handleExternalMathHighlightData(int p_idx, TimeStamp p_timeStamp,
+                                                      const QString &p_html) {
+  Q_ASSERT(m_mathBlockHighlighter);
+  m_mathBlockHighlighter->handleExternalMathHighlightData(p_idx, p_timeStamp, p_html);
 }

@@ -18,6 +18,12 @@ public:
 
   static void setExternalCodeBlockHighlihgtStyles(const ExternalCodeBlockHighlightStyles &p_styles);
 
+  // Parse Prism-highlighted @p_html into per-line highlight styles, matching token
+  // text against @p_lines starting from line @p_startLineIdx. @p_styles must be
+  // pre-sized to @p_lines.size(). Shared by the code block and math highlighters.
+  static void parseHtmlToStyles(const QString &p_html, const QStringList &p_lines,
+                                int p_startLineIdx, HighlightStyles &p_styles);
+
 signals:
   void externalCodeBlockHighlightRequested(int p_idx, TimeStamp p_timeStamp, const QString &p_text);
 

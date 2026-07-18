@@ -15,6 +15,10 @@ public:
 
   // Whether enable code block syntax highlight.
   bool m_codeBlockHighlightEnabled = true;
+
+  // Whether enable syntax highlight of the LaTeX source of display math
+  // ($$...$$). Only effective when m_mathExtEnabled is true.
+  bool m_mathHighlightEnabled = true;
 };
 
 enum HighlightBlockState {
