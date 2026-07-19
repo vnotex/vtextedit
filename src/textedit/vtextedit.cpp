@@ -6,6 +6,7 @@
 #include <QInputMethod>
 #include <QKeyEvent>
 #include <QMenu>
+#include <QMimeData>
 #include <QRegularExpression>
 #include <QResizeEvent>
 #include <QScrollBar>
@@ -704,7 +705,23 @@ void VTextEdit::insertFromMimeDataOfBase(const QMimeData *p_source) {
 }
 
 QMimeData *VTextEdit::createMimeDataFromSelection() const {
-  auto *mimeData = QTextEdit::createMimeDataFromSelection();
+  QMimeData *mimeData = nullptr;
+  // When there is an overridden selection (e.g. Vi visual mode, which is
+  // inclusive of the character under the cursor), the visible QTextCursor
+  // selection is off by one. Build the mime data from the overridden
+  // selection so that context-menu copy matches the Vi yank.
+  const auto &selection = m_selections.m_overriddenSelection;
+  if (selection.isValid()) {
+    mimeData = new QMimeData();
+    // QTextCursor::selectedText() encodes block boundaries as U+2029
+    // paragraph separators; normalize them to newlines like the default
+    // QTextEdit path does, so multi-line copies paste correctly.
+    QString text = getSelectedText(selection);
+    text.replace(QChar(QChar::ParagraphSeparator), QLatin1Char('\n'));
+    mimeData->setText(text);
+  } else {
+    mimeData = QTextEdit::createMimeDataFromSelection();
+  }
   emit const_cast<VTextEdit *>(this)->createMimeDataFromSelectionRequested(mimeData);
   return mimeData;
 }
