@@ -16,6 +16,7 @@
 #include "editorindicatorsborder.h"
 #include "editorinputmode.h"
 #include "indicatorsborder.h"
+#include "inputmodestatuswidget.h"
 #include "ksyntaxhighlighterwrapper.h"
 #include "plaintexthighlighter.h"
 #include "statusindicator.h"
@@ -766,9 +767,25 @@ void VTextEditor::updateModeOfStatusWidget() {
 }
 
 void VTextEditor::updateInputModeStatusWidget() {
+  auto inputModeWidget = getInputMode()->statusWidget();
   if (m_statusIndicator) {
-    m_statusIndicator->updateInputModeStatusWidget(getInputMode()->statusWidget());
+    m_statusIndicator->updateInputModeStatusWidget(inputModeWidget);
   }
+
+  // Return focus to the editor when the input-mode status widget (e.g. the Vi
+  // command bar) loses focus. Wired here so it works even without the embedded
+  // StatusIndicator (the migrated status-bar path never creates one).
+  disconnect(m_inputModeFocusConnection);
+  if (inputModeWidget) {
+    m_inputModeFocusConnection =
+        connect(inputModeWidget.data(), &InputModeStatusWidget::focusOut, this,
+                [this]() { m_textEdit->setFocus(); });
+  }
+
+  // Emit outside the m_statusIndicator guard so migrated hosts (which never
+  // create a StatusIndicator) still receive the widget swap.
+  emit inputModeStatusWidgetChanged(inputModeWidget ? inputModeWidget->widget()
+                                                     : QSharedPointer<QWidget>());
 }
 
 EditorMode VTextEditor::getEditorMode() const {
@@ -1248,6 +1265,43 @@ void VTextEditor::updateSpellCheck() {
     m_highlighter->setSpellCheckEnabled(m_parameters->m_spellCheckEnabled);
     m_highlighter->setAutoDetectLanguageEnabled(m_parameters->m_autoDetectLanguageEnabled);
   }
+}
+
+bool VTextEditor::isSpellCheckEnabled() const { return m_parameters->m_spellCheckEnabled; }
+
+bool VTextEditor::isAutoDetectLanguageEnabled() const {
+  return m_parameters->m_autoDetectLanguageEnabled;
+}
+
+QString VTextEditor::currentSpellCheckLanguage() const {
+  return m_parameters->m_defaultSpellCheckLanguage;
+}
+
+QMap<QString, QString> VTextEditor::availableSpellCheckDictionaries() const {
+  return SpellChecker::getInst().availableDictionaries();
+}
+
+void VTextEditor::setSpellCheckEnabled(bool p_enabled) {
+  m_parameters->m_spellCheckEnabled = p_enabled;
+  updateSpellCheck();
+  emit spellCheckStateChanged();
+}
+
+void VTextEditor::setAutoDetectLanguageEnabled(bool p_enabled) {
+  m_parameters->m_autoDetectLanguageEnabled = p_enabled;
+  updateSpellCheck();
+  emit spellCheckStateChanged();
+}
+
+void VTextEditor::setSpellCheckLanguage(const QString &p_language) {
+  m_parameters->m_defaultSpellCheckLanguage = p_language;
+  updateSpellCheck();
+  emit spellCheckStateChanged();
+}
+
+QSharedPointer<QWidget> VTextEditor::inputModeStatusWidget() const {
+  auto widget = getInputMode()->statusWidget();
+  return widget ? widget->widget() : QSharedPointer<QWidget>();
 }
 
 bool VTextEditor::appendSpellCheckMenu(QContextMenuEvent *p_event, QMenu *p_menu) {

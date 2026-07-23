@@ -4,6 +4,8 @@
 #include <QKeySequence>
 #include <QObject>
 
+#include <vtextedit/vtextedit_export.h>
+
 namespace vte {
 enum InputMode { NormalMode = 0, ViMode, VscodeMode, MaxInputMode };
 
@@ -20,7 +22,7 @@ enum EditorMode {
   ViModeReplace = 15
 };
 
-class VTextEditTranslate : public QObject {
+class VTEXTEDIT_EXPORT VTextEditTranslate : public QObject {
   Q_OBJECT
 };
 

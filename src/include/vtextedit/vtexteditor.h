@@ -5,6 +5,7 @@
 #include <vtextedit/vtextedit_export.h>
 
 #include <QFont>
+#include <QMap>
 #include <QPalette>
 #include <QScopedPointer>
 #include <QSharedPointer>
@@ -84,6 +85,24 @@ public:
   QSharedPointer<QWidget> statusWidget();
 
   EditorMode getEditorMode() const;
+
+  // Spell-check state API. These read/write m_parameters and drive
+  // updateSpellCheck(); the setters emit spellCheckStateChanged(). This is the
+  // signal-driven path used by a host status bar, complementing (not replacing)
+  // the embedded StatusIndicator widget.
+  bool isSpellCheckEnabled() const;
+  bool isAutoDetectLanguageEnabled() const;
+  QString currentSpellCheckLanguage() const;
+  QMap<QString, QString> availableSpellCheckDictionaries() const;
+
+  void setSpellCheckEnabled(bool p_enabled);
+  void setAutoDetectLanguageEnabled(bool p_enabled);
+  void setSpellCheckLanguage(const QString &p_language);
+
+  // Current input-mode status widget to mount into a host status bar (nullptr
+  // for Normal/VSCode modes). Lets a host perform an initial sync without the
+  // signal having fired yet.
+  QSharedPointer<QWidget> inputModeStatusWidget() const;
 
   QTextDocument *document() const;
 
@@ -167,6 +186,14 @@ signals:
   void focusOut();
 
   void topLineChanged();
+
+  // Emitted when the input-mode status widget changes (e.g. entering/leaving Vi
+  // mode). Carries the widget to mount (nullptr for Normal/VSCode modes). Fired
+  // regardless of whether the embedded StatusIndicator exists.
+  void inputModeStatusWidgetChanged(QSharedPointer<QWidget> p_widget);
+
+  // Emitted when spell-check state changes via the setters above.
+  void spellCheckStateChanged();
 
 protected:
   void focusInEvent(QFocusEvent *p_event) Q_DECL_OVERRIDE;
@@ -312,6 +339,11 @@ private:
   QScopedPointer<EditorCompleter> m_completerInterface;
 
   QSharedPointer<StatusIndicator> m_statusIndicator;
+
+  // Connection returning focus to the editor when the input-mode status widget
+  // (e.g. the Vi command bar) loses focus. Re-armed on each input-mode change,
+  // independent of the (optional) embedded StatusIndicator.
+  QMetaObject::Connection m_inputModeFocusConnection;
 
   // Path to search for resources, such as images.
   QString m_basePath;
