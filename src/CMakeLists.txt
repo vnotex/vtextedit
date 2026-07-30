@@ -33,7 +33,6 @@ add_library(VTextEdit SHARED
     include/vtextedit/lrucache.h
     include/vtextedit/markdowneditorconfig.h
     include/vtextedit/markdownutils.h
-    include/vtextedit/networkutils.h
     include/vtextedit/orderedintset.h
     include/vtextedit/markdownhighlighter.h
     include/vtextedit/markdownhighlighterdata.h
@@ -109,7 +108,10 @@ add_library(VTextEdit SHARED
     texteditor/vsyntaxhighlighter.cpp
     texteditor/vtexteditor.cpp
     utils/markdownutils.cpp
-    utils/networkutils.cpp
+    # networkutils is INTERNAL: the header lives next to the .cpp (not under
+    # include/vtextedit) so it is neither installed nor consumable by users of
+    # the library. It stays listed here so AUTOMOC still processes NetworkAccess.
+    utils/networkutils.cpp utils/networkutils.h
     utils/noncopyable.h
     utils/texteditutils.cpp
     utils/textutils.cpp

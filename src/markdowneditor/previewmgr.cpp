@@ -8,10 +8,10 @@
 #include <QVector>
 
 #include <vtextedit/markdownutils.h>
-#include <vtextedit/networkutils.h>
 #include <vtextedit/texteditutils.h>
 #include <vtextedit/textutils.h>
 
+#include "../utils/networkutils.h"
 #include "documentresourcemgr.h"
 
 using namespace vte;

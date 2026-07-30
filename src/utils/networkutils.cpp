@@ -1,4 +1,4 @@
-#include <vtextedit/networkutils.h>
+#include "networkutils.h"
 
 #include <QMetaEnum>
 

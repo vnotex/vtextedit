@@ -1,8 +1,23 @@
 #ifndef NETWORKUTILS_H
 #define NETWORKUTILS_H
 
-#include "vtextedit_export.h"
-
+// INTERNAL header. Deliberately NOT under src/include/vtextedit and NOT
+// exported: NetworkAccess is an implementation detail of PreviewMgr's image
+// downloader. Consumers that need HTTP helpers should provide their own.
+//
+// Dropping VTEXTEDIT_EXPORT is only half the job: it removes
+// __declspec(dllexport) on MSVC, but GCC/Clang default to PUBLIC symbol
+// visibility, so the vtable, typeinfo, moc functions and out-of-line members
+// would still land in the ELF/Mach-O dynamic symbol table. Q_DECL_HIDDEN
+// (__attribute__((visibility("hidden"))); a no-op on MSVC) closes that gap.
+//
+// Verify after changing this file:
+//   Windows: dumpbin /EXPORTS VTextEdit.dll | findstr NetworkAccess
+//   Linux:   nm -D -C libVTextEdit.so | grep -E 'vte::Network'
+//   macOS:   nm -gU -C libVTextEdit.dylib | grep -E 'vte::Network'
+// All three should report no vte::NetworkAccess / NetworkReply / NetworkUtils
+// members (PreviewMgr's own exported members may still mention the types in
+// their mangled names; that is expected and harmless).
 #include <QByteArray>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -13,7 +28,7 @@
 #include <QVector>
 
 namespace vte {
-class VTEXTEDIT_EXPORT NetworkUtils {
+class Q_DECL_HIDDEN NetworkUtils {
 public:
   NetworkUtils() = delete;
 
@@ -22,7 +37,7 @@ public:
   static QString networkErrorStr(QNetworkReply::NetworkError p_err);
 };
 
-struct VTEXTEDIT_EXPORT NetworkReply {
+struct Q_DECL_HIDDEN NetworkReply {
   QString errorStr() const;
 
   QNetworkReply::NetworkError m_error = QNetworkReply::HostNotFoundError;
@@ -30,7 +45,7 @@ struct VTEXTEDIT_EXPORT NetworkReply {
   QByteArray m_data;
 };
 
-class VTEXTEDIT_EXPORT NetworkAccess : public QObject {
+class Q_DECL_HIDDEN NetworkAccess : public QObject {
   Q_OBJECT
 public:
   typedef QVector<QPair<QByteArray, QByteArray>> RawHeaderPairs;
