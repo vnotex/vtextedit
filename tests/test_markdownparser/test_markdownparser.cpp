@@ -1,7 +1,10 @@
 #include "test_markdownparser.h"
 
-#include <QFile>
+#include <QApplication>
 #include <QElapsedTimer>
+#include <QFile>
+#include <QPaintEvent>
+#include <QRegion>
 #include <QSignalSpy>
 #include <QTextBlock>
 #include <QTextLayout>
@@ -12,6 +15,7 @@
 #include <vtextedit/texteditorconfig.h>
 #include <vtextedit/theme.h>
 #include <vtextedit/vmarkdowneditor.h>
+#include <vtextedit/vtextedit.h>
 
 #include "markdownastwalker.h"
 
@@ -777,6 +781,207 @@ void TestMarkdownParser::testPerformance()
   QVERIFY2(median < 500,
            qPrintable(
                QString("Median parse time %1ms exceeds 500ms threshold").arg(median)));
+}
+
+// ============================================================
+// Extra selection invalidation
+// ============================================================
+
+namespace {
+// Accumulate the paint regions delivered to a widget.
+class PaintRegionRecorder : public QObject
+{
+public:
+  explicit PaintRegionRecorder(QWidget *p_widget)
+    : QObject(p_widget)
+  {
+    p_widget->installEventFilter(this);
+  }
+
+  void clear() { m_region = QRegion(); }
+
+  const QRegion &region() const { return m_region; }
+
+protected:
+  bool eventFilter(QObject *p_obj, QEvent *p_event) Q_DECL_OVERRIDE
+  {
+    if (p_event->type() == QEvent::Paint) {
+      m_region += static_cast<QPaintEvent *>(p_event)->region();
+    }
+    return QObject::eventFilter(p_obj, p_event);
+  }
+
+private:
+  QRegion m_region;
+};
+
+// Wait until no paint event is received during a quiet window, so that delayed
+// highlighting, initial show and resize paints could not pollute the recording.
+bool settlePaints(PaintRegionRecorder &p_recorder, int p_quietMs = 150, int p_maxMs = 5000)
+{
+  QElapsedTimer timer;
+  timer.start();
+  while (timer.elapsed() < p_maxMs) {
+    p_recorder.clear();
+    QTest::qWait(p_quietMs);
+    if (p_recorder.region().isEmpty()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// A one pixel high row spanning the whole viewport.
+QRect fullWidthRow(const QWidget *p_viewport, int p_y)
+{
+  return QRect(0, p_y, p_viewport->width(), 1);
+}
+
+// QRegion::contains(QRect) semantics differ between Qt versions, so check the
+// complete containment explicitly.
+bool regionContains(const QRegion &p_region, const QRect &p_rect)
+{
+  return QRegion(p_rect).subtracted(p_region).isEmpty();
+}
+} // namespace
+
+void TestMarkdownParser::testCursorLineInvalidationExpanded_data()
+{
+  QTest::addColumn<qreal>("lineSpacing");
+
+  // A line spacing greater than 1.0 gives the lines a fractional geometry, for
+  // which the rounded cursor rectangle differs from the aligned extent that the
+  // full-width selection is painted over.
+  QTest::newRow("integral line geometry") << 1.0;
+  QTest::newRow("fractional line geometry") << 1.5;
+}
+
+void TestMarkdownParser::testCursorLineInvalidationExpanded()
+{
+  QFETCH(qreal, lineSpacing);
+
+  // Avoid cursor blink repaints polluting the recorded paint regions.
+  const int cursorFlashTime = QApplication::cursorFlashTime();
+  QApplication::setCursorFlashTime(0);
+  struct FlashTimeRestorer {
+    ~FlashTimeRestorer() { QApplication::setCursorFlashTime(m_value); }
+    int m_value = 0;
+  } flashTimeRestorer{cursorFlashTime};
+
+  const QString themeJson = QStringLiteral(R"({
+    "metadata": {"type": "vtextedit", "name": "CursorLineTest"},
+    "editor-styles": {
+      "Text": {"font-family": "Arial", "font-size": 12},
+      "CursorLine": {"background-color": "#c5cae9"}
+    }
+  })");
+  auto theme = vte::Theme::createThemeFromContent(themeJson);
+  QVERIFY(!theme.isNull());
+
+  auto textConfig = QSharedPointer<vte::TextEditorConfig>::create();
+  textConfig->m_theme = theme;
+  textConfig->m_lineSpacing = lineSpacing;
+  auto markdownConfig = QSharedPointer<vte::MarkdownEditorConfig>::create(textConfig);
+  markdownConfig->m_inplacePreviewSources = vte::MarkdownEditorConfig::NoInplacePreview;
+  auto parameters = QSharedPointer<vte::TextEditorParameters>::create();
+  vte::VMarkdownEditor editor(markdownConfig, parameters);
+  auto highlighter = editor.getHighlighter();
+  QVERIFY(highlighter);
+
+  QString text;
+  const int lineCount = 16;
+  for (int i = 0; i < lineCount; ++i) {
+    text += QStringLiteral("line %1 of plain text\n").arg(i);
+  }
+
+  QSignalSpy completed(highlighter, &vte::MarkdownHighlighter::highlightCompleted);
+  editor.setText(text);
+  completed.clear();
+  highlighter->updateHighlight();
+  QTRY_VERIFY(completed.count() > 0);
+
+  auto textEdit = editor.getTextEdit();
+  QVERIFY(textEdit);
+  auto viewport = textEdit->viewport();
+
+  editor.resize(600, 600);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+
+  PaintRegionRecorder recorder(viewport);
+
+  auto moveCursorToBlock = [&editor, textEdit](int p_blockNumber) {
+    auto cursor = textEdit->textCursor();
+    cursor.setPosition(editor.document()->findBlockByNumber(p_blockNumber).position());
+    textEdit->setTextCursor(cursor);
+  };
+
+  const int oldBlock = 3;
+  const int newBlock = 7;
+  const int untouchedBlock = 12;
+
+  // Settle the initial show/resize/highlight paints before recording.
+  moveCursorToBlock(oldBlock);
+  QVERIFY(settlePaints(recorder));
+
+  const QRect oldRect = textEdit->cursorRect(textEdit->textCursor());
+  const QRect untouchedRect =
+      textEdit->cursorRect(QTextCursor(editor.document()->findBlockByNumber(untouchedBlock)));
+
+  recorder.clear();
+  moveCursorToBlock(newBlock);
+  const QRect newRect = textEdit->cursorRect(textEdit->textCursor());
+
+  QTRY_VERIFY(!recorder.region().isEmpty());
+  // Collect the remaining queued paints of this cursor move.
+  QTest::qWait(150);
+
+  // VTextEdit::cursorRect() rounds the line geometry with qRound(), while the
+  // selection is painted over its aligned (floor/ceil) extent. The fringe row
+  // outside of the painted extent is therefore either the first or the second
+  // row outside of the rounded rectangle, so both of them must be invalidated.
+  const int maxMargin = 2;
+
+  // All the involved lines must have room above and below within the viewport,
+  // otherwise the expanded rows would be clipped away.
+  const QRect viewportRect = viewport->rect();
+  QVERIFY(oldRect.top() - maxMargin >= viewportRect.top());
+  QVERIFY(oldRect.bottom() + maxMargin <= viewportRect.bottom());
+  QVERIFY(newRect.top() - maxMargin >= viewportRect.top());
+  QVERIFY(newRect.bottom() + maxMargin <= viewportRect.bottom());
+  QVERIFY(untouchedRect.top() - 1 >= viewportRect.top());
+  QVERIFY(untouchedRect.isValid() && untouchedRect.bottom() <= viewportRect.bottom());
+
+  const QRegion region = recorder.region();
+  for (int margin = 1; margin <= maxMargin; ++margin) {
+    QVERIFY2(regionContains(region, fullWidthRow(viewport, oldRect.top() - margin)),
+             qPrintable(QStringLiteral("Row %1 above the old cursor line is not invalidated")
+                            .arg(margin)));
+    QVERIFY2(regionContains(region, fullWidthRow(viewport, oldRect.bottom() + margin)),
+             qPrintable(QStringLiteral("Row %1 below the old cursor line is not invalidated")
+                            .arg(margin)));
+    QVERIFY2(regionContains(region, fullWidthRow(viewport, newRect.top() - margin)),
+             qPrintable(QStringLiteral("Row %1 above the new cursor line is not invalidated")
+                            .arg(margin)));
+    QVERIFY2(regionContains(region, fullWidthRow(viewport, newRect.bottom() + margin)),
+             qPrintable(QStringLiteral("Row %1 below the new cursor line is not invalidated")
+                            .arg(margin)));
+  }
+
+  // The supplemental invalidation must stay local. This also guards the
+  // assertions above against a full viewport repaint.
+  QVERIFY2(!regionContains(region, fullWidthRow(viewport, untouchedRect.top() - 1)),
+           "An unrelated line is invalidated by a cursor line move");
+
+  // Re-applying the extra selections without changing the full-width cursor
+  // line selection must not invalidate its expanded rows again.
+  recorder.clear();
+  editor.clearSearchHighlight();
+  QTest::qWait(500);
+  QVERIFY2(!regionContains(recorder.region(), fullWidthRow(viewport, newRect.top() - 1)),
+           "An unchanged full-width selection is invalidated again");
+  QVERIFY2(!regionContains(recorder.region(), fullWidthRow(viewport, newRect.bottom() + 1)),
+           "An unchanged full-width selection is invalidated again");
 }
 
 QTEST_MAIN(tests::TestMarkdownParser)

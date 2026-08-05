@@ -51,6 +51,10 @@ namespace tests
 
         // T13: Performance benchmark
         void testPerformance();
+
+        // Extra selection invalidation
+        void testCursorLineInvalidationExpanded_data();
+        void testCursorLineInvalidationExpanded();
     };
 } // ns tests
 

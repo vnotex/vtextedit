@@ -21,6 +21,10 @@ public:
 
 private:
   VTextEditor *m_editor = nullptr;
+
+  // The full-width selections of the last applied extra selections, used to
+  // supplement the invalidation of the changed ones.
+  QList<QTextEdit::ExtraSelection> m_lastFullWidthSelections;
 };
 } // namespace vte
 
