@@ -1,6 +1,7 @@
 #include "test_textfolding.h"
 
 #include <QDebug>
+#include <QTextCursor>
 #include <QTextDocument>
 
 #include <utils/utils.h>
@@ -96,7 +97,8 @@ void TestTextFolding::testNewFoldingRange()
         QCOMPARE(m_textFolding->debugDump(),
                  QStringLiteral("tree [10 p 20] [30 pf 40] - folded [30 pf 40]"));
         QVERIFY(checkTextBlocksVisible(m_doc, 30, 30));
-        QVERIFY(checkTextBlocksInvisible(m_doc, 31, 40));
+        QVERIFY(checkTextBlocksInvisible(m_doc, 31, 39));
+        QVERIFY(checkTextBlocksVisible(m_doc, 40, 40));
     }
 
     // Nested range [15, 16] is allowed.
@@ -105,10 +107,10 @@ void TestTextFolding::testNewFoldingRange()
         Q_UNUSED(id);
         QCOMPARE(m_textFolding->debugDump(),
                  QStringLiteral("tree [10 p [15 pf 16] 20] [30 pf 40] - folded [15 pf 16] [30 pf 40]"));
-        QVERIFY(checkTextBlocksVisible(m_doc, 15, 15));
-        QVERIFY(checkTextBlocksInvisible(m_doc, 16, 16));
+        QVERIFY(checkTextBlocksVisible(m_doc, 15, 16));
         QVERIFY(checkTextBlocksVisible(m_doc, 30, 30));
-        QVERIFY(checkTextBlocksInvisible(m_doc, 31, 40));
+        QVERIFY(checkTextBlocksInvisible(m_doc, 31, 39));
+        QVERIFY(checkTextBlocksVisible(m_doc, 40, 40));
     }
 
     // Nested range [10, 12] is not allowed.
@@ -142,10 +144,10 @@ void TestTextFolding::testNewFoldingRange()
         Q_UNUSED(id);
         QCOMPARE(m_textFolding->debugDump(),
                  QStringLiteral("tree [10 p [15 pf 16] 20] [30 pf [35  40] 40] - folded [15 pf 16] [30 pf 40]"));
-        QVERIFY(checkTextBlocksVisible(m_doc, 15, 15));
-        QVERIFY(checkTextBlocksInvisible(m_doc, 16, 16));
+        QVERIFY(checkTextBlocksVisible(m_doc, 15, 16));
         QVERIFY(checkTextBlocksVisible(m_doc, 30, 30));
-        QVERIFY(checkTextBlocksInvisible(m_doc, 31, 40));
+        QVERIFY(checkTextBlocksInvisible(m_doc, 31, 39));
+        QVERIFY(checkTextBlocksVisible(m_doc, 40, 40));
     }
 
     // New range [28, 40] is allowed.
@@ -154,10 +156,10 @@ void TestTextFolding::testNewFoldingRange()
         Q_UNUSED(id);
         QCOMPARE(m_textFolding->debugDump(),
                  QStringLiteral("tree [10 p [15 pf 16] 20] [28  [30 pf [35  40] 40] 40] - folded [15 pf 16] [30 pf 40]"));
-        QVERIFY(checkTextBlocksVisible(m_doc, 15, 15));
-        QVERIFY(checkTextBlocksInvisible(m_doc, 16, 16));
+        QVERIFY(checkTextBlocksVisible(m_doc, 15, 16));
         QVERIFY(checkTextBlocksVisible(m_doc, 30, 30));
-        QVERIFY(checkTextBlocksInvisible(m_doc, 31, 40));
+        QVERIFY(checkTextBlocksInvisible(m_doc, 31, 39));
+        QVERIFY(checkTextBlocksVisible(m_doc, 40, 40));
     }
 
     // New range [8, 10] is not allowed.
@@ -204,7 +206,17 @@ void TestTextFolding::textFoldRange()
         m_textFolding->toggleRange(id);
         QCOMPARE(m_textFolding->debugDump(), QStringLiteral("tree [10 pf 20] - folded [10 pf 20]"));
         QVERIFY(checkTextBlocksVisible(m_doc, 10, 10));
-        QVERIFY(checkTextBlocksInvisible(m_doc, 11, 20));
+        QVERIFY(checkTextBlocksInvisible(m_doc, 11, 19));
+        QVERIFY(checkTextBlocksVisible(m_doc, 20, 20));
+
+        QCOMPARE(m_textFolding->lineToVisibleLine(10), 10);
+        QCOMPARE(m_textFolding->lineToVisibleLine(11), 10);
+        QCOMPARE(m_textFolding->lineToVisibleLine(19), 10);
+        QCOMPARE(m_textFolding->lineToVisibleLine(20), 11);
+        QCOMPARE(m_textFolding->lineToVisibleLine(21), 12);
+        QCOMPARE(m_textFolding->visibleLineToLine(10), 10);
+        QCOMPARE(m_textFolding->visibleLineToLine(11), 20);
+        QCOMPARE(m_textFolding->visibleLineToLine(12), 21);
 
         m_textFolding->toggleRange(id);
         QCOMPARE(m_textFolding->debugDump(), QStringLiteral("tree [10 p 20] - folded "));
@@ -217,12 +229,106 @@ void TestTextFolding::textFoldRange()
         QCOMPARE(m_textFolding->debugDump(),
                  QStringLiteral("tree [10 p 20] [30 pf 40] - folded [30 pf 40]"));
         QVERIFY(checkTextBlocksVisible(m_doc, 30, 30));
-        QVERIFY(checkTextBlocksInvisible(m_doc, 31, 40));
+        QVERIFY(checkTextBlocksInvisible(m_doc, 31, 39));
+        QVERIFY(checkTextBlocksVisible(m_doc, 40, 40));
+
+        auto rangesAt10 = m_textFolding->foldingRangesStartingOnBlock(10);
+        QCOMPARE(rangesAt10.size(), 1);
+        m_textFolding->toggleRange(rangesAt10[0].first);
+
+        QCOMPARE(m_textFolding->lineToVisibleLine(20), 11);
+        QCOMPARE(m_textFolding->lineToVisibleLine(21), 12);
+        QCOMPARE(m_textFolding->lineToVisibleLine(30), 21);
+        QCOMPARE(m_textFolding->lineToVisibleLine(31), 21);
+        QCOMPARE(m_textFolding->lineToVisibleLine(39), 21);
+        QCOMPARE(m_textFolding->lineToVisibleLine(40), 22);
+        QCOMPARE(m_textFolding->lineToVisibleLine(41), 23);
+        QCOMPARE(m_textFolding->visibleLineToLine(11), 20);
+        QCOMPARE(m_textFolding->visibleLineToLine(12), 21);
+        QCOMPARE(m_textFolding->visibleLineToLine(21), 30);
+        QCOMPARE(m_textFolding->visibleLineToLine(22), 40);
+        QCOMPARE(m_textFolding->visibleLineToLine(23), 41);
+
+        m_textFolding->toggleRange(rangesAt10[0].first);
+
+        auto childId = insertNewFoldingRange(35, 40, TextFolding::Folded);
+        QVERIFY(childId != TextFolding::InvalidRangeId);
 
         m_textFolding->toggleRange(id);
         QCOMPARE(m_textFolding->debugDump(),
+                 QStringLiteral("tree [10 p 20] [30 p [35 f 40] 40] - folded [35 f 40]"));
+        QVERIFY(checkTextBlocksVisible(m_doc, 30, 35));
+        QVERIFY(checkTextBlocksInvisible(m_doc, 36, 39));
+        QVERIFY(checkTextBlocksVisible(m_doc, 40, 40));
+
+        m_textFolding->toggleRange(childId);
+        QCOMPARE(m_textFolding->debugDump(),
                  QStringLiteral("tree [10 p 20] [30 p 40] - folded "));
         QVERIFY(checkTextBlocksVisible(m_doc, 0, m_doc->blockCount()));
+    }
+
+    // A two-line folded range retains folded state without hiding either endpoint.
+    {
+        auto id = insertNewFoldingRange(44, 45, TextFolding::Folded);
+        QVERIFY(id != TextFolding::InvalidRangeId);
+        auto rangesAt44 = m_textFolding->foldingRangesStartingOnBlock(44);
+        QCOMPARE(rangesAt44.size(), 1);
+        QVERIFY(rangesAt44[0].second.testFlag(TextFolding::Folded));
+        QVERIFY(checkTextBlocksVisible(m_doc, 44, 45));
+        QCOMPARE(m_textFolding->lineToVisibleLine(44), 44);
+        QCOMPARE(m_textFolding->lineToVisibleLine(45), 45);
+        QCOMPARE(m_textFolding->lineToVisibleLine(46), 46);
+        QCOMPARE(m_textFolding->visibleLineToLine(44), 44);
+        QCOMPARE(m_textFolding->visibleLineToLine(45), 45);
+        QCOMPARE(m_textFolding->visibleLineToLine(46), 46);
+
+        m_textFolding->toggleRange(id);
+    }
+
+    // A folded range may collapse to one block after an edit and must remain a zero-delta fold.
+    {
+        QTextDocument doc(QStringLiteral("0\n1\n2\n3\n4\n5\n6"));
+        TextFolding folding(&doc);
+        auto outerId = folding.newFoldingRange(
+            TextBlockRange(doc.findBlockByNumber(0), doc.findBlockByNumber(6)),
+            TextFolding::Persistent | TextFolding::Folded);
+        auto collapsedId = folding.newFoldingRange(
+            TextBlockRange(doc.findBlockByNumber(1), doc.findBlockByNumber(2)),
+            TextFolding::Persistent | TextFolding::Folded);
+        auto followingId = folding.newFoldingRange(
+            TextBlockRange(doc.findBlockByNumber(3), doc.findBlockByNumber(5)),
+            TextFolding::Persistent | TextFolding::Folded);
+        QVERIFY(outerId != TextFolding::InvalidRangeId);
+        QVERIFY(collapsedId != TextFolding::InvalidRangeId);
+        QVERIFY(followingId != TextFolding::InvalidRangeId);
+
+        QTextCursor cursor(&doc);
+        cursor.setPosition(doc.findBlockByNumber(1).position());
+        cursor.setPosition(doc.findBlockByNumber(2).position(), QTextCursor::KeepAnchor);
+        cursor.removeSelectedText();
+
+        QCOMPARE(folding.m_idToFoldingRange.value(collapsedId)->first(), 1);
+        QCOMPARE(folding.m_idToFoldingRange.value(collapsedId)->last(), 1);
+        QCOMPARE(folding.m_idToFoldingRange.value(followingId)->first(), 2);
+        QCOMPARE(folding.m_idToFoldingRange.value(followingId)->last(), 4);
+        QCOMPARE(folding.debugDump(),
+                 QStringLiteral("tree [0 pf [1 pf 1] [2 pf 4] 5] - folded [0 pf 5]"));
+        folding.toggleRange(outerId);
+        QCOMPARE(folding.debugDump(),
+                 QStringLiteral("tree [0 p [1 pf 1] [2 pf 4] 5] - folded [1 pf 1] [2 pf 4]"));
+
+        QVERIFY(checkTextBlocksVisible(&doc, 0, 2));
+        QVERIFY(checkTextBlocksInvisible(&doc, 3, 3));
+        QVERIFY(checkTextBlocksVisible(&doc, 4, 5));
+        QCOMPARE(folding.lineToVisibleLine(1), 1);
+        QCOMPARE(folding.lineToVisibleLine(2), 2);
+        QCOMPARE(folding.lineToVisibleLine(3), 2);
+        QCOMPARE(folding.lineToVisibleLine(4), 3);
+        QCOMPARE(folding.lineToVisibleLine(5), 4);
+        QCOMPARE(folding.visibleLineToLine(1), 1);
+        QCOMPARE(folding.visibleLineToLine(2), 2);
+        QCOMPARE(folding.visibleLineToLine(3), 4);
+        QCOMPARE(folding.visibleLineToLine(4), 5);
     }
 
     // Nested folded range [32, 38] (folded).
@@ -231,7 +337,8 @@ void TestTextFolding::textFoldRange()
         QCOMPARE(m_textFolding->debugDump(),
                  QStringLiteral("tree [10 p 20] [30 p [32 f 38] 40] - folded [32 f 38]"));
         QVERIFY(checkTextBlocksVisible(m_doc, 32, 32));
-        QVERIFY(checkTextBlocksInvisible(m_doc, 33, 38));
+        QVERIFY(checkTextBlocksInvisible(m_doc, 33, 37));
+        QVERIFY(checkTextBlocksVisible(m_doc, 38, 38));
 
         m_textFolding->toggleRange(id);
         QCOMPARE(m_textFolding->debugDump(),
@@ -245,20 +352,22 @@ void TestTextFolding::textFoldRange()
         QCOMPARE(m_textFolding->debugDump(),
                  QStringLiteral("tree [8 pf [10 p 20] [30 p 40] 42] - folded [8 pf 42]"));
         QVERIFY(checkTextBlocksVisible(m_doc, 8, 8));
-        QVERIFY(checkTextBlocksInvisible(m_doc, 9, 42));
+        QVERIFY(checkTextBlocksInvisible(m_doc, 9, 41));
+        QVERIFY(checkTextBlocksVisible(m_doc, 42, 42));
 
         auto subId = insertNewFoldingRange(22, 26, TextFolding::Persistent | TextFolding::Folded);
         QCOMPARE(m_textFolding->debugDump(),
                  QStringLiteral("tree [8 pf [10 p 20] [22 pf 26] [30 p 40] 42] - folded [8 pf 42]"));
         QVERIFY(checkTextBlocksVisible(m_doc, 8, 8));
-        QVERIFY(checkTextBlocksInvisible(m_doc, 9, 42));
+        QVERIFY(checkTextBlocksInvisible(m_doc, 9, 41));
+        QVERIFY(checkTextBlocksVisible(m_doc, 42, 42));
 
         m_textFolding->toggleRange(id);
         QCOMPARE(m_textFolding->debugDump(),
                  QStringLiteral("tree [8 p [10 p 20] [22 pf 26] [30 p 40] 42] - folded [22 pf 26]"));
         QVERIFY(checkTextBlocksVisible(m_doc, 8, 22));
-        QVERIFY(checkTextBlocksInvisible(m_doc, 23, 26));
-        QVERIFY(checkTextBlocksVisible(m_doc, 27, 42));
+        QVERIFY(checkTextBlocksInvisible(m_doc, 23, 25));
+        QVERIFY(checkTextBlocksVisible(m_doc, 26, 42));
 
         m_textFolding->toggleRange(subId);
         QCOMPARE(m_textFolding->debugDump(),
@@ -284,7 +393,8 @@ void TestTextFolding::testRemoveFoldingRange()
     {
         auto id = insertNewFoldingRange(30, 40, TextFolding::Persistent | TextFolding::Folded);
         QVERIFY(id != TextFolding::InvalidRangeId);
-        QVERIFY(checkTextBlocksInvisible(m_doc, 31, 40));
+        QVERIFY(checkTextBlocksInvisible(m_doc, 31, 39));
+        QVERIFY(checkTextBlocksVisible(m_doc, 40, 40));
 
         QVERIFY(m_textFolding->removeFoldingRange(id));
         QVERIFY(checkTextBlocksVisible(m_doc, 30, 40));
@@ -321,7 +431,8 @@ void TestTextFolding::testRemoveFoldingRange()
         auto id = insertNewFoldingRange(10, 20, TextFolding::Persistent);
         QVERIFY(id != TextFolding::InvalidRangeId);
         m_textFolding->toggleRange(id);
-        QVERIFY(checkTextBlocksInvisible(m_doc, 11, 20));
+        QVERIFY(checkTextBlocksInvisible(m_doc, 11, 19));
+        QVERIFY(checkTextBlocksVisible(m_doc, 20, 20));
 
         QVERIFY(m_textFolding->removeFoldingRange(id));
         QVERIFY(checkTextBlocksVisible(m_doc, 10, 20));
@@ -361,7 +472,8 @@ void TestTextFolding::testDocumentClear()
 {
     auto id1 = insertNewFoldingRange(10, 20, TextFolding::Persistent | TextFolding::Folded);
     QVERIFY(id1 != TextFolding::InvalidRangeId);
-    QVERIFY(checkTextBlocksInvisible(m_doc, 11, 20));
+    QVERIFY(checkTextBlocksInvisible(m_doc, 11, 19));
+    QVERIFY(checkTextBlocksVisible(m_doc, 20, 20));
 
     // Clear the document entirely.
     m_doc->clear();

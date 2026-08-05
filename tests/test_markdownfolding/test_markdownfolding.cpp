@@ -445,17 +445,17 @@ void TestMarkdownFolding::testFoldingBlockHeights()
   // Fold it.
   folding.toggleRange(id);
 
-  // Hidden blocks (3-10) should have zero-height rects.
-  for (int i = 3; i <= 10; ++i) {
+  // Hidden interior blocks (3-9) should have zero-height rects.
+  for (int i = 3; i <= 9; ++i) {
     auto block = doc.findBlockByNumber(i);
     auto info = BlockLayoutData::get(block);
     QCOMPARE(info->m_rect.height(), 0.0);
   }
 
-  // Fold-header block (2) should still have positive height.
-  {
-    auto headerInfo = BlockLayoutData::get(doc.findBlockByNumber(2));
-    QVERIFY(headerInfo->m_rect.height() > 0);
+  // Both fold endpoints should still have positive height.
+  for (int i : {2, 10}) {
+    auto info = BlockLayoutData::get(doc.findBlockByNumber(i));
+    QVERIFY(info->m_rect.height() > 0);
   }
 
   // Document height should have decreased.
@@ -476,6 +476,7 @@ void TestMarkdownFolding::testFoldingBlockHeights()
   // Document height should be restored.
   qreal unfoldedHeight = layout->documentSize().height();
   QVERIFY(unfoldedHeight > foldedHeight);
+  QVERIFY(qFuzzyCompare(unfoldedHeight, preFoldHeight));
 }
 
 QTEST_MAIN(tests::TestMarkdownFolding)

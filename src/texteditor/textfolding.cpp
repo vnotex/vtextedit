@@ -356,15 +356,18 @@ void TextFolding::setRangeFolded(const TextBlockRange &p_range, bool p_folded) c
   blockIt.setVisible(true);
 
   int lastBlockNumber = p_range.last().blockNumber();
+  if (blockIt.blockNumber() == lastBlockNumber) {
+    return;
+  }
 
   blockIt = blockIt.next();
   while (blockIt.isValid()) {
-    blockIt.setVisible(!p_folded);
-
     if (blockIt.blockNumber() == lastBlockNumber) {
+      blockIt.setVisible(true);
       break;
     }
 
+    blockIt.setVisible(!p_folded);
     blockIt = blockIt.next();
   }
 }
@@ -540,12 +543,15 @@ void TextFolding::unfoldRangeWithNestedFoldedRanges(
     bool isHit = false;
     if (idx < p_foldedChildren.size()) {
       const auto &range = p_foldedChildren[idx];
-      if (range->contains(blockNumber)) {
+      if (range->first() <= blockNumber && range->last() >= blockNumber) {
         isHit = true;
         if (range->first() == blockNumber) {
           blockIt.setVisible(true);
+          if (range->last() == blockNumber) {
+            ++idx;
+          }
         } else if (range->last() == blockNumber) {
-          blockIt.setVisible(false);
+          blockIt.setVisible(true);
           ++idx;
         } else {
           blockIt.setVisible(false);
@@ -702,12 +708,12 @@ int TextFolding::lineToVisibleLine(int p_line) const {
     Q_ASSERT(range->isValid());
     if (p_line <= range->first()) {
       return p_line + delta;
-    } else if (p_line <= range->last()) {
+    } else if (p_line < range->last()) {
       // Locate within the folded range.
       delta += (range->first() - p_line);
       return p_line + delta;
     } else {
-      delta += (range->first() - range->last());
+      delta -= qMax(range->last() - range->first() - 1, 0);
     }
   }
 
@@ -732,7 +738,7 @@ int TextFolding::visibleLineToLine(int p_line) const {
     if (visualLine >= p_line) {
       return p_line + delta;
     } else {
-      delta += (range->last() - range->first());
+      delta += qMax(range->last() - range->first() - 1, 0);
     }
   }
 
