@@ -24,6 +24,8 @@ const int TextDocumentLayout::c_maxInlineImageHeight = 400;
 
 const int TextDocumentLayout::c_imagePadding = 2;
 
+const int TextDocumentLayout::c_cursorGeometryWidth = 4;
+
 static bool realEqual(qreal p_a, qreal p_b) { return qAbs(p_a - p_b) < 1e-8; }
 
 TextDocumentLayout::TextDocumentLayout(QTextDocument *p_doc, DocumentResourceMgr *p_resourceMgr)
@@ -58,7 +60,7 @@ void TextDocumentLayout::blockRangeFromRect(const QRectF &p_rect, int &p_first, 
 
   p_first = -1;
   p_last = document()->blockCount() - 1;
-  int y = p_rect.y();
+  qreal y = p_rect.y();
   QTextBlock block = document()->firstBlock();
   while (block.isValid()) {
     auto info = BlockLayoutData::get(block);
@@ -105,7 +107,7 @@ void TextDocumentLayout::blockRangeFromRectBS(const QRectF &p_rect, int &p_first
     return;
   }
 
-  int y = p_rect.bottom();
+  qreal y = p_rect.bottom();
   QTextBlock block = document()->findBlockByNumber(p_first);
   auto info = BlockLayoutData::get(block);
   if (realEqual(info->top(), p_rect.top()) && p_first > 0) {
@@ -134,7 +136,7 @@ void TextDocumentLayout::blockRangeFromRectBS(const QRectF &p_rect, int &p_first
 int TextDocumentLayout::findBlockByPosition(const QPointF &p_point) const {
   QTextDocument *doc = document();
   int first = 0, last = doc->blockCount() - 1;
-  int y = p_point.y();
+  qreal y = p_point.y();
   while (first <= last) {
     int mid = (first + last) / 2;
     QTextBlock blk = doc->findBlockByNumber(mid);
@@ -286,7 +288,6 @@ TextDocumentLayout::formatRangeFromSelection(const QTextBlock &p_block,
 }
 
 int TextDocumentLayout::hitTest(const QPointF &p_point, Qt::HitTestAccuracy p_accuracy) const {
-  Q_UNUSED(p_accuracy);
   int bn = findBlockByPosition(p_point);
   if (bn == -1) {
     return -1;
@@ -297,6 +298,19 @@ int TextDocumentLayout::hitTest(const QPointF &p_point, Qt::HitTestAccuracy p_ac
   QTextLayout *layout = block.layout();
   int off = 0;
   QPointF pos = p_point - QPointF(m_margin, BlockLayoutData::get(block)->top());
+  if (p_accuracy == Qt::ExactHit) {
+    for (int i = 0; i < layout->lineCount(); ++i) {
+      QTextLine line = layout->lineAt(i);
+      const QRectF lr = line.naturalTextRect();
+      if (pos.x() > lr.left() && pos.x() < lr.right() && pos.y() > lr.top() &&
+          pos.y() < lr.bottom()) {
+        return block.position() + line.xToCursor(pos.x(), QTextLine::CursorOnCharacter);
+      }
+    }
+
+    return -1;
+  }
+
   for (int i = 0; i < layout->lineCount(); ++i) {
     QTextLine line = layout->lineAt(i);
     const QRectF lr = line.naturalTextRect();
@@ -451,7 +465,7 @@ void TextDocumentLayout::layoutBlock(const QTextBlock &p_block) {
 
     auto info = BlockLayoutData::get(p_block);
     info->reset();
-    info->m_rect = QRectF(0, 0, m_margin * 2 + m_cursorWidth, 0);
+    info->m_rect = QRectF(0, 0, m_margin * 2 + c_cursorGeometryWidth, 0);
     return;
   }
 
@@ -485,7 +499,7 @@ void TextDocumentLayout::layoutBlock(const QTextBlock &p_block) {
     availableWidth = qreal(INT_MAX);
   }
 
-  availableWidth -= (2 * m_margin + extraMargin + m_cursorMargin + m_cursorWidth);
+  availableWidth -= (2 * m_margin + extraMargin + m_cursorMargin + c_cursorGeometryWidth);
 
   QVector<Marker> markers;
   QVector<ImagePaintData> images;
@@ -576,10 +590,11 @@ qreal TextDocumentLayout::layoutLines(const QTextBlock &p_block, QTextLayout *p_
   const QVector<PreviewData *> *pPreviewData = nullptr;
   if (m_previewEnabled) {
     const auto &previewData = BlockPreviewData::get(p_block)->getPreviewData();
-    if (!previewData.isEmpty()) {
-      auto imageData = previewData.first()->getImageData();
+    for (auto data : previewData) {
+      auto imageData = data ? data->getImageData() : nullptr;
       if (imageData && imageData->m_inline) {
         pPreviewData = &previewData;
+        break;
       }
     }
   }
@@ -696,8 +711,8 @@ void TextDocumentLayout::updateDocumentSize() {
     updateOffsetBefore(block);
   }
 
-  int oldHeight = m_height;
-  int oldWidth = m_width;
+  qreal oldHeight = m_height;
+  qreal oldWidth = m_width;
 
   m_height = info->bottom();
 
@@ -714,7 +729,7 @@ void TextDocumentLayout::updateDocumentSize() {
     blk = blk.next();
   }
 
-  if (oldHeight != m_height || oldWidth != m_width) {
+  if (!realEqual(oldHeight, m_height) || !realEqual(oldWidth, m_width)) {
     emit documentSizeChanged(documentSize());
   }
 }
@@ -742,8 +757,9 @@ QRectF TextDocumentLayout::blockRectFromTextLayout(const QTextBlock &p_block,
   if (m_previewEnabled) {
     const auto &previewData = BlockPreviewData::get(p_block)->getPreviewData();
     if (previewData.size() == 1) {
-      auto img = previewData.first()->getImageData();
-      if (!img->m_inline) {
+      auto data = previewData.first();
+      auto img = data ? data->getImageData() : nullptr;
+      if (img && !img->m_inline) {
         int maximumWidth = tlRect.width();
         int padding;
         QSize size;
@@ -767,7 +783,7 @@ QRectF TextDocumentLayout::blockRectFromTextLayout(const QTextBlock &p_block,
   }
 
   // Add margins to both sides.
-  br.adjust(0, 0, m_margin * 2 + m_cursorWidth, 0);
+  br.adjust(0, 0, m_margin * 2 + c_cursorGeometryWidth, 0);
 
   // Add bottom margin.
   if (!p_block.next().isValid()) {
@@ -926,8 +942,11 @@ qreal TextDocumentLayout::fetchInlineImagesForOneLine(const QVector<PreviewData 
   int end = p_line->textLength() + start;
 
   for (int i = 0; i < p_data.size(); ++i) {
-    auto img = p_data[i]->getImageData();
-    Q_ASSERT(img && img->m_inline);
+    auto data = p_data[i];
+    auto img = data ? data->getImageData() : nullptr;
+    if (!img || !img->m_inline) {
+      continue;
+    }
 
     if (img->m_startPos >= start && img->m_startPos < end) {
       // Start of a new image.
@@ -973,8 +992,8 @@ qreal TextDocumentLayout::fetchInlineImagesForOneLine(const QVector<PreviewData 
       }
     } else if (img->m_endPos > start && img->m_startPos < start) {
       qreal startX = p_line->x() + p_margin;
-      qreal endX =
-          img->m_endPos > end ? p_line->x() + p_line->width() : p_line->cursorToX(img->m_endPos);
+      qreal endX = img->m_endPos > end ? p_line->x() + p_line->width() + p_margin
+                                       : p_line->cursorToX(img->m_endPos) + p_margin;
       if (p_index <= i) {
         // Image i has not been drawn. Draw it here.
         p_images.append(img);
@@ -1033,7 +1052,14 @@ void TextDocumentLayout::scaleSize(QSize &p_size, int p_width, int p_height) {
   }
 }
 
-void TextDocumentLayout::setCursorWidth(int p_width) { m_cursorWidth = p_width; }
+void TextDocumentLayout::setCursorWidth(int p_width) {
+  if (m_cursorWidth == p_width) {
+    return;
+  }
+
+  m_cursorWidth = p_width;
+  emit update();
+}
 
 int TextDocumentLayout::cursorWidth() const { return m_cursorWidth; }
 

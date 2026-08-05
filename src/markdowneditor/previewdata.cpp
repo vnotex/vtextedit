@@ -75,6 +75,11 @@ QSharedPointer<BlockPreviewData> BlockPreviewData::get(const QTextBlock &p_block
 const QVector<PreviewData *> &BlockPreviewData::getPreviewData() const { return m_data; }
 
 bool BlockPreviewData::insert(PreviewData *p_data) {
+  if (!p_data || !p_data->getImageData()) {
+    delete p_data;
+    return false;
+  }
+
   bool tsUpdated = false;
   bool inserted = false;
   auto newImageData = p_data->getImageData();

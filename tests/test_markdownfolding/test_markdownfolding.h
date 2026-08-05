@@ -45,6 +45,20 @@ private slots:
 
   void testFoldingBlockHeights();
 
+  void testFractionalBlockCoordinates();
+
+  void testFractionalClipDraw();
+
+  void testDocumentSizeSignals();
+
+  void testWrappedInlinePreviewCoordinates();
+
+  void testMalformedPreviewData();
+
+  void testCursorWidthPaintOnly();
+
+  void testExactHitTesting();
+
   void cleanupTestCase();
 
   void cleanup();

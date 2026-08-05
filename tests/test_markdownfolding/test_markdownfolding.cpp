@@ -1,9 +1,14 @@
 #include "test_markdownfolding.h"
 
+#include <QImage>
+#include <QPainter>
+#include <QSignalSpy>
 #include <QTextBlock>
+#include <QTextCursor>
 #include <QTextDocument>
 
 #include <vtextedit/markdownhighlighterdata.h>
+#include <vtextedit/previewdata.h>
 
 #include <foldingregionutils.h>
 #include <markdownfoldingprovider.h>
@@ -16,8 +21,7 @@
 using namespace tests;
 using namespace vte;
 
-static QString generateLines(int p_count)
-{
+static QString generateLines(int p_count) {
   QString text;
   for (int i = 0; i < p_count; ++i) {
     if (i > 0) {
@@ -28,16 +32,18 @@ static QString generateLines(int p_count)
   return text;
 }
 
-void TestMarkdownFolding::initTestCase()
-{
+static bool realNear(qreal p_actual, qreal p_expected) {
+  return qAbs(p_actual - p_expected) < 1e-6;
+}
+
+void TestMarkdownFolding::initTestCase() {
   Q_ASSERT(!m_doc);
   m_doc = new QTextDocument(generateLines(50));
   m_textFolding = new TextFolding(m_doc);
   m_provider = new MarkdownFoldingProvider(m_textFolding, m_doc);
 }
 
-void TestMarkdownFolding::cleanupTestCase()
-{
+void TestMarkdownFolding::cleanupTestCase() {
   delete m_provider;
   delete m_textFolding;
   delete m_doc;
@@ -46,14 +52,10 @@ void TestMarkdownFolding::cleanupTestCase()
   m_doc = nullptr;
 }
 
-void TestMarkdownFolding::cleanup()
-{
-  m_provider->clear();
-}
+void TestMarkdownFolding::cleanup() { m_provider->clear(); }
 
 // 1. Apply regions and verify fold ranges exist.
-void TestMarkdownFolding::testApplyFoldingRegions()
-{
+void TestMarkdownFolding::testApplyFoldingRegions() {
   QVector<md::FoldingRegion> regions;
   // Heading section [0, 9].
   regions.append({0, 9, md::Heading, 1});
@@ -74,8 +76,7 @@ void TestMarkdownFolding::testApplyFoldingRegions()
 }
 
 // 2. Re-apply same regions after folding one — fold state preserved.
-void TestMarkdownFolding::testDiffPreservesFoldState()
-{
+void TestMarkdownFolding::testDiffPreservesFoldState() {
   QVector<md::FoldingRegion> regions;
   regions.append({0, 9, md::Heading, 1});
   regions.append({3, 7, md::FencedCode, 0});
@@ -105,8 +106,7 @@ void TestMarkdownFolding::testDiffPreservesFoldState()
 }
 
 // 3. Stale ranges removed when not in new set.
-void TestMarkdownFolding::testDiffRemovesStaleRanges()
-{
+void TestMarkdownFolding::testDiffRemovesStaleRanges() {
   QVector<md::FoldingRegion> regions;
   regions.append({0, 9, md::Heading, 1});
   regions.append({12, 19, md::Heading, 2});
@@ -132,8 +132,7 @@ void TestMarkdownFolding::testDiffRemovesStaleRanges()
 }
 
 // 4. New ranges added when not in old set.
-void TestMarkdownFolding::testDiffAddsNewRanges()
-{
+void TestMarkdownFolding::testDiffAddsNewRanges() {
   QVector<md::FoldingRegion> regions;
   regions.append({0, 9, md::Heading, 1});
   regions.append({12, 19, md::Heading, 2});
@@ -158,8 +157,7 @@ void TestMarkdownFolding::testDiffAddsNewRanges()
 }
 
 // 5. Regions spanning a single block are skipped.
-void TestMarkdownFolding::testSkipsSmallRanges()
-{
+void TestMarkdownFolding::testSkipsSmallRanges() {
   QVector<md::FoldingRegion> regions;
   // Single-block region: startBlock == endBlock.
   regions.append({5, 5, md::Heading, 1});
@@ -173,8 +171,7 @@ void TestMarkdownFolding::testSkipsSmallRanges()
 }
 
 // 6. Nested regions both created correctly.
-void TestMarkdownFolding::testNesting()
-{
+void TestMarkdownFolding::testNesting() {
   QVector<md::FoldingRegion> regions;
   regions.append({0, 20, md::Heading, 1});
   regions.append({5, 10, md::FencedCode, 0});
@@ -191,8 +188,7 @@ void TestMarkdownFolding::testNesting()
 }
 
 // 7. Empty regions vector produces no folds.
-void TestMarkdownFolding::testEmptyRegions()
-{
+void TestMarkdownFolding::testEmptyRegions() {
   QVector<md::FoldingRegion> regions;
   m_provider->updateFoldingRegions(regions);
 
@@ -202,8 +198,7 @@ void TestMarkdownFolding::testEmptyRegions()
 }
 
 // 8. clear() removes all markdown folds.
-void TestMarkdownFolding::testClearOnDisable()
-{
+void TestMarkdownFolding::testClearOnDisable() {
   QVector<md::FoldingRegion> regions;
   regions.append({0, 9, md::Heading, 1});
   regions.append({12, 19, md::Heading, 2});
@@ -223,8 +218,7 @@ void TestMarkdownFolding::testClearOnDisable()
 
 // Helper to find a FoldingRegion by type and startBlock.
 static const md::FoldingRegion *findRegion(const QVector<md::FoldingRegion> &p_regions,
-                                           md::FoldingRegionType p_type, int p_startBlock)
-{
+                                           md::FoldingRegionType p_type, int p_startBlock) {
   for (const auto &r : p_regions) {
     if (r.m_type == p_type && r.m_startBlock == p_startBlock) {
       return &r;
@@ -234,8 +228,7 @@ static const md::FoldingRegion *findRegion(const QVector<md::FoldingRegion> &p_r
 }
 
 // 9. Single heading extends to end of document.
-void TestMarkdownFolding::testHeadingSectionBasic()
-{
+void TestMarkdownFolding::testHeadingSectionBasic() {
   const int numBlocks = 20;
   QVector<md::FoldingRegion> regions;
   // AST walker produces heading with single-line range; endBlock is placeholder.
@@ -250,8 +243,7 @@ void TestMarkdownFolding::testHeadingSectionBasic()
 }
 
 // 10. Two same-level headings: first section ends before second.
-void TestMarkdownFolding::testHeadingSectionMultiple()
-{
+void TestMarkdownFolding::testHeadingSectionMultiple() {
   const int numBlocks = 20;
   QVector<md::FoldingRegion> regions;
   regions.append({0, 0, md::Heading, 2});
@@ -269,8 +261,7 @@ void TestMarkdownFolding::testHeadingSectionMultiple()
 }
 
 // 11. Nested headings: H1 contains H2, next H1 terminates both.
-void TestMarkdownFolding::testHeadingSectionNested()
-{
+void TestMarkdownFolding::testHeadingSectionNested() {
   const int numBlocks = 20;
   QVector<md::FoldingRegion> regions;
   regions.append({0, 0, md::Heading, 1});   // H1
@@ -292,8 +283,7 @@ void TestMarkdownFolding::testHeadingSectionNested()
 }
 
 // 12. Heading section spanning only 1 block is filtered out.
-void TestMarkdownFolding::testHeadingSectionTooSmall()
-{
+void TestMarkdownFolding::testHeadingSectionTooSmall() {
   const int numBlocks = 20;
   QVector<md::FoldingRegion> regions;
   regions.append({5, 5, md::Heading, 2});
@@ -311,8 +301,7 @@ void TestMarkdownFolding::testHeadingSectionTooSmall()
 }
 
 // 13. Heading near end of document extends to last block.
-void TestMarkdownFolding::testHeadingSectionAtEnd()
-{
+void TestMarkdownFolding::testHeadingSectionAtEnd() {
   const int numBlocks = 20;
   QVector<md::FoldingRegion> regions;
   regions.append({15, 15, md::Heading, 3});
@@ -326,8 +315,7 @@ void TestMarkdownFolding::testHeadingSectionAtEnd()
 }
 
 // 14. Heading inside a blockquote is NOT converted to a section fold.
-void TestMarkdownFolding::testHeadingSectionInsideBlockquote()
-{
+void TestMarkdownFolding::testHeadingSectionInsideBlockquote() {
   const int numBlocks = 20;
   QVector<md::FoldingRegion> regions;
   // Blockquote spanning [2, 8].
@@ -370,15 +358,14 @@ void TestMarkdownFolding::testHeadingSectionInsideBlockquote()
 }
 
 // Integration: heading section computation feeds into provider.
-void TestMarkdownFolding::testEndToEndFolding()
-{
+void TestMarkdownFolding::testEndToEndFolding() {
   // Simulate full pipeline: raw heading regions -> computeHeadingSections -> provider.
   const int numBlocks = 20;
   QVector<md::FoldingRegion> regions;
   // Raw heading lines (as produced by AST walker).
-  regions.append({0, 0, md::Heading, 1});    // H1
-  regions.append({3, 3, md::Heading, 2});    // H2
-  regions.append({10, 10, md::Heading, 1});  // H1
+  regions.append({0, 0, md::Heading, 1});   // H1
+  regions.append({3, 3, md::Heading, 2});   // H2
+  regions.append({10, 10, md::Heading, 1}); // H1
   // A code block inside the first section.
   regions.append({5, 7, md::FencedCode, 0});
 
@@ -413,8 +400,7 @@ void TestMarkdownFolding::testEndToEndFolding()
 }
 
 // 16. Folding sets hidden blocks to zero-height rects; unfolding restores them.
-void TestMarkdownFolding::testFoldingBlockHeights()
-{
+void TestMarkdownFolding::testFoldingBlockHeights() {
   // Use a standalone document + layout for this test (not the shared m_doc).
   QTextDocument doc(generateLines(25));
   DocumentResourceMgr resourceMgr;
@@ -477,6 +463,206 @@ void TestMarkdownFolding::testFoldingBlockHeights()
   qreal unfoldedHeight = layout->documentSize().height();
   QVERIFY(unfoldedHeight > foldedHeight);
   QVERIFY(qFuzzyCompare(unfoldedHeight, preFoldHeight));
+}
+
+void TestMarkdownFolding::testFractionalBlockCoordinates() {
+  QTextDocument doc(generateLines(10));
+  doc.setTextWidth(600);
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  layout->setLeadingSpaceOfLine(3.28);
+  layout->relayout();
+
+  for (int i = 0; i < doc.blockCount(); ++i) {
+    QTextBlock block = doc.findBlockByNumber(i);
+    const auto info = BlockLayoutData::get(block);
+    const QPointF point(doc.documentMargin(), info->top() + 0.25);
+    QCOMPARE(layout->findBlockByPosition(point), i);
+    QCOMPARE(layout->hitTest(point, Qt::FuzzyHit), block.position());
+  }
+}
+
+void TestMarkdownFolding::testFractionalClipDraw() {
+  QTextDocument doc(QStringLiteral("First block\nSecond block"));
+  doc.setTextWidth(200);
+
+  QTextCursor cursor(doc.findBlockByNumber(1));
+  QTextBlockFormat format;
+  format.setBackground(Qt::green);
+  cursor.setBlockFormat(format);
+
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  layout->setLeadingSpaceOfLine(3.28);
+  layout->relayout();
+
+  const qreal secondTop = BlockLayoutData::get(doc.findBlockByNumber(1))->top();
+  QVERIFY(!realNear(secondTop, qFloor(secondTop)));
+
+  QImage image(220, qCeil(layout->documentSize().height()) + 10, QImage::Format_ARGB32);
+  image.fill(Qt::white);
+  QPainter painter(&image);
+  const qreal clipBottom = (secondTop + qCeil(secondTop)) / 2;
+  QVERIFY(clipBottom > secondTop);
+  QVERIFY(qFloor(clipBottom) < secondTop);
+  const QRectF clip(0, 0, image.width(), clipBottom);
+  painter.setClipRect(clip);
+
+  QAbstractTextDocumentLayout::PaintContext context;
+  context.clip = clip;
+  layout->draw(&painter, context);
+  painter.end();
+
+  const int sampleX = qFloor(doc.documentMargin()) + 2;
+  const int sampleY = qFloor(secondTop);
+  QCOMPARE(image.pixelColor(sampleX, sampleY), QColor(Qt::green));
+}
+
+void TestMarkdownFolding::testDocumentSizeSignals() {
+  QTextDocument doc(generateLines(10));
+  doc.setTextWidth(600);
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  layout->setLeadingSpaceOfLine(3.28);
+  layout->relayout();
+
+  const QSizeF originalSize = layout->documentSize();
+  QSignalSpy sizeSpy(layout, SIGNAL(documentSizeChanged(QSizeF)));
+  layout->relayout();
+  QCOMPARE(layout->documentSize(), originalSize);
+  QCOMPARE(sizeSpy.count(), 0);
+
+  layout->setLeadingSpaceOfLine(4.28);
+  layout->relayout();
+  QVERIFY(layout->documentSize() != originalSize);
+  QCOMPARE(sizeSpy.count(), 1);
+}
+
+void TestMarkdownFolding::testWrappedInlinePreviewCoordinates() {
+  QTextDocument doc(QString(160, QLatin1Char('x')));
+  doc.setTextWidth(120);
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  layout->relayout();
+
+  QTextBlock block = doc.firstBlock();
+  QTextLayout *textLayout = block.layout();
+  QVERIFY(textLayout->lineCount() >= 3);
+  const int start = textLayout->lineAt(0).textStart() + 1;
+  const int end = textLayout->lineAt(2).textStart() + 2;
+  auto previewData = BlockPreviewData::get(block);
+  previewData->insert(new PreviewData(PreviewData::ImageLink, 1, start, end, 0, true,
+                                      QStringLiteral("wrapped-image"), QSize(100, 40), 0));
+
+  layout->setPreviewEnabled(true);
+  textLayout = block.layout();
+  QVERIFY(textLayout->lineCount() >= 3);
+
+  const auto info = BlockLayoutData::get(block);
+  QCOMPARE(info->m_markers.size(), 4);
+  const QTextLine continuationLine = textLayout->lineAt(1);
+  const QTextLine endingLine = textLayout->lineAt(2);
+  QVERIFY(
+      realNear(info->m_markers.at(1).m_end.x(), continuationLine.x() + continuationLine.width()));
+  QVERIFY(realNear(info->m_markers.at(2).m_end.x(), endingLine.cursorToX(end)));
+}
+
+void TestMarkdownFolding::testMalformedPreviewData() {
+  QTextDocument doc(QStringLiteral("Preview data"));
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+
+  auto previewData = BlockPreviewData::get(doc.firstBlock());
+  QVERIFY(!previewData->insert(nullptr));
+  QCOMPARE(previewData->getPreviewData().size(), 0);
+  QVERIFY(!previewData->insert(new PreviewData()));
+  QCOMPARE(previewData->getPreviewData().size(), 0);
+
+  layout->setPreviewEnabled(true);
+  QVERIFY(layout->documentSize().height() > 0);
+}
+
+void TestMarkdownFolding::testCursorWidthPaintOnly() {
+  QTextDocument doc(QString(120, QLatin1Char('x')) + QStringLiteral("\nfolded\nlast"));
+  doc.setTextWidth(120);
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  doc.findBlockByNumber(1).setVisible(false);
+  layout->relayout();
+
+  QVector<QPair<int, int>> lineBreaks;
+  QTextBlock block = doc.firstBlock();
+  for (int i = 0; i < block.layout()->lineCount(); ++i) {
+    const QTextLine line = block.layout()->lineAt(i);
+    lineBreaks.append(qMakePair(line.textStart(), line.textLength()));
+  }
+
+  QVector<QRectF> blockRects;
+  for (block = doc.firstBlock(); block.isValid(); block = block.next()) {
+    blockRects.append(BlockLayoutData::get(block)->m_rect);
+  }
+  const QSizeF documentSize = layout->documentSize();
+
+  QSignalSpy updateSpy(layout, SIGNAL(update(QRectF)));
+  QSignalSpy sizeSpy(layout, SIGNAL(documentSizeChanged(QSizeF)));
+  const int newWidth = layout->cursorWidth() + 10;
+  layout->setCursorWidth(newWidth);
+  QCOMPARE(updateSpy.count(), 1);
+  QCOMPARE(sizeSpy.count(), 0);
+
+  updateSpy.clear();
+  layout->setCursorWidth(newWidth);
+  QCOMPARE(updateSpy.count(), 0);
+  QCOMPARE(sizeSpy.count(), 0);
+
+  layout->relayout();
+  QCOMPARE(sizeSpy.count(), 0);
+  QCOMPARE(layout->documentSize(), documentSize);
+
+  QVector<QPair<int, int>> newLineBreaks;
+  block = doc.firstBlock();
+  for (int i = 0; i < block.layout()->lineCount(); ++i) {
+    const QTextLine line = block.layout()->lineAt(i);
+    newLineBreaks.append(qMakePair(line.textStart(), line.textLength()));
+  }
+  QCOMPARE(newLineBreaks, lineBreaks);
+
+  int blockNumber = 0;
+  for (block = doc.firstBlock(); block.isValid(); block = block.next(), ++blockNumber) {
+    QCOMPARE(BlockLayoutData::get(block)->m_rect, blockRects.at(blockNumber));
+  }
+}
+
+void TestMarkdownFolding::testExactHitTesting() {
+  QTextDocument doc(QStringLiteral("Exact hit text"));
+  doc.setTextWidth(300);
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  layout->setLeadingSpaceOfLine(8.5);
+  layout->relayout();
+
+  const QTextBlock block = doc.firstBlock();
+  const QTextLine line = block.layout()->lineAt(0);
+  const QRectF textRect = line.naturalTextRect().translated(doc.documentMargin(), 0);
+  const qreal blockTop = BlockLayoutData::get(block)->top();
+  const QPointF interior(textRect.center().x(), blockTop + textRect.center().y());
+  QVERIFY(layout->hitTest(interior, Qt::ExactHit) >= block.position());
+
+  const QVector<QPointF> outsidePoints = {
+      QPointF(textRect.left() - 2, blockTop + textRect.center().y()),
+      QPointF(textRect.right() + 2, blockTop + textRect.center().y()),
+      QPointF(textRect.center().x(), blockTop + line.naturalTextRect().top() / 2)};
+  for (const auto &point : outsidePoints) {
+    QCOMPARE(layout->hitTest(point, Qt::ExactHit), -1);
+    QVERIFY(layout->hitTest(point, Qt::FuzzyHit) >= 0);
+  }
 }
 
 QTEST_MAIN(tests::TestMarkdownFolding)

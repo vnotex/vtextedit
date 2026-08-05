@@ -167,7 +167,7 @@ private:
   // Block count of the document.
   int m_blockCount = 0;
 
-  // Width of the cursor.
+  // Width used only to paint the cursor.
   int m_cursorWidth = 1;
 
   // Right margin for cursor.
@@ -189,6 +189,9 @@ private:
 
   // Padding of image preview for top and bottom.
   static const int c_imagePadding;
+
+  // Fixed geometry reserved for the cursor at the end of a block.
+  static const int c_cursorGeometryWidth;
 };
 
 } // namespace vte
