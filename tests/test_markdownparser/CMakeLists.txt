@@ -23,7 +23,6 @@ target_include_directories(test_markdownparser PRIVATE
     ${CMAKE_BINARY_DIR}/libs/cmark/src
 )
 target_compile_definitions(test_markdownparser PRIVATE
-    VTEXTEDIT_STATIC_DEFINE
     FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
 )
 target_link_libraries(test_markdownparser PRIVATE
@@ -31,6 +30,14 @@ target_link_libraries(test_markdownparser PRIVATE
     Qt::Gui
     Qt::Test
     Qt::Widgets
+    VTextEdit
     cmark
 )
+if(WIN32)
+    add_custom_command(TARGET test_markdownparser POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:VTextEdit>
+            $<TARGET_FILE_DIR:test_markdownparser>
+    )
+endif()
 add_test(NAME test_markdownparser COMMAND test_markdownparser)

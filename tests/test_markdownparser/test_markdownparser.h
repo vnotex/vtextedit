@@ -17,6 +17,7 @@ namespace tests
         void testBlockquotes();
         void testHorizontalRules();
         void testFencedCodeBlocks();
+        void testFencedCodeBlockIndentationFormat();
         void testIndentedCodeBlocks();
         void testHTMLBlocks();
         void testLists();

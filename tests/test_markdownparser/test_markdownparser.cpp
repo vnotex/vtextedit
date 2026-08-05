@@ -2,7 +2,16 @@
 
 #include <QFile>
 #include <QElapsedTimer>
+#include <QSignalSpy>
+#include <QTextBlock>
+#include <QTextLayout>
 #include <algorithm>
+
+#include <vtextedit/markdowneditorconfig.h>
+#include <vtextedit/markdownhighlighter.h>
+#include <vtextedit/texteditorconfig.h>
+#include <vtextedit/theme.h>
+#include <vtextedit/vmarkdowneditor.h>
 
 #include "markdownastwalker.h"
 
@@ -112,6 +121,18 @@ static QString readFixture(const QString &p_name)
   return QString::fromUtf8(f.readAll());
 }
 
+static QTextCharFormat formatAt(const QTextBlock &p_block, int p_position)
+{
+  const auto ranges = p_block.layout()->formats();
+  for (const auto &range : ranges) {
+    if (range.start <= p_position && p_position < range.start + range.length) {
+      return range.format;
+    }
+  }
+
+  return QTextCharFormat();
+}
+
 void TestMarkdownParser::initTestCase()
 {
 }
@@ -201,6 +222,71 @@ void TestMarkdownParser::testFencedCodeBlocks()
   auto it = result.codeBlockRegions.constBegin();
   QCOMPARE(it.value().m_startPos, 0);
   QCOMPARE(it.value().m_endPos, 20);
+
+  const QString nestedInput =
+      QStringLiteral("1. Nested code block\n\n    ```cpp\n    code here\n    ```\n2. List item\n");
+  auto nestedResult = parse(nestedInput);
+
+  QCOMPARE(nestedResult.codeBlockRegions.size(), 1);
+  const auto &openingFenceHighlights = nestedResult.blocksHighlights.at(2);
+  const auto openingFence = std::find_if(
+      openingFenceHighlights.cbegin(), openingFenceHighlights.cend(), [](const vte::md::HLUnit &p_unit) {
+        return p_unit.styleIndex == HLT_FENCEDCODEBLOCK;
+      });
+  QVERIFY(openingFence != openingFenceHighlights.cend());
+  // The list indentation is intentionally outside the AST range and must be formatted by the
+  // highlighter's second pass.
+  QCOMPARE(openingFence->start, 4UL);
+}
+
+void TestMarkdownParser::testFencedCodeBlockIndentationFormat()
+{
+  const QString themeJson = QStringLiteral(R"({
+    "metadata": {"type": "vtextedit", "name": "FencedCodeTest"},
+    "editor": {"font-family": "Arial", "font-size": 11},
+    "markdown-syntax-styles": {
+      "FENCEDCODEBLOCK": {
+        "font-family": "Courier New",
+        "font-size": 19,
+        "background-color": "#123456"
+      }
+    }
+  })");
+  auto theme = vte::Theme::createThemeFromContent(themeJson);
+  QVERIFY(!theme.isNull());
+
+  auto textConfig = QSharedPointer<vte::TextEditorConfig>::create();
+  textConfig->m_theme = theme;
+  auto markdownConfig = QSharedPointer<vte::MarkdownEditorConfig>::create(textConfig);
+  markdownConfig->m_inplacePreviewSources = vte::MarkdownEditorConfig::NoInplacePreview;
+  auto parameters = QSharedPointer<vte::TextEditorParameters>::create();
+  vte::VMarkdownEditor editor(markdownConfig, parameters);
+  auto highlighter = editor.getHighlighter();
+  QVERIFY(highlighter);
+
+  QSignalSpy completed(highlighter, &vte::MarkdownHighlighter::highlightCompleted);
+  editor.setText(QStringLiteral(
+      "1. Nested code block\n\n    ```cpp\n    code here\n    ```\n2. List item\n"));
+  completed.clear();
+  highlighter->updateHighlight();
+  QTRY_VERIFY(completed.count() > 0);
+
+  const QTextBlock openingFence = editor.document()->findBlockByNumber(2);
+  QCOMPARE(openingFence.userState(),
+           static_cast<int>(vte::md::HighlightBlockState::CodeBlockStart));
+  const auto expected = highlighter->codeBlockStyle();
+  const auto indentationFormat = formatAt(openingFence, 0);
+  const auto lastIndentationFormat = formatAt(openingFence, 3);
+  const auto fenceFormat = formatAt(openingFence, 4);
+  QCOMPARE(indentationFormat.fontPointSize(), expected.fontPointSize());
+  QCOMPARE(indentationFormat.background().color(), expected.background().color());
+  QCOMPARE(lastIndentationFormat.fontPointSize(), expected.fontPointSize());
+  QCOMPARE(lastIndentationFormat.background().color(), expected.background().color());
+  QCOMPARE(fenceFormat.fontPointSize(), expected.fontPointSize());
+  QCOMPARE(fenceFormat.background().color(), expected.background().color());
+
+  const QTextBlock nextListItem = editor.document()->findBlockByNumber(5);
+  QVERIFY(formatAt(nextListItem, 0).background().color() != expected.background().color());
 }
 
 void TestMarkdownParser::testIndentedCodeBlocks()

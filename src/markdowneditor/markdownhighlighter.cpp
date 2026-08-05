@@ -168,8 +168,8 @@ void MarkdownHighlighter::highlightBlock(const QString &p_text) {
     highlightData->clearHighlight();
   }
 
+  formatCodeBlockLeadingSpaces(p_text);
   if (isCodeBlock) {
-    formatCodeBlockLeadingSpaces(p_text);
     if (highlightData->getCodeBlockHighlightTimeStamp() == result->m_codeBlockTimeStamp ||
         !result->m_codeBlockHighlightReceived) {
       highlightCodeBlock(highlightData->getCodeBlockHighlight());
@@ -1007,7 +1007,10 @@ const QTextCharFormat &MarkdownHighlighter::codeBlockStyle() const {
 
 void MarkdownHighlighter::formatCodeBlockLeadingSpaces(const QString &p_text) {
   // Brush the indentation spaces.
-  if (currentBlockState() == md::HighlightBlockState::CodeBlock) {
+  const auto state = currentBlockState();
+  if (state == md::HighlightBlockState::CodeBlockStart ||
+      state == md::HighlightBlockState::CodeBlock ||
+      state == md::HighlightBlockState::CodeBlockEnd) {
     int spaces = TextUtils::fetchIndentation(p_text);
     if (spaces > 0) {
       setFormat(0, spaces, codeBlockStyle());
