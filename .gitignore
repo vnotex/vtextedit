@@ -4,3 +4,4 @@ build
 .ccls
 compile_flags.txt
 .sisyphus/
+.kilo/
