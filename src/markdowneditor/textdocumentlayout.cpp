@@ -311,17 +311,51 @@ int TextDocumentLayout::hitTest(const QPointF &p_point, Qt::HitTestAccuracy p_ac
     return -1;
   }
 
-  for (int i = 0; i < layout->lineCount(); ++i) {
+  // Resolve the line vertically. A block reserves m_leadingSpaceOfLine above
+  // every line, so a point may land outside all natural text rects while still
+  // being inside the block. In such a gap the x coordinate must still be
+  // honored, otherwise the cursor collapses to the line boundary.
+  const int lineCount = layout->lineCount();
+  if (pos.y() < 0) {
+    // Above the whole document. findBlockByPosition() falls back to the first
+    // block here, so keep the block start instead of resolving horizontally.
+    return block.position();
+  }
+
+  int targetLine = -1;
+  for (int i = 0; i < lineCount; ++i) {
     QTextLine line = layout->lineAt(i);
     const QRectF lr = line.naturalTextRect();
-    if (lr.top() > pos.y()) {
-      off = qMin(off, line.textStart());
-    } else if (lr.bottom() <= pos.y()) {
-      off = qMax(off, line.textStart() + line.textLength());
-    } else {
-      off = line.xToCursor(pos.x(), QTextLine::CursorBetweenCharacters);
-      break;
+    if (pos.y() >= lr.bottom()) {
+      // Below this line. Keep looking at the following ones.
+      continue;
     }
+
+    targetLine = i;
+    if (pos.y() < lr.top() && i > 0) {
+      // Within the gap above this line. layoutLines() reserves
+      // m_leadingSpaceOfLine there plus, when this line owns an inline
+      // preview, the image space. Only the plain leading space is shared with
+      // the previous line; image space stays with the line owning the image.
+      const QTextLine prevLine = layout->lineAt(i - 1);
+      const qreal reserved = line.y() - (prevLine.y() + prevLine.height());
+      const QRectF prevRect = prevLine.naturalTextRect();
+      if (reserved <= m_leadingSpaceOfLine + 1e-6 &&
+          pos.y() - prevRect.bottom() < lr.top() - pos.y()) {
+        targetLine = i - 1;
+      }
+    }
+
+    break;
+  }
+
+  if (targetLine != -1) {
+    off = layout->lineAt(targetLine).xToCursor(pos.x(), QTextLine::CursorBetweenCharacters);
+  } else if (lineCount > 0) {
+    // Below every line of the block, such as the preview image area. Keep the
+    // cursor at the end of the block.
+    const QTextLine line = layout->lineAt(lineCount - 1);
+    off = line.textStart() + line.textLength();
   }
 
   return block.position() + off;

@@ -665,4 +665,211 @@ void TestMarkdownFolding::testExactHitTesting() {
   }
 }
 
+// A click in the leading space above a line must still honor the x coordinate
+// instead of collapsing to the start of the block.
+void TestMarkdownFolding::testFuzzyHitInLeadingSpace() {
+  QTextDocument doc(QStringLiteral("Leading space hit testing"));
+  doc.setTextWidth(400);
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  layout->setLeadingSpaceOfLine(6);
+  layout->relayout();
+
+  const QTextBlock block = doc.firstBlock();
+  const QTextLine line = block.layout()->lineAt(0);
+  const QRectF lr = line.naturalTextRect();
+  QVERIFY(lr.top() > 0);
+
+  const qreal blockTop = BlockLayoutData::get(block)->top();
+  const qreal localX = lr.center().x();
+  // Vertically inside the leading space, above the line's natural text rect.
+  const QPointF point(localX + doc.documentMargin(), blockTop + lr.top() / 2);
+
+  const int expected = block.position() + line.xToCursor(localX, QTextLine::CursorBetweenCharacters);
+  QVERIFY(expected > block.position());
+  QCOMPARE(layout->hitTest(point, Qt::FuzzyHit), expected);
+}
+
+// A click in the gap between two wrapped lines must resolve horizontally within
+// the nearest line instead of returning the line boundary.
+void TestMarkdownFolding::testFuzzyHitInWrappedLineGap() {
+  QTextDocument doc(QString(160, QLatin1Char('x')));
+  doc.setTextWidth(120);
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  layout->setLeadingSpaceOfLine(6);
+  layout->relayout();
+
+  const QTextBlock block = doc.firstBlock();
+  QTextLayout *textLayout = block.layout();
+  QVERIFY(textLayout->lineCount() >= 2);
+
+  const QTextLine firstLine = textLayout->lineAt(0);
+  const QTextLine secondLine = textLayout->lineAt(1);
+  const QRectF secondRect = secondLine.naturalTextRect();
+  // The leading space opens a real gap between consecutive wrapped lines.
+  QVERIFY(secondRect.top() > firstLine.naturalTextRect().bottom());
+
+  const qreal blockTop = BlockLayoutData::get(block)->top();
+  const qreal localX = secondRect.center().x();
+  // Just above the second line, inside the inter-line gap.
+  const QPointF point(localX + doc.documentMargin(), blockTop + secondRect.top() - 0.25);
+
+  const int expected =
+      block.position() + secondLine.xToCursor(localX, QTextLine::CursorBetweenCharacters);
+  QVERIFY(expected > block.position() + secondLine.textStart());
+  QCOMPARE(layout->hitTest(point, Qt::FuzzyHit), expected);
+}
+
+// A click below every line of a block, such as the block preview image area,
+// keeps the historical end-of-block behavior.
+void TestMarkdownFolding::testFuzzyHitBelowLastLine() {
+  QTextDocument doc(QStringLiteral("Below the last line"));
+  doc.setTextWidth(400);
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  layout->setLeadingSpaceOfLine(6);
+  layout->relayout();
+
+  const QTextBlock block = doc.firstBlock();
+  QTextLayout *textLayout = block.layout();
+  const QTextLine lastLine = textLayout->lineAt(textLayout->lineCount() - 1);
+  const QRectF lr = lastLine.naturalTextRect();
+
+  const qreal blockTop = BlockLayoutData::get(block)->top();
+  const QPointF point(lr.center().x() + doc.documentMargin(), blockTop + lr.bottom() + 5);
+
+  const int expected = block.position() + lastLine.textStart() + lastLine.textLength();
+  QCOMPARE(layout->hitTest(point, Qt::FuzzyHit), expected);
+}
+
+// Without leading space consecutive lines are tightly packed. This is a
+// non-regression guard: a point exactly on a line's top edge belongs to that
+// line, not to the preceding one.
+void TestMarkdownFolding::testFuzzyHitAtLineBoundary() {
+  QTextDocument doc(QString(160, QLatin1Char('x')));
+  doc.setTextWidth(120);
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  layout->setLeadingSpaceOfLine(0);
+  layout->relayout();
+
+  const QTextBlock block = doc.firstBlock();
+  QTextLayout *textLayout = block.layout();
+  QVERIFY(textLayout->lineCount() >= 2);
+
+  const QTextLine secondLine = textLayout->lineAt(1);
+  const QRectF secondRect = secondLine.naturalTextRect();
+  QVERIFY(secondRect.top() >= textLayout->lineAt(0).naturalTextRect().bottom());
+
+  const qreal blockTop = BlockLayoutData::get(block)->top();
+  const qreal localX = secondRect.center().x();
+  const QPointF point(localX + doc.documentMargin(), blockTop + secondRect.top());
+
+  const int expected =
+      block.position() + secondLine.xToCursor(localX, QTextLine::CursorBetweenCharacters);
+  QVERIFY(expected > block.position() + secondLine.textStart());
+  QCOMPARE(layout->hitTest(point, Qt::FuzzyHit), expected);
+}
+
+// Inside plain leading space the nearest line wins, including the line above.
+void TestMarkdownFolding::testFuzzyHitNearerPreviousLine() {
+  QTextDocument doc(QString(160, QLatin1Char('x')));
+  doc.setTextWidth(120);
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  layout->setLeadingSpaceOfLine(6);
+  layout->relayout();
+
+  const QTextBlock block = doc.firstBlock();
+  QTextLayout *textLayout = block.layout();
+  QVERIFY(textLayout->lineCount() >= 2);
+
+  const QTextLine firstLine = textLayout->lineAt(0);
+  const QRectF firstRect = firstLine.naturalTextRect();
+  const QRectF secondRect = textLayout->lineAt(1).naturalTextRect();
+  QVERIFY(secondRect.top() > firstRect.bottom());
+
+  const qreal blockTop = BlockLayoutData::get(block)->top();
+  const qreal localX = firstRect.center().x();
+  // Just below the first line, i.e. nearer to it than to the second one.
+  const QPointF point(localX + doc.documentMargin(), blockTop + firstRect.bottom() + 0.25);
+
+  const int expected =
+      block.position() + firstLine.xToCursor(localX, QTextLine::CursorBetweenCharacters);
+  QVERIFY(expected < block.position() + firstLine.textStart() + firstLine.textLength());
+  QCOMPARE(layout->hitTest(point, Qt::FuzzyHit), expected);
+}
+
+// A point above the whole document keeps resolving to the document start so
+// that dragging a selection past the top still selects to the beginning.
+void TestMarkdownFolding::testFuzzyHitAboveDocument() {
+  QTextDocument doc(generateLines(5));
+  doc.setTextWidth(400);
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  layout->setLeadingSpaceOfLine(6);
+  layout->relayout();
+
+  const QTextBlock block = doc.firstBlock();
+  const QRectF lr = block.layout()->lineAt(0).naturalTextRect();
+  const QPointF point(lr.center().x() + doc.documentMargin(), -20);
+
+  QCOMPARE(layout->hitTest(point, Qt::FuzzyHit), block.position());
+}
+
+// The space an inline preview image occupies belongs to the line owning the
+// image, not to the preceding line, however close the point is to the latter.
+void TestMarkdownFolding::testFuzzyHitInInlinePreviewGap() {
+  QTextDocument doc(QString(220, QLatin1Char('x')));
+  doc.setTextWidth(120);
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  layout->setLeadingSpaceOfLine(6);
+  layout->relayout();
+
+  QTextBlock block = doc.firstBlock();
+  QTextLayout *textLayout = block.layout();
+  QVERIFY(textLayout->lineCount() >= 3);
+
+  // Anchor the preview on the second visual line so that the image space is
+  // laid out above a line that has a predecessor.
+  const int start = textLayout->lineAt(1).textStart() + 1;
+  const int end = textLayout->lineAt(2).textStart() + 2;
+  BlockPreviewData::get(block)->insert(new PreviewData(PreviewData::ImageLink, 1, start, end, 0,
+                                                       true, QStringLiteral("inline-gap-image"),
+                                                       QSize(100, 60), 0));
+  layout->setPreviewEnabled(true);
+
+  block = doc.firstBlock();
+  textLayout = block.layout();
+  QVERIFY(textLayout->lineCount() >= 3);
+
+  const QTextLine firstLine = textLayout->lineAt(0);
+  const QTextLine imageLine = textLayout->lineAt(1);
+  const QRectF firstRect = firstLine.naturalTextRect();
+  const QRectF imageRect = imageLine.naturalTextRect();
+  // The gap holds the image and is therefore wider than plain leading space.
+  QVERIFY(imageRect.top() - firstRect.bottom() > layout->getLeadingSpaceOfLine() + 1);
+
+  const qreal blockTop = BlockLayoutData::get(block)->top();
+  const qreal localX = imageRect.center().x();
+  // Deep inside the image area but much nearer to the preceding line.
+  const QPointF point(localX + doc.documentMargin(), blockTop + firstRect.bottom() + 1);
+
+  const int expected =
+      block.position() + imageLine.xToCursor(localX, QTextLine::CursorBetweenCharacters);
+  const int previousLineResult =
+      block.position() + firstLine.xToCursor(localX, QTextLine::CursorBetweenCharacters);
+  QVERIFY(expected != previousLineResult);
+  QCOMPARE(layout->hitTest(point, Qt::FuzzyHit), expected);
+}
+
 QTEST_MAIN(tests::TestMarkdownFolding)

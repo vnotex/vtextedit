@@ -59,6 +59,20 @@ private slots:
 
   void testExactHitTesting();
 
+  void testFuzzyHitInLeadingSpace();
+
+  void testFuzzyHitInWrappedLineGap();
+
+  void testFuzzyHitBelowLastLine();
+
+  void testFuzzyHitAtLineBoundary();
+
+  void testFuzzyHitNearerPreviousLine();
+
+  void testFuzzyHitAboveDocument();
+
+  void testFuzzyHitInInlinePreviewGap();
+
   void cleanupTestCase();
 
   void cleanup();
