@@ -89,6 +89,8 @@ QSize RecordingPreviewWidget::sizeHint() const {
   return m_hint;
 }
 
+qreal RecordingPreviewWidget::preferredWidthFraction() const { return m_widthFraction; }
+
 bool RecordingPreviewWidget::hasHeightForWidth() const { return m_wrapping; }
 
 int RecordingPreviewWidget::heightForWidth(int p_width) const {
@@ -158,6 +160,7 @@ PreviewWidget *RecordingPreviewFactory::createWidget(PreviewWidgetContext *p_con
   auto types = m_refuseSetPreview ? QVector<PreviewElementType>() : m_types;
   auto widget = new RecordingPreviewWidget(p_context, p_parent, types, m_hint);
   widget->m_wrapping = m_wrapping;
+  widget->m_widthFraction = m_widthFraction;
   if (m_wrapping) {
     QSizePolicy policy = widget->sizePolicy();
     policy.setHeightForWidth(true);
@@ -1640,6 +1643,351 @@ void TestInteractivePreview::testTableSheetFitsWithoutScrollBars() {
                             .arg(viewportSize.width())
                             .arg(totalColumnWidth)));
   }
+}
+
+// ---------------------------------------------------------------------------
+// Sheet geometry
+// ---------------------------------------------------------------------------
+
+namespace {
+// TablePreviewWidget::c_widthFraction, which lives in an internal header this
+// target deliberately cannot reach.
+const qreal c_expectedWidthFraction = 0.9;
+
+// The reserved band is a qreal rectangle turned into widget geometry with
+// toAlignedRect(), which can round outwards by a pixel on either edge.
+const int c_widthTolerance = 2;
+
+QTableView *sheetView(PreviewWidget *p_widget) {
+  return qobject_cast<QTableView *>(p_widget->findChild<QAbstractItemView *>());
+}
+
+int totalColumnWidth(QTableView *p_view) {
+  int total = 0;
+  for (int c = 0; c < p_view->model()->columnCount(); ++c) {
+    total += p_view->columnWidth(c);
+  }
+
+  return total;
+}
+
+// The whole width contract in one expression: a sheet narrower than the fill
+// grows to it, a wider one keeps its natural width, and one wider than the
+// text column is clamped to it.
+int expectedSheetWidth(qreal p_available, int p_natural) {
+  return qRound(qBound(p_available * c_expectedWidthFraction, qreal(p_natural), p_available));
+}
+} // namespace
+
+void TestInteractivePreview::testTableSheetSpansContentWidth() {
+  // The two outer branches of the contract: far below the fill, and beyond the
+  // text column. The middle one only exists at one particular editor width and
+  // has a test of its own.
+  const QVector<QString> tables{
+      QStringLiteral("| a | b |\n| --- | --- |\n| c | d |\n"),
+      QStringLiteral("| h |\n| --- |\n| ") + QString(300, QLatin1Char('x')) +
+          QStringLiteral(" |\n")};
+
+  for (int i = 0; i < tables.size(); ++i) {
+    VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+    editor.resize(600, 400);
+    editor.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&editor));
+    setTextAndSettle(editor, tables.at(i));
+
+    auto widget = singlePreviewWidget(editor);
+    QVERIFY(widget);
+    QVERIFY(widget->previewContext());
+
+    const qreal available = widget->previewContext()->availableContentRect().width();
+    QVERIFY(available > 0);
+
+    // Unchanged by the fill: the measurement derives from the content hints,
+    // never from the assigned geometry.
+    const int natural = widget->sizeHint().width();
+
+    // Assert the branch this source is meant to exercise, otherwise a drifting
+    // font could silently turn both rows into the same case.
+    if (i == 0) {
+      QVERIFY2(natural < available * c_expectedWidthFraction,
+               qPrintable(QStringLiteral("the narrow table is not narrow enough: %1 vs %2")
+                              .arg(natural)
+                              .arg(available * c_expectedWidthFraction)));
+    } else {
+      QVERIFY2(natural > available,
+               qPrintable(QStringLiteral("the wide table is not wider than the text column: "
+                                         "%1 vs %2")
+                              .arg(natural)
+                              .arg(available)));
+    }
+
+    const int expected = expectedSheetWidth(available, natural);
+    QVERIFY2(qAbs(widget->width() - expected) <= c_widthTolerance,
+             qPrintable(QStringLiteral("table %1: sheet width %2 is not the expected %3 "
+                                       "(natural %4, available %5)")
+                            .arg(i)
+                            .arg(widget->width())
+                            .arg(expected)
+                            .arg(natural)
+                            .arg(available)));
+
+    if (i == 0) {
+      // A no-op implementation would still satisfy the clamp above for the
+      // tables which are naturally wide enough.
+      QVERIFY2(widget->width() > natural,
+               qPrintable(QStringLiteral("the narrow sheet was not widened: %1 <= %2")
+                              .arg(widget->width())
+                              .arg(natural)));
+    }
+  }
+}
+
+void TestInteractivePreview::testTableSheetHeightMatchesItsRows() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(900, 600);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+
+  // Cells far longer than the column they start out in: the height is measured
+  // before the columns are distributed, so a wrapping row reserves a band for
+  // text which then fits on one line once the sheet is widened.
+  setTextAndSettle(
+      editor,
+      QStringLiteral("| Component | Description | Supported |\n"
+                     "|-----------|-------------|:---------:|\n"
+                     "| `VTextEdit` | Base edit widget with cursor and selection | Yes |\n"
+                     "| `VTextEditor` | Adds syntax highlight, Vi mode and folding | Yes |\n"
+                     "| `VMarkdownEditor` | Markdown parsing and in-place preview | Yes |\n"));
+  QTest::qWait(50);
+  QCoreApplication::processEvents();
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto view = sheetView(widget);
+  QVERIFY(view);
+  QCOMPARE(view->model()->rowCount(), 4);
+
+  int total = 2 * view->frameWidth();
+  int shortest = INT_MAX;
+  int tallest = 0;
+  for (int r = 0; r < view->model()->rowCount(); ++r) {
+    const int height = view->rowHeight(r);
+    total += height;
+    shortest = qMin(shortest, height);
+    tallest = qMax(tallest, height);
+  }
+
+  // Every row is one line high. A wrapped cell is at least twice the height of
+  // an unwrapped one, so this catches the measurement that produced the band.
+  QVERIFY2(tallest < 2 * shortest,
+           qPrintable(QStringLiteral("a row wrapped: tallest %1, shortest %2")
+                          .arg(tallest)
+                          .arg(shortest)));
+
+  // No empty strip under the last row, and nothing scrolled out of view
+  // either.
+  QVERIFY(!view->verticalScrollBar()->isVisible());
+  QVERIFY2(qAbs(widget->height() - total) <= c_widthTolerance,
+           qPrintable(QStringLiteral("sheet height %1 does not match its %2 row(s) plus the "
+                                     "frame (%3)")
+                          .arg(widget->height())
+                          .arg(view->model()->rowCount())
+                          .arg(total)));
+}
+
+void TestInteractivePreview::testTableSheetKeepsANaturalWidthInsideTheBand() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 400);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor,
+                   QStringLiteral("| header one | header two |\n| --- | --- |\n"
+                                  "| a fairly long cell value | another long cell value |\n"));
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  const int natural = widget->sizeHint().width();
+  QVERIFY(natural > 0);
+
+  // A table whose natural width already sits between the fill and the full
+  // text column keeps that width. Which editor size that is depends on the
+  // font, so calibrate the editor to the table: aim for the middle of the
+  // band, leaving 5% of slack on either side.
+  const qreal before = widget->previewContext()->availableContentRect().width();
+  const qreal target = natural / 0.95;
+  editor.resize(qRound(editor.width() + target - before), 400);
+  settle(editor);
+  QTest::qWait(50);
+  QCoreApplication::processEvents();
+
+  const qreal available = widget->previewContext()->availableContentRect().width();
+  QCOMPARE(widget->sizeHint().width(), natural);
+  QVERIFY2(natural >= available * c_expectedWidthFraction && natural <= available,
+           qPrintable(QStringLiteral("the calibration missed the band: natural %1, available %2")
+                          .arg(natural)
+                          .arg(available)));
+
+  // Neither shrunk to the natural width of a narrower sheet nor forced to the
+  // fill: a "every fitting table is exactly 90%" implementation fails here.
+  QVERIFY2(qAbs(widget->width() - natural) <= c_widthTolerance,
+           qPrintable(QStringLiteral("sheet width %1 is not the natural %2 (available %3)")
+                          .arg(widget->width())
+                          .arg(natural)
+                          .arg(available)));
+}
+
+void TestInteractivePreview::testInlinePreviewIgnoresTheWidthFraction() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+
+  auto factory = new RecordingPreviewFactory({PreviewElementType::Image});
+  factory->m_hint = QSize(40, 20);
+  factory->m_widthFraction = c_expectedWidthFraction;
+  QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
+
+  editor.resize(600, 400);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor, QStringLiteral("lead ![a](b.png) trail\n"));
+
+  QCOMPARE(factory->m_widgets.size(), 1);
+  auto widget = factory->m_widgets.first();
+  QVERIFY(widget->m_preview);
+  QCOMPARE(widget->m_preview->placement(), PreviewPlacement::InlineAboveLine);
+
+  // An inline preview is bound to the text span it replaces, whatever fraction
+  // it declares. The host restricts the fill by placement rather than by "the
+  // span width came back unset", because an inline span whose width could not
+  // be resolved reaches the same branch and must not be widened either - that
+  // sub-case is prevented by construction, not covered here.
+  const qreal available = widget->previewContext()->availableContentRect().width();
+  QVERIFY(available > 0);
+  QVERIFY2(widget->width() < available * c_expectedWidthFraction,
+           qPrintable(QStringLiteral("the inline preview was widened to %1 of an available %2")
+                          .arg(widget->width())
+                          .arg(available)));
+}
+
+void TestInteractivePreview::testTableColumnsShareTheExtraWidth() {
+  // Equal contents must stay equal, and unequal contents must keep their
+  // order: handing the whole surplus to the stretched last section breaks
+  // both.
+  const QVector<QString> tables{
+      QStringLiteral("| aaaa | aaaa |\n| --- | --- |\n| bbbb | bbbb |\n"),
+      QStringLiteral("| aaaaaaaaaaaaaaaa | b |\n| --- | --- |\n| cccccccccccccccc | d |\n")};
+
+  for (int i = 0; i < tables.size(); ++i) {
+    VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+    editor.resize(600, 400);
+    editor.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&editor));
+    setTextAndSettle(editor, tables.at(i));
+
+    auto widget = singlePreviewWidget(editor);
+    QVERIFY(widget);
+    auto view = sheetView(widget);
+    QVERIFY(view);
+    QCOMPARE(view->model()->columnCount(), 2);
+
+    QTest::qWait(50);
+    QCoreApplication::processEvents();
+
+    const int viewportWidth = view->viewport()->width();
+    QVERIFY2(qAbs(totalColumnWidth(view) - viewportWidth) <= c_widthTolerance,
+             qPrintable(QStringLiteral("table %1: columns total %2 do not cover the viewport %3")
+                            .arg(i)
+                            .arg(totalColumnWidth(view))
+                            .arg(viewportWidth)));
+
+    const int first = view->columnWidth(0);
+    const int second = view->columnWidth(1);
+    if (i == 0) {
+      QVERIFY2(qAbs(first - second) <= c_widthTolerance,
+               qPrintable(QStringLiteral("equal columns were distributed unequally: %1 vs %2")
+                              .arg(first)
+                              .arg(second)));
+    } else {
+      QVERIFY2(first > second,
+               qPrintable(QStringLiteral("the wide column %1 did not stay wider than %2")
+                              .arg(first)
+                              .arg(second)));
+    }
+  }
+}
+
+void TestInteractivePreview::testSingleColumnTableFillsTheSheet() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 400);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor, QStringLiteral("| only |\n| --- |\n| a |\n"));
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto view = sheetView(widget);
+  QVERIFY(view);
+  QCOMPARE(view->model()->columnCount(), 1);
+
+  QTest::qWait(50);
+  QCoreApplication::processEvents();
+
+  // The sheet has to have been widened at all: a single column already filled
+  // the viewport of its natural-width sheet through the stretched last
+  // section, so the column assertion below cannot detect the fill on its own.
+  const int natural = widget->sizeHint().width();
+  QVERIFY2(widget->width() > natural,
+           qPrintable(QStringLiteral("the sheet was not widened: %1 <= %2")
+                          .arg(widget->width())
+                          .arg(natural)));
+
+  // The case a "distribute over the first count - 1 columns" loop never
+  // touches at all.
+  QVERIFY2(qAbs(view->columnWidth(0) - view->viewport()->width()) <= c_widthTolerance,
+           qPrintable(QStringLiteral("the only column %1 does not cover the viewport %2")
+                          .arg(view->columnWidth(0))
+                          .arg(view->viewport()->width())));
+}
+
+void TestInteractivePreview::testTableWidthFollowsEditorResize() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 400);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor, QStringLiteral("| a | b |\n| --- | --- |\n| c | d |\n"));
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto view = sheetView(widget);
+  QVERIFY(view);
+
+  const qreal availableBefore = widget->previewContext()->availableContentRect().width();
+  const int widthBefore = widget->width();
+
+  editor.resize(900, 400);
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  settle(editor);
+  QTest::qWait(50);
+  QCoreApplication::processEvents();
+
+  const qreal available = widget->previewContext()->availableContentRect().width();
+  QVERIFY2(available > availableBefore,
+           qPrintable(QStringLiteral("the text column did not grow: %1 -> %2")
+                          .arg(availableBefore)
+                          .arg(available)));
+
+  // Both the re-measurement against the new width basis and the redistribution
+  // have to re-run.
+  const int expected = expectedSheetWidth(available, widget->sizeHint().width());
+  QVERIFY2(qAbs(widget->width() - expected) <= c_widthTolerance,
+           qPrintable(QStringLiteral("sheet width %1 is not the expected %2 after the resize "
+                                     "(was %3)")
+                          .arg(widget->width())
+                          .arg(expected)
+                          .arg(widthBefore)));
+  QVERIFY2(qAbs(totalColumnWidth(view) - view->viewport()->width()) <= c_widthTolerance,
+           qPrintable(QStringLiteral("columns total %1 do not cover the viewport %2 after the "
+                                     "resize")
+                          .arg(totalColumnWidth(view))
+                          .arg(view->viewport()->width())));
 }
 
 // ---------------------------------------------------------------------------

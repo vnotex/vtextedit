@@ -9,6 +9,7 @@
 #include "tablepreviewwidget.h"
 
 #include <QHeaderView>
+#include <QLayout>
 
 using namespace tests;
 using namespace vte;
@@ -544,6 +545,108 @@ void TestTablePreview::testPreferredSizeCacheTracksContents() {
 
   // Content changes have to invalidate it.
   QVERIFY(widget.sizeHint().width() > narrow);
+}
+
+namespace {
+// A two column sheet whose columns are deliberately very unequal, so an
+// "equalize" distribution is distinguishable from a proportional one.
+QSharedPointer<const TablePreview> makeUnequalTable() {
+  QVector<QVector<QString>> cells;
+  cells.append({QStringLiteral("a rather long header"), QStringLiteral("b")});
+  cells.append({QStringLiteral("a rather long value"), QStringLiteral("c")});
+  return makeTable(cells, {PreviewTableAlignment::None, PreviewTableAlignment::None});
+}
+
+int totalColumnWidth(TablePreviewView *p_view) {
+  int total = 0;
+  for (int c = 0; c < p_view->model()->columnCount(); ++c) {
+    total += p_view->columnWidth(c);
+  }
+
+  return total;
+}
+} // namespace
+
+void TestTablePreview::testColumnsFillTheAssignedWidth() {
+  TablePreviewWidget widget(nullptr, nullptr);
+  QVERIFY(widget.setPreview(makeUnequalTable()));
+
+  auto view = widget.findChild<TablePreviewView *>();
+  QVERIFY(view);
+  QCOMPARE(view->model()->columnCount(), 2);
+
+  // The natural per column widths, which the exported-API test cannot reach.
+  // The stretch has to be off while they are taken: it would otherwise inflate
+  // the last section to whatever the current viewport is.
+  view->horizontalHeader()->setStretchLastSection(false);
+  view->resizeColumnsToContents();
+  QVector<int> baseline;
+  int baselineTotal = 0;
+  for (int c = 0; c < view->model()->columnCount(); ++c) {
+    baseline.append(view->columnWidth(c));
+    baselineTotal += baseline.last();
+  }
+  view->horizontalHeader()->setStretchLastSection(true);
+  QVERIFY(baseline.first() > baseline.last());
+  QVERIFY(baselineTotal > 0);
+
+  // Twice the natural width: the surplus is what the distribution has to
+  // spread. No editor is involved, so this holds for any assigned geometry.
+  const QSize hint = widget.sizeHint();
+  widget.resize(hint.width() * 2, hint.height());
+  widget.layout()->activate();
+  QCoreApplication::processEvents();
+
+  const int viewportWidth = view->viewport()->width();
+  QVERIFY(viewportWidth > baselineTotal);
+  QVERIFY2(qAbs(totalColumnWidth(view) - viewportWidth) <= 1,
+           qPrintable(QStringLiteral("columns total %1 do not cover the viewport %2")
+                          .arg(totalColumnWidth(view))
+                          .arg(viewportWidth)));
+
+  for (int c = 0; c < baseline.size(); ++c) {
+    const int expected = qRound(qreal(baseline.at(c)) * viewportWidth / baselineTotal);
+    QVERIFY2(qAbs(view->columnWidth(c) - expected) <= 2,
+             qPrintable(QStringLiteral("column %1 is %2, not its proportional share %3")
+                            .arg(c)
+                            .arg(view->columnWidth(c))
+                            .arg(expected)));
+  }
+}
+
+void TestTablePreview::testColumnLayoutFollowsACellEdit() {
+  TablePreviewWidget widget(nullptr, nullptr);
+  QVERIFY(widget.setPreview(makeUnequalTable()));
+
+  auto view = widget.findChild<TablePreviewView *>();
+  QVERIFY(view);
+
+  const QSize hint = widget.sizeHint();
+  widget.resize(hint.width() * 2, hint.height());
+  widget.layout()->activate();
+  QCoreApplication::processEvents();
+
+  const int shortBefore = view->columnWidth(1);
+
+  // A committed cell edit emits only dataChanged: the snapshot echoing it takes
+  // the "unchanged" path, so nothing rebuilds the sheet. The columns still have
+  // to be re-measured and redistributed, or a longer value stays clipped inside
+  // a column sized for the value it replaced.
+  QVERIFY(view->model()->setData(view->model()->index(1, 1),
+                                 QStringLiteral("a considerably longer cell value"),
+                                 Qt::EditRole));
+  QTest::qWait(50);
+  QCoreApplication::processEvents();
+
+  QVERIFY2(view->columnWidth(1) > shortBefore,
+           qPrintable(QStringLiteral("the edited column stayed at %1 (was %2)")
+                          .arg(view->columnWidth(1))
+                          .arg(shortBefore)));
+  QVERIFY2(qAbs(totalColumnWidth(view) - view->viewport()->width()) <= 1,
+           qPrintable(QStringLiteral("columns total %1 do not cover the viewport %2 after the "
+                                     "edit")
+                          .arg(totalColumnWidth(view))
+                          .arg(view->viewport()->width())));
 }
 
 QTEST_MAIN(tests::TestTablePreview)

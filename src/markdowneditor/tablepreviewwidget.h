@@ -13,6 +13,8 @@
 #include <vtextedit/preview.h>
 #include <vtextedit/previewwidget.h>
 
+class QTimer;
+
 namespace vte {
 // Canonical Markdown serialization of an editable table sheet.
 //
@@ -141,6 +143,11 @@ public:
 
   QSize sizeHint() const Q_DECL_OVERRIDE;
 
+  // Re-measure the contents and hand every column its share of the assigned
+  // width. Supersedes resizeColumnsToContents(): it writes every section too,
+  // but scaled to the width the sheet actually got.
+  void layoutColumns();
+
   // Measuring walks every cell through the delegate, and Qt queries sizeHint()
   // far more often than the contents change, so the result is cached until
   // something it depends on moves.
@@ -150,6 +157,15 @@ protected:
   void wheelEvent(QWheelEvent *p_event) Q_DECL_OVERRIDE;
 
   void changeEvent(QEvent *p_event) Q_DECL_OVERRIDE;
+
+  // Re-runs the distribution, which is based on the viewport width. This is
+  // the hook rather than resizeEvent() because the viewport also changes width
+  // on its own: dropping the vertical scroll bar happens in the deferred
+  // geometry pass, and on a widget which is not visible yet Qt only marks the
+  // resize event as pending instead of delivering it. Missing that leaves the
+  // sheet distributed for a viewport it no longer has, with the stretched last
+  // section quietly absorbing the difference.
+  void updateGeometries() Q_DECL_OVERRIDE;
 
 private:
   // The cheap inputs the measurement depends on besides the cell contents.
@@ -187,6 +203,13 @@ private:
 
   PreferredSizeKey currentPreferredSizeKey() const;
 
+  // Give every column its share of the assigned width.
+  void distributeColumnWidths();
+
+  // Coalesce a burst of model signals into one distribution pass, and keep the
+  // pass out of the emission itself.
+  void scheduleColumnLayout();
+
   int m_visibleRows = 10;
 
   // Only the connections this view made itself, so dropping a model cannot
@@ -195,19 +218,39 @@ private:
 
   mutable QSize m_cachedPreferredSize;
 
+  // The per-column content widths behind m_cachedPreferredSize, refreshed
+  // under the same key guard. Reused by the distribution because
+  // sizeHintForColumn() walks the delegate and would otherwise run on every
+  // resize event.
+  mutable QVector<int> m_cachedColumnWidths;
+
   mutable PreferredSizeKey m_cachedPreferredSizeKey;
 
   mutable bool m_preferredSizeDirty = true;
+
+  // setColumnWidth() can drop the vertical scroll bar, which resizes the
+  // viewport and re-enters the geometry hooks below from inside the pass.
+  bool m_distributingColumns = false;
+
+  // Managed by QObject.
+  QTimer *m_columnLayoutTimer = nullptr;
 };
 
 class TablePreviewWidget : public PreviewWidget {
   Q_OBJECT
 public:
+  // Share of the available content width a sheet spans at least. Without it a
+  // short table renders as a small box hugging the left margin, because the
+  // host reserves a band exactly as wide as the natural contents.
+  static const qreal c_widthFraction;
+
   TablePreviewWidget(PreviewWidgetContext *p_context, QWidget *p_parent);
 
   QVector<PreviewElementType> supportedTypes() const Q_DECL_OVERRIDE;
 
   bool setPreview(const QSharedPointer<const Preview> &p_preview) Q_DECL_OVERRIDE;
+
+  qreal preferredWidthFraction() const Q_DECL_OVERRIDE;
 
   void setVisibleRows(int p_rows);
 

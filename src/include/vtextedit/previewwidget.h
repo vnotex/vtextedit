@@ -96,6 +96,12 @@ public:
   // instance and fall through to the next factory.
   virtual bool setPreview(const QSharedPointer<const Preview> &p_preview) = 0;
 
+  // Minimum share of the available content width this renderer wants to occupy,
+  // as a fraction in [0, 1]. 0 (the default) means "natural size". Only honored
+  // for previews placed on their own band (PreviewPlacement::BlockAfterSource);
+  // an inline preview is always bound to the text span it replaces.
+  virtual qreal preferredWidthFraction() const;
+
   PreviewWidgetContext *previewContext() const;
 
 private:

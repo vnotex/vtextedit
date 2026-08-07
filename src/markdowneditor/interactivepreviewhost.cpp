@@ -979,6 +979,18 @@ QSizeF InteractivePreviewHost::preferredSize(PreviewWidget *p_widget, PreviewPla
   const QSize hint = p_widget->sizeHint();
   if (width < 0) {
     width = hint.width();
+    // Only a preview on its own band may ask to span a share of the text
+    // column, so a short table does not render as a small box at the margin.
+    // The placement is what decides that, not the missing width above: an
+    // inline span whose width could not be resolved lands here too, and
+    // widening it would measure a height for a width the inline layout is
+    // never going to assign.
+    if (p_placement == PreviewPlacement::BlockAfterSource) {
+      const qreal fraction = qBound<qreal>(0, p_widget->preferredWidthFraction(), 1);
+      if (fraction > 0 && maxWidth > 0) {
+        width = qMax(width, maxWidth * fraction);
+      }
+    }
   }
 
   if (maxWidth > 0) {

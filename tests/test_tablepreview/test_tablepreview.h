@@ -35,6 +35,8 @@ private slots:
   void testWidgetRejectsTooManyRowsOrColumns();
   void testRaggedTableIsNotRoundTrippable();
   void testPreferredSizeCacheTracksContents();
+  void testColumnsFillTheAssignedWidth();
+  void testColumnLayoutFollowsACellEdit();
 };
 } // namespace tests
 

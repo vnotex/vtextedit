@@ -3,8 +3,10 @@
 #include <QApplication>
 #include <QFont>
 #include <QHeaderView>
+#include <QScopedValueRollback>
 #include <QScrollBar>
 #include <QStringList>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 
@@ -369,6 +371,13 @@ QString TablePreviewModel::toMarkdown() const {
 // TablePreviewView
 // ---------------------------------------------------------------------------
 
+namespace {
+// How often one distribution may re-run against a viewport its own writes
+// resized. Two passes are what dropping the vertical scroll bar costs; the
+// third is slack.
+const int c_maxDistributionPasses = 3;
+} // namespace
+
 const QAbstractItemView::EditTriggers TablePreviewView::c_defaultEditTriggers =
     QAbstractItemView::DoubleClicked | QAbstractItemView::SelectedClicked |
     QAbstractItemView::EditKeyPressed | QAbstractItemView::AnyKeyPressed;
@@ -380,6 +389,19 @@ TablePreviewView::TablePreviewView(QWidget *p_parent) : QTableView(p_parent) {
   setSelectionMode(QAbstractItemView::SingleSelection);
   setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
   setEditTriggers(c_defaultEditTriggers);
+
+  // A Markdown table cell is single-line by construction, and wrapping is what
+  // makes sizeHintForRow() depend on the assigned column widths. The height is
+  // measured before the columns are distributed, so a wrapping row reserved a
+  // band for text which then fits on one line, leaving an empty strip under
+  // the sheet. Cells too wide for their column are elided instead, which is
+  // what the horizontal scroll bar policy above already implies.
+  setWordWrap(false);
+
+  m_columnLayoutTimer = new QTimer(this);
+  m_columnLayoutTimer->setSingleShot(true);
+  m_columnLayoutTimer->setInterval(0);
+  connect(m_columnLayoutTimer, &QTimer::timeout, this, &TablePreviewView::distributeColumnWidths);
 }
 
 void TablePreviewView::setModel(QAbstractItemModel *p_model) {
@@ -397,7 +419,15 @@ void TablePreviewView::setModel(QAbstractItemModel *p_model) {
     return;
   }
 
-  auto invalidate = [this]() { invalidatePreferredSize(); };
+  // A committed cell edit only emits dataChanged: the parse generation which
+  // echoes it takes the "unchanged snapshot" path, so resetFromSource() never
+  // runs. Re-laying out explicitly keeps the edited column from holding the
+  // proportions of a value it no longer has, instead of relying on Qt to
+  // schedule an items layout for the changed size hint.
+  auto invalidate = [this]() {
+    invalidatePreferredSize();
+    scheduleColumnLayout();
+  };
   m_modelConnections
       << connect(p_model, &QAbstractItemModel::modelReset, this, invalidate)
       << connect(p_model, &QAbstractItemModel::layoutChanged, this, invalidate)
@@ -448,6 +478,9 @@ void TablePreviewView::setVisibleRows(int p_rows) {
   // The window may have grown over rows which were never fitted.
   resizeVisibleRowsToContents();
   invalidatePreferredSize();
+  // The row window decides whether a vertical scroll bar is reserved, which
+  // moves the width the columns have to share.
+  distributeColumnWidths();
   updateGeometry();
 }
 
@@ -481,8 +514,11 @@ QSize TablePreviewView::preferredSize() const {
     // Derive from the contents, never from the currently assigned geometry:
     // the last section stretches, so using columnWidth() here would feed the
     // assigned width straight back into the preferred width.
+    m_cachedColumnWidths.resize(model()->columnCount());
     for (int c = 0; c < model()->columnCount(); ++c) {
-      width += qMax(sizeHintForColumn(c), minColumnWidth);
+      const int columnWidth = qMax(sizeHintForColumn(c), minColumnWidth);
+      m_cachedColumnWidths[c] = columnWidth;
+      width += columnWidth;
     }
 
     const int rows = qMin(model()->rowCount(), qMax(1, m_visibleRows));
@@ -493,6 +529,10 @@ QSize TablePreviewView::preferredSize() const {
     if (model()->rowCount() > rows) {
       width += verticalScrollBar()->sizeHint().width();
     }
+  } else {
+    // Never leave widths behind which the distribution could consult with a
+    // column count that no longer exists.
+    m_cachedColumnWidths.clear();
   }
 
   m_cachedPreferredSize = QSize(qMax(width, frame + 1), qMax(height, frame + 1));
@@ -524,9 +564,87 @@ void TablePreviewView::wheelEvent(QWheelEvent *p_event) {
   QTableView::wheelEvent(p_event);
 }
 
+void TablePreviewView::updateGeometries() {
+  QTableView::updateGeometries();
+  distributeColumnWidths();
+}
+
+void TablePreviewView::layoutColumns() {
+  invalidatePreferredSize();
+  distributeColumnWidths();
+}
+
+void TablePreviewView::scheduleColumnLayout() {
+  if (m_columnLayoutTimer && !m_columnLayoutTimer->isActive()) {
+    m_columnLayoutTimer->start();
+  }
+}
+
+void TablePreviewView::distributeColumnWidths() {
+  if (m_distributingColumns || !model() || model()->columnCount() <= 0) {
+    return;
+  }
+
+  // Refreshes m_cachedColumnWidths; cheap when the cache is still valid.
+  preferredSize();
+
+  const int count = m_cachedColumnWidths.size();
+  int total = 0;
+  for (int w : m_cachedColumnWidths) {
+    total += w;
+  }
+  if (count <= 0 || total <= 0) {
+    return;
+  }
+
+  const int minColumnWidth = qMax(1, horizontalHeader()->minimumSectionSize());
+  QScopedValueRollback<bool> guard(m_distributingColumns, true);
+
+  // Writing the sections can drop the vertical scroll bar, which resizes the
+  // viewport from inside setColumnWidth() - and the guard has to swallow the
+  // re-entrant pass that comes with it. So re-run here against the width the
+  // viewport settled on, otherwise the sheet keeps the proportions of a
+  // viewport it no longer has and the stretched last section quietly absorbs
+  // the difference. The scroll bar depends on the row heights only, so this
+  // converges; the bound is there so a style with width-dependent scroll bars
+  // cannot spin.
+  for (int pass = 0; pass < c_maxDistributionPasses; ++pass) {
+    const int available = viewport()->width();
+    if (available <= total) {
+      // No surplus: keep the content widths. The stretched last section
+      // absorbs the shortfall, which is the pre-existing behavior.
+      for (int c = 0; c < count; ++c) {
+        setColumnWidth(c, m_cachedColumnWidths.at(c));
+      }
+    } else {
+      // Every section is written, including the last one. Letting the stretch
+      // handle the remainder instead would leave the last section's stored
+      // base size behind from whatever the previous contents were, and a one
+      // column table would get no assignment at all.
+      int assigned = 0;
+      for (int c = 0; c < count - 1; ++c) {
+        const int width =
+            qMax(minColumnWidth, qRound(qreal(m_cachedColumnWidths.at(c)) * available / total));
+        setColumnWidth(c, width);
+        assigned += width;
+      }
+
+      // Cumulative remainder, so the sections cover the viewport exactly
+      // however the per column rounding fell.
+      setColumnWidth(count - 1, qMax(minColumnWidth, available - assigned));
+    }
+
+    if (viewport()->width() == available) {
+      break;
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // TablePreviewWidget
 // ---------------------------------------------------------------------------
+
+const qreal TablePreviewWidget::c_widthFraction = 0.9;
 
 TablePreviewWidget::TablePreviewWidget(PreviewWidgetContext *p_context, QWidget *p_parent)
     : PreviewWidget(p_context, p_parent) {
@@ -551,6 +669,8 @@ TablePreviewWidget::TablePreviewWidget(PreviewWidgetContext *p_context, QWidget 
 QVector<PreviewElementType> TablePreviewWidget::supportedTypes() const {
   return QVector<PreviewElementType>() << PreviewElementType::Table;
 }
+
+qreal TablePreviewWidget::preferredWidthFraction() const { return c_widthFraction; }
 
 bool TablePreviewWidget::setPreview(const QSharedPointer<const Preview> &p_preview) {
   if (!p_preview || p_preview->type() != PreviewElementType::Table) {
@@ -648,7 +768,7 @@ void TablePreviewWidget::resetFromSource() {
 
   m_applyingSource = true;
   m_model->setTable(m_table);
-  m_view->resizeColumnsToContents();
+  m_view->layoutColumns();
   m_view->resizeVisibleRowsToContents();
   m_applyingSource = false;
 
@@ -673,7 +793,7 @@ void TablePreviewWidget::changeEvent(QEvent *p_event) {
     // the inherited font. Forward it explicitly and re-fit.
     if (m_view->font() != font()) {
       m_view->setFont(font());
-      m_view->resizeColumnsToContents();
+      m_view->layoutColumns();
       m_view->resizeVisibleRowsToContents();
       updateGeometry();
     }

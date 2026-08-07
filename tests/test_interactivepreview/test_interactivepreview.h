@@ -50,6 +50,12 @@ public:
 
   QSize sizeHint() const Q_DECL_OVERRIDE;
 
+  qreal preferredWidthFraction() const Q_DECL_OVERRIDE;
+
+  // Share of the text column this double claims. Only a preview on its own
+  // band may be widened by it.
+  qreal m_widthFraction = 0;
+
   // Every measurement the host performs goes through here.
   mutable int m_sizeHintCount = 0;
 
@@ -97,6 +103,9 @@ public:
 
   // Create wrapping instances whose height depends on the assigned width.
   bool m_wrapping = false;
+
+  // Handed to every instance this factory creates.
+  qreal m_widthFraction = 0;
 
   // Unregister this factory from inside supportedTypes()/createWidget().
   vte::VMarkdownEditor *m_unregisterSelfIn = nullptr;
@@ -187,6 +196,15 @@ private slots:
   void testCommitKeepsCellEditorAcrossNextParse();
   void testTableIsOptInByDefault();
   void testMultiLineImageIsStandalone();
+
+  // Sheet geometry.
+  void testTableSheetHeightMatchesItsRows();
+  void testTableSheetSpansContentWidth();
+  void testTableSheetKeepsANaturalWidthInsideTheBand();
+  void testInlinePreviewIgnoresTheWidthFraction();
+  void testTableColumnsShareTheExtraWidth();
+  void testSingleColumnTableFillsTheSheet();
+  void testTableWidthFollowsEditorResize();
 
   // Review fixes.
   void testRejectionAfterAcceptKeepsCommittedValues();

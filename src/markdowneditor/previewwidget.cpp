@@ -88,6 +88,8 @@ PreviewWidget::PreviewWidget(PreviewWidgetContext *p_context, QWidget *p_parent)
 
 PreviewWidget::~PreviewWidget() {}
 
+qreal PreviewWidget::preferredWidthFraction() const { return 0; }
+
 PreviewWidgetContext *PreviewWidget::previewContext() const { return m_d->m_context.data(); }
 
 PreviewWidgetFactory::PreviewWidgetFactory(QObject *p_parent) : QObject(p_parent) {}
