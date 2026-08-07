@@ -2,11 +2,14 @@
 #define VTEXTDOCUMENTLAYOUT_H
 
 #include <QAbstractTextDocumentLayout>
+#include <QHash>
 #include <QMap>
+#include <QPair>
 #include <QSize>
 #include <QVector>
 
 #include <vtextedit/orderedintset.h>
+#include <vtextedit/preview.h>
 
 #include "textdocumentlayoutdata.h"
 
@@ -18,6 +21,61 @@ class PreviewData;
 class TextDocumentLayout : public QAbstractTextDocumentLayout {
   Q_OBJECT
 public:
+  // One interactive preview widget to reserve space for.
+  struct WidgetPreviewSpec {
+    bool operator==(const WidgetPreviewSpec &p_other) const {
+      return m_id == p_other.m_id && m_startPos == p_other.m_startPos &&
+             m_endPos == p_other.m_endPos && m_placement == p_other.m_placement &&
+             m_typeOrder == p_other.m_typeOrder && qFuzzyCompare(m_width + 1, p_other.m_width + 1) &&
+             qFuzzyCompare(m_height + 1, p_other.m_height + 1);
+    }
+
+    bool operator!=(const WidgetPreviewSpec &p_other) const { return !(*this == p_other); }
+
+    // Stable identity assigned by InteractivePreviewHost.
+    quint64 m_id = 0;
+
+    // Half-open document range of the source.
+    int m_startPos = 0;
+    int m_endPos = 0;
+
+    PreviewPlacement m_placement = PreviewPlacement::BlockAfterSource;
+
+    // Secondary stacking key, derived from the element type.
+    int m_typeOrder = 0;
+
+    // Preferred size in logical pixels.
+    qreal m_width = 0;
+    qreal m_height = 0;
+  };
+
+  // One element whose static painted preview is suppressed because an
+  // interactive widget claimed it.
+  struct PreviewClaim {
+    bool operator==(const PreviewClaim &p_other) const {
+      return m_startPos == p_other.m_startPos && m_endPos == p_other.m_endPos &&
+             m_type == p_other.m_type;
+    }
+
+    bool operator!=(const PreviewClaim &p_other) const { return !(*this == p_other); }
+
+    bool operator<(const PreviewClaim &p_other) const {
+      if (m_startPos != p_other.m_startPos) {
+        return m_startPos < p_other.m_startPos;
+      }
+      if (m_endPos != p_other.m_endPos) {
+        return m_endPos < p_other.m_endPos;
+      }
+      return static_cast<int>(m_type) < static_cast<int>(p_other.m_type);
+    }
+
+    // Half-open document range of the claimed source.
+    int m_startPos = 0;
+    int m_endPos = 0;
+
+    PreviewElementType m_type = PreviewElementType::Image;
+  };
+
   TextDocumentLayout(QTextDocument *p_doc, DocumentResourceMgr *p_resourceMgr);
 
   void draw(QPainter *p_painter, const PaintContext &p_context) Q_DECL_OVERRIDE;
@@ -58,6 +116,39 @@ public:
   // Request update block by block number.
   void updateBlockByNumber(int p_blockNumber);
 
+  // Submit the complete set of interactive preview widgets to reserve space
+  // for. Layout data only ever stores identities and rectangles, never widget
+  // pointers.
+  void setWidgetPreviews(const QVector<WidgetPreviewSpec> &p_specs);
+
+  const QVector<WidgetPreviewSpec> &widgetPreviews() const;
+
+  // The complete set of elements claimed by interactive widgets. Only a claim
+  // whose type matches a painted preview's own source suppresses it, so a
+  // table widget never hides an image nested inside its cells. Must be sorted.
+  void setPreviewClaims(const QVector<PreviewClaim> &p_claims);
+
+  // Final document rect of a laid out widget preview. Returns a null rect when
+  // the widget is not currently laid out (folded away, removed, ...).
+  QRectF widgetPreviewRect(quint64 p_id) const;
+
+  // The width a preview may occupy at most, or 0 when unconstrained.
+  qreal availableContentWidth() const;
+
+  // Union of the visible text layout rects of [p_startPos, p_endPos) in
+  // document coordinates.
+  QRectF sourceTextRect(int p_startPos, int p_endPos) const;
+
+  // The exact width an InlineAboveLine band gets for [p_startPos, p_endPos),
+  // using the same visual-line selection rule as the layout itself. Returns 0
+  // when no line claims the range.
+  qreal inlinePlacementWidth(int p_startPos, int p_endPos) const;
+
+signals:
+  // Emitted whenever the geometry assigned to any interactive preview widget
+  // changed, even when the overall document size did not.
+  void widgetPreviewGeometryChanged();
+
 protected:
   void documentChanged(int p_from, int p_charsRemoved, int p_charsAdded) Q_DECL_OVERRIDE;
 
@@ -82,7 +173,8 @@ private:
   // Returns the total height of this block after layouting lines and inline
   // images.
   qreal layoutLines(const QTextBlock &p_block, QTextLayout *p_tl, QVector<Marker> &p_markers,
-                    QVector<ImagePaintData> &p_images, qreal p_availableWidth, qreal p_height);
+                    QVector<ImagePaintData> &p_images, QVector<WidgetPaintData> &p_widgets,
+                    qreal p_availableWidth, qreal p_height);
 
   // Layout inline image in a line.
   // @p_data: if NULL, means just layout a marker.
@@ -107,7 +199,8 @@ private:
 
   // Update rect of a block.
   void finishBlockLayout(const QTextBlock &p_block, const QVector<Marker> &p_markers,
-                         const QVector<ImagePaintData> &p_images);
+                         const QVector<ImagePaintData> &p_images,
+                         const QVector<WidgetPaintData> &p_widgets);
 
   void updateDocumentSize();
 
@@ -126,7 +219,8 @@ private:
   // If @p_imageRect is not NULL and there is block image for this block, it
   // will be set to the rect of that image. Return a null rect if @p_block has
   // not been layouted.
-  QRectF blockRectFromTextLayout(const QTextBlock &p_block, ImagePaintData *p_image = NULL);
+  QRectF blockRectFromTextLayout(const QTextBlock &p_block, ImagePaintData *p_image = NULL,
+                                 QVector<WidgetPaintData> *p_widgets = NULL);
 
   // Update document size when only @p_block is changed and the height
   // remains the same.
@@ -148,6 +242,56 @@ private:
   int getTextWidthWithinTextLine(const QTextLayout *p_layout, int p_pos, int p_length);
 
   bool shouldBlockWrapLine(const QTextBlock &p_block) const;
+
+  // Whether @p_line owns the block-local range [p_start, p_end) under the
+  // inline placement rule, and if so its x span. A range crossing the line
+  // boundary stays on the side owning at least half of it.
+  // @p_positioned: false while the block is still being laid out, where
+  // QTextLine::x() is still 0 and the document margin must be added by hand.
+  // Shared by layoutLines() and inlinePlacementWidth() so the width a widget
+  // is measured at always matches the width it is assigned.
+  bool lineClaimsRange(const QTextLine &p_line, int p_start, int p_end, bool p_positioned,
+                       qreal *p_startX, qreal *p_endX) const;
+
+  // Rebuild the block-number to widget-spec index map when it went stale.
+  void ensureWidgetPreviewMap();
+
+  // Widget specs anchored to @p_block with the given placement, in stacking
+  // order.
+  QVector<const WidgetPreviewSpec *> widgetSpecsForBlock(const QTextBlock &p_block,
+                                                         PreviewPlacement p_placement);
+
+  // The block's preview data with claimed entries removed.
+  QVector<PreviewData *> unclaimedPreviewData(const QTextBlock &p_block) const;
+
+  // Whether [p_start, p_end) is covered by a claim of the same element type.
+  bool isPreviewClaimed(int p_start, int p_end, PreviewElementType p_type) const;
+
+  // Recompute the document rects of every laid out widget preview and notify
+  // when anything changed.
+  void updateWidgetPreviewGeometry();
+
+  // Blocks whose painted preview or reservation can change between two sorted
+  // claim/spec sets.
+  void collectClaimDeltaBlocks(const QVector<PreviewClaim> &p_old,
+                               const QVector<PreviewClaim> &p_new, OrderedIntSet &p_blocks);
+
+  void collectBlocksForClaim(const PreviewClaim &p_claim, OrderedIntSet &p_blocks);
+
+  void collectSpecDeltaBlocks(const QVector<WidgetPreviewSpec> &p_old,
+                              const QVector<WidgetPreviewSpec> &p_new, OrderedIntSet &p_blocks);
+
+  void collectBlocksForSpec(const WidgetPreviewSpec &p_spec, OrderedIntSet &p_blocks);
+
+  // The block which carries @p_spec's reservation. Returns an invalid block
+  // when the spec's positions no longer resolve.
+  //
+  // ensureWidgetPreviewMap() uses this to decide which block reserves the
+  // band, and collectBlocksForSpec() to decide which blocks a spec change
+  // relayouts. If the two ever disagreed, the reserving block would never be
+  // relayouted and the published rectangle would stay stale, leaving the
+  // widget over unrelated text - so the rule lives here once.
+  QTextBlock blockForSpec(const WidgetPreviewSpec &p_spec) const;
 
   // Document margin on left/right/bottom.
   qreal m_margin = 0;
@@ -183,6 +327,23 @@ private:
 
   QColor m_previewMarkerForeground = {"#9575CD"};
 
+  // Interactive preview widgets to reserve space for.
+  QVector<WidgetPreviewSpec> m_widgetPreviews;
+
+  // Block number to indices into m_widgetPreviews, in stacking order.
+  QHash<int, QVector<int>> m_widgetPreviewsByBlock;
+
+  // Document revision the block map was built for.
+  int m_widgetPreviewMapRevision = -1;
+
+  bool m_widgetPreviewMapDirty = true;
+
+  // Final document rects of the laid out widget previews.
+  QHash<quint64, QRectF> m_widgetPreviewGeometry;
+
+  // Half-open document ranges whose static preview is suppressed.
+  QVector<PreviewClaim> m_claimedPreviews;
+
   static const int c_markerThickness;
 
   static const int c_maxInlineImageHeight;
@@ -192,6 +353,9 @@ private:
 
   // Fixed geometry reserved for the cursor at the end of a block.
   static const int c_cursorGeometryWidth;
+
+  // Vertical padding around an interactive preview widget.
+  static const int c_widgetPreviewPadding;
 };
 
 } // namespace vte

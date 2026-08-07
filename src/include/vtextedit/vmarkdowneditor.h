@@ -16,6 +16,8 @@ class MarkdownEditorConfig;
 class WebCodeBlockHighlighter;
 class MathBlockHighlighter;
 class MarkdownFoldingProvider;
+class PreviewWidgetFactory;
+class InteractivePreviewHost;
 
 class VTEXTEDIT_EXPORT VMarkdownEditor : public VTextEditor {
   Q_OBJECT
@@ -51,6 +53,26 @@ public:
   // sources.
   void setInplacePreviewEnabled(bool p_enabled);
 
+  // Register an interactive preview renderer.
+  //
+  // Factories are tried by descending explicit priority, then by registration
+  // order. The built-in renderers use priority 0, so an application can
+  // override them with any higher priority.
+  //
+  // Rejects null, duplicate and reentrant registration without taking
+  // ownership. On success the factory is reparented to an internal host and is
+  // destroyed together with this editor.
+  bool registerPreviewWidgetFactory(PreviewWidgetFactory *p_factory, int p_priority = 0);
+
+  // Deactivate and destroy a previously registered factory. Ownership never
+  // returns to the caller: the pointer is invalid once this returns true.
+  bool unregisterPreviewWidgetFactory(PreviewWidgetFactory *p_factory);
+
+  // Maximum number of table rows the built-in editable sheet shows before it
+  // scrolls internally. Defaults to 10 and is consumed as at least 1.
+  int tablePreviewVisibleRows() const;
+  void setTablePreviewVisibleRows(int p_rows);
+
   static void setExternalCodeBlockHighlihgtStyles(const ExternalCodeBlockHighlightStyles &p_styles);
 
 public slots:
@@ -77,6 +99,10 @@ private:
   void setupSyntaxHighlighter();
 
   void setupPreviewMgr();
+
+  // Locate the internal interactive preview host. Returns nullptr before it
+  // has been created.
+  InteractivePreviewHost *interactivePreviewHost() const;
 
   void updateFromConfig();
 

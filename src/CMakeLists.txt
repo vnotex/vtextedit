@@ -36,8 +36,10 @@ add_library(VTextEdit SHARED
     include/vtextedit/orderedintset.h
     include/vtextedit/markdownhighlighter.h
     include/vtextedit/markdownhighlighterdata.h
+    include/vtextedit/preview.h
     include/vtextedit/previewdata.h
     include/vtextedit/previewmgr.h
+    include/vtextedit/previewwidget.h
     include/vtextedit/spellchecker.h
     include/vtextedit/textblockdata.h
     include/vtextedit/texteditorconfig.h
@@ -74,8 +76,15 @@ add_library(VTextEdit SHARED
     markdowneditor/markdownparser.cpp markdowneditor/markdownparser.h
     markdowneditor/cmarkadapter.cpp markdowneditor/cmarkadapter.h
     markdowneditor/markdownastwalker.cpp markdowneditor/markdownastwalker.h
+    markdowneditor/interactivepreviewhost.cpp markdowneditor/interactivepreviewhost.h
+    markdowneditor/preview.cpp
+    markdowneditor/previewbuilder.h
+    markdowneditor/previewfromast.cpp markdowneditor/previewfromast.h
+    markdowneditor/previewlogging.cpp markdowneditor/previewlogging.h
     markdowneditor/previewdata.cpp
     markdowneditor/previewmgr.cpp
+    markdowneditor/previewwidget.cpp
+    markdowneditor/tablepreviewwidget.cpp markdowneditor/tablepreviewwidget.h
     markdowneditor/textdocumentlayout.cpp markdowneditor/textdocumentlayout.h
     markdowneditor/textdocumentlayoutdata.h
     markdowneditor/vmarkdowneditor.cpp

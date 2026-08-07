@@ -7,7 +7,17 @@
 namespace vte {
 class VTEXTEDIT_EXPORT MarkdownEditorConfig {
 public:
-  enum InplacePreviewSource { NoInplacePreview = 0, ImageLink = 0x1, CodeBlock = 0x2, Math = 0x4 };
+  enum InplacePreviewSource {
+    NoInplacePreview = 0,
+    ImageLink = 0x1,
+    CodeBlock = 0x2,
+    Math = 0x4,
+
+    // Renders tables as an editable sheet which writes back to the document.
+    // Opt-in: an application has to ask for a preview which can rewrite the
+    // user's Markdown.
+    Table = 0x8
+  };
   Q_DECLARE_FLAGS(InplacePreviewSources, InplacePreviewSource);
 
   MarkdownEditorConfig(const QSharedPointer<TextEditorConfig> &p_textEditorConfig);

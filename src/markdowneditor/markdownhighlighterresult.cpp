@@ -1,6 +1,9 @@
 #include "markdownhighlighterresult.h"
 
 #include "foldingregionutils.h"
+#include "previewbuilder.h"
+#include "previewfromast.h"
+#include "previewlogging.h"
 
 #include <QDebug>
 #include <QRegularExpression>
@@ -47,6 +50,122 @@ MarkdownHighlighterResult::MarkdownHighlighterResult(const MarkdownHighlighter *
   parseTableBlocks(p_result);
 
   parseFoldingRegions(m_numOfBlocks);
+
+  // Implicit sharing: keeping the raw typed data is nearly free, and lets the
+  // snapshots be built later for exactly the enabled element types.
+  m_imageElements = p_result->m_imageElements;
+  m_codeElements = p_result->m_codeElements;
+  m_mathElements = p_result->m_mathElements;
+  m_tableElements = p_result->m_tableElements;
+}
+
+QVector<QSharedPointer<const Preview>>
+MarkdownHighlighterResult::buildPreviews(const QTextDocument *p_doc, int p_typeMask) const {
+  QVector<QSharedPointer<const Preview>> previews;
+  if (!p_doc || p_typeMask == 0) {
+    // The host publishes an empty mask when the feature is off or when no
+    // registered factory claims any type, and then no snapshot work is done.
+    qCDebug(previewSnapshotLog) << "no snapshots requested - document" << (p_doc != nullptr)
+                                << "typeMask" << p_typeMask;
+    return previews;
+  }
+
+  auto typeEnabled = [p_typeMask](PreviewElementType p_type) {
+    return (p_typeMask & (1 << static_cast<int>(p_type))) != 0;
+  };
+
+  const quint64 revision = static_cast<quint64>(m_timeStamp);
+
+  auto sourceOf = [p_doc](int p_start, int p_end) {
+    return previewSourceText(p_doc, p_start, p_end);
+  };
+
+  if (typeEnabled(PreviewElementType::Image)) {
+    for (const auto &image : m_imageElements) {
+      const auto source = sourceOf(image.m_startPos, image.m_endPos);
+      if (source.isEmpty()) {
+        qCDebug(previewSnapshotLog) << "skipped image element with no source text at ["
+                                    << image.m_startPos << "," << image.m_endPos << ")";
+        continue;
+      }
+      previews.append(PreviewBuilder::createImage(
+          revision, image.m_startPos, image.m_endPos, source,
+          image.m_standalone ? PreviewPlacement::BlockAfterSource
+                             : PreviewPlacement::InlineAboveLine,
+          image.m_destination, image.m_alternateText, image.m_title));
+    }
+  }
+
+  if (typeEnabled(PreviewElementType::Code)) {
+    for (const auto &code : m_codeElements) {
+      const auto source = sourceOf(code.m_startPos, code.m_endPos);
+      if (source.isEmpty()) {
+        qCDebug(previewSnapshotLog) << "skipped code element with no source text at ["
+                                    << code.m_startPos << "," << code.m_endPos << ")";
+        continue;
+      }
+      previews.append(PreviewBuilder::createCode(revision, code.m_startPos, code.m_endPos, source,
+                                                 code.m_language, code.m_code));
+    }
+  }
+
+  if (typeEnabled(PreviewElementType::Math)) {
+    for (const auto &math : m_mathElements) {
+      const auto source = sourceOf(math.m_startPos, math.m_endPos);
+      if (source.isEmpty()) {
+        qCDebug(previewSnapshotLog) << "skipped math element with no source text at ["
+                                    << math.m_startPos << "," << math.m_endPos << ")";
+        continue;
+      }
+      previews.append(PreviewBuilder::createMath(revision, math.m_startPos, math.m_endPos, source,
+                                                 math.m_expression, math.m_display));
+    }
+  }
+
+  if (typeEnabled(PreviewElementType::Table)) {
+    for (const auto &table : m_tableElements) {
+      const auto source = sourceOf(table.m_startPos, table.m_endPos);
+      if (source.isEmpty()) {
+        qCDebug(previewSnapshotLog) << "skipped table element with no source text at ["
+                                    << table.m_startPos << "," << table.m_endPos << ")";
+        continue;
+      }
+
+      previews.append(
+          createTablePreview(revision, table.m_startPos, table.m_endPos, source, table));
+    }
+  }
+
+  std::sort(previews.begin(), previews.end(),
+            [](const QSharedPointer<const Preview> &a, const QSharedPointer<const Preview> &b) {
+              if (a->startPos() != b->startPos()) {
+                return a->startPos() < b->startPos();
+              }
+              return a->endPos() < b->endPos();
+            });
+
+  if (previewSnapshotLog().isDebugEnabled()) {
+    int counts[c_previewElementTypeCount] = {0};
+    for (const auto &preview : previews) {
+      ++counts[static_cast<int>(preview->type())];
+    }
+
+    qCDebug(previewSnapshotLog)
+        << "built" << previews.size() << "snapshot(s) for revision" << revision
+        << "typeMask" << Qt::hex << p_typeMask << Qt::dec << "- image" << counts[0] << "code"
+        << counts[1] << "math" << counts[2] << "table" << counts[3] << "(source elements: image"
+        << m_imageElements.size() << "code" << m_codeElements.size() << "math"
+        << m_mathElements.size() << "table" << m_tableElements.size() << ")";
+
+    for (const auto &preview : previews) {
+      qCDebug(previewSnapshotLog)
+          << "  " << previewTypeName(preview->type()) << "at [" << preview->startPos() << ","
+          << preview->endPos() << ") placement" << previewPlacementName(preview->placement())
+          << "source" << preview->sourceMarkdown().left(60);
+    }
+  }
+
+  return previews;
 }
 
 #if 0

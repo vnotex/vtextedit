@@ -16,6 +16,7 @@
 #include "documentresourcemgr.h"
 #include "editormarkdownhighlighter.h"
 #include "editorpreviewmgr.h"
+#include "interactivepreviewhost.h"
 #include "ksyntaxcodeblockhighlighter.h"
 #include "mathblockhighlighter.h"
 #include "textdocumentlayout.h"
@@ -133,6 +134,39 @@ void VMarkdownEditor::setupPreviewMgr() {
           &PreviewMgr::updateImageLinks);
   connect(m_previewMgr, &PreviewMgr::requestUpdateImageLinks, getHighlighter(),
           &MarkdownHighlighter::updateHighlight);
+
+  // Interactive preview widgets. The host is an internal QObject child so no
+  // exported class needs a new data member.
+  auto host = new InteractivePreviewHost(this);
+  connect(getHighlighter(), &MarkdownHighlighter::previewElementsUpdated, host,
+          &InteractivePreviewHost::updatePreviews);
+}
+
+InteractivePreviewHost *VMarkdownEditor::interactivePreviewHost() const {
+  return findChild<InteractivePreviewHost *>(
+      QLatin1String(InteractivePreviewHost::c_objectName), Qt::FindDirectChildrenOnly);
+}
+
+bool VMarkdownEditor::registerPreviewWidgetFactory(PreviewWidgetFactory *p_factory,
+                                                   int p_priority) {
+  auto host = interactivePreviewHost();
+  return host ? host->registerFactory(p_factory, p_priority) : false;
+}
+
+bool VMarkdownEditor::unregisterPreviewWidgetFactory(PreviewWidgetFactory *p_factory) {
+  auto host = interactivePreviewHost();
+  return host ? host->unregisterFactory(p_factory) : false;
+}
+
+int VMarkdownEditor::tablePreviewVisibleRows() const {
+  auto host = interactivePreviewHost();
+  return host ? host->tablePreviewVisibleRows() : 10;
+}
+
+void VMarkdownEditor::setTablePreviewVisibleRows(int p_rows) {
+  if (auto host = interactivePreviewHost()) {
+    host->setTablePreviewVisibleRows(p_rows);
+  }
 }
 
 DocumentResourceMgr *VMarkdownEditor::getDocumentResourceMgr() const {
@@ -190,24 +224,44 @@ void VMarkdownEditor::setInplacePreviewEnabled(bool p_enabled) {
 }
 
 void VMarkdownEditor::updateInplacePreviewSources() {
+  auto host = interactivePreviewHost();
+
   if (!m_inplacePreviewEnabled) {
     m_previewMgr->setPreviewEnabled(false);
+    if (host) {
+      host->setEnabled(false);
+    }
     return;
   }
 
-  if (m_config->m_inplacePreviewSources ==
-      (MarkdownEditorConfig::ImageLink | MarkdownEditorConfig::CodeBlock |
-       MarkdownEditorConfig::Math)) {
+  if (host) {
+    host->setEnabled(true);
+    host->setTypeEnabled(PreviewElementType::Image,
+                         m_config->m_inplacePreviewSources & MarkdownEditorConfig::ImageLink);
+    host->setTypeEnabled(PreviewElementType::Code,
+                         m_config->m_inplacePreviewSources & MarkdownEditorConfig::CodeBlock);
+    host->setTypeEnabled(PreviewElementType::Math,
+                         m_config->m_inplacePreviewSources & MarkdownEditorConfig::Math);
+    host->setTypeEnabled(PreviewElementType::Table,
+                         m_config->m_inplacePreviewSources & MarkdownEditorConfig::Table);
+  }
+
+  // The painted path only knows about image, code and math.
+  const auto paintedSources =
+      m_config->m_inplacePreviewSources &
+      (MarkdownEditorConfig::ImageLink | MarkdownEditorConfig::CodeBlock | MarkdownEditorConfig::Math);
+  if (paintedSources == (MarkdownEditorConfig::ImageLink | MarkdownEditorConfig::CodeBlock |
+                         MarkdownEditorConfig::Math)) {
     m_previewMgr->setPreviewEnabled(true);
   } else {
     m_previewMgr->setPreviewEnabled(false);
-    if (m_config->m_inplacePreviewSources & MarkdownEditorConfig::ImageLink) {
+    if (paintedSources & MarkdownEditorConfig::ImageLink) {
       m_previewMgr->setPreviewEnabled(PreviewData::Source::ImageLink, true);
     }
-    if (m_config->m_inplacePreviewSources & MarkdownEditorConfig::CodeBlock) {
+    if (paintedSources & MarkdownEditorConfig::CodeBlock) {
       m_previewMgr->setPreviewEnabled(PreviewData::Source::CodeBlock, true);
     }
-    if (m_config->m_inplacePreviewSources & MarkdownEditorConfig::Math) {
+    if (paintedSources & MarkdownEditorConfig::Math) {
       m_previewMgr->setPreviewEnabled(PreviewData::Source::MathBlock, true);
     }
   }

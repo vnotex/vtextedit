@@ -24,6 +24,16 @@ public:
   // Return the QChar offset of the start of the given 0-indexed line.
   int lineStartQCharOffset(int p_lineIdx) const;
 
+  // Return the QChar offset of the end of the given 0-indexed line, excluding
+  // the line terminator ("\n" or "\r\n"). Used to build source ranges which
+  // exclude the paragraph separator.
+  int lineEndQCharOffset(int p_lineIdx) const;
+
+  // Return the byte range [p_start, p_start + p_length) of the given 0-indexed
+  // line within the original UTF-8 buffer, excluding the line terminator.
+  // Returns false when the line does not exist.
+  bool lineByteRange(int p_lineIdx, int &p_start, int &p_length) const;
+
   // Return the number of lines in the table.
   int lineCount() const;
 

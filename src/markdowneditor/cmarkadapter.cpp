@@ -179,6 +179,42 @@ int LineOffsetTable::lineCount() const
   return m_lineQCharOffsets.size();
 }
 
+bool LineOffsetTable::lineByteRange(int p_lineIdx, int &p_start, int &p_length) const
+{
+  if (!m_data || p_lineIdx < 0 || p_lineIdx >= m_lineByteOffsets.size()) {
+    return false;
+  }
+
+  const int lineStart = m_lineByteOffsets[p_lineIdx];
+  int lineEnd = (p_lineIdx + 1 < m_lineByteOffsets.size()) ? m_lineByteOffsets[p_lineIdx + 1]
+                                                           : m_dataLen;
+  // Drop the line terminator.
+  while (lineEnd > lineStart && (m_data[lineEnd - 1] == '\n' || m_data[lineEnd - 1] == '\r')) {
+    --lineEnd;
+  }
+
+  p_start = lineStart;
+  p_length = lineEnd - lineStart;
+  return true;
+}
+
+int LineOffsetTable::lineEndQCharOffset(int p_lineIdx) const
+{
+  int byteStart = 0;
+  int byteLength = 0;
+  if (!lineByteRange(p_lineIdx, byteStart, byteLength)) {
+    return 0;
+  }
+
+  const QVector<int> &byteMap = m_byteToQChar[p_lineIdx];
+  if (byteMap.isEmpty()) {
+    return m_lineQCharOffsets[p_lineIdx];
+  }
+
+  const int idx = qMin(byteLength, byteMap.size() - 1);
+  return m_lineQCharOffsets[p_lineIdx] + byteMap[idx];
+}
+
 int LineOffsetTable::lineLeadingSpaces(int p_lineIdx) const
 {
   if (!m_data || p_lineIdx < 0 || p_lineIdx >= m_lineByteOffsets.size()) {

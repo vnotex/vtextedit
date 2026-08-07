@@ -9,6 +9,7 @@
 
 #include "markdownparser.h"
 #include <vtextedit/markdownhighlighterdata.h>
+#include <vtextedit/preview.h>
 
 class QTextDocument;
 
@@ -107,6 +108,20 @@ public:
 
   // Folding regions (heading sections, code blocks, blockquotes, etc.).
   QVector<md::FoldingRegion> m_foldingRegions;
+
+  // Typed element data of every parsed element which can be rendered as an
+  // interactive preview. Kept raw (implicitly shared with the parse result)
+  // so that immutable snapshots can be built on demand for exactly the
+  // element types which are currently enabled and renderable.
+  QVector<md::ImageElement> m_imageElements;
+  QVector<md::CodeElement> m_codeElements;
+  QVector<md::MathElement> m_mathElements;
+  QVector<md::TableElement> m_tableElements;
+
+  // Build immutable preview snapshots for the element types set in
+  // @p_typeMask (bit i corresponds to PreviewElementType value i).
+  QVector<QSharedPointer<const Preview>> buildPreviews(const QTextDocument *p_doc,
+                                                       int p_typeMask) const;
 
   QVector<md::HLUnitStyle> m_dummyHighlight;
 

@@ -52,6 +52,17 @@ namespace tests
         // T13: Performance benchmark
         void testPerformance();
 
+        // Typed preview element extraction.
+        void testTableElementBasic();
+        void testTableElementAlignments();
+        void testTableElementRawCells();
+        void testTableElementEscapedPipes();
+        void testTableElementEmptyAndRaggedRows();
+        void testTableElementSurrogatePositions();
+        void testTableElementNestedPrefixes();
+        void testTableElementInvalid();
+        void testImageCodeMathElements();
+
         // Extra selection invalidation
         void testCursorLineInvalidationExpanded_data();
         void testCursorLineInvalidationExpanded();

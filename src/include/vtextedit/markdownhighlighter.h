@@ -6,6 +6,7 @@
 
 #include <vtextedit/codeblockhighlighter.h>
 #include <vtextedit/markdownhighlighterdata.h>
+#include <vtextedit/preview.h>
 #include <vtextedit/vsyntaxhighlighter.h>
 
 class QScrollBar;
@@ -98,6 +99,11 @@ signals:
 
   // Emitted when folding regions have been computed from a new parsing result.
   void foldingRegionsUpdated(const QVector<md::FoldingRegion> &p_foldingRegions);
+
+  // Emitted when immutable typed preview snapshots have been produced from an
+  // accepted parse result. @p_revision is the parse generation of the result.
+  void previewElementsUpdated(quint64 p_revision,
+                              const QVector<QSharedPointer<const Preview>> &p_previews);
 
 protected:
   void highlightBlock(const QString &p_text) Q_DECL_OVERRIDE;

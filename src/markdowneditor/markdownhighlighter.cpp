@@ -18,6 +18,7 @@
 #include "markdownhighlighterresult.h"
 #include "markdownparser.h"
 #include "mathblockhighlighter.h"
+#include "interactivepreviewhost.h"
 
 // Extension flags (replacing pmh_EXT_* constants).
 // These are kept for config compatibility but cmark enables all extensions by default.
@@ -828,6 +829,16 @@ void MarkdownHighlighter::completeHighlight(QSharedPointer<MarkdownHighlighterRe
   emit imageLinksUpdated(p_result->m_imageRegions);
   emit headersUpdated(p_result->m_headerRegions);
   emit foldingRegionsUpdated(p_result->m_foldingRegions);
+
+  // Snapshots are built here rather than when the result is constructed, so a
+  // runtime change of the enabled element types takes effect on the next
+  // updateHighlight() without waiting for a full reparse. The mask is carried
+  // as a dynamic property because this class is exported and must not grow a
+  // data member.
+  const QVariant maskValue = property(InteractivePreviewHost::c_enabledTypeMaskProperty);
+  const int typeMask = maskValue.isValid() ? maskValue.toInt() : 0;
+  emit previewElementsUpdated(static_cast<quint64>(p_result->m_timeStamp),
+                              p_result->buildPreviews(document(), typeMask));
 }
 
 bool MarkdownHighlighter::isMathEnabled() const { return m_parserExts & EXT_MATH; }

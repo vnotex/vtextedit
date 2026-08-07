@@ -26,6 +26,8 @@ const int TextDocumentLayout::c_imagePadding = 2;
 
 const int TextDocumentLayout::c_cursorGeometryWidth = 4;
 
+const int TextDocumentLayout::c_widgetPreviewPadding = 2;
+
 static bool realEqual(qreal p_a, qreal p_b) { return qAbs(p_a - p_b) < 1e-8; }
 
 TextDocumentLayout::TextDocumentLayout(QTextDocument *p_doc, DocumentResourceMgr *p_resourceMgr)
@@ -537,15 +539,16 @@ void TextDocumentLayout::layoutBlock(const QTextBlock &p_block) {
 
   QVector<Marker> markers;
   QVector<ImagePaintData> images;
+  QVector<WidgetPaintData> widgets;
 
-  layoutLines(p_block, tl, markers, images, availableWidth, 0);
+  layoutLines(p_block, tl, markers, images, widgets, availableWidth, 0);
 
   // Set this block's line count to its layout's line count.
   // That is one block may occupy multiple visual lines.
   const_cast<QTextBlock &>(p_block).setLineCount(p_block.isVisible() ? tl->lineCount() : 0);
 
   // Update the info about this block.
-  finishBlockLayout(p_block, markers, images);
+  finishBlockLayout(p_block, markers, images, widgets);
 }
 
 void TextDocumentLayout::updateOffsetBefore(const QTextBlock &p_block) {
@@ -617,13 +620,15 @@ void TextDocumentLayout::updateOffsetAfter(const QTextBlock &p_block) {
 
 qreal TextDocumentLayout::layoutLines(const QTextBlock &p_block, QTextLayout *p_tl,
                                       QVector<Marker> &p_markers, QVector<ImagePaintData> &p_images,
-                                      qreal p_availableWidth, qreal p_height) {
+                                      QVector<WidgetPaintData> &p_widgets, qreal p_availableWidth,
+                                      qreal p_height) {
   Q_ASSERT(p_block.isValid());
 
   // Handle block inline image.
+  QVector<PreviewData *> previewData;
   const QVector<PreviewData *> *pPreviewData = nullptr;
   if (m_previewEnabled) {
-    const auto &previewData = BlockPreviewData::get(p_block)->getPreviewData();
+    previewData = unclaimedPreviewData(p_block);
     for (auto data : previewData) {
       auto imageData = data ? data->getImageData() : nullptr;
       if (imageData && imageData->m_inline) {
@@ -632,6 +637,16 @@ qreal TextDocumentLayout::layoutLines(const QTextBlock &p_block, QTextLayout *p_
       }
     }
   }
+
+  // Interactive preview widgets placed above their visual line.
+  QVector<const WidgetPreviewSpec *> inlineWidgets;
+  QVector<bool> inlineWidgetPlaced;
+  if (m_previewEnabled) {
+    inlineWidgets = widgetSpecsForBlock(p_block, PreviewPlacement::InlineAboveLine);
+    inlineWidgetPlaced.fill(false, inlineWidgets.size());
+  }
+
+  const int blockPos = p_block.position();
 
   p_tl->beginLayout();
 
@@ -660,6 +675,48 @@ qreal TextDocumentLayout::layoutLines(const QTextBlock &p_block, QTextLayout *p_
 
       if (!images.isEmpty()) {
         p_height += imgHeight + c_markerThickness * 2 + c_imagePadding * 2;
+      }
+    }
+
+    if (!inlineWidgets.isEmpty()) {
+      // Reserve one shared band above this visual line for every widget
+      // anchored to it, using the same ownership rule as
+      // inlinePlacementWidth() so the measured and assigned widths agree.
+      QVector<int> onThisLine;
+      QVector<QPair<qreal, qreal>> spans;
+      qreal bandHeight = 0;
+      for (int i = 0; i < inlineWidgets.size(); ++i) {
+        if (inlineWidgetPlaced[i]) {
+          continue;
+        }
+
+        const auto *spec = inlineWidgets[i];
+        qreal startX = 0;
+        qreal endX = 0;
+        if (!lineClaimsRange(line, spec->m_startPos - blockPos, spec->m_endPos - blockPos, false,
+                             &startX, &endX)) {
+          continue;
+        }
+
+        onThisLine.append(i);
+        spans.append(QPair<qreal, qreal>(startX, endX));
+        bandHeight = qMax(bandHeight, spec->m_height);
+        inlineWidgetPlaced[i] = true;
+      }
+
+      if (!onThisLine.isEmpty() && bandHeight > 0) {
+        p_height += c_widgetPreviewPadding;
+        for (int i = 0; i < onThisLine.size(); ++i) {
+          const auto *spec = inlineWidgets[onThisLine[i]];
+          WidgetPaintData wpd;
+          wpd.m_id = spec->m_id;
+          const qreal spanWidth = spans[i].second - spans[i].first;
+          wpd.m_rect = QRectF(spans[i].first - m_margin,
+                              p_height + bandHeight - spec->m_height,
+                              qMax<qreal>(0, spanWidth), spec->m_height);
+          p_widgets.append(wpd);
+        }
+        p_height += bandHeight + c_widgetPreviewPadding;
       }
     }
 
@@ -701,13 +758,15 @@ void TextDocumentLayout::layoutInlineImage(const PreviewImageData *p_data, qreal
 
 void TextDocumentLayout::finishBlockLayout(const QTextBlock &p_block,
                                            const QVector<Marker> &p_markers,
-                                           const QVector<ImagePaintData> &p_images) {
+                                           const QVector<ImagePaintData> &p_images,
+                                           const QVector<WidgetPaintData> &p_widgets) {
   Q_ASSERT(p_block.isValid());
   ImagePaintData ipd;
+  QVector<WidgetPaintData> blockWidgets;
   auto info = BlockLayoutData::get(p_block);
   Q_ASSERT(info->isNull());
   info->reset();
-  info->m_rect = blockRectFromTextLayout(p_block, &ipd);
+  info->m_rect = blockRectFromTextLayout(p_block, &ipd, &blockWidgets);
   Q_ASSERT(!info->m_rect.isNull());
 
   bool hasImage = false;
@@ -721,6 +780,11 @@ void TextDocumentLayout::finishBlockLayout(const QTextBlock &p_block,
     info->m_images = p_images;
     hasImage = true;
   }
+
+  // Inline bands are reserved during line layout; block bands are appended
+  // after the text.
+  info->m_widgets = p_widgets;
+  info->m_widgets += blockWidgets;
 
   // Add vertical marker.
   if (hasImage) {
@@ -766,10 +830,13 @@ void TextDocumentLayout::updateDocumentSize() {
   if (!realEqual(oldHeight, m_height) || !realEqual(oldWidth, m_width)) {
     emit documentSizeChanged(documentSize());
   }
+
+  updateWidgetPreviewGeometry();
 }
 
 QRectF TextDocumentLayout::blockRectFromTextLayout(const QTextBlock &p_block,
-                                                   ImagePaintData *p_image) {
+                                                   ImagePaintData *p_image,
+                                                   QVector<WidgetPaintData> *p_widgets) {
   if (p_image) {
     *p_image = ImagePaintData();
   }
@@ -789,7 +856,7 @@ QRectF TextDocumentLayout::blockRectFromTextLayout(const QTextBlock &p_block,
 
   // Handle block non-inline image.
   if (m_previewEnabled) {
-    const auto &previewData = BlockPreviewData::get(p_block)->getPreviewData();
+    const auto previewData = unclaimedPreviewData(p_block);
     if (previewData.size() == 1) {
       auto data = previewData.first();
       auto img = data ? data->getImageData() : nullptr;
@@ -816,6 +883,39 @@ QRectF TextDocumentLayout::blockRectFromTextLayout(const QTextBlock &p_block,
     }
   }
 
+  // Reserve the band of every interactive preview widget anchored after this
+  // block. Widths are clamped to the available content width.
+  if (m_previewEnabled && p_widgets) {
+    const auto specs = widgetSpecsForBlock(p_block, PreviewPlacement::BlockAfterSource);
+    if (!specs.isEmpty()) {
+      const qreal maxWidth = availableContentWidth();
+      qreal y = br.height();
+      qreal maxRight = 0;
+      for (const auto *spec : specs) {
+        qreal width = spec->m_width;
+        if (maxWidth > 0) {
+          width = qMin(width, maxWidth);
+        }
+        width = qMax<qreal>(0, width);
+        const qreal height = qMax<qreal>(0, spec->m_height);
+
+        y += c_widgetPreviewPadding;
+
+        WidgetPaintData wpd;
+        wpd.m_id = spec->m_id;
+        wpd.m_rect = QRectF(0, y, width, height);
+        p_widgets->append(wpd);
+
+        y += height;
+        maxRight = qMax(maxRight, width);
+      }
+
+      y += c_widgetPreviewPadding;
+      br.setHeight(y);
+      br.setWidth(qMax(br.width(), maxRight));
+    }
+  }
+
   // Add margins to both sides.
   br.adjust(0, 0, m_margin * 2 + c_cursorGeometryWidth, 0);
 
@@ -837,7 +937,10 @@ void TextDocumentLayout::updateDocumentSizeWithOneBlockChanged(const QTextBlock 
   } else if (width < m_width && p_block.blockNumber() == m_maximumWidthBlockNumber) {
     // Shrink the longest block.
     updateDocumentSize();
+    return;
   }
+
+  updateWidgetPreviewGeometry();
 }
 
 void TextDocumentLayout::adjustImagePaddingAndSize(const PreviewImageData *p_data,
@@ -1139,4 +1242,416 @@ void TextDocumentLayout::setLeadingSpaceOfLine(qreal p_leading) {
 
 bool TextDocumentLayout::shouldBlockWrapLine(const QTextBlock &p_block) const {
   return MarkdownHighlightBlockData::get(p_block)->getWrapLineEnabled();
+}
+
+void TextDocumentLayout::ensureWidgetPreviewMap() {
+  const int revision = document()->revision();
+  if (!m_widgetPreviewMapDirty && revision == m_widgetPreviewMapRevision) {
+    return;
+  }
+
+  m_widgetPreviewMapDirty = false;
+  m_widgetPreviewMapRevision = revision;
+  m_widgetPreviewsByBlock.clear();
+  if (m_widgetPreviews.isEmpty()) {
+    return;
+  }
+
+  for (int i = 0; i < m_widgetPreviews.size(); ++i) {
+    const QTextBlock block = blockForSpec(m_widgetPreviews[i]);
+    if (!block.isValid()) {
+      continue;
+    }
+
+    m_widgetPreviewsByBlock[block.blockNumber()].append(i);
+  }
+
+  // Stack by source start, then type, then identity.
+  const auto &specs = m_widgetPreviews;
+  for (auto it = m_widgetPreviewsByBlock.begin(); it != m_widgetPreviewsByBlock.end(); ++it) {
+    std::sort(it.value().begin(), it.value().end(), [&specs](int p_a, int p_b) {
+      const auto &a = specs[p_a];
+      const auto &b = specs[p_b];
+      if (a.m_startPos != b.m_startPos) {
+        return a.m_startPos < b.m_startPos;
+      }
+      if (a.m_typeOrder != b.m_typeOrder) {
+        return a.m_typeOrder < b.m_typeOrder;
+      }
+      return a.m_id < b.m_id;
+    });
+  }
+}
+
+QVector<const TextDocumentLayout::WidgetPreviewSpec *>
+TextDocumentLayout::widgetSpecsForBlock(const QTextBlock &p_block, PreviewPlacement p_placement) {
+  QVector<const WidgetPreviewSpec *> result;
+  if (m_widgetPreviews.isEmpty()) {
+    return result;
+  }
+
+  ensureWidgetPreviewMap();
+
+  auto it = m_widgetPreviewsByBlock.constFind(p_block.blockNumber());
+  if (it == m_widgetPreviewsByBlock.constEnd()) {
+    return result;
+  }
+
+  for (int idx : it.value()) {
+    const auto &spec = m_widgetPreviews[idx];
+    if (spec.m_placement == p_placement) {
+      result.append(&spec);
+    }
+  }
+
+  return result;
+}
+
+bool TextDocumentLayout::isPreviewClaimed(int p_start, int p_end,
+                                          PreviewElementType p_type) const {
+  for (const auto &claim : m_claimedPreviews) {
+    if (claim.m_startPos >= p_end) {
+      // Claims are sorted by start position.
+      break;
+    }
+
+    if (claim.m_type == p_type && claim.m_endPos > p_start) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// The painted preview sources map one to one onto the interactive element
+// types; a Table claim has no painted counterpart and therefore suppresses
+// nothing.
+static bool previewSourceToElementType(PreviewData::Source p_source, PreviewElementType *p_type) {
+  switch (p_source) {
+  case PreviewData::ImageLink:
+    *p_type = PreviewElementType::Image;
+    return true;
+  case PreviewData::CodeBlock:
+    *p_type = PreviewElementType::Code;
+    return true;
+  case PreviewData::MathBlock:
+    *p_type = PreviewElementType::Math;
+    return true;
+  default:
+    return false;
+  }
+}
+
+QVector<PreviewData *> TextDocumentLayout::unclaimedPreviewData(const QTextBlock &p_block) const {
+  const auto &data = BlockPreviewData::get(p_block)->getPreviewData();
+  if (m_claimedPreviews.isEmpty()) {
+    return data;
+  }
+
+  const int blockPos = p_block.position();
+  QVector<PreviewData *> result;
+  result.reserve(data.size());
+  for (auto item : data) {
+    auto image = item ? item->getImageData() : nullptr;
+    PreviewElementType type = PreviewElementType::Image;
+    if (image && previewSourceToElementType(item->source(), &type) &&
+        isPreviewClaimed(blockPos + image->m_startPos, blockPos + image->m_endPos, type)) {
+      continue;
+    }
+
+    result.append(item);
+  }
+
+  return result;
+}
+
+void TextDocumentLayout::setWidgetPreviews(const QVector<WidgetPreviewSpec> &p_specs) {
+  if (m_widgetPreviews == p_specs) {
+    return;
+  }
+
+  // Only the specs which actually changed can move any geometry, so relayout
+  // their blocks instead of every block holding a reservation.
+  OrderedIntSet affectedBlocks;
+  collectSpecDeltaBlocks(m_widgetPreviews, p_specs, affectedBlocks);
+
+  m_widgetPreviews = p_specs;
+  m_widgetPreviewMapDirty = true;
+
+  if (affectedBlocks.isEmpty()) {
+    ensureWidgetPreviewMap();
+    updateWidgetPreviewGeometry();
+    return;
+  }
+
+  relayout(affectedBlocks);
+}
+
+// Both vectors are sorted by identity, so one merge walk yields the specs
+// present in only one of them or differing between them.
+void TextDocumentLayout::collectSpecDeltaBlocks(const QVector<WidgetPreviewSpec> &p_old,
+                                                const QVector<WidgetPreviewSpec> &p_new,
+                                                OrderedIntSet &p_blocks) {
+  int oldIdx = 0;
+  int newIdx = 0;
+  while (oldIdx < p_old.size() || newIdx < p_new.size()) {
+    if (newIdx >= p_new.size()) {
+      collectBlocksForSpec(p_old[oldIdx++], p_blocks);
+    } else if (oldIdx >= p_old.size()) {
+      collectBlocksForSpec(p_new[newIdx++], p_blocks);
+    } else if (p_old[oldIdx].m_id < p_new[newIdx].m_id) {
+      collectBlocksForSpec(p_old[oldIdx++], p_blocks);
+    } else if (p_new[newIdx].m_id < p_old[oldIdx].m_id) {
+      collectBlocksForSpec(p_new[newIdx++], p_blocks);
+    } else {
+      if (p_old[oldIdx] != p_new[newIdx]) {
+        collectBlocksForSpec(p_old[oldIdx], p_blocks);
+        collectBlocksForSpec(p_new[newIdx], p_blocks);
+      }
+      ++oldIdx;
+      ++newIdx;
+    }
+  }
+}
+
+QTextBlock TextDocumentLayout::blockForSpec(const WidgetPreviewSpec &p_spec) const {
+  QTextDocument *doc = document();
+  if (!doc) {
+    return QTextBlock();
+  }
+
+  // BlockAfterSource anchors after the block containing endPos - 1.
+  const int anchorPos = p_spec.m_placement == PreviewPlacement::BlockAfterSource
+                            ? qMax(p_spec.m_startPos, p_spec.m_endPos - 1)
+                            : p_spec.m_startPos;
+  if (anchorPos < 0 || anchorPos > doc->characterCount() - 1) {
+    return QTextBlock();
+  }
+
+  return doc->findBlock(anchorPos);
+}
+
+void TextDocumentLayout::collectBlocksForSpec(const WidgetPreviewSpec &p_spec,
+                                              OrderedIntSet &p_blocks) {
+  const QTextBlock block = blockForSpec(p_spec);
+  if (block.isValid()) {
+    p_blocks.insert(block.blockNumber(), QMapDummyValue());
+  }
+}
+
+const QVector<TextDocumentLayout::WidgetPreviewSpec> &TextDocumentLayout::widgetPreviews() const {
+  return m_widgetPreviews;
+}
+
+void TextDocumentLayout::setPreviewClaims(const QVector<PreviewClaim> &p_claims) {
+  if (m_claimedPreviews == p_claims) {
+    return;
+  }
+
+  // Only the blocks covered by the claim delta can change their painted
+  // preview, so removing a claim restores the static fallback immediately
+  // without relayouting every claimed block in the document.
+  OrderedIntSet affectedBlocks;
+  collectClaimDeltaBlocks(m_claimedPreviews, p_claims, affectedBlocks);
+
+  m_claimedPreviews = p_claims;
+
+  if (affectedBlocks.isEmpty()) {
+    return;
+  }
+
+  relayout(affectedBlocks);
+}
+
+// Both vectors are sorted, so one merge walk yields the symmetric difference.
+void TextDocumentLayout::collectClaimDeltaBlocks(const QVector<PreviewClaim> &p_old,
+                                                 const QVector<PreviewClaim> &p_new,
+                                                 OrderedIntSet &p_blocks) {
+  int oldIdx = 0;
+  int newIdx = 0;
+  while (oldIdx < p_old.size() || newIdx < p_new.size()) {
+    if (newIdx >= p_new.size()) {
+      collectBlocksForClaim(p_old[oldIdx++], p_blocks);
+    } else if (oldIdx >= p_old.size()) {
+      collectBlocksForClaim(p_new[newIdx++], p_blocks);
+    } else if (p_old[oldIdx] < p_new[newIdx]) {
+      collectBlocksForClaim(p_old[oldIdx++], p_blocks);
+    } else if (p_new[newIdx] < p_old[oldIdx]) {
+      collectBlocksForClaim(p_new[newIdx++], p_blocks);
+    } else {
+      ++oldIdx;
+      ++newIdx;
+    }
+  }
+}
+
+void TextDocumentLayout::collectBlocksForClaim(const PreviewClaim &p_claim,
+                                               OrderedIntSet &p_blocks) {
+  QTextDocument *doc = document();
+  const int maxPos = doc->characterCount() - 1;
+  const int start = qBound(0, p_claim.m_startPos, maxPos);
+  const int end = qBound(start, p_claim.m_endPos, maxPos);
+  QTextBlock block = doc->findBlock(start);
+  while (block.isValid()) {
+    p_blocks.insert(block.blockNumber(), QMapDummyValue());
+    if (block.position() + block.length() > end) {
+      break;
+    }
+    block = block.next();
+  }
+}
+
+QRectF TextDocumentLayout::widgetPreviewRect(quint64 p_id) const {
+  return m_widgetPreviewGeometry.value(p_id);
+}
+
+qreal TextDocumentLayout::availableContentWidth() const {
+  const qreal pageWidth = document()->pageSize().width();
+  if (pageWidth <= 0) {
+    return 0;
+  }
+
+  return qMax<qreal>(0, pageWidth - (2 * m_margin + m_cursorMargin + c_cursorGeometryWidth));
+}
+
+QRectF TextDocumentLayout::sourceTextRect(int p_startPos, int p_endPos) const {
+  QTextDocument *doc = document();
+  if (p_startPos < 0 || p_endPos <= p_startPos) {
+    return QRectF();
+  }
+
+  const int maxPos = doc->characterCount() - 1;
+  if (p_startPos > maxPos) {
+    return QRectF();
+  }
+
+  QRectF result;
+  QTextBlock block = doc->findBlock(p_startPos);
+  while (block.isValid() && block.position() < p_endPos) {
+    if (!block.isVisible()) {
+      block = block.next();
+      continue;
+    }
+
+    auto info = BlockLayoutData::get(block);
+    if (!info->hasOffset()) {
+      block = block.next();
+      continue;
+    }
+
+    QTextLayout *layout = block.layout();
+    const int blockPos = block.position();
+    const int localStart = qMax(0, p_startPos - blockPos);
+    const int localEnd = qMin(block.length() - 1, p_endPos - blockPos);
+    for (int i = 0; i < layout->lineCount(); ++i) {
+      QTextLine line = layout->lineAt(i);
+      const int lineStart = line.textStart();
+      const int lineEnd = lineStart + line.textLength();
+      if (lineEnd <= localStart || lineStart >= localEnd) {
+        continue;
+      }
+
+      const qreal x1 = line.cursorToX(qMax(lineStart, localStart));
+      const qreal x2 = line.cursorToX(qMin(lineEnd, localEnd));
+      QRectF lineRect(qMin(x1, x2), line.y() + info->m_offset, qAbs(x2 - x1), line.height());
+      result = result.isNull() ? lineRect : result.united(lineRect);
+    }
+
+    block = block.next();
+  }
+
+  return result;
+}
+
+bool TextDocumentLayout::lineClaimsRange(const QTextLine &p_line, int p_start, int p_end,
+                                         bool p_positioned, qreal *p_startX,
+                                         qreal *p_endX) const {
+  const int lineStart = p_line.textStart();
+  const int lineEnd = lineStart + p_line.textLength();
+  if (p_end <= lineStart || p_start >= lineEnd) {
+    return false;
+  }
+
+  const bool startsHere = p_start >= lineStart;
+  const bool endsHere = p_end <= lineEnd;
+  if (startsHere && !endsHere && lineEnd - p_start < ((p_end - p_start) >> 1)) {
+    // The range crosses the line boundary and this side owns less than half of
+    // it, so the following line claims it instead.
+    return false;
+  }
+
+  // While the block is still being laid out QTextLine::x() is 0, so the
+  // document margin has to be added by hand; on a finished layout
+  // cursorToX() already carries it.
+  const qreal margin = p_positioned ? 0 : m_margin;
+  const qreal startX = (startsHere ? p_line.cursorToX(p_start) : p_line.x()) + margin;
+  const qreal endX = (endsHere ? p_line.cursorToX(p_end) : p_line.x() + p_line.width()) + margin;
+
+  if (p_startX) {
+    *p_startX = startX;
+  }
+  if (p_endX) {
+    *p_endX = qMax(startX, endX);
+  }
+
+  return true;
+}
+
+qreal TextDocumentLayout::inlinePlacementWidth(int p_startPos, int p_endPos) const {
+  QTextDocument *doc = document();
+  if (p_startPos < 0 || p_endPos <= p_startPos || p_startPos > doc->characterCount() - 1) {
+    return 0;
+  }
+
+  QTextBlock block = doc->findBlock(p_startPos);
+  if (!block.isValid() || !block.isVisible()) {
+    return 0;
+  }
+
+  QTextLayout *layout = block.layout();
+  const int blockPos = block.position();
+  const int start = p_startPos - blockPos;
+  const int end = p_endPos - blockPos;
+
+  for (int i = 0; i < layout->lineCount(); ++i) {
+    qreal startX = 0;
+    qreal endX = 0;
+    if (lineClaimsRange(layout->lineAt(i), start, end, true, &startX, &endX)) {
+      return qMax<qreal>(0, endX - startX);
+    }
+  }
+
+  return 0;
+}
+
+void TextDocumentLayout::updateWidgetPreviewGeometry() {
+  QHash<quint64, QRectF> geometry;
+  if (!m_widgetPreviews.isEmpty()) {
+    ensureWidgetPreviewMap();
+
+    QTextDocument *doc = document();
+    for (auto it = m_widgetPreviewsByBlock.constBegin(); it != m_widgetPreviewsByBlock.constEnd();
+         ++it) {
+      QTextBlock block = doc->findBlockByNumber(it.key());
+      if (!block.isValid() || !block.isVisible()) {
+        continue;
+      }
+
+      auto info = BlockLayoutData::get(block);
+      if (!info->hasOffset() || info->m_widgets.isEmpty()) {
+        continue;
+      }
+
+      for (const auto &widget : info->m_widgets) {
+        geometry.insert(widget.m_id, widget.m_rect.translated(m_margin, info->m_offset));
+      }
+    }
+  }
+
+  if (geometry == m_widgetPreviewGeometry) {
+    return;
+  }
+
+  m_widgetPreviewGeometry = geometry;
+  emit widgetPreviewGeometryChanged();
 }

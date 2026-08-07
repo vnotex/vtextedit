@@ -385,4 +385,54 @@ void TestASTWalker::testHLUnitEndingInEmoji()
   }
 }
 
+// Cross-checks the walker's image classification against the rule
+// PreviewMgr::fetchImageLinksFromRegions() applies to the painted preview path:
+// what precedes the element on its first line and what follows it on its last
+// line must both be blank. The two must not drift apart, or the same image
+// would render as a block preview in one path and an inline one in the other.
+//
+// This also locks the assumption isStandaloneOnLine() relies on, namely that a
+// multi-line inline image construct is reported by cmark at its last line, so
+// its single-line rule stays equivalent to the whole-span rule.
+void TestASTWalker::testImageStandaloneMatchesPaintedPath() {
+  const QVector<QByteArray> cases{
+      // Alone on one line.
+      QByteArray("![alt](img.png)\n"),
+      // The alt text wraps onto a second line.
+      QByteArray("![alt\ntext](img.png)\n"),
+      QByteArray("![alt\ntext](img.png)\ntrailing\n"),
+      // Something else shares the element's line.
+      QByteArray("lead ![alt\ntext](img.png)\n"),
+      QByteArray("![a](\nimg.png)\n"),
+      QByteArray("text ![alt](img.png) more\n"),
+  };
+
+  for (const auto &markdown : cases) {
+    const int blocks = markdown.count('\n') + 1;
+    auto result = vte::md::walkAndConvert(markdown, blocks);
+    QCOMPARE(result.imageElements.size(), 1);
+
+    const auto &image = result.imageElements.first();
+    const QString text = QString::fromUtf8(markdown);
+    QVERIFY(image.m_startPos >= 0 && image.m_endPos <= text.size());
+    QVERIFY(image.m_startPos < image.m_endPos);
+
+    // Independently evaluate the painted-path rule over the element's whole
+    // span: leading text on its first line, trailing text on its last line.
+    const int lineStart =
+        image.m_startPos == 0 ? 0
+                              : text.lastIndexOf(QLatin1Char('\n'), image.m_startPos - 1) + 1;
+    int lineEnd = text.indexOf(QLatin1Char('\n'), image.m_endPos - 1);
+    if (lineEnd < 0) {
+      lineEnd = text.size();
+    }
+
+    const bool paintedStandalone =
+        text.mid(lineStart, image.m_startPos - lineStart).trimmed().isEmpty() &&
+        text.mid(image.m_endPos, lineEnd - image.m_endPos).trimmed().isEmpty();
+
+    QVERIFY2(image.m_standalone == paintedStandalone, markdown.constData());
+  }
+}
+
 QTEST_MAIN(tests::TestASTWalker)

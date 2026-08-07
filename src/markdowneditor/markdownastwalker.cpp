@@ -276,6 +276,235 @@ static cmark_node *findAncestorParagraph(cmark_node *p_node)
   return nullptr;
 }
 
+// Return the raw QChar text of the given 0-indexed source line, excluding the
+// line terminator.
+static QString lineText(const QByteArray &p_utf8Text, const LineOffsetTable &p_offsets,
+                        int p_lineIdx)
+{
+  int start = 0;
+  int len = 0;
+  if (!p_offsets.lineByteRange(p_lineIdx, start, len)) {
+    return QString();
+  }
+
+  return QString::fromUtf8(p_utf8Text.constData() + start, len);
+}
+
+// Split a table row source line into its block container prefix and its raw
+// cells, mirroring cmark's scanner (blocks.c scan_table_row_helper): the row
+// starts with '|' right after the prefix, a pipe preceded by an odd number of
+// backslashes is escaped, and only whitespace may follow the trailing pipe.
+static bool splitTableRow(const QString &p_line, QString &p_prefix, QVector<QString> &p_cells)
+{
+  const int firstPipe = p_line.indexOf(QLatin1Char('|'));
+  if (firstPipe < 0) {
+    return false;
+  }
+
+  p_prefix = p_line.left(firstPipe);
+
+  int cellStart = firstPipe + 1;
+  bool escaped = false;
+  bool closed = false;
+  for (int i = cellStart; i < p_line.size(); ++i) {
+    const QChar ch = p_line.at(i);
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (ch == QLatin1Char('\\')) {
+      escaped = true;
+      continue;
+    }
+
+    if (ch == QLatin1Char('|')) {
+      p_cells.append(p_line.mid(cellStart, i - cellStart).trimmed());
+      cellStart = i + 1;
+      closed = true;
+    }
+  }
+
+  if (!closed) {
+    return false;
+  }
+
+  return p_line.mid(cellStart).trimmed().isEmpty();
+}
+
+// Collect the concatenated literal text of all descendants.
+static QString collectLiteralText(cmark_node *p_node)
+{
+  QString text;
+  for (cmark_node *child = cmark_node_first_child(p_node); child;
+       child = cmark_node_next(child)) {
+    const char *literal = cmark_node_get_literal(child);
+    if (literal) {
+      text += QString::fromUtf8(literal);
+    } else {
+      text += collectLiteralText(child);
+    }
+  }
+  return text;
+}
+
+// Whether [p_docStart, p_docEnd) is the only non-whitespace content of its line.
+//
+// This has to agree with PreviewMgr::fetchImageLinksFromRegions(), which makes
+// the same block-vs-inline decision for the painted preview path; the two
+// classifications must not drift apart. PreviewMgr evaluates the whole
+// first-block-to-last-block span, whereas this only accepts a single-line
+// element. That is currently equivalent: cmark reports a multi-line inline
+// image construct at the position of its last line, so an element which spans
+// two source lines never reaches here with p_startLine != p_endLine (see the
+// image span cases in tests/test_astwalker). Revisit both together if cmark's
+// inline source positions ever change.
+static bool isStandaloneOnLine(const QByteArray &p_utf8Text, const LineOffsetTable &p_offsets,
+                               int p_line, int p_docStart, int p_docEnd)
+{
+  const int lineIdx = p_line - 1;
+  const QString text = lineText(p_utf8Text, p_offsets, lineIdx);
+  const int lineStart = p_offsets.lineStartQCharOffset(lineIdx);
+  const int localStart = p_docStart - lineStart;
+  const int localEnd = p_docEnd - lineStart;
+  if (localStart < 0 || localEnd > text.size() || localEnd < localStart) {
+    return false;
+  }
+
+  return text.left(localStart).trimmed().isEmpty() && text.mid(localEnd).trimmed().isEmpty();
+}
+
+// Capture the full structure of a table while the AST and the original input
+// are alive. Bails out (producing nothing) whenever the AST rows do not map
+// one-to-one onto consecutive source lines of the table's own range, which is
+// the only situation where a rewrite could corrupt the document.
+static void extractTable(cmark_node *p_tableNode, const LineOffsetTable &p_offsets,
+                         const QByteArray &p_utf8Text, ASTWalkResult &p_result, int p_offset)
+{
+  const int startLine = cmark_node_get_start_line(p_tableNode);
+  const int endLine = cmark_node_get_end_line(p_tableNode);
+  if (startLine <= 0 || endLine < startLine) {
+    return;
+  }
+
+  TableElement table;
+  table.m_columns = p_tableNode->as.table.columns_cnt;
+  if (table.m_columns <= 0) {
+    return;
+  }
+
+  table.m_alignments.reserve(table.m_columns);
+  for (int i = 0; i < table.m_columns; ++i) {
+    table.m_alignments.append(p_tableNode->as.table.alignments
+                                  ? static_cast<int>(p_tableNode->as.table.alignments[i])
+                                  : 0);
+  }
+
+  int expectedLine = startLine;
+  for (cmark_node *row = cmark_node_first_child(p_tableNode); row; row = cmark_node_next(row)) {
+    if (cmark_node_get_type(row) != CMARK_NODE_TABLE_ROW) {
+      return;
+    }
+
+    if (cmark_node_get_start_line(row) != expectedLine || expectedLine > endLine) {
+      return;
+    }
+
+    TableRowElement rowElement;
+    switch (row->as.table_row.type) {
+    case CMARK_TABLE_ROW_TYPE_HEADER:
+      rowElement.m_type = TableRowType::Header;
+      break;
+    case CMARK_TABLE_ROW_TYPE_DELIMITER:
+      rowElement.m_type = TableRowType::Delimiter;
+      break;
+    default:
+      rowElement.m_type = TableRowType::Data;
+      break;
+    }
+
+    if (!splitTableRow(lineText(p_utf8Text, p_offsets, expectedLine - 1), rowElement.m_prefix,
+                       rowElement.m_cells)) {
+      return;
+    }
+    table.m_rows.append(rowElement);
+    ++expectedLine;
+  }
+
+  if (expectedLine - 1 != endLine || table.m_rows.size() < 2) {
+    return;
+  }
+
+  if (table.m_rows[0].m_type != TableRowType::Header ||
+      table.m_rows[1].m_type != TableRowType::Delimiter) {
+    return;
+  }
+
+  table.m_startPos = p_offset + p_offsets.lineStartQCharOffset(startLine - 1);
+  table.m_endPos = p_offset + p_offsets.lineEndQCharOffset(endLine - 1);
+  if (table.m_endPos <= table.m_startPos) {
+    return;
+  }
+
+  p_result.tableElements.append(table);
+}
+
+// Capture the typed data of one non-table element.
+static void extractTypedElement(cmark_node *p_node, cmark_node_type p_type, int p_style,
+                                const QByteArray &p_utf8Text, const LineOffsetTable &p_offsets,
+                                ASTWalkResult &p_result, int p_startLine, int p_endLine,
+                                int p_docStart, int p_docEnd, int p_absStart, int p_absEnd)
+{
+  switch (p_type) {
+  case CMARK_NODE_IMAGE: {
+    ImageElement image;
+    image.m_startPos = p_absStart;
+    image.m_endPos = p_absEnd;
+    const char *url = cmark_node_get_url(p_node);
+    image.m_destination = url ? QString::fromUtf8(url) : QString();
+    const char *title = cmark_node_get_title(p_node);
+    image.m_title = title ? QString::fromUtf8(title) : QString();
+    image.m_alternateText = collectLiteralText(p_node);
+    image.m_standalone =
+        (p_startLine == p_endLine) &&
+        isStandaloneOnLine(p_utf8Text, p_offsets, p_startLine, p_docStart, p_docEnd);
+    p_result.imageElements.append(image);
+    break;
+  }
+
+  case CMARK_NODE_CODE_BLOCK: {
+    if (p_style != STYLE_FENCEDCODEBLOCK) {
+      break;
+    }
+    CodeElement code;
+    code.m_startPos = p_absStart;
+    code.m_endPos = p_absEnd;
+    const char *info = cmark_node_get_fence_info(p_node);
+    code.m_language = info ? QString::fromUtf8(info) : QString();
+    const char *literal = cmark_node_get_literal(p_node);
+    code.m_code = literal ? QString::fromUtf8(literal) : QString();
+    p_result.codeElements.append(code);
+    break;
+  }
+
+  case CMARK_NODE_FORMULA_BLOCK:
+  case CMARK_NODE_FORMULA_INLINE: {
+    MathElement math;
+    math.m_startPos = p_absStart;
+    math.m_endPos = p_absEnd;
+    const char *literal = cmark_node_get_literal(p_node);
+    math.m_expression = literal ? QString::fromUtf8(literal) : QString();
+    math.m_display = (p_type == CMARK_NODE_FORMULA_BLOCK);
+    p_result.mathElements.append(math);
+    break;
+  }
+
+  default:
+    break;
+  }
+}
+
+
 ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks,
                              int p_offset, int p_startBlock, bool p_fast)
 {
@@ -410,6 +639,13 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks,
       int absEnd = p_offset + docEnd;
       addRegion(result, style, absStart, absEnd);
 
+      if (type == CMARK_NODE_TABLE) {
+        extractTable(node, offsets, p_utf8Text, result, p_offset);
+      } else {
+        extractTypedElement(node, type, style, p_utf8Text, offsets, result, sl, el, docStart,
+                            docEnd, absStart, absEnd);
+      }
+
       int startBlock = p_startBlock + (sl - 1);
       int endBlock = p_startBlock + (el - 1);
       addFoldingRegion(result, style, startBlock, endBlock);
@@ -435,6 +671,14 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks,
               [](const FoldingRegion &a, const FoldingRegion &b) {
                 return a.m_startBlock < b.m_startBlock;
               });
+
+    auto byStart = [](const TypedPreviewElement &a, const TypedPreviewElement &b) {
+      return a.m_startPos < b.m_startPos;
+    };
+    std::sort(result.imageElements.begin(), result.imageElements.end(), byStart);
+    std::sort(result.codeElements.begin(), result.codeElements.end(), byStart);
+    std::sort(result.mathElements.begin(), result.mathElements.end(), byStart);
+    std::sort(result.tableElements.begin(), result.tableElements.end(), byStart);
   }
 
   cmark_node_free(doc);

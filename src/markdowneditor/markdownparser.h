@@ -93,6 +93,13 @@ struct MarkdownParseResult {
 
   // Folding regions (headings, code blocks, blockquotes, etc.).
   QVector<FoldingRegion> m_foldingRegions;
+
+  // Typed element data for interactive previews.
+  // Sorted by start position ascendingly.
+  QVector<ImageElement> m_imageElements;
+  QVector<CodeElement> m_codeElements;
+  QVector<MathElement> m_mathElements;
+  QVector<TableElement> m_tableElements;
 };
 
 class MarkdownParserWorker : public QThread {

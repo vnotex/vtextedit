@@ -73,6 +73,25 @@ private slots:
 
   void testFuzzyHitInInlinePreviewGap();
 
+  // Interactive preview widget reservations.
+  void testWidgetPreviewBlockReservation();
+
+  void testWidgetPreviewStacking();
+
+  void testWidgetPreviewGeometryWithEqualDocumentSize();
+
+  void testWidgetPreviewFolding();
+
+  void testWidgetPreviewWidthClamped();
+
+  void testWidgetPreviewInlineBand();
+
+  void testClaimSuppressesStaticPreview();
+
+  void testClaimIsTypeScoped();
+
+  void testSourceTextRectSharesWidgetCoordinates();
+
   void cleanupTestCase();
 
   void cleanup();

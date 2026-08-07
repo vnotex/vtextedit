@@ -984,4 +984,165 @@ void TestMarkdownParser::testCursorLineInvalidationExpanded()
            "An unchanged full-width selection is invalidated again");
 }
 
+// ============================================================
+// Typed preview element extraction
+// ============================================================
+
+void TestMarkdownParser::testTableElementBasic()
+{
+  const QString input = QStringLiteral("| h1 | h2 |\n| --- | --- |\n| a | b |\n");
+  auto result = parse(input);
+
+  QCOMPARE(result.tableElements.size(), 1);
+  const auto &table = result.tableElements.first();
+  QCOMPARE(table.m_columns, 2);
+  QCOMPARE(table.m_rows.size(), 3);
+  QCOMPARE(table.m_startPos, 0);
+  // The range excludes the terminating paragraph separator.
+  QCOMPARE(table.m_endPos, input.indexOf(QStringLiteral("| a | b |")) + 9);
+
+  QVERIFY(table.m_rows[0].m_type == vte::md::TableRowType::Header);
+  QVERIFY(table.m_rows[1].m_type == vte::md::TableRowType::Delimiter);
+  QVERIFY(table.m_rows[2].m_type == vte::md::TableRowType::Data);
+
+  QCOMPARE(table.m_rows[0].m_cells, QVector<QString>({QStringLiteral("h1"), QStringLiteral("h2")}));
+  QCOMPARE(table.m_rows[2].m_cells, QVector<QString>({QStringLiteral("a"), QStringLiteral("b")}));
+  QVERIFY(table.m_rows[0].m_prefix.isEmpty());
+}
+
+void TestMarkdownParser::testTableElementAlignments()
+{
+  const QString input =
+      QStringLiteral("| a | b | c | d |\n| --- | :--- | :---: | ---: |\n| 1 | 2 | 3 | 4 |\n");
+  auto result = parse(input);
+
+  QCOMPARE(result.tableElements.size(), 1);
+  // 0 none, 1 left, 2 center, 3 right.
+  QCOMPARE(result.tableElements.first().m_alignments, QVector<int>({0, 1, 2, 3}));
+}
+
+void TestMarkdownParser::testTableElementRawCells()
+{
+  const QString input = QStringLiteral("| **bold** | [x](y.md) |\n| --- | --- |\n| `a|b` | _i_ |\n");
+  auto result = parse(input);
+
+  QCOMPARE(result.tableElements.size(), 1);
+  const auto &table = result.tableElements.first();
+  // Raw Markdown is preserved; inline processing never touches these values.
+  QCOMPARE(table.m_rows[0].m_cells[0], QStringLiteral("**bold**"));
+  QCOMPARE(table.m_rows[0].m_cells[1], QStringLiteral("[x](y.md)"));
+  // A pipe inside a code span still splits the cell in this dialect.
+  QCOMPARE(table.m_rows[2].m_cells.size(), 3);
+}
+
+void TestMarkdownParser::testTableElementEscapedPipes()
+{
+  const QString input = QStringLiteral("| a \\| b | c |\n| --- | --- |\n| d | e |\n");
+  auto result = parse(input);
+
+  QCOMPARE(result.tableElements.size(), 1);
+  const auto &table = result.tableElements.first();
+  QCOMPARE(table.m_columns, 2);
+  QCOMPARE(table.m_rows[0].m_cells.size(), 2);
+  // The escape is part of the raw source and must survive.
+  QCOMPARE(table.m_rows[0].m_cells[0], QStringLiteral("a \\| b"));
+}
+
+void TestMarkdownParser::testTableElementEmptyAndRaggedRows()
+{
+  const QString input =
+      QStringLiteral("| a | b |\n| --- | --- |\n||\n| x | y | z |\n| only |\n");
+  auto result = parse(input);
+
+  QCOMPARE(result.tableElements.size(), 1);
+  const auto &table = result.tableElements.first();
+  QCOMPARE(table.m_columns, 2);
+  QCOMPARE(table.m_rows.size(), 5);
+  // Empty cell.
+  QCOMPARE(table.m_rows[2].m_cells, QVector<QString>({QString()}));
+  // Extra wide row is preserved verbatim, nothing is discarded.
+  QCOMPARE(table.m_rows[3].m_cells.size(), 3);
+  QCOMPARE(table.m_rows[3].m_cells[2], QStringLiteral("z"));
+  // Narrower row.
+  QCOMPARE(table.m_rows[4].m_cells, QVector<QString>({QStringLiteral("only")}));
+}
+
+void TestMarkdownParser::testTableElementSurrogatePositions()
+{
+  // The emoji is a surrogate pair: UTF-16 offsets must not be byte offsets.
+  const QString prefix = QStringLiteral("\xF0\x9F\x98\x80 head\n\n");
+  const QString input =
+      QString::fromUtf8("\xF0\x9F\x98\x80 head\n\n| \xF0\x9F\x98\x80 | b |\n| --- | --- |\n| c | d |\n");
+  auto result = parse(input);
+
+  QCOMPARE(result.tableElements.size(), 1);
+  const auto &table = result.tableElements.first();
+  QCOMPARE(table.m_startPos, input.indexOf(QStringLiteral("| ")));
+  QCOMPARE(table.m_rows[0].m_cells[0], QString::fromUtf8("\xF0\x9F\x98\x80"));
+  QCOMPARE(input.mid(table.m_startPos, 1), QStringLiteral("|"));
+  Q_UNUSED(prefix);
+}
+
+void TestMarkdownParser::testTableElementNestedPrefixes()
+{
+  const QString input =
+      QStringLiteral("> | a | b |\n> | --- | --- |\n> | c | d |\n");
+  auto result = parse(input);
+
+  QCOMPARE(result.tableElements.size(), 1);
+  const auto &table = result.tableElements.first();
+  // The range includes the container prefix.
+  QCOMPARE(table.m_startPos, 0);
+  for (const auto &row : table.m_rows) {
+    QCOMPARE(row.m_prefix, QStringLiteral("> "));
+  }
+}
+
+void TestMarkdownParser::testTableElementInvalid()
+{
+  // Missing trailing pipe: not a table in this dialect.
+  QCOMPARE(parse(QStringLiteral("| a | b\n| --- | ---\n")).tableElements.size(), 0);
+  // Column count mismatch.
+  QCOMPARE(parse(QStringLiteral("| a | b | c |\n| --- | --- |\n")).tableElements.size(), 0);
+  // No delimiter row.
+  QCOMPARE(parse(QStringLiteral("| a | b |\n| c | d |\n")).tableElements.size(), 0);
+}
+
+void TestMarkdownParser::testImageCodeMathElements()
+{
+  {
+    const QString input = QStringLiteral("![alt](pic.png \"t\")\n");
+    auto result = parse(input);
+    QCOMPARE(result.imageElements.size(), 1);
+    const auto &image = result.imageElements.first();
+    QCOMPARE(image.m_destination, QStringLiteral("pic.png"));
+    QCOMPARE(image.m_alternateText, QStringLiteral("alt"));
+    QCOMPARE(image.m_title, QStringLiteral("t"));
+    QVERIFY(image.m_standalone);
+    QCOMPARE(image.m_startPos, 0);
+  }
+
+  {
+    const QString input = QStringLiteral("text ![a](b.png) more\n");
+    auto result = parse(input);
+    QCOMPARE(result.imageElements.size(), 1);
+    QVERIFY(!result.imageElements.first().m_standalone);
+  }
+
+  {
+    const QString input = QStringLiteral("```cpp\nint a;\n```\n");
+    auto result = parse(input);
+    QCOMPARE(result.codeElements.size(), 1);
+    QCOMPARE(result.codeElements.first().m_language, QStringLiteral("cpp"));
+    QCOMPARE(result.codeElements.first().m_code, QStringLiteral("int a;\n"));
+  }
+
+  {
+    const QString input = QStringLiteral("$$\nx^2\n$$\n");
+    auto result = parse(input);
+    QCOMPARE(result.mathElements.size(), 1);
+    QVERIFY(result.mathElements.first().m_display);
+  }
+}
+
 QTEST_MAIN(tests::TestMarkdownParser)

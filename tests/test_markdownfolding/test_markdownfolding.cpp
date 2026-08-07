@@ -872,4 +872,305 @@ void TestMarkdownFolding::testFuzzyHitInInlinePreviewGap() {
   QCOMPARE(layout->hitTest(point, Qt::FuzzyHit), expected);
 }
 
+// ---------------------------------------------------------------------------
+// Interactive preview widget reservations.
+// ---------------------------------------------------------------------------
+
+static TextDocumentLayout::WidgetPreviewSpec makeSpec(quint64 p_id, int p_start, int p_end,
+                                                      qreal p_width, qreal p_height,
+                                                      PreviewPlacement p_placement) {
+  TextDocumentLayout::WidgetPreviewSpec spec;
+  spec.m_id = p_id;
+  spec.m_startPos = p_start;
+  spec.m_endPos = p_end;
+  spec.m_width = p_width;
+  spec.m_height = p_height;
+  spec.m_placement = p_placement;
+  return spec;
+}
+
+void TestMarkdownFolding::testWidgetPreviewBlockReservation() {
+  QTextDocument doc(generateLines(5));
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  layout->setPreviewEnabled(true);
+
+  const QTextBlock block = doc.findBlockByNumber(1);
+  const qreal plainHeight = BlockLayoutData::get(block)->m_rect.height();
+  const qreal plainDocHeight = layout->documentSize().height();
+
+  QSignalSpy geometrySpy(layout, &TextDocumentLayout::widgetPreviewGeometryChanged);
+
+  QVector<TextDocumentLayout::WidgetPreviewSpec> specs;
+  specs.append(makeSpec(7, block.position(), block.position() + block.length() - 1, 120, 40,
+                        PreviewPlacement::BlockAfterSource));
+  layout->setWidgetPreviews(specs);
+
+  auto info = BlockLayoutData::get(block);
+  QCOMPARE(info->m_widgets.size(), 1);
+  QCOMPARE(info->m_widgets.first().m_id, quint64(7));
+  QCOMPARE(info->m_widgets.first().m_rect.height(), 40.0);
+  QCOMPARE(info->m_widgets.first().m_rect.width(), 120.0);
+  QVERIFY(info->m_rect.height() > plainHeight + 39);
+  QVERIFY(layout->documentSize().height() > plainDocHeight + 39);
+  QVERIFY(geometrySpy.count() >= 1);
+
+  // The published rect is in document coordinates.
+  const QRectF docRect = layout->widgetPreviewRect(7);
+  QVERIFY(!docRect.isNull());
+  QCOMPARE(docRect.top(), info->top() + info->m_widgets.first().m_rect.top());
+  QCOMPARE(docRect.left(), doc.documentMargin());
+
+  // Removing the reservation restores the original geometry.
+  layout->setWidgetPreviews(QVector<TextDocumentLayout::WidgetPreviewSpec>());
+  QVERIFY(BlockLayoutData::get(block)->m_widgets.isEmpty());
+  QCOMPARE(BlockLayoutData::get(block)->m_rect.height(), plainHeight);
+  QVERIFY(layout->widgetPreviewRect(7).isNull());
+}
+
+void TestMarkdownFolding::testWidgetPreviewStacking() {
+  QTextDocument doc(QStringLiteral("alpha beta gamma\nnext"));
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  layout->setPreviewEnabled(true);
+
+  const QTextBlock block = doc.firstBlock();
+  QVector<TextDocumentLayout::WidgetPreviewSpec> specs;
+  // Submitted out of order on purpose: stacking must follow the source start.
+  specs.append(makeSpec(2, block.position() + 6, block.position() + 10, 60, 30,
+                        PreviewPlacement::BlockAfterSource));
+  specs.append(makeSpec(1, block.position(), block.position() + 5, 60, 20,
+                        PreviewPlacement::BlockAfterSource));
+  layout->setWidgetPreviews(specs);
+
+  auto info = BlockLayoutData::get(block);
+  QCOMPARE(info->m_widgets.size(), 2);
+  QCOMPARE(info->m_widgets.at(0).m_id, quint64(1));
+  QCOMPARE(info->m_widgets.at(1).m_id, quint64(2));
+  QVERIFY(info->m_widgets.at(0).m_rect.bottom() <= info->m_widgets.at(1).m_rect.top());
+}
+
+void TestMarkdownFolding::testWidgetPreviewGeometryWithEqualDocumentSize() {
+  QTextDocument doc(generateLines(6));
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  layout->setPreviewEnabled(true);
+
+  const QTextBlock first = doc.findBlockByNumber(1);
+  const QTextBlock second = doc.findBlockByNumber(3);
+
+  QVector<TextDocumentLayout::WidgetPreviewSpec> specs;
+  specs.append(makeSpec(1, first.position(), first.position() + first.length() - 1, 50, 20,
+                        PreviewPlacement::BlockAfterSource));
+  specs.append(makeSpec(2, second.position(), second.position() + second.length() - 1, 50, 40,
+                        PreviewPlacement::BlockAfterSource));
+  layout->setWidgetPreviews(specs);
+
+  const QSizeF sizeBefore = layout->documentSize();
+  const QRectF firstBefore = layout->widgetPreviewRect(1);
+
+  QSignalSpy sizeSpy(layout, SIGNAL(documentSizeChanged(QSizeF)));
+  QSignalSpy geometrySpy(layout, &TextDocumentLayout::widgetPreviewGeometryChanged);
+
+  // Swap the heights: the total document size is unchanged but the geometry of
+  // both widgets moved.
+  specs[0].m_height = 40;
+  specs[1].m_height = 20;
+  layout->setWidgetPreviews(specs);
+
+  QCOMPARE(layout->documentSize(), sizeBefore);
+  QCOMPARE(sizeSpy.count(), 0);
+  QCOMPARE(geometrySpy.count(), 1);
+  QVERIFY(layout->widgetPreviewRect(1) != firstBefore);
+}
+
+void TestMarkdownFolding::testWidgetPreviewFolding() {
+  QTextDocument doc(generateLines(10));
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  layout->setPreviewEnabled(true);
+
+  TextFolding folding(&doc);
+
+  const QTextBlock block = doc.findBlockByNumber(5);
+  QVector<TextDocumentLayout::WidgetPreviewSpec> specs;
+  specs.append(makeSpec(3, block.position(), block.position() + block.length() - 1, 50, 30,
+                        PreviewPlacement::BlockAfterSource));
+  layout->setWidgetPreviews(specs);
+  QVERIFY(!layout->widgetPreviewRect(3).isNull());
+
+  TextBlockRange range(doc.findBlockByNumber(4), doc.findBlockByNumber(7));
+  auto id = folding.newFoldingRange(range, TextFolding::Persistent);
+  QVERIFY(id != TextFolding::InvalidRangeId);
+  folding.toggleRange(id);
+
+  // The anchoring block became invisible: the widget must disappear without
+  // being forgotten.
+  QVERIFY(layout->widgetPreviewRect(3).isNull());
+  QCOMPARE(layout->widgetPreviews().size(), 1);
+
+  folding.toggleRange(id);
+  QVERIFY(!layout->widgetPreviewRect(3).isNull());
+}
+
+void TestMarkdownFolding::testWidgetPreviewWidthClamped() {
+  QTextDocument doc(QStringLiteral("short"));
+  doc.setTextWidth(200);
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  layout->setPreviewEnabled(true);
+
+  const qreal available = layout->availableContentWidth();
+  QVERIFY(available > 0);
+  QVERIFY(available < 200);
+
+  const QTextBlock block = doc.firstBlock();
+  QVector<TextDocumentLayout::WidgetPreviewSpec> specs;
+  specs.append(makeSpec(9, block.position(), block.position() + block.length() - 1, 10000, 25,
+                        PreviewPlacement::BlockAfterSource));
+  layout->setWidgetPreviews(specs);
+
+  auto info = BlockLayoutData::get(block);
+  QCOMPARE(info->m_widgets.size(), 1);
+  QCOMPARE(info->m_widgets.first().m_rect.width(), available);
+}
+
+void TestMarkdownFolding::testWidgetPreviewInlineBand() {
+  QTextDocument doc(QStringLiteral("alpha beta gamma delta"));
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  layout->setPreviewEnabled(true);
+
+  const QTextBlock block = doc.firstBlock();
+  const qreal plainHeight = BlockLayoutData::get(block)->m_rect.height();
+
+  QVector<TextDocumentLayout::WidgetPreviewSpec> specs;
+  specs.append(makeSpec(4, block.position() + 6, block.position() + 10, 40, 35,
+                        PreviewPlacement::InlineAboveLine));
+  layout->setWidgetPreviews(specs);
+
+  auto info = BlockLayoutData::get(block);
+  QCOMPARE(info->m_widgets.size(), 1);
+  QCOMPARE(info->m_widgets.first().m_rect.height(), 35.0);
+  // The band sits above the visual line and matches the source span.
+  // Widget rects are stored relative to the content origin, so the document
+  // margin is added only when the geometry is published.
+  const QTextLine line = block.layout()->lineAt(0);
+  const qreal margin = doc.documentMargin();
+  QVERIFY(info->m_widgets.first().m_rect.bottom() <= line.y() + 1e-6);
+  QVERIFY(realNear(info->m_widgets.first().m_rect.left(), line.cursorToX(6) - margin));
+  QVERIFY(
+      realNear(info->m_widgets.first().m_rect.width(), line.cursorToX(10) - line.cursorToX(6)));
+  QVERIFY(info->m_rect.height() > plainHeight + 34);
+  QCOMPARE(layout->widgetPreviewRect(4).left(), line.cursorToX(6));
+}
+
+void TestMarkdownFolding::testClaimSuppressesStaticPreview() {
+  QTextDocument doc(QStringLiteral("![img](a.png)\ntail"));
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+
+  const QTextBlock block = doc.firstBlock();
+  const qreal plainHeight = BlockLayoutData::get(block)->m_rect.height();
+
+  auto previewData = BlockPreviewData::get(block);
+  previewData->insert(new PreviewData(PreviewData::ImageLink, 1, 0, block.length() - 1, 0, false,
+                                      QStringLiteral("claim-image"), QSize(80, 60), 0));
+  layout->setPreviewEnabled(true);
+
+  const qreal paintedHeight = BlockLayoutData::get(block)->m_rect.height();
+  QVERIFY(paintedHeight > plainHeight + 59);
+  QCOMPARE(BlockLayoutData::get(block)->m_images.size(), 1);
+
+  // A claim of a different type must not suppress this painted image.
+  QVector<TextDocumentLayout::PreviewClaim> claims;
+  TextDocumentLayout::PreviewClaim claim;
+  claim.m_startPos = block.position();
+  claim.m_endPos = block.position() + block.length() - 1;
+  claim.m_type = PreviewElementType::Table;
+  claims.append(claim);
+  layout->setPreviewClaims(claims);
+
+  QCOMPARE(BlockLayoutData::get(block)->m_rect.height(), paintedHeight);
+  QCOMPARE(BlockLayoutData::get(block)->m_images.size(), 1);
+
+  // Claiming the element with a matching type suppresses exactly that painted
+  // preview.
+  claims[0].m_type = PreviewElementType::Image;
+  layout->setPreviewClaims(claims);
+
+  QCOMPARE(BlockLayoutData::get(block)->m_rect.height(), plainHeight);
+  QVERIFY(BlockLayoutData::get(block)->m_images.isEmpty());
+
+  // Removing the claim restores the painted fallback immediately.
+  layout->setPreviewClaims(QVector<TextDocumentLayout::PreviewClaim>());
+  QCOMPARE(BlockLayoutData::get(block)->m_rect.height(), paintedHeight);
+  QCOMPARE(BlockLayoutData::get(block)->m_images.size(), 1);
+}
+
+void TestMarkdownFolding::testClaimIsTypeScoped() {
+  // An image nested in a claimed table range keeps its painted preview: the
+  // table widget renders the source, not the image.
+  QTextDocument doc(QStringLiteral("| ![img](a.png) |\n| --- |\ntail"));
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+
+  const QTextBlock block = doc.firstBlock();
+  const qreal plainHeight = BlockLayoutData::get(block)->m_rect.height();
+
+  auto previewData = BlockPreviewData::get(block);
+  previewData->insert(new PreviewData(PreviewData::ImageLink, 1, 2, 15, 0, true,
+                                      QStringLiteral("nested-image"), QSize(40, 30), 0));
+  layout->setPreviewEnabled(true);
+  const qreal paintedHeight = BlockLayoutData::get(block)->m_rect.height();
+  QVERIFY(paintedHeight > plainHeight);
+
+  const QTextBlock lastRow = doc.findBlockByNumber(1);
+  QVector<TextDocumentLayout::PreviewClaim> claims;
+  TextDocumentLayout::PreviewClaim claim;
+  claim.m_startPos = block.position();
+  claim.m_endPos = lastRow.position() + lastRow.length() - 1;
+  claim.m_type = PreviewElementType::Table;
+  claims.append(claim);
+  layout->setPreviewClaims(claims);
+
+  QCOMPARE(BlockLayoutData::get(block)->m_rect.height(), paintedHeight);
+  QVERIFY(!BlockLayoutData::get(block)->m_images.isEmpty());
+}
+
+void TestMarkdownFolding::testSourceTextRectSharesWidgetCoordinates() {
+  QTextDocument doc(QStringLiteral("alpha beta gamma delta"));
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  layout->setPreviewEnabled(true);
+
+  const QTextBlock block = doc.firstBlock();
+  QVector<TextDocumentLayout::WidgetPreviewSpec> specs;
+  specs.append(makeSpec(11, block.position() + 6, block.position() + 10, 40, 20,
+                        PreviewPlacement::InlineAboveLine));
+  layout->setWidgetPreviews(specs);
+
+  // Both rectangles are documented as document coordinates and are handed to
+  // the same widget, so they must share the same origin.
+  const QRectF sourceRect = layout->sourceTextRect(block.position() + 6, block.position() + 10);
+  const QRectF widgetRect = layout->widgetPreviewRect(11);
+  QVERIFY(!sourceRect.isNull());
+  QVERIFY(!widgetRect.isNull());
+  QVERIFY(realNear(sourceRect.left(), widgetRect.left()));
+  QVERIFY(realNear(sourceRect.width(), widgetRect.width()));
+
+  // The width the widget is measured at is the width it is assigned.
+  QVERIFY(realNear(layout->inlinePlacementWidth(block.position() + 6, block.position() + 10),
+                   widgetRect.width()));
+}
+
 QTEST_MAIN(tests::TestMarkdownFolding)

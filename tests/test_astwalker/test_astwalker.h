@@ -18,6 +18,7 @@ private slots:
   void testFoldingRegionsFrontMatter();
   void testFoldingRegionsMixed();
   void testHLUnitEndingInEmoji();
+  void testImageStandaloneMatchesPaintedPath();
 };
 
 } // namespace tests
