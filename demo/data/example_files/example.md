@@ -50,3 +50,17 @@ Could not agree more!
     #include <iostream>
     ```
 2. List item 2
+
+## Table
+| Component | Description | Supported |
+|-----------|-------------|:---------:|
+| `VTextEdit` | Base edit widget with cursor and selection | Yes |
+| `VTextEditor` | Adds syntax highlight, Vi mode and folding | Yes |
+| `VMarkdownEditor` | Markdown parsing and in-place preview | Yes |
+
+Alignment test:
+
+| Left | Center | Right |
+|:-----|:------:|------:|
+| a | b | c |
+| *italic* | **bold** | `code` |
