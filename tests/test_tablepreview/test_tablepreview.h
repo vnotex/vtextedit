@@ -34,9 +34,43 @@ private slots:
   void testWidgetRejectsOversizedTable();
   void testWidgetRejectsTooManyRowsOrColumns();
   void testRaggedTableIsNotRoundTrippable();
+  void testCellEditorHoldsRawMarkdown();
+  void testOneClickStartsEditing();
+  void testClickPutsTheCaretUnderThePointer();
+  void testClickAtTheEndPutsTheCaretAtTheEnd();
+  void testReadOnlySheetIgnoresTheClick();
   void testPreferredSizeCacheTracksContents();
   void testColumnsFillTheAssignedWidth();
   void testColumnLayoutFollowsACellEdit();
+
+  // Delegate.
+  void testDelegateWrapsOrdinaryText();
+  void testDelegateWrapsAnUnbreakableToken();
+  void testDelegateAccumulatesLineHeightsOnly();
+  void testDelegateHonorsRolesAndDirection();
+  void testDelegateHonorsPaletteState();
+  void testDelegatePaintsPanelTextAndFocusInOrder();
+  void testDelegatePreservesPainterState();
+
+  // Column planning.
+  void testColumnFloorIsTwelveCharacters();
+  void testColumnsCompressProportionally();
+  void testColumnsStopAtTheFloorAndScroll();
+  void testVerticalScrollBarChromeIsReserved();
+
+  // Band geometry.
+  void testPureHeightMatchesTheLiveRows();
+  void testInheritedMutationDropsTheMemo();
+  void testConstrainedHeightTracksTheWidth();
+  void testRowsGrowAndShrinkWithTheWidth();
+
+  // Lazy row fitting.
+  void testDistantRowsAreFittedLazily();
+  void testRowFittingKeepsTheAnchorNearTheEnd();
+  void testRowFittingIsBounded();
+
+  // Host notification.
+  void testSettledGeometryNotifiesTheHost();
 };
 } // namespace tests
 

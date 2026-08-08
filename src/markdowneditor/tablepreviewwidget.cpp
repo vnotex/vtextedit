@@ -1,16 +1,26 @@
 #include "tablepreviewwidget.h"
 
+#include <algorithm>
+#include <cmath>
+
 #include <QApplication>
 #include <QFont>
+#include <QFontMetricsF>
 #include <QHeaderView>
+#include <QLineEdit>
+#include <QPainter>
 #include <QScopedValueRollback>
 #include <QScrollBar>
 #include <QStringList>
 #include <QStyle>
 #include <QStyleOption>
+#include <QStyledItemDelegate>
+#include <QTextLayout>
+#include <QTextOption>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWheelEvent>
+#include <QtMath>
 
 #include "previewlogging.h"
 
@@ -373,11 +383,193 @@ QString TablePreviewModel::toMarkdown() const {
 // TablePreviewView
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// TablePreviewDelegate
+// ---------------------------------------------------------------------------
+
 namespace {
-// How often one distribution may re-run against a viewport its own writes
+// Line width standing in for "no constraint". QTextLine works in 26.6 fixed
+// point, so this stays far away from the overflow QFIXED_MAX guards against
+// while being wider than any cell a Markdown table can hold.
+const qreal c_unboundedLineWidth = 1 << 22;
+
+// The horizontal inset QCommonStyle applies on each side of an item's text.
+// Using the very same expression here is what keeps the delegate's own
+// painting, its size hints and the column floor from disagreeing by a pixel.
+int itemTextMargin(const QStyle *p_style, const QStyleOption &p_option, const QWidget *p_widget) {
+  return p_style->pixelMetric(QStyle::PM_FocusFrameHMargin, &p_option, p_widget) + 1;
+}
+
+// Lay @p_layout out at @p_width and return the bounds it occupies. Only
+// QTextLine::height() is accumulated: a QTextDocument would add paragraph and
+// document margins, which is exactly the stale vertical space this sheet must
+// not have.
+QSizeF layoutLines(QTextLayout &p_layout, qreal p_width) {
+  qreal height = 0;
+  qreal widthUsed = 0;
+
+  p_layout.beginLayout();
+  forever {
+    QTextLine line = p_layout.createLine();
+    if (!line.isValid()) {
+      break;
+    }
+
+    // An empty cell has one zero-length line. Mirroring QCommonStyle and
+    // stopping here keeps such a row at the vertical header's minimum instead
+    // of reserving a line box for text which is not there.
+    if (line.textLength() == 0) {
+      break;
+    }
+
+    line.setLineWidth(p_width);
+    line.setPosition(QPointF(0, height));
+    height += line.height();
+    widthUsed = qMax(widthUsed, line.naturalTextWidth());
+  }
+  p_layout.endLayout();
+
+  return QSizeF(widthUsed, height);
+}
+
+// Prepare @p_layout for one cell and lay it out into @p_width, or naturally
+// when @p_width is not positive.
+QSizeF layoutCellText(QTextLayout &p_layout, const QStyleOptionViewItem &p_option, int p_width) {
+  QTextOption textOption;
+  // Qt's own item delegates use QTextOption::WordWrap, which cannot break an
+  // unbroken token and leaves it elided instead. A cell holding a long URL or
+  // an identifier is exactly the case this sheet has to show in full.
+  textOption.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+  textOption.setTextDirection(p_option.direction);
+  textOption.setAlignment(QStyle::visualAlignment(p_option.direction, p_option.displayAlignment));
+
+  p_layout.setText(p_option.text);
+  p_layout.setFont(p_option.font);
+  p_layout.setTextOption(textOption);
+
+  return layoutLines(p_layout, p_width > 0 ? qreal(p_width) : c_unboundedLineWidth);
+}
+
+// Item delegate which wraps rather than elides.
+//
+// Only display painting and sizing are replaced; editor creation, the commit
+// path and every data role stay with QStyledItemDelegate, so a cell is still
+// edited as the single line of raw Markdown it is.
+class TablePreviewDelegate : public QStyledItemDelegate {
+public:
+  explicit TablePreviewDelegate(QObject *p_parent = nullptr) : QStyledItemDelegate(p_parent) {}
+
+  void paint(QPainter *p_painter, const QStyleOptionViewItem &p_option,
+             const QModelIndex &p_index) const Q_DECL_OVERRIDE;
+
+  // The width of p_option.rect is read as the section width the cell has to
+  // fit into; a non-positive one asks for the natural, unwrapped size.
+  QSize sizeHint(const QStyleOptionViewItem &p_option,
+                 const QModelIndex &p_index) const Q_DECL_OVERRIDE;
+};
+
+void TablePreviewDelegate::paint(QPainter *p_painter, const QStyleOptionViewItem &p_option,
+                                 const QModelIndex &p_index) const {
+  QStyleOptionViewItem option = p_option;
+  initStyleOption(&option, p_index);
+
+  const QWidget *widget = option.widget;
+  QStyle *style = widget ? widget->style() : QApplication::style();
+
+  p_painter->save();
+  // Intersect rather than replace: the view has already clipped to the region
+  // it is repainting, and dropping that would let a cell paint over its
+  // neighbours.
+  p_painter->setClipRect(option.rect, Qt::IntersectClip);
+
+  // The native panel first: background, alternating rows, selection and hover
+  // all come from the style, so a themed sheet keeps looking like one.
+  style->drawPrimitive(QStyle::PE_PanelItemViewItem, &option, p_painter, widget);
+
+  QPalette::ColorGroup group =
+      option.state & QStyle::State_Enabled ? QPalette::Normal : QPalette::Disabled;
+  if (group == QPalette::Normal && !(option.state & QStyle::State_Active)) {
+    group = QPalette::Inactive;
+  }
+
+  if (!option.text.isEmpty()) {
+    p_painter->setPen(option.palette.color(group, option.state & QStyle::State_Selected
+                                                      ? QPalette::HighlightedText
+                                                      : QPalette::Text));
+
+    // The sheet carries neither decorations nor check indicators, so the text
+    // occupies the whole item minus the style's own horizontal inset. Taking
+    // SE_ItemViewItemText and insetting it again would count that inset twice.
+    const int margin = itemTextMargin(style, option, widget);
+    const QRect textRect = option.rect.adjusted(margin, 0, -margin, 0);
+
+    QTextLayout layout;
+    const QSizeF bounds = layoutCellText(layout, option, textRect.width());
+    // Horizontal alignment lives inside the layout, which is why the layout
+    // rectangle spans the full text width; only the vertical placement of the
+    // whole block is decided here.
+    const QRect layoutRect =
+        QStyle::alignedRect(option.direction, option.displayAlignment,
+                            QSize(textRect.width(), qCeil(bounds.height())), textRect);
+    layout.draw(p_painter, layoutRect.topLeft());
+  }
+
+  if (option.state & QStyle::State_HasFocus) {
+    QStyleOptionFocusRect focus;
+    focus.QStyleOption::operator=(option);
+    focus.rect = style->subElementRect(QStyle::SE_ItemViewItemFocusRect, &option, widget);
+    focus.state |= QStyle::State_KeyboardFocusChange;
+    focus.state |= QStyle::State_Item;
+    focus.backgroundColor = option.palette.color(
+        group, option.state & QStyle::State_Selected ? QPalette::Highlight : QPalette::Window);
+    style->drawPrimitive(QStyle::PE_FrameFocusRect, &focus, p_painter, widget);
+  }
+
+  p_painter->restore();
+}
+
+QSize TablePreviewDelegate::sizeHint(const QStyleOptionViewItem &p_option,
+                                     const QModelIndex &p_index) const {
+  QStyleOptionViewItem option = p_option;
+  initStyleOption(&option, p_index);
+
+  const QWidget *widget = option.widget;
+  const QStyle *style = widget ? widget->style() : QApplication::style();
+  const int margin = itemTextMargin(style, option, widget);
+
+  int available = -1;
+  if (option.rect.width() > 0) {
+    // A section narrower than its own padding still has to lay out, otherwise
+    // the wrap loop would never place a character.
+    available = qMax(1, option.rect.width() - 2 * margin);
+  }
+
+  QTextLayout layout;
+  const QSizeF bounds = layoutCellText(layout, option, available);
+  return QSize(qCeil(bounds.width()) + 2 * margin, qCeil(bounds.height()));
+}
+} // namespace
+
+// ---------------------------------------------------------------------------
+// TablePreviewView
+// ---------------------------------------------------------------------------
+
+namespace {
+// How often one layout pass may re-run against a viewport its own writes
 // resized. Two passes are what dropping the vertical scroll bar costs; the
 // third is slack.
-const int c_maxDistributionPasses = 3;
+const int c_maxLayoutPasses = 3;
+
+// Bounds on one lazy row-fitting pass. Enough to cover a viewport in a couple
+// of event loop turns, small enough that a table at the model limits cannot
+// stall the GUI thread while the user drags the scroll bar.
+const int c_rowFitBatch = 8;
+
+const int c_rowFitRounds = 8;
+
+// Rows fitted on either side of the viewport, so a small scroll step never
+// shows an unfitted row.
+const int c_rowFitOverscan = 2;
 
 // A wheel movement can be consumed only while the bar it targets still has
 // room in that direction; otherwise the editor underneath keeps scrolling.
@@ -410,38 +602,149 @@ HorizontalIntent horizontalIntent(const QWheelEvent &p_event) {
 QPoint onHorizontalAxis(const QPoint &p_delta, HorizontalIntent p_intent) {
   return QPoint(p_intent == HorizontalIntent::FromVerticalAxis ? p_delta.y() : p_delta.x(), 0);
 }
+
+// Where a mouse event happened, in the receiving widget's coordinates.
+QPoint mousePosition(const QMouseEvent &p_event) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+  return p_event.position().toPoint();
+#else
+  return p_event.pos();
+#endif
+}
+
+// Fill @p_available exactly with widths proportional to @p_natural, never
+// letting a column fall below @p_minimum.
+//
+// Compressing proportionally on its own would push a narrow column under the
+// floor, and simply clamping it afterwards would overshoot the target. So the
+// columns which hit the floor are frozen one round at a time and the rest are
+// rescaled against what is left, which is the standard apportionment fixed
+// point. The final integer split uses largest remainders so the sections cover
+// the viewport to the pixel however the rounding fell.
+QVector<int> planColumnWidths(const QVector<int> &p_natural, int p_minimum, int p_available) {
+  const int count = p_natural.size();
+  QVector<int> widths(count, p_minimum);
+  if (count <= 0) {
+    return widths;
+  }
+
+  // Not even the floors fit: hand out the floors and let the sheet scroll.
+  if (p_available <= count * p_minimum) {
+    return widths;
+  }
+
+  qint64 freeTotal = 0;
+  for (int width : p_natural) {
+    freeTotal += qMax(width, p_minimum);
+  }
+  if (freeTotal <= 0) {
+    return widths;
+  }
+
+  QVector<bool> frozen(count, false);
+  int remaining = p_available;
+  bool changed = true;
+  while (changed && freeTotal > 0) {
+    changed = false;
+    for (int c = 0; c < count; ++c) {
+      if (frozen[c] || freeTotal <= 0) {
+        continue;
+      }
+
+      const qreal scaled = qreal(remaining) * qMax(p_natural.at(c), p_minimum) / freeTotal;
+      if (scaled < p_minimum) {
+        frozen[c] = true;
+        freeTotal -= qMax(p_natural.at(c), p_minimum);
+        remaining -= p_minimum;
+        changed = true;
+      }
+    }
+  }
+
+  QVector<QPair<double, int>> remainders;
+  qint64 assigned = 0;
+  for (int c = 0; c < count; ++c) {
+    if (frozen[c]) {
+      continue;
+    }
+
+    const double exact =
+        freeTotal > 0 ? double(remaining) * qMax(p_natural.at(c), p_minimum) / freeTotal : 0.0;
+    const int base = qMax(p_minimum, int(std::floor(exact)));
+    widths[c] = base;
+    assigned += base;
+    remainders.append(qMakePair(exact - std::floor(exact), c));
+  }
+
+  if (remainders.isEmpty()) {
+    // Every column froze, which the arithmetic above rules out. Keep the
+    // contract anyway: the sections must cover the viewport.
+    widths[count - 1] += p_available - count * p_minimum;
+    return widths;
+  }
+
+  std::sort(remainders.begin(), remainders.end(),
+            [](const QPair<double, int> &p_a, const QPair<double, int> &p_b) {
+              return p_a.first != p_b.first ? p_a.first > p_b.first : p_a.second < p_b.second;
+            });
+
+  int leftover = remaining - int(assigned);
+  for (int i = 0; leftover > 0; ++i, --leftover) {
+    ++widths[remainders.at(i % remainders.size()).second];
+  }
+
+  // Only reachable through floating point drift, and only ever by a pixel or
+  // two; take it back from the columns which rounded up last.
+  for (int i = remainders.size() - 1; leftover < 0 && i >= 0; --i) {
+    const int c = remainders.at(i).second;
+    const int take = qMin(widths[c] - p_minimum, -leftover);
+    widths[c] -= take;
+    leftover += take;
+  }
+
+  return widths;
+}
 } // namespace
 
 const QAbstractItemView::EditTriggers TablePreviewView::c_defaultEditTriggers =
     QAbstractItemView::DoubleClicked | QAbstractItemView::SelectedClicked |
     QAbstractItemView::EditKeyPressed | QAbstractItemView::AnyKeyPressed;
 
+const int TablePreviewView::c_minimumColumnCharacters = 12;
+
 TablePreviewView::TablePreviewView(QWidget *p_parent) : QTableView(p_parent) {
   horizontalHeader()->hide();
   verticalHeader()->hide();
-  horizontalHeader()->setStretchLastSection(true);
+  // Every section is written by the layout pass, including the last one, so
+  // the stretch would only ever overwrite a planned width with a viewport it
+  // was not planned against.
+  horizontalHeader()->setStretchLastSection(false);
   setSelectionMode(QAbstractItemView::SingleSelection);
-  // A sheet clamped to the text column cannot show every column, and a
-  // Markdown table carries no natural place to break a row, so the columns
-  // keep their content widths and the overflow is reached by scrolling.
-  // Per pixel, because per item cannot reveal the tail of a single column
-  // wider than the viewport - which is exactly the cell that overflowed.
   setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+  // Per pixel, because per item cannot reveal the tail of a single column
+  // wider than the viewport - which is exactly the cell that overflowed. The
+  // vertical axis is per pixel too, so a tall wrapped row can be scrolled
+  // through instead of jumping past it.
   setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+  setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
   setEditTriggers(c_defaultEditTriggers);
 
-  // A Markdown table cell is single-line by construction, and wrapping is what
-  // makes sizeHintForRow() depend on the assigned column widths. The height is
-  // measured before the columns are distributed, so a wrapping row reserved a
-  // band for text which then fits on one line, leaving an empty strip under
-  // the sheet. Cells too wide for their column are elided instead, which is
-  // what the horizontal scroll bar policy above already implies.
-  setWordWrap(false);
+  // A cell wider than its column is shown in full rather than elided, which
+  // is what makes a row's height depend on the width its columns end up with.
+  // The layout pass below is what keeps the two in step: columns are planned
+  // first, and the rows are then fitted against exactly those widths.
+  setWordWrap(true);
+  setItemDelegate(new TablePreviewDelegate(this));
 
-  m_columnLayoutTimer = new QTimer(this);
-  m_columnLayoutTimer->setSingleShot(true);
-  m_columnLayoutTimer->setInterval(0);
-  connect(m_columnLayoutTimer, &QTimer::timeout, this, &TablePreviewView::distributeColumnWidths);
+  m_layoutTimer = new QTimer(this);
+  m_layoutTimer->setSingleShot(true);
+  m_layoutTimer->setInterval(0);
+  connect(m_layoutTimer, &QTimer::timeout, this, &TablePreviewView::applyLayout);
+
+  m_rowFitTimer = new QTimer(this);
+  m_rowFitTimer->setSingleShot(true);
+  m_rowFitTimer->setInterval(0);
+  connect(m_rowFitTimer, &QTimer::timeout, this, &TablePreviewView::fitRowsAroundViewport);
 }
 
 void TablePreviewView::setModel(QAbstractItemModel *p_model) {
@@ -466,7 +769,7 @@ void TablePreviewView::setModel(QAbstractItemModel *p_model) {
   // schedule an items layout for the changed size hint.
   auto invalidate = [this]() {
     invalidatePreferredSize();
-    scheduleColumnLayout();
+    scheduleLayout();
   };
   m_modelConnections
       << connect(p_model, &QAbstractItemModel::modelReset, this, invalidate)
@@ -483,7 +786,7 @@ void TablePreviewView::setModel(QAbstractItemModel *p_model) {
 TablePreviewView::PreferredSizeKey TablePreviewView::currentPreferredSizeKey() const {
   PreferredSizeKey key;
   key.m_frame = frameWidth() * 2;
-  key.m_minColumnWidth = qMax(1, horizontalHeader()->minimumSectionSize());
+  key.m_minColumnWidth = minimumColumnWidth();
   key.m_minRowHeight = qMax(1, verticalHeader()->minimumSectionSize());
   key.m_rows = model() ? model()->rowCount() : 0;
   key.m_columns = model() ? model()->columnCount() : 0;
@@ -494,16 +797,33 @@ TablePreviewView::PreferredSizeKey TablePreviewView::currentPreferredSizeKey() c
   return key;
 }
 
-void TablePreviewView::invalidatePreferredSize() { m_preferredSizeDirty = true; }
+void TablePreviewView::invalidatePreferredSize() {
+  m_preferredSizeDirty = true;
+  m_constrainedWidthKey = -1;
+  // Every lazily fitted row was measured against contents which may just have
+  // changed, and row identities do not survive a reset or a reorder either.
+  m_fittedRows.clear();
+  m_fittedColumnWidths.clear();
+  m_notificationArmed = true;
+}
 
 void TablePreviewView::changeEvent(QEvent *p_event) {
   switch (p_event->type()) {
+  case QEvent::StyleChange:
+    // A different style lays its scroll bars out differently, so what the old
+    // one was seen to take says nothing about the new one.
+    m_observedVerticalChrome = -1;
+    m_observedHorizontalChrome = -1;
+    invalidatePreferredSize();
+    scheduleLayout();
+    break;
+
   case QEvent::FontChange:
   case QEvent::ApplicationFontChange:
-  case QEvent::StyleChange:
   case QEvent::LayoutDirectionChange:
     // The measurement is derived from font and style metrics.
     invalidatePreferredSize();
+    scheduleLayout();
     break;
 
   default:
@@ -515,96 +835,323 @@ void TablePreviewView::changeEvent(QEvent *p_event) {
 
 void TablePreviewView::setVisibleRows(int p_rows) {
   m_visibleRows = qMax(1, p_rows);
-  // The window may have grown over rows which were never fitted.
-  resizeVisibleRowsToContents();
+  // The window may have grown over rows which were never fitted, and it also
+  // decides whether a vertical scroll bar is reserved, which moves the width
+  // the columns have to share.
   invalidatePreferredSize();
-  // The row window decides whether a vertical scroll bar is reserved, which
-  // moves the width the columns have to share.
-  distributeColumnWidths();
+  applyLayout();
   updateGeometry();
 }
 
-void TablePreviewView::resizeVisibleRowsToContents() {
+int TablePreviewView::bandRowCount() const {
   if (!model()) {
+    return 0;
+  }
+
+  return qMin(model()->rowCount(), qMax(1, m_visibleRows));
+}
+
+QStyleOptionViewItem TablePreviewView::baseViewOption() const {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+  QStyleOptionViewItem option;
+  initViewItemOption(&option);
+#else
+  QStyleOptionViewItem option = viewOptions();
+#endif
+  return option;
+}
+
+QSize TablePreviewView::cellHint(const QStyleOptionViewItem &p_base, int p_row, int p_column,
+                                 int p_width) const {
+  if (!model()) {
+    return QSize();
+  }
+
+  const QModelIndex index = model()->index(p_row, p_column);
+  if (!index.isValid()) {
+    return QSize();
+  }
+
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+  const QAbstractItemDelegate *delegate = itemDelegateForIndex(index);
+#else
+  const QAbstractItemDelegate *delegate = itemDelegate(index);
+#endif
+  if (!delegate) {
+    return QSize();
+  }
+
+  QStyleOptionViewItem option = p_base;
+  option.rect = QRect(0, 0, qMax(0, p_width), 0);
+  return delegate->sizeHint(option, index);
+}
+
+int TablePreviewView::rowHeightFor(const QStyleOptionViewItem &p_base, int p_row,
+                                   const QVector<int> &p_widths) const {
+  // QTableView's own accounting is asymmetric but exact: a cell is painted
+  // into the section minus the grid line, while the section itself is the
+  // tallest cell plus it.
+  const int grid = showGrid() ? 1 : 0;
+  int hint = 0;
+  for (int c = 0; c < p_widths.size(); ++c) {
+    hint = qMax(hint, cellHint(p_base, p_row, c, p_widths.at(c) - grid).height());
+  }
+
+  return qMax(qMax(1, verticalHeader()->minimumSectionSize()), hint + grid);
+}
+
+int TablePreviewView::minimumColumnWidth() const {
+  const int headerMinimum = qMax(1, horizontalHeader()->minimumSectionSize());
+
+  QStyleOption option;
+  option.initFrom(this);
+  const int margin = itemTextMargin(style(), option, this);
+  const int grid = showGrid() ? 1 : 0;
+  const int text = qCeil(c_minimumColumnCharacters * QFontMetricsF(font()).averageCharWidth());
+
+  return qMax(headerMinimum, text + 2 * margin + grid);
+}
+
+int TablePreviewView::scrollBarExtent(Qt::Orientation p_orientation) const {
+  const int observed =
+      p_orientation == Qt::Vertical ? m_observedVerticalChrome : m_observedHorizontalChrome;
+  if (observed >= 0) {
+    return observed;
+  }
+
+  const QScrollBar *bar =
+      p_orientation == Qt::Vertical ? verticalScrollBar() : horizontalScrollBar();
+  if (!bar) {
+    return 0;
+  }
+
+  QStyleOption option;
+  option.initFrom(this);
+
+  // The estimate until a pass has seen the real thing, following the two rules
+  // QAbstractScrollArea lays its children out by: a bar which overlaps the
+  // content takes none of the viewport's extent, and a frame drawn around the
+  // contents only leaves the bar outside the frame, together with the style's
+  // scroll view spacing.
+  const int overlap = style()->pixelMetric(QStyle::PM_ScrollView_ScrollBarOverlap, &option, this);
+  const QSize hint = bar->sizeHint();
+  const int extent = p_orientation == Qt::Vertical ? hint.width() : hint.height();
+
+  int consumed = overlap == 0 ? extent : 0;
+  if (frameWidth() > 0 &&
+      style()->styleHint(QStyle::SH_ScrollView_FrameOnlyAroundContents, &option, this)) {
+    consumed +=
+        overlap + style()->pixelMetric(QStyle::PM_ScrollView_ScrollBarSpacing, &option, this);
+  }
+
+  return qMax(0, consumed);
+}
+
+void TablePreviewView::observeScrollBarChrome() {
+  const int frame = frameWidth() * 2;
+  bool changed = false;
+
+  // Only a bar which is actually shown says anything about what it costs.
+  if (verticalScrollBar()->isVisible()) {
+    const int chrome = qMax(0, width() - frame - viewport()->width());
+    changed = changed || chrome != scrollBarExtent(Qt::Vertical);
+    m_observedVerticalChrome = chrome;
+  }
+
+  if (horizontalScrollBar()->isVisible()) {
+    const int chrome = qMax(0, height() - frame - viewport()->height());
+    changed = changed || chrome != scrollBarExtent(Qt::Horizontal);
+    m_observedHorizontalChrome = chrome;
+  }
+
+  if (!changed) {
     return;
   }
 
-  const int rows = qMin(model()->rowCount(), qMax(1, m_visibleRows));
-  for (int r = 0; r < rows; ++r) {
-    resizeRowToContents(r);
-  }
+  // Every answer the host holds was derived from the estimate this just
+  // replaced, so they all have to be measured again and reported.
+  qCDebug(previewTableLog) << "the sheet's scroll bar chrome is really"
+                           << m_observedVerticalChrome << "x" << m_observedHorizontalChrome;
+  m_preferredSizeDirty = true;
+  m_constrainedWidthKey = -1;
+  m_notificationArmed = true;
 }
 
-QSize TablePreviewView::preferredSize() const {
+void TablePreviewView::ensureMeasured() const {
   const PreferredSizeKey key = currentPreferredSizeKey();
   if (!m_preferredSizeDirty && key == m_cachedPreferredSizeKey) {
-    return m_cachedPreferredSize;
+    return;
+  }
+
+  // A key which moved without an explicit invalidation is one of the inherited
+  // mutations that have no signal of their own - a swapped delegate, the grid
+  // being turned off, a new header minimum. They change what the sheet reports
+  // and what its sections should be, so they owe a pass and a notification
+  // just as a content change does.
+  if (!m_preferredSizeDirty) {
+    qCDebug(previewTableLog) << "the sheet was mutated behind its own back - re-planning";
+    m_fittedRows.clear();
+    m_fittedColumnWidths.clear();
+    m_notificationArmed = true;
+    scheduleLayout();
   }
 
   const int frame = key.m_frame;
   int width = frame;
   int height = frame;
 
-  if (model()) {
-    // A header never assigns a section less than its minimum, so measuring the
-    // bare content hint would reserve a band the view cannot lay out in.
-    const int minColumnWidth = key.m_minColumnWidth;
-    const int minRowHeight = key.m_minRowHeight;
+  m_cachedColumnWidths.clear();
+  m_cachedRowHeights.clear();
+
+  if (model() && model()->columnCount() > 0 && model()->rowCount() > 0) {
+    const QStyleOptionViewItem base = baseViewOption();
+    const int grid = key.m_showGrid ? 1 : 0;
+    const int columns = model()->columnCount();
+    const int band = bandRowCount();
 
     // Derive from the contents, never from the currently assigned geometry:
-    // the last section stretches, so using columnWidth() here would feed the
-    // assigned width straight back into the preferred width.
-    m_cachedColumnWidths.resize(model()->columnCount());
-    for (int c = 0; c < model()->columnCount(); ++c) {
-      const int columnWidth = qMax(sizeHintForColumn(c), minColumnWidth);
-      m_cachedColumnWidths[c] = columnWidth;
-      width += columnWidth;
+    // the columns are planned against the width the sheet gets, so consulting
+    // columnWidth() here would feed that width straight back into the natural
+    // one. Only the band is measured - a row the sheet cannot show has no say
+    // in the geometry it reserves.
+    m_cachedColumnWidths.resize(columns);
+    for (int c = 0; c < columns; ++c) {
+      int hint = 0;
+      for (int r = 0; r < band; ++r) {
+        hint = qMax(hint, cellHint(base, r, c, -1).width());
+      }
+
+      m_cachedColumnWidths[c] = qMax(key.m_minColumnWidth, hint + grid);
+      width += m_cachedColumnWidths.at(c);
     }
 
-    const int rows = qMin(model()->rowCount(), qMax(1, m_visibleRows));
-    for (int r = 0; r < rows; ++r) {
-      height += qMax(sizeHintForRow(r), minRowHeight);
+    m_cachedRowHeights.resize(band);
+    for (int r = 0; r < band; ++r) {
+      m_cachedRowHeights[r] = rowHeightFor(base, r, m_cachedColumnWidths);
+      height += m_cachedRowHeights.at(r);
     }
 
-    if (model()->rowCount() > rows) {
-      width += verticalScrollBar()->sizeHint().width();
+    if (model()->rowCount() > band) {
+      width += scrollBarExtent(Qt::Vertical);
     }
-  } else {
-    // Never leave widths behind which the distribution could consult with a
-    // column count that no longer exists.
-    m_cachedColumnWidths.clear();
   }
 
   m_cachedPreferredSize = QSize(qMax(width, frame + 1), qMax(height, frame + 1));
   m_cachedPreferredSizeKey = key;
   m_preferredSizeDirty = false;
+  m_constrainedWidthKey = -1;
 
   qCDebug(previewTableLog) << "measured the sheet ->" << m_cachedPreferredSize << "for"
                            << key.m_rows << "x" << key.m_columns << "cell(s), showing at most"
                            << key.m_visibleRows << "row(s); frame" << key.m_frame
                            << "minimum section" << key.m_minColumnWidth << "x"
                            << key.m_minRowHeight;
+}
 
+QSize TablePreviewView::preferredSize() const {
+  ensureMeasured();
   return m_cachedPreferredSize;
 }
 
 QSize TablePreviewView::sizeHint() const { return preferredSize(); }
 
-QSize TablePreviewView::preferredSizeWithin(int p_maxWidth) const {
-  QSize size = preferredSize();
-  if (p_maxWidth > 0 && size.width() > p_maxWidth) {
-    // The sheet is about to be clamped, so a horizontal scroll bar appears.
-    // Without reserving the height it takes from the viewport the band would
-    // be exactly the rows tall and the bar would cover the last one. A style
-    // whose bars float over the content takes nothing, and then reserving
-    // would leave an empty strip instead.
-    QStyleOption option;
-    option.initFrom(this);
-    const int overlap = style()->pixelMetric(QStyle::PM_ScrollView_ScrollBarOverlap, &option, this);
-    size.rheight() += qMax(0, horizontalScrollBar()->sizeHint().height() - overlap);
+TablePreviewView::Solution TablePreviewView::solveGeometry(int p_outerWidth,
+                                                           int p_viewportWidth) const {
+  ensureMeasured();
+
+  Solution solution;
+  const int frame = frameWidth() * 2;
+  if (!model() || model()->columnCount() <= 0 || model()->rowCount() <= 0) {
+    solution.m_viewportWidth = qMax(0, p_outerWidth - frame);
+    return solution;
   }
 
-  return size;
+  const int band = bandRowCount();
+  // Only ever consulted here: the band is what decides whether the rows below
+  // it need a bar, and the bar is what the columns have to share the width
+  // with.
+  const bool verticalScrollBar = model()->rowCount() > band;
+
+  int viewport = -1;
+  if (p_viewportWidth >= 0) {
+    viewport = p_viewportWidth;
+  } else if (p_outerWidth > 0) {
+    viewport = p_outerWidth - frame - (verticalScrollBar ? scrollBarExtent(Qt::Vertical) : 0);
+    viewport = qMax(0, viewport);
+  }
+
+  const int minimum = minimumColumnWidth();
+  if (viewport < 0) {
+    // The natural plan: what the sheet would like to be before anything clamps
+    // it. Whether the frame arrangement puts the scroll bars inside or outside
+    // it (SH_ScrollView_FrameOnlyAroundContents) changes where they are drawn,
+    // not how much of the outer width they consume, so one formula covers both.
+    solution.m_columnWidths = m_cachedColumnWidths;
+    int total = 0;
+    for (int w : solution.m_columnWidths) {
+      total += w;
+    }
+    solution.m_viewportWidth = total;
+  } else {
+    solution.m_columnWidths = planColumnWidths(m_cachedColumnWidths, minimum, viewport);
+    solution.m_viewportWidth = viewport;
+    solution.m_horizontalScrollBar = m_cachedColumnWidths.size() * minimum > viewport;
+  }
+
+  // Measure the band against exactly the widths just planned. Qt sizes a
+  // wrapped row from the *current* sections, which is why nothing may fit a
+  // row before its columns are decided.
+  //
+  // Whenever the plan came out at the natural widths - the whole
+  // p_outerWidth <= 0 branch, and every viewport roomy enough not to compress
+  // anything - ensureMeasured() has already measured the band against those
+  // very widths. Walking every cell of the band through the delegate a second
+  // time for the same answer is the single most expensive thing this solver
+  // could do, and it runs once per parse generation while the user types.
+  if (solution.m_columnWidths == m_cachedColumnWidths) {
+    solution.m_rowHeights = m_cachedRowHeights;
+    for (int height : solution.m_rowHeights) {
+      solution.m_bandHeight += height;
+    }
+  } else {
+    const QStyleOptionViewItem base = baseViewOption();
+    solution.m_rowHeights.resize(band);
+    for (int r = 0; r < band; ++r) {
+      solution.m_rowHeights[r] = rowHeightFor(base, r, solution.m_columnWidths);
+      solution.m_bandHeight += solution.m_rowHeights.at(r);
+    }
+  }
+
+  return solution;
+}
+
+QSize TablePreviewView::constrainedSizeFor(const Solution &p_solution, int p_width) const {
+  const int frame = frameWidth() * 2;
+  int height = frame + p_solution.m_bandHeight;
+  if (p_solution.m_horizontalScrollBar) {
+    height += scrollBarExtent(Qt::Horizontal);
+  }
+
+  return QSize(qMin(preferredSize().width(), p_width), qMax(height, frame + 1));
+}
+
+QSize TablePreviewView::preferredSizeWithin(int p_maxWidth) const {
+  if (p_maxWidth <= 0) {
+    return preferredSize();
+  }
+
+  // Before the memo, never after: ensureMeasured() is what notices the
+  // inherited mutations which drop it, and answering from a memo the sheet has
+  // already outgrown is exactly the stale reservation this has to avoid.
+  ensureMeasured();
+  if (m_constrainedWidthKey == p_maxWidth) {
+    return m_constrainedSize;
+  }
+
+  const Solution solution = solveGeometry(p_maxWidth, -1);
+  m_constrainedSize = constrainedSizeFor(solution, p_maxWidth);
+  m_constrainedWidthKey = p_maxWidth;
+  return m_constrainedSize;
 }
 
 void TablePreviewView::wheelEvent(QWheelEvent *p_event) {
@@ -654,80 +1201,280 @@ void TablePreviewView::wheelEvent(QWheelEvent *p_event) {
 
 void TablePreviewView::updateGeometries() {
   QTableView::updateGeometries();
-  distributeColumnWidths();
+  if (m_layingOut || m_fittingRows) {
+    return;
+  }
+
+  // Writing a section makes QTableView post a deferred geometry update for the
+  // very sections the pass just wrote, and that update lands after the guard
+  // above has been rolled back. Re-planning for it would walk every cell of
+  // the band through the delegate again only to produce the identical plan.
+  if (!m_preferredSizeDirty && viewport()->width() == m_plannedViewportWidth) {
+    return;
+  }
+
+  scheduleLayout();
+}
+
+void TablePreviewView::mousePressEvent(QMouseEvent *p_event) {
+  QTableView::mousePressEvent(p_event);
+
+  // NoEditTriggers is how a read-only editor, and a table which cannot be
+  // written back, turn editing off. Neither may be opened by a click either.
+  if (p_event->button() != Qt::LeftButton || editTriggers() == QAbstractItemView::NoEditTriggers) {
+    return;
+  }
+
+  const QModelIndex index = indexAt(mousePosition(*p_event));
+  if (!index.isValid() || !index.flags().testFlag(Qt::ItemIsEditable)) {
+    return;
+  }
+
+  // One click is enough, and the caret lands under the pointer. A second click
+  // never reaches here: the editor covers its own cell by then.
+  edit(index, QAbstractItemView::AllEditTriggers, p_event);
+}
+
+bool TablePreviewView::edit(const QModelIndex &p_index, EditTrigger p_trigger, QEvent *p_event) {
+  const bool editing = QTableView::edit(p_index, p_trigger, p_event);
+  if (editing) {
+    // The base has already shown the editor and given it focus, so whatever
+    // selection that produced is in place and can be replaced with a caret.
+    placeCursor(p_index, p_event);
+  }
+
+  return editing;
+}
+
+QLineEdit *TablePreviewView::cellEditor(const QModelIndex &p_index) const {
+  const QRect cell = visualRect(p_index);
+  if (!cell.isValid()) {
+    return nullptr;
+  }
+
+  for (auto editor : viewport()->findChildren<QLineEdit *>()) {
+    if (editor->isVisible() && cell.intersects(editor->geometry())) {
+      return editor;
+    }
+  }
+
+  return nullptr;
+}
+
+void TablePreviewView::placeCursor(const QModelIndex &p_index, const QEvent *p_event) {
+  auto editor = cellEditor(p_index);
+  if (!editor) {
+    return;
+  }
+
+  int position = editor->text().size();
+  if (p_event && p_event->type() == QEvent::MouseButtonPress) {
+    // The editor is a child of the viewport and covers the cell, so the click
+    // it was opened by maps straight onto a character in it.
+    const QPoint pos = mousePosition(*static_cast<const QMouseEvent *>(p_event));
+    position = editor->cursorPositionAt(editor->mapFrom(viewport(), pos));
+  }
+
+  editor->deselect();
+  editor->setCursorPosition(position);
+}
+
+void TablePreviewView::scrollContentsBy(int p_dx, int p_dy) {
+  QTableView::scrollContentsBy(p_dx, p_dy);
+  if (p_dy != 0 && !m_fittingRows) {
+    scheduleRowFit();
+  }
 }
 
 void TablePreviewView::layoutColumns() {
   invalidatePreferredSize();
-  distributeColumnWidths();
+  applyLayout();
 }
 
-void TablePreviewView::scheduleColumnLayout() {
-  if (m_columnLayoutTimer && !m_columnLayoutTimer->isActive()) {
-    m_columnLayoutTimer->start();
+void TablePreviewView::scheduleLayout() const {
+  if (m_layoutTimer && !m_layoutTimer->isActive()) {
+    m_layoutTimer->start();
   }
 }
 
-void TablePreviewView::distributeColumnWidths() {
-  if (m_distributingColumns || !model() || model()->columnCount() <= 0) {
+void TablePreviewView::scheduleRowFit() {
+  if (m_rowFitTimer && !m_rowFitTimer->isActive()) {
+    m_rowFitTimer->start();
+  }
+}
+
+void TablePreviewView::applyLayout() {
+  if (m_layingOut || !model() || model()->columnCount() <= 0 || model()->rowCount() <= 0) {
     return;
   }
 
-  // Refreshes m_cachedColumnWidths; cheap when the cache is still valid.
-  preferredSize();
-
-  const int count = m_cachedColumnWidths.size();
-  int total = 0;
-  for (int w : m_cachedColumnWidths) {
-    total += w;
-  }
-  if (count <= 0 || total <= 0) {
-    return;
+  if (m_layoutTimer) {
+    m_layoutTimer->stop();
   }
 
-  const int minColumnWidth = qMax(1, horizontalHeader()->minimumSectionSize());
-  QScopedValueRollback<bool> guard(m_distributingColumns, true);
+  QScopedValueRollback<bool> guard(m_layingOut, true);
 
-  // Writing the sections can drop the vertical scroll bar, which resizes the
-  // viewport from inside setColumnWidth() - and the guard has to swallow the
-  // re-entrant pass that comes with it. So re-run here against the width the
-  // viewport settled on, otherwise the sheet keeps the proportions of a
-  // viewport it no longer has and the stretched last section quietly absorbs
-  // the difference. The scroll bar depends on the row heights only, so this
-  // converges; the bound is there so a style with width-dependent scroll bars
-  // cannot spin.
-  for (int pass = 0; pass < c_maxDistributionPasses; ++pass) {
-    const int available = viewport()->width();
-    if (available <= total) {
-      // No surplus: keep the content widths rather than squeezing the columns
-      // into the band. The overflow is what the horizontal scroll bar exists
-      // for, and squeezing would elide cells the user cannot then reach.
-      for (int c = 0; c < count; ++c) {
-        setColumnWidth(c, m_cachedColumnWidths.at(c));
-      }
-    } else {
-      // Every section is written, including the last one. Letting the stretch
-      // handle the remainder instead would leave the last section's stored
-      // base size behind from whatever the previous contents were, and a one
-      // column table would get no assignment at all.
-      int assigned = 0;
-      for (int c = 0; c < count - 1; ++c) {
-        const int width =
-            qMax(minColumnWidth, qRound(qreal(m_cachedColumnWidths.at(c)) * available / total));
-        setColumnWidth(c, width);
-        assigned += width;
-      }
+  Solution solution;
+  int observedViewport = -1;
+  for (int pass = 0; pass < c_maxLayoutPasses; ++pass) {
+    solution = solveGeometry(width(), observedViewport);
 
-      // Cumulative remainder, so the sections cover the viewport exactly
-      // however the per column rounding fell.
-      setColumnWidth(count - 1, qMax(minColumnWidth, available - assigned));
+    // Columns first: Qt measures a wrapped row against the sections it finds,
+    // so fitting rows before the widths are decided is what reserves a band
+    // for text which then fits on fewer lines.
+    for (int c = 0; c < solution.m_columnWidths.size(); ++c) {
+      setColumnWidth(c, solution.m_columnWidths.at(c));
     }
 
-    if (viewport()->width() == available) {
+    for (int r = 0; r < solution.m_rowHeights.size(); ++r) {
+      setRowHeight(r, solution.m_rowHeights.at(r));
+    }
+
+    // Writing the sections can add or drop a scroll bar, which resizes the
+    // viewport from underneath the plan. Ask Qt to settle, then compare: the
+    // plan is only authoritative if the viewport it assumed is the one the
+    // sheet actually has. The retry is bounded so an unusual style cannot spin.
+    QTableView::updateGeometries();
+    observeScrollBarChrome();
+
+    const int actual = viewport()->width();
+    if (actual == solution.m_viewportWidth || actual == observedViewport) {
       break;
     }
+
+    observedViewport = actual;
+  }
+
+  m_plannedViewportWidth = viewport()->width();
+
+  // Only a different plan makes the rows fitted for the previous one stale. A
+  // pass which lands on the same widths - the common one, since most passes
+  // answer a geometry update rather than a content change - would otherwise
+  // throw away every lazily fitted row and measure it all over again.
+  if (m_fittedColumnWidths != solution.m_columnWidths) {
+    m_fittedColumnWidths = solution.m_columnWidths;
+    m_fittedRows.clear();
+  }
+
+  for (int r = 0; r < solution.m_rowHeights.size(); ++r) {
+    m_fittedRows.insert(r);
+  }
+
+  notifyPreferredGeometry(solution);
+
+  // Whatever is on screen below the band still carries a default height.
+  if (model()->rowCount() > solution.m_rowHeights.size()) {
+    scheduleRowFit();
   }
 }
+
+void TablePreviewView::fitRowsAroundViewport() {
+  if (m_fittingRows || m_layingOut || !model() || model()->columnCount() <= 0 ||
+      model()->rowCount() <= 0) {
+    return;
+  }
+
+  if (m_fittedColumnWidths.size() != model()->columnCount()) {
+    // No authoritative plan yet, and fitting against sections the pass is
+    // about to rewrite would only have to be undone.
+    scheduleLayout();
+    return;
+  }
+
+  QScopedValueRollback<bool> guard(m_fittingRows, true);
+  const QStyleOptionViewItem base = baseViewOption();
+  const int rows = model()->rowCount();
+  auto vbar = verticalScrollBar();
+
+  for (int round = 0; round < c_rowFitRounds; ++round) {
+    // Recomputed every round: fitting a row moves the ones below it, so the
+    // interval the viewport covers is not the one it covered before.
+    int first = rowAt(0);
+    if (first < 0) {
+      first = 0;
+    }
+    int last = rowAt(qMax(0, viewport()->height() - 1));
+    if (last < 0) {
+      last = rows - 1;
+    }
+    first = qMax(0, first - c_rowFitOverscan);
+    last = qMin(rows - 1, last + c_rowFitOverscan);
+
+    QVector<int> pending;
+    for (int r = first; r <= last && pending.size() < c_rowFitBatch; ++r) {
+      if (!m_fittedRows.contains(r)) {
+        pending.append(r);
+      }
+    }
+
+    if (pending.isEmpty()) {
+      return;
+    }
+
+    // Keep whatever the user is looking at where it is: the rows being fitted
+    // change the content height above the viewport as well as inside it.
+    const int anchorRow = qBound(0, rowAt(0), rows - 1);
+    const int anchorBefore = rowViewportPosition(anchorRow);
+
+    for (int r : pending) {
+      setRowHeight(r, rowHeightFor(base, r, m_fittedColumnWidths));
+      m_fittedRows.insert(r);
+    }
+
+    // setRowHeight() only *posts* the scroll bar's range update, so without
+    // this the bar would still be bounded by the content height the rows just
+    // grew past, and the correction below would be clamped away - which is a
+    // visible jump for anyone fitting rows near the end of a long table.
+    QTableView::updateGeometries();
+
+    if (vbar) {
+      const int anchorAfter = rowViewportPosition(anchorRow);
+      vbar->setValue(vbar->value() + (anchorAfter - anchorBefore));
+    }
+  }
+
+  // Bounded work per pass; the rest continues on the next event loop turn.
+  scheduleRowFit();
+}
+
+void TablePreviewView::notifyPreferredGeometry(const Solution &p_solution) {
+  const QSize preferred = preferredSize();
+  const QSize constrained =
+      constrainedSizeFor(p_solution, width() > 0 ? width() : preferred.width());
+
+  // The pass just measured the band against the width the sheet actually has,
+  // so seed the memo rather than measuring it all over again. Taken after the
+  // intrinsic measurement, which drops the memo when it has to re-run.
+  if (width() > 0) {
+    m_constrainedSize = constrained;
+    m_constrainedWidthKey = width();
+  }
+
+  const bool armed = m_notificationArmed;
+  const bool changed = preferred != m_settledPreferredSize ||
+                       constrained.height() != m_settledConstrainedHeight;
+
+  m_notificationArmed = false;
+  m_settledPreferredSize = preferred;
+  m_settledConstrainedHeight = constrained.height();
+
+  if (!m_settlementEstablished) {
+    // The first settlement is the baseline the host measured on its own.
+    m_settlementEstablished = true;
+    return;
+  }
+
+  // A geometry-only pass answers a width the host chose; telling it about the
+  // answer it asked for is how a measurement loop starts.
+  if (!armed || !changed) {
+    return;
+  }
+
+  qCDebug(previewTableLog) << "the sheet settled on" << preferred << "and" << constrained
+                           << "at width" << width();
+  emit preferredGeometryChanged();
+}
+
 
 // ---------------------------------------------------------------------------
 // TablePreviewWidget
@@ -754,6 +1501,11 @@ TablePreviewWidget::TablePreviewWidget(PreviewWidgetContext *p_context, QWidget 
 
   connect(m_model, &TablePreviewModel::cellCommitted, this,
           &TablePreviewWidget::handleCellCommitted);
+
+  // The host's event filter watches this widget, not the view inside it, so
+  // the sheet cannot reach it through updateGeometry() alone.
+  connect(m_view, &TablePreviewView::preferredGeometryChanged, this,
+          &TablePreviewWidget::handlePreferredGeometryChanged);
 
   if (p_context) {
     connect(p_context, &PreviewWidgetContext::replacementFinished, this,
@@ -863,8 +1615,8 @@ void TablePreviewWidget::resetFromSource() {
 
   m_applyingSource = true;
   m_model->setTable(m_table);
+  // Plans the columns and fits the band against them, in that order.
   m_view->layoutColumns();
-  m_view->resizeVisibleRowsToContents();
   m_applyingSource = false;
 
   applyEditTriggers();
@@ -883,13 +1635,36 @@ QSize TablePreviewWidget::sizeHint() const { return m_view->preferredSize(); }
 bool TablePreviewWidget::hasHeightForWidth() const { return true; }
 
 int TablePreviewWidget::heightForWidth(int p_width) const {
-  // The host clamps the band to the text column, and a sheet wider than the
-  // band gets a horizontal scroll bar which eats into the viewport. Reserving
-  // its height here rather than in sizeHint() is what makes the reserve track
-  // the clamp: the width passed in is the one the band ends up with, whereas
-  // the widget's own geometry context still holds the previous layout pass at
-  // measuring time.
+  // The host clamps the band to the text column, and a sheet whose columns
+  // cannot even be compressed to their readable floor gets a horizontal
+  // scroll bar which eats into the viewport. Reserving its height here rather
+  // than in sizeHint() is what makes the reserve track the clamp: the width
+  // passed in is the one the band ends up with, whereas the widget's own
+  // geometry context still holds the previous layout pass at measuring time.
   return m_view->preferredSizeWithin(p_width).height();
+}
+
+bool TablePreviewWidget::event(QEvent *p_event) {
+  if (p_event->type() == QEvent::LayoutRequest) {
+    // Whatever queued this has been delivered; the next settlement may queue
+    // another one.
+    m_layoutRequestPending = false;
+  }
+
+  return PreviewWidget::event(p_event);
+}
+
+void TablePreviewWidget::handlePreferredGeometryChanged() {
+  if (m_layoutRequestPending) {
+    return;
+  }
+
+  // updateGeometry() posts a layout request to the *parent*, which the host
+  // does not watch. Posting one here is what makes the host drop its cached
+  // measurement and re-publish the reservation.
+  m_layoutRequestPending = true;
+  updateGeometry();
+  QCoreApplication::postEvent(this, new QEvent(QEvent::LayoutRequest));
 }
 
 void TablePreviewWidget::changeEvent(QEvent *p_event) {
@@ -901,7 +1676,6 @@ void TablePreviewWidget::changeEvent(QEvent *p_event) {
     if (m_view->font() != font()) {
       m_view->setFont(font());
       m_view->layoutColumns();
-      m_view->resizeVisibleRowsToContents();
       updateGeometry();
     }
   }

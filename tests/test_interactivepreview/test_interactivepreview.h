@@ -198,6 +198,7 @@ private slots:
   void testMultiLineImageIsStandalone();
 
   // Sheet geometry.
+  void testClickEditsACellInPlace();
   void testTableSheetHeightMatchesItsRows();
   void testWideTableSheetScrollsHorizontally();
   void testASingleOverflowingColumnScrollsToItsEnd();
