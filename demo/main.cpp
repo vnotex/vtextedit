@@ -42,7 +42,7 @@ static VMarkdownEditor *setupMarkdownEditor(QWidget *p_parent) {
   auto editorConfig = QSharedPointer<TextEditorConfig>::create();
   editorConfig->m_inputMode = InputMode::VscodeMode;
   editorConfig->m_lineSpacing = 1.25;
-  editorConfig->m_maxContentWidth = 600;
+  // editorConfig->m_maxContentWidth = 600;
   auto markdownEditorConfig = QSharedPointer<MarkdownEditorConfig>::create(editorConfig);
   // The editable table sheet is opt-in, because it writes back to the document.
   markdownEditorConfig->m_inplacePreviewSources |= MarkdownEditorConfig::Table;
