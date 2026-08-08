@@ -199,6 +199,10 @@ private slots:
 
   // Sheet geometry.
   void testTableSheetHeightMatchesItsRows();
+  void testWideTableSheetScrollsHorizontally();
+  void testASingleOverflowingColumnScrollsToItsEnd();
+  void testSheetReservesTheScrollBarAcrossAResize();
+  void testWideSheetConsumesHorizontalWheel();
   void testTableSheetSpansContentWidth();
   void testTableSheetKeepsANaturalWidthInsideTheBand();
   void testInlinePreviewIgnoresTheWidthFraction();

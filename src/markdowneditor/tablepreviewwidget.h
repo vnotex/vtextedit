@@ -141,6 +141,11 @@ public:
 
   QSize preferredSize() const;
 
+  // preferredSize(), plus the horizontal scroll bar's height when the sheet
+  // will not fit in p_maxWidth. The host clamps the band to that width, so the
+  // bar the clamp brings with it has to be reserved before the band is sized.
+  QSize preferredSizeWithin(int p_maxWidth) const;
+
   QSize sizeHint() const Q_DECL_OVERRIDE;
 
   // Re-measure the contents and hand every column its share of the assigned
@@ -259,6 +264,10 @@ public:
   void setReadOnly(bool p_readOnly);
 
   QSize sizeHint() const Q_DECL_OVERRIDE;
+
+  bool hasHeightForWidth() const Q_DECL_OVERRIDE;
+
+  int heightForWidth(int p_width) const Q_DECL_OVERRIDE;
 
 protected:
   void changeEvent(QEvent *p_event) Q_DECL_OVERRIDE;

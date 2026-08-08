@@ -1795,6 +1795,243 @@ void TestInteractivePreview::testTableSheetHeightMatchesItsRows() {
                           .arg(total)));
 }
 
+void TestInteractivePreview::testWideTableSheetScrollsHorizontally() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(420, 400);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+
+  // Far more content than the text column can hold, so the sheet is clamped
+  // and the columns keep their content widths.
+  setTextAndSettle(
+      editor,
+      QStringLiteral("| Component | Description | Supported |\n"
+                     "|-----------|-------------|:---------:|\n"
+                     "| `VTextEdit` | Base edit widget with cursor and selection | Yes |\n"
+                     "| `VTextEditor` | Adds syntax highlight, Vi mode and folding | Yes |\n"
+                     "| `VMarkdownEditor` | Markdown parsing and in-place preview | Yes |\n"));
+  QTest::qWait(50);
+  QCoreApplication::processEvents();
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto view = sheetView(widget);
+  QVERIFY(view);
+
+  const qreal available = widget->previewContext()->availableContentRect().width();
+  QVERIFY2(qAbs(widget->width() - qRound(available)) <= c_widthTolerance,
+           qPrintable(QStringLiteral("the sheet was not clamped to the text column: %1 vs %2")
+                          .arg(widget->width())
+                          .arg(available)));
+  QVERIFY2(totalColumnWidth(view) > view->viewport()->width(),
+           qPrintable(QStringLiteral("the columns do not overflow: %1 vs viewport %2")
+                          .arg(totalColumnWidth(view))
+                          .arg(view->viewport()->width())));
+
+  // The overflow is reachable rather than silently clipped.
+  auto hbar = view->horizontalScrollBar();
+  QVERIFY(hbar->isVisible());
+  QVERIFY2(hbar->maximum() > 0,
+           qPrintable(QStringLiteral("the sheet does not scroll: maximum %1").arg(hbar->maximum())));
+
+  int rowTotal = 0;
+  for (int r = 0; r < view->model()->rowCount(); ++r) {
+    rowTotal += view->rowHeight(r);
+  }
+
+  // The band reserves the bar's height, so it covers no row.
+  QVERIFY2(view->viewport()->height() >= rowTotal,
+           qPrintable(QStringLiteral("the scroll bar covers a row: viewport %1, rows %2")
+                          .arg(view->viewport()->height())
+                          .arg(rowTotal)));
+  QVERIFY2(widget->height() >= rowTotal + hbar->sizeHint().height(),
+           qPrintable(QStringLiteral("sheet height %1 does not hold %2 of rows plus a %3 bar")
+                          .arg(widget->height())
+                          .arg(rowTotal)
+                          .arg(hbar->sizeHint().height())));
+
+  // Scrolling to the end brings the last column fully into view.
+  const int last = view->model()->columnCount() - 1;
+  hbar->setValue(hbar->maximum());
+  QCoreApplication::processEvents();
+  QVERIFY2(view->columnViewportPosition(last) >= 0 &&
+               view->columnViewportPosition(last) + view->columnWidth(last) <=
+                   view->viewport()->width(),
+           qPrintable(QStringLiteral("the last column is not reachable: x %1, width %2, "
+                                     "viewport %3")
+                          .arg(view->columnViewportPosition(last))
+                          .arg(view->columnWidth(last))
+                          .arg(view->viewport()->width())));
+}
+
+void TestInteractivePreview::testASingleOverflowingColumnScrollsToItsEnd() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(420, 400);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+
+  // One cell far wider than the whole sheet: scrolling a column at a time
+  // could never reveal its tail, however far the bar is dragged.
+  setTextAndSettle(editor, QStringLiteral("| h |\n| --- |\n| ") +
+                               QString(300, QLatin1Char('x')) + QStringLiteral(" |\n"));
+  QTest::qWait(50);
+  QCoreApplication::processEvents();
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto view = sheetView(widget);
+  QVERIFY(view);
+  QCOMPARE(view->model()->columnCount(), 1);
+
+  auto hbar = view->horizontalScrollBar();
+  QVERIFY(hbar->isVisible());
+  QVERIFY(view->columnWidth(0) > view->viewport()->width());
+
+  hbar->setValue(hbar->maximum());
+  QCoreApplication::processEvents();
+
+  // The right edge of the only column has been brought to the right edge of
+  // the viewport.
+  const int right = view->columnViewportPosition(0) + view->columnWidth(0);
+  QVERIFY2(qAbs(right - view->viewport()->width()) <= c_widthTolerance,
+           qPrintable(QStringLiteral("the end of the cell is unreachable: right edge %1, "
+                                     "viewport %2")
+                          .arg(right)
+                          .arg(view->viewport()->width())));
+}
+
+namespace {
+// Deliver a wheel movement the way the platform would, and report whether it
+// was consumed. An unconsumed event is what Qt then propagates to the editor.
+bool sendWheel(QWidget *p_target, const QPoint &p_angleDelta, Qt::KeyboardModifiers p_modifiers) {
+  const QPointF pos(p_target->width() / 2.0, p_target->height() / 2.0);
+  QWheelEvent event(pos, p_target->mapToGlobal(pos.toPoint()), QPoint(), p_angleDelta,
+                    Qt::NoButton, p_modifiers, Qt::NoScrollPhase, false);
+  event.setAccepted(false);
+  QCoreApplication::sendEvent(p_target, &event);
+  return event.isAccepted();
+}
+} // namespace
+
+void TestInteractivePreview::testWideSheetConsumesHorizontalWheel() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(420, 400);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(
+      editor,
+      QStringLiteral("| Component | Description | Supported |\n"
+                     "|-----------|-------------|:---------:|\n"
+                     "| `VTextEdit` | Base edit widget with cursor and selection | Yes |\n"
+                     "| `VTextEditor` | Adds syntax highlight, Vi mode and folding | Yes |\n"
+                     "| `VMarkdownEditor` | Markdown parsing and in-place preview | Yes |\n"));
+  QTest::qWait(50);
+  QCoreApplication::processEvents();
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto view = sheetView(widget);
+  QVERIFY(view);
+
+  auto hbar = view->horizontalScrollBar();
+  QVERIFY(hbar->isVisible());
+  QVERIFY(hbar->maximum() > 0);
+  QCOMPARE(hbar->value(), 0);
+
+  // A horizontal movement belongs to the sheet while it still has room.
+  QVERIFY(sendWheel(view->viewport(), QPoint(-120, 0), Qt::NoModifier));
+  QVERIFY2(hbar->value() > 0,
+           qPrintable(QStringLiteral("a horizontal wheel did not scroll the sheet: %1")
+                          .arg(hbar->value())));
+
+  // Shift is how a plain wheel asks for horizontal movement. Qt routes an
+  // event by its dominant axis, so this would otherwise scroll vertically. A
+  // small stray horizontal component must not defeat the recognition either.
+  hbar->setValue(0);
+  QVERIFY(sendWheel(view->viewport(), QPoint(-8, -120), Qt::ShiftModifier));
+  QVERIFY2(hbar->value() > 0,
+           qPrintable(QStringLiteral("shift+wheel did not scroll the sheet: %1").arg(hbar->value())));
+
+  // Control is the editor's zoom gesture and is never consumed here, however
+  // much room the sheet has.
+  hbar->setValue(0);
+  QVERIFY2(!sendWheel(view->viewport(), QPoint(0, -120), Qt::ControlModifier | Qt::ShiftModifier),
+           "ctrl+shift+wheel was swallowed instead of reaching the editor");
+  QCOMPARE(hbar->value(), 0);
+  QVERIFY2(!sendWheel(view->viewport(), QPoint(-120, 0), Qt::ControlModifier),
+           "ctrl+horizontal wheel was swallowed instead of reaching the editor");
+  QCOMPARE(hbar->value(), 0);
+
+  // At the end of the range the movement is handed back rather than swallowed.
+  hbar->setValue(hbar->maximum());
+  QVERIFY2(!sendWheel(view->viewport(), QPoint(-120, 0), Qt::NoModifier),
+           "the exhausted sheet swallowed the movement");
+  QCOMPARE(hbar->value(), hbar->maximum());
+}
+
+void TestInteractivePreview::testSheetReservesTheScrollBarAcrossAResize() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(900, 400);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(
+      editor,
+      QStringLiteral("| Component | Description | Supported |\n"
+                     "|-----------|-------------|:---------:|\n"
+                     "| `VTextEdit` | Base edit widget with cursor and selection | Yes |\n"
+                     "| `VTextEditor` | Adds syntax highlight, Vi mode and folding | Yes |\n"
+                     "| `VMarkdownEditor` | Markdown parsing and in-place preview | Yes |\n"));
+  QTest::qWait(50);
+  QCoreApplication::processEvents();
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto view = sheetView(widget);
+  QVERIFY(view);
+
+  // The reserve is decided against the width the band ends up with. That width
+  // is only published into the widget's geometry context after the host has
+  // already measured, so a measurement which read it from there would answer
+  // for the previous editor size and stay cached under the new one.
+  const auto rowTotal = [view]() {
+    int total = 0;
+    for (int r = 0; r < view->model()->rowCount(); ++r) {
+      total += view->rowHeight(r);
+    }
+
+    return total;
+  };
+
+  QVERIFY(!view->horizontalScrollBar()->isVisible());
+  const int fittingHeight = widget->height();
+
+  // Narrow the editor until the sheet no longer fits.
+  editor.resize(420, 400);
+  settle(editor);
+  QTest::qWait(50);
+  QCoreApplication::processEvents();
+
+  QVERIFY2(view->horizontalScrollBar()->isVisible(), "narrowing did not bring up the scroll bar");
+  QVERIFY2(view->viewport()->height() >= rowTotal(),
+           qPrintable(QStringLiteral("the scroll bar covers a row after narrowing: viewport %1, "
+                                     "rows %2")
+                          .arg(view->viewport()->height())
+                          .arg(rowTotal())));
+  QVERIFY2(widget->height() > fittingHeight,
+           qPrintable(QStringLiteral("the band did not grow for the scroll bar: %1 vs %2")
+                          .arg(widget->height())
+                          .arg(fittingHeight)));
+
+  // And widen it back: the reserve has to be given up again.
+  editor.resize(900, 400);
+  settle(editor);
+  QTest::qWait(50);
+  QCoreApplication::processEvents();
+
+  QVERIFY2(!view->horizontalScrollBar()->isVisible(), "widening did not drop the scroll bar");
+  QCOMPARE(widget->height(), fittingHeight);
+}
+
 void TestInteractivePreview::testTableSheetKeepsANaturalWidthInsideTheBand() {
   VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
   editor.resize(600, 400);

@@ -6,6 +6,8 @@
 #include <QScopedValueRollback>
 #include <QScrollBar>
 #include <QStringList>
+#include <QStyle>
+#include <QStyleOption>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWheelEvent>
@@ -376,6 +378,38 @@ namespace {
 // resized. Two passes are what dropping the vertical scroll bar costs; the
 // third is slack.
 const int c_maxDistributionPasses = 3;
+
+// A wheel movement can be consumed only while the bar it targets still has
+// room in that direction; otherwise the editor underneath keeps scrolling.
+bool canScroll(const QScrollBar *p_bar, int p_delta) {
+  return p_bar && ((p_delta < 0 && p_bar->value() < p_bar->maximum()) ||
+                   (p_delta > 0 && p_bar->value() > p_bar->minimum()));
+}
+
+// Whether a wheel movement asks the sheet to scroll sideways, and which axis
+// carries the amount. A horizontal axis speaks for itself when it dominates -
+// the same rule QAbstractScrollArea uses to pick a bar - and shift with a
+// vertical one is how a plain wheel asks for horizontal movement. Only
+// angleDelta() decides, because that is all QAbstractSlider acts on, so a
+// movement Qt cannot scroll with cannot scroll a sheet either.
+enum class HorizontalIntent { None, FromHorizontalAxis, FromVerticalAxis };
+
+HorizontalIntent horizontalIntent(const QWheelEvent &p_event) {
+  const QPoint delta = p_event.angleDelta();
+  if (p_event.modifiers().testFlag(Qt::ShiftModifier) && delta.y() != 0 &&
+      qAbs(delta.y()) >= qAbs(delta.x())) {
+    return HorizontalIntent::FromVerticalAxis;
+  }
+
+  return qAbs(delta.x()) > qAbs(delta.y()) ? HorizontalIntent::FromHorizontalAxis
+                                           : HorizontalIntent::None;
+}
+
+// The same movement carried on the horizontal axis, so a slider oriented that
+// way acts on it.
+QPoint onHorizontalAxis(const QPoint &p_delta, HorizontalIntent p_intent) {
+  return QPoint(p_intent == HorizontalIntent::FromVerticalAxis ? p_delta.y() : p_delta.x(), 0);
+}
 } // namespace
 
 const QAbstractItemView::EditTriggers TablePreviewView::c_defaultEditTriggers =
@@ -387,7 +421,13 @@ TablePreviewView::TablePreviewView(QWidget *p_parent) : QTableView(p_parent) {
   verticalHeader()->hide();
   horizontalHeader()->setStretchLastSection(true);
   setSelectionMode(QAbstractItemView::SingleSelection);
-  setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  // A sheet clamped to the text column cannot show every column, and a
+  // Markdown table carries no natural place to break a row, so the columns
+  // keep their content widths and the overflow is reached by scrolling.
+  // Per pixel, because per item cannot reveal the tail of a single column
+  // wider than the viewport - which is exactly the cell that overflowed.
+  setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+  setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
   setEditTriggers(c_defaultEditTriggers);
 
   // A Markdown table cell is single-line by construction, and wrapping is what
@@ -550,12 +590,60 @@ QSize TablePreviewView::preferredSize() const {
 
 QSize TablePreviewView::sizeHint() const { return preferredSize(); }
 
+QSize TablePreviewView::preferredSizeWithin(int p_maxWidth) const {
+  QSize size = preferredSize();
+  if (p_maxWidth > 0 && size.width() > p_maxWidth) {
+    // The sheet is about to be clamped, so a horizontal scroll bar appears.
+    // Without reserving the height it takes from the viewport the band would
+    // be exactly the rows tall and the bar would cover the last one. A style
+    // whose bars float over the content takes nothing, and then reserving
+    // would leave an empty strip instead.
+    QStyleOption option;
+    option.initFrom(this);
+    const int overlap = style()->pixelMetric(QStyle::PM_ScrollView_ScrollBarOverlap, &option, this);
+    size.rheight() += qMax(0, horizontalScrollBar()->sizeHint().height() - overlap);
+  }
+
+  return size;
+}
+
 void TablePreviewView::wheelEvent(QWheelEvent *p_event) {
-  QScrollBar *vbar = verticalScrollBar();
+  const Qt::KeyboardModifiers modifiers = p_event->modifiers();
+  // Control is the editor's zoom gesture, which VTextEdit deliberately ignores
+  // so the application can act on it. The sheet must not swallow it whatever
+  // it could otherwise do with the movement.
+  const HorizontalIntent intent = modifiers.testFlag(Qt::ControlModifier)
+                                      ? HorizontalIntent::None
+                                      : horizontalIntent(*p_event);
+  if (intent != HorizontalIntent::None) {
+    // Hand the movement to the bar itself. QTableView picks its target from
+    // the event's dominant axis, and a slider only acts on the axis it is
+    // oriented along, so a shift+wheel has to be turned into a horizontal
+    // movement first. Going through the slider rather than setValue() keeps
+    // its inversion handling and its accumulation of high resolution deltas.
+    // A bar with no room left leaves the event ignored, so the fall through
+    // still reaches the editor.
+    const QPoint angleDelta = onHorizontalAxis(p_event->angleDelta(), intent);
+    const QPoint pixelDelta = onHorizontalAxis(p_event->pixelDelta(), intent);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    QWheelEvent horizontal(p_event->position(), p_event->globalPosition(), pixelDelta, angleDelta,
+                           p_event->buttons(), modifiers, p_event->phase(), p_event->inverted(),
+                           p_event->source());
+#else
+    QWheelEvent horizontal(QPointF(p_event->pos()), p_event->globalPosF(), pixelDelta, angleDelta,
+                           p_event->buttons(), modifiers, p_event->phase(), p_event->inverted(),
+                           p_event->source());
+#endif
+    horizontal.setAccepted(false);
+    QCoreApplication::sendEvent(horizontalScrollBar(), &horizontal);
+    if (horizontal.isAccepted()) {
+      p_event->accept();
+      return;
+    }
+  }
+
   const int delta = p_event->angleDelta().y();
-  const bool canScroll = vbar && ((delta < 0 && vbar->value() < vbar->maximum()) ||
-                                  (delta > 0 && vbar->value() > vbar->minimum()));
-  if (!canScroll || p_event->modifiers() != Qt::NoModifier) {
+  if (!canScroll(verticalScrollBar(), delta) || modifiers != Qt::NoModifier) {
     // Let Qt propagate the unconsumed movement up to the editor viewport.
     p_event->ignore();
     return;
@@ -611,8 +699,9 @@ void TablePreviewView::distributeColumnWidths() {
   for (int pass = 0; pass < c_maxDistributionPasses; ++pass) {
     const int available = viewport()->width();
     if (available <= total) {
-      // No surplus: keep the content widths. The stretched last section
-      // absorbs the shortfall, which is the pre-existing behavior.
+      // No surplus: keep the content widths rather than squeezing the columns
+      // into the band. The overflow is what the horizontal scroll bar exists
+      // for, and squeezing would elide cells the user cannot then reach.
       for (int c = 0; c < count; ++c) {
         setColumnWidth(c, m_cachedColumnWidths.at(c));
       }
@@ -656,6 +745,12 @@ TablePreviewWidget::TablePreviewWidget(PreviewWidgetContext *p_context, QWidget 
   m_view = new TablePreviewView(this);
   m_view->setModel(m_model);
   layout->addWidget(m_view);
+
+  // The host only consults heightForWidth() when the policy advertises it, and
+  // that is the only hook which sees the width the band actually gets.
+  QSizePolicy policy = sizePolicy();
+  policy.setHeightForWidth(true);
+  setSizePolicy(policy);
 
   connect(m_model, &TablePreviewModel::cellCommitted, this,
           &TablePreviewWidget::handleCellCommitted);
@@ -784,6 +879,18 @@ void TablePreviewWidget::setVisibleRows(int p_rows) {
 }
 
 QSize TablePreviewWidget::sizeHint() const { return m_view->preferredSize(); }
+
+bool TablePreviewWidget::hasHeightForWidth() const { return true; }
+
+int TablePreviewWidget::heightForWidth(int p_width) const {
+  // The host clamps the band to the text column, and a sheet wider than the
+  // band gets a horizontal scroll bar which eats into the viewport. Reserving
+  // its height here rather than in sizeHint() is what makes the reserve track
+  // the clamp: the width passed in is the one the band ends up with, whereas
+  // the widget's own geometry context still holds the previous layout pass at
+  // measuring time.
+  return m_view->preferredSizeWithin(p_width).height();
+}
 
 void TablePreviewWidget::changeEvent(QEvent *p_event) {
   if (p_event->type() == QEvent::FontChange && m_view) {
