@@ -1,0 +1,25 @@
+# Line endings are a property of this project, not of each contributor's Git
+# installation.
+#
+# Every text file is stored with LF in the repository and checked out with LF
+# on every platform. Without this the behaviour depends on the machine: the
+# Git for Windows installer sets core.autocrlf=true in its system config, which
+# rewrites the working tree to CRLF on checkout and normalises back on commit.
+# Two things follow from that, and both have bitten this repository:
+#
+#   - with core.safecrlf=true, which the same installer sets, "git add" fails
+#     outright on any file an editor or tool happened to write with LF, because
+#     the LF -> index -> CRLF round trip is not reversible;
+#
+#   - a file whose blob was committed with CRLF from a machine where the
+#     conversion was off is silently renormalised the next time anyone touches
+#     it, turning a one-line change into a whole-file diff.
+#
+# Declaring the policy here removes both, and makes the result identical on
+# Windows, Linux and macOS regardless of core.autocrlf and core.eol.
+* text=auto eol=lf
+
+# Byte-exact regardless of the auto detection above: Qt translation catalogues
+# and images must never be rewritten.
+*.qm binary
+*.png binary
