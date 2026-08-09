@@ -96,7 +96,12 @@ static QString serializeBlocksHighlights(
 static bool writeGoldenFile(const QString &p_path, const QString &p_content)
 {
   QFile f(p_path);
-  if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+  // Deliberately not QIODevice::Text: it translates '\n' to the platform
+  // separator on write, so a run on Windows rewrote every golden file with
+  // CRLF and left the checkout dirty after each test run. These files are
+  // tracked, and they have to be byte-identical whatever platform produced
+  // them.
+  if (!f.open(QIODevice::WriteOnly)) {
     return false;
   }
   f.write(p_content.toUtf8());
@@ -106,6 +111,8 @@ static bool writeGoldenFile(const QString &p_path, const QString &p_content)
 static QString readGoldenFile(const QString &p_path)
 {
   QFile f(p_path);
+  // Text is kept on the read side on purpose: the comparison stays tolerant of
+  // a golden file which picked up CRLF from somewhere else.
   if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
     return QString();
   }
