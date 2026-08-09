@@ -1173,4 +1173,93 @@ void TestMarkdownFolding::testSourceTextRectSharesWidgetCoordinates() {
                    widgetRect.width()));
 }
 
+// An element whose source is rewritten in one go - what the preview write-back
+// path does when a table cell is edited - loses its fold range inside
+// TextFolding, because the blocks it spans are replaced. The next parse reports
+// the very same (startBlock, endBlock) pair, so the range has to be recreated
+// even though the diff sees no change.
+void TestMarkdownFolding::testInPlaceRewriteKeepsFoldRange() {
+  const QString table = QStringLiteral("| Left | Center | Right |\n"
+                                       "| :--- | :----: | ----: |\n"
+                                       "| a    | b      | c     |\n"
+                                       "| d    | e      | f     |");
+  QTextDocument doc(QStringLiteral("# Title\n\nintro\n") + table +
+                    QStringLiteral("\n\ntail 1\ntail 2"));
+
+  TextFolding folding(&doc);
+  MarkdownFoldingProvider provider(&folding, &doc);
+
+  QVector<md::FoldingRegion> regions;
+  // A second range which survives the rewrite, so TextFolding never becomes
+  // empty and the editor's reset-on-empty safety net does not kick in.
+  regions.append({0, doc.blockCount() - 1, md::Heading, 1});
+  regions.append({3, 6, md::Table, 0});
+
+  provider.updateFoldingRegions(regions);
+  QCOMPARE(folding.foldingRangesStartingOnBlock(0).size(), 1);
+  QCOMPARE(folding.foldingRangesStartingOnBlock(3).size(), 1);
+
+  const QTextBlock firstRow = doc.findBlockByNumber(3);
+  const QTextBlock lastRow = doc.findBlockByNumber(6);
+  QTextCursor cursor(&doc);
+  cursor.beginEditBlock();
+  cursor.setPosition(firstRow.position());
+  cursor.setPosition(lastRow.position() + lastRow.length() - 1, QTextCursor::KeepAnchor);
+  cursor.insertText(QString(table).replace(QStringLiteral("| b "), QStringLiteral("| B ")));
+  cursor.endEditBlock();
+
+  // The blocks the range spanned were replaced, so the range no longer starts
+  // where the parser says it does.
+  QCOMPARE(doc.blockCount(), 10);
+  QCOMPARE(folding.foldingRangesStartingOnBlock(3).size(), 0);
+  QCOMPARE(folding.foldingRangesStartingOnBlock(0).size(), 1);
+
+  // The re-parse yields identical regions and must restore the lost range.
+  provider.updateFoldingRegions(regions);
+  QCOMPARE(folding.foldingRangesStartingOnBlock(3).size(), 1);
+  QCOMPARE(folding.foldingRangesStartingOnBlock(0).size(), 1);
+
+  // The restored range is usable.
+  auto ranges = folding.foldingRangesStartingOnBlock(3);
+  QVERIFY(ranges[0].second.testFlag(TextFolding::Persistent));
+  QVERIFY(folding.toggleRange(ranges[0].first));
+  QVERIFY(!doc.findBlockByNumber(4).isVisible());
+}
+
+// A range which is still live must not be recreated: re-applying the same
+// regions keeps a single range, its id and its fold state.
+void TestMarkdownFolding::testLiveRangeIsNotRecreated() {
+  QVector<md::FoldingRegion> regions;
+  regions.append({0, 9, md::Heading, 1});
+  regions.append({3, 7, md::FencedCode, 0});
+
+  m_provider->updateFoldingRegions(regions);
+  const qint64 headingId = m_textFolding->foldingRangesStartingOnBlock(0).first().first;
+  const qint64 codeId = m_textFolding->foldingRangesStartingOnBlock(3).first().first;
+
+  m_provider->updateFoldingRegions(regions);
+  m_provider->updateFoldingRegions(regions);
+
+  auto rangesAt0 = m_textFolding->foldingRangesStartingOnBlock(0);
+  auto rangesAt3 = m_textFolding->foldingRangesStartingOnBlock(3);
+  QCOMPARE(rangesAt0.size(), 1);
+  QCOMPARE(rangesAt3.size(), 1);
+  QCOMPARE(rangesAt0.first().first, headingId);
+  QCOMPARE(rangesAt3.first().first, codeId);
+
+  // The ids alone do not prove the range was left alone: recreating a live
+  // range is rejected by TextFolding anyway, which would leave the tree
+  // untouched but drop the cached pair -> id entry. Retiring the region is
+  // what makes that loss observable, because the removal goes through that
+  // very entry.
+  QVector<md::FoldingRegion> shrunk;
+  shrunk.append({0, 9, md::Heading, 1});
+  m_provider->updateFoldingRegions(shrunk);
+
+  QCOMPARE(m_textFolding->foldingRangesStartingOnBlock(3).size(), 0);
+  auto remaining = m_textFolding->foldingRangesStartingOnBlock(0);
+  QCOMPARE(remaining.size(), 1);
+  QCOMPARE(remaining.first().first, headingId);
+}
+
 QTEST_MAIN(tests::TestMarkdownFolding)

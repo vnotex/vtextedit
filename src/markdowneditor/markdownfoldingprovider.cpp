@@ -20,6 +20,17 @@ MarkdownFoldingProvider::MarkdownFoldingProvider(TextFolding *p_textFolding,
 
 void MarkdownFoldingProvider::updateFoldingRegions(const QVector<md::FoldingRegion> &p_regions)
 {
+  // 0. Drop the ranges the document has invalidated behind TextFolding's back.
+  //
+  // Replacing the whole source of an element in one edit - what the preview
+  // write-back path does when a table cell is edited, and what a paste or an
+  // undo over the element does - destroys the blocks a range spans. The range
+  // survives that edit holding stale endpoints and stops matching the block it
+  // is supposed to start on, so the gutter loses its folding marker. A parse
+  // result always describes a settled document, which makes this the right
+  // moment to re-validate.
+  m_textFolding->checkAndUpdateFoldings();
+
   // 1. Filter out regions that span fewer than 2 blocks.
   QVector<md::FoldingRegion> valid;
   valid.reserve(p_regions.size());
@@ -60,20 +71,39 @@ void MarkdownFoldingProvider::updateFoldingRegions(const QVector<md::FoldingRegi
     }
   }
 
-  // 6. Add new ranges (in new but not in old), outermost-first.
+  // 6. Add the ranges which TextFolding does not hold, outermost-first.
+  //
+  // Being absent from the old set is not the only reason for a range to be
+  // missing: TextFolding drops a range without notice once the blocks it spans
+  // are replaced (checkAndUpdateFoldings()), which is what an in-place source
+  // rewrite of a previewed element does. Such a range comes back from the
+  // parser with an unchanged (startBlock, endBlock) pair, so keying purely on
+  // the diff would leave it gone for good. Creation can also simply fail, e.g.
+  // when the range is not well nested with an existing one; retrying it on the
+  // next parse costs nothing.
   for (const auto &r : valid) {
     auto pair = qMakePair(r.m_startBlock, r.m_endBlock);
-    if (!oldPairs.contains(pair)) {
-      TextBlockRange range(m_document->findBlockByNumber(r.m_startBlock),
-                           m_document->findBlockByNumber(r.m_endBlock));
-      qint64 id = m_textFolding->newFoldingRange(range, TextFolding::Persistent);
-      if (id != TextFolding::InvalidRangeId) {
-        m_regionIdMap.insert(pair, id);
+    auto it = m_regionIdMap.find(pair);
+    if (it != m_regionIdMap.end()) {
+      if (m_textFolding->hasRange(it.value())) {
+        // Still live - keep it, along with its fold state.
+        continue;
       }
+
+      // Stale id: the range is gone from TextFolding.
+      m_regionIdMap.erase(it);
+    }
+
+    TextBlockRange range(m_document->findBlockByNumber(r.m_startBlock),
+                         m_document->findBlockByNumber(r.m_endBlock));
+    qint64 id = m_textFolding->newFoldingRange(range, TextFolding::Persistent);
+    if (id != TextFolding::InvalidRangeId) {
+      m_regionIdMap.insert(pair, id);
     }
   }
 
-  // 7. Unchanged pairs: do nothing — preserves fold state.
+  // 7. Unchanged pairs whose range is still live are left alone - that is what
+  // preserves the fold state across re-parses.
 
   // 8. Update previous regions.
   m_previousRegions = valid;

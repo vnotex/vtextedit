@@ -92,6 +92,10 @@ private slots:
 
   void testSourceTextRectSharesWidgetCoordinates();
 
+  void testInPlaceRewriteKeepsFoldRange();
+
+  void testLiveRangeIsNotRecreated();
+
   void cleanupTestCase();
 
   void cleanup();

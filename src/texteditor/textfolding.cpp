@@ -87,6 +87,8 @@ bool TextFolding::hasFoldedFolding() const { return !m_foldedFoldingRanges.isEmp
 
 bool TextFolding::isEmpty() const { return m_foldingRanges.isEmpty(); }
 
+bool TextFolding::hasRange(qint64 p_id) const { return m_idToFoldingRange.contains(p_id); }
+
 void TextFolding::hardClear() {
   if (m_foldingRanges.isEmpty()) {
     return;

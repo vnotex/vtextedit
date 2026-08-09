@@ -46,6 +46,12 @@ public:
 
   bool isEmpty() const;
 
+  // Whether @p_id still refers to a live folding range.
+  // A range may be dropped without notice by checkAndUpdateFoldings() once the
+  // blocks it spans have been replaced, so an owner which caches range ids has
+  // to be able to tell a live id from a stale one.
+  bool hasRange(qint64 p_id) const;
+
   qint64 newFoldingRange(const TextBlockRange &p_range, FoldingRangeFlags p_flags);
 
   QVector<QPair<qint64, TextFolding::FoldingRangeFlags>>
