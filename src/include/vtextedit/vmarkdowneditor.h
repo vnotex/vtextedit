@@ -68,11 +68,6 @@ public:
   // returns to the caller: the pointer is invalid once this returns true.
   bool unregisterPreviewWidgetFactory(PreviewWidgetFactory *p_factory);
 
-  // Maximum number of table rows the built-in editable sheet shows before it
-  // scrolls internally. Defaults to 10 and is consumed as at least 1.
-  int tablePreviewVisibleRows() const;
-  void setTablePreviewVisibleRows(int p_rows);
-
   static void setExternalCodeBlockHighlihgtStyles(const ExternalCodeBlockHighlightStyles &p_styles);
 
 public slots:

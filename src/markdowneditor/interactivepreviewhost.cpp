@@ -119,7 +119,14 @@ InteractivePreviewHost::InteractivePreviewHost(VMarkdownEditor *p_editor)
 
   // Built-in renderers use priority 0 so applications can override them.
   m_tableFactory = new TablePreviewWidgetFactory(this);
-  m_tableFactory->setVisibleRows(m_tablePreviewVisibleRows);
+  connect(m_tableFactory.data(), &TablePreviewWidgetFactory::focusEscapeRequested, this,
+          [this](TablePreviewWidget *p_widget, FocusEscapeDirection p_direction) {
+            handleFocusEscape(p_widget, p_direction);
+          });
+  connect(m_tableFactory.data(), &TablePreviewWidgetFactory::undoRequested, this,
+          [this](TablePreviewWidget *p_widget) { handleSheetUndo(p_widget); });
+  connect(m_tableFactory.data(), &TablePreviewWidgetFactory::redoRequested, this,
+          [this](TablePreviewWidget *p_widget) { handleSheetRedo(p_widget); });
   registerFactory(m_tableFactory.data(), 0);
 
   publishEnabledTypeMask();
@@ -330,27 +337,38 @@ bool InteractivePreviewHost::isTypeEnabled(PreviewElementType p_type) const {
   return m_typeEnabled[typeIndex(p_type)];
 }
 
-int InteractivePreviewHost::tablePreviewVisibleRows() const { return m_tablePreviewVisibleRows; }
-
-void InteractivePreviewHost::setTablePreviewVisibleRows(int p_rows) {
-  const int rows = qMax(1, p_rows);
-  if (m_tablePreviewVisibleRows == rows) {
-    return;
-  }
-
-  m_tablePreviewVisibleRows = rows;
-  if (m_tableFactory) {
-    m_tableFactory->setVisibleRows(rows);
-  }
-
-  schedulePublish();
-}
-
 // ---------------------------------------------------------------------------
 // Reconciliation
 // ---------------------------------------------------------------------------
 
+void InteractivePreviewHost::flushDirtySheets() {
+  // Identities are allocated monotonically and never reused, and a flush is
+  // reentrant - it applies a document edit and calls schedulePublish() - so
+  // every item is re-resolved by id rather than held across the call.
+  const auto ids = m_items.keys();
+  for (quint64 id : ids) {
+    auto it = m_items.find(id);
+    if (it == m_items.end()) {
+      continue;
+    }
+
+    QPointer<TablePreviewWidget> sheet =
+        qobject_cast<TablePreviewWidget *>(it.value().m_widget.data());
+    if (sheet) {
+      sheet->flushNow();
+    }
+  }
+}
+
 void InteractivePreviewHost::rebuildAll() {
+  // A sheet with a pending write-back applies a document edit when it is
+  // flushed, and insertText() over the anchored range collapses that anchor -
+  // including the copy carried below, because a QTextCursor copy shares one
+  // registered private with the original. Flushing first is what makes the
+  // anchors snapshotted here the retargeted ones; without it the rebuild would
+  // see a collapsed range and drop the element to the painted path.
+  flushDirtySheets();
+
   // Carry the live state across the rebuild: m_lastPreviews holds the
   // positions of parse generation m_revision, which the document may have
   // moved since, whereas the anchors have been tracking every edit. An
@@ -881,6 +899,30 @@ void InteractivePreviewHost::removeItem(quint64 p_id, bool p_synchronous) {
     return;
   }
 
+  // A sheet may still owe a debounced write-back, and its context, its
+  // snapshot and its anchor are only authoritative while the identity is in
+  // m_items. Flushing after the erase below would be rejected as an
+  // UnknownIdentity and the edit silently lost - and the focus move further
+  // down would trigger exactly that flush. So: flush first, then revoke, so a
+  // late timeout, the hide, the focus-out and the deferred deletion all become
+  // no-ops.
+  QPointer<TablePreviewWidget> sheet =
+      qobject_cast<TablePreviewWidget *>(it.value().m_widget.data());
+  if (sheet) {
+    sheet->flushNow();
+    if (sheet) {
+      sheet->revokeAuthority();
+    }
+
+    // The flush applies a document edit and calls schedulePublish(), so it can
+    // re-enter this host and tear the very item down. Identities are allocated
+    // monotonically and never reused, so re-resolving by id is exact.
+    it = m_items.find(p_id);
+    if (it == m_items.end()) {
+      return;
+    }
+  }
+
   ActiveItem item = it.value();
   m_items.erase(it);
 
@@ -949,6 +991,72 @@ void InteractivePreviewHost::removeAllItems(bool p_synchronous) {
   const auto ids = m_items.keys();
   for (quint64 id : ids) {
     removeItem(id, p_synchronous);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sheet relays
+// ---------------------------------------------------------------------------
+
+quint64 InteractivePreviewHost::identityOf(const PreviewWidget *p_widget) const {
+  if (!p_widget) {
+    return 0;
+  }
+
+  for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it) {
+    if (it.value().m_widget.data() == p_widget) {
+      return it.value().m_id;
+    }
+  }
+
+  return 0;
+}
+
+void InteractivePreviewHost::handleFocusEscape(TablePreviewWidget *p_widget,
+                                               FocusEscapeDirection p_direction) {
+  if (!m_textEdit) {
+    return;
+  }
+
+  const quint64 id = identityOf(p_widget);
+  const auto it = id ? m_items.constFind(id) : m_items.constEnd();
+  if (it != m_items.constEnd() && p_direction != FocusEscapeDirection::Keep) {
+    // Resolved from the live anchor, never from the snapshot's own start/end:
+    // those describe the parse generation the sheet was bound in, which any
+    // unrelated edit before the table has already moved.
+    const int start = it.value().m_anchor.selectionStart();
+    const int end = it.value().m_anchor.selectionEnd();
+    if (start >= 0 && end > start) {
+      // The source is rendered above the sheet
+      // (PreviewPlacement::BlockAfterSource), so leaving upwards lands at the
+      // end of the source and leaving downwards just past its line.
+      const int limit = m_doc ? m_doc->characterCount() - 1 : end;
+      const int target =
+          p_direction == FocusEscapeDirection::Up ? end : qMin(end + 1, qMax(end, limit));
+
+      QTextCursor cursor = m_textEdit->textCursor();
+      cursor.setPosition(qBound(0, target, qMax(0, limit)));
+      m_textEdit->setTextCursor(cursor);
+
+      qCDebug(previewHostLog) << "item" << id << "handed the caret back to the editor at"
+                              << cursor.position();
+    }
+  }
+
+  m_textEdit->setFocus();
+}
+
+void InteractivePreviewHost::handleSheetUndo(TablePreviewWidget *p_widget) {
+  Q_UNUSED(p_widget);
+  if (m_textEdit) {
+    m_textEdit->undo();
+  }
+}
+
+void InteractivePreviewHost::handleSheetRedo(TablePreviewWidget *p_widget) {
+  Q_UNUSED(p_widget);
+  if (m_textEdit) {
+    m_textEdit->redo();
   }
 }
 

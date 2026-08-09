@@ -1,24 +1,40 @@
 #ifndef TABLEPREVIEWWIDGET_H
 #define TABLEPREVIEWWIDGET_H
 
-#include <QAbstractItemDelegate>
-#include <QAbstractTableModel>
-#include <QMetaObject>
 #include <QPointer>
-#include <QSet>
+#include <QScopedPointer>
 #include <QSize>
 #include <QString>
-#include <QStyleOptionViewItem>
-#include <QTableView>
+#include <QTextEdit>
 #include <QVector>
 
 #include <vtextedit/preview.h>
 #include <vtextedit/previewwidget.h>
 
-class QLineEdit;
+class QTextDocument;
+class QTextTable;
 class QTimer;
 
 namespace vte {
+// Why a sheet is handing the caret back to the editor, and where the caret
+// should land when it gets there.
+//
+// The destination is deliberately not a document position: a sheet only knows
+// the snapshot coordinates of its own source, and those go stale on any
+// unrelated edit. Only the host holds a live anchor, so it resolves the
+// position at delivery time.
+enum class FocusEscapeDirection {
+  // Escape: the editor takes the focus back and the caret stays where it was.
+  Keep,
+
+  // Up out of the first row. The Markdown source is rendered above the sheet
+  // (PreviewPlacement::BlockAfterSource), so "up" is the end of the source.
+  Up,
+
+  // Down out of the last row, i.e. just past the source's own line.
+  Down
+};
+
 // Canonical Markdown serialization of an editable table sheet.
 //
 // The dialect targeted here is the one this cmark fork accepts: both the
@@ -42,27 +58,55 @@ public:
                            const QString &p_delimiterPrefix);
 };
 
-// Editable sheet model over the raw Markdown cells of one table.
-// Row 0 is the header row; the delimiter row stays metadata.
-class TablePreviewModel : public QAbstractTableModel {
-  Q_OBJECT
+// The rich text document behind one editable sheet: a QTextDocument holding a
+// single QTextTable, plus the metadata a QTextTable cannot carry.
+//
+// The document is the single source of truth. There is no parallel cell
+// matrix: the cells are derived from the table on demand, so a caret sitting
+// in a half-typed cell can never disagree with what is about to be serialized.
+class TablePreviewDocument {
 public:
-  // Upper bounds on the sheet materialized for one table. cmark does not
-  // truncate body rows to the header column count, so a single very wide row
-  // would otherwise inflate the width of every other row and make the padded
-  // matrix quadratic in the document size. Rows and columns are bounded
-  // independently as well: the product alone still admits a 200000x1 sheet,
-  // whose per-edit resizeRowsToContents() would block the GUI thread.
+  // Upper bound on the number of cells one sheet materializes.
+  //
+  // Measured, not guessed. A QTextTable is not virtualized: every cell is a
+  // QTextBlock, the sheet renders at its full natural height, and Qt relays
+  // the whole table out on any change inside it. On a release build the cost
+  // is linear in the cell count and independent of the shape - at a constant
+  // 300 cells, 300x1, 30x10 and 1x300 all land within 10.6 to 17.4 ms - at
+  // roughly 0.055 ms per cell for the first layout, for a width reflow and,
+  // crucially, for every single keystroke:
+  //
+  //     cells     first layout   reflow   one keystroke
+  //       200            10 ms    10 ms         10.6 ms
+  //       300            16 ms    16 ms         16.5 ms
+  //       500            28 ms    29 ms         29.1 ms
+  //      2000           136 ms   140 ms          138 ms
+  //    200000         36702 ms 36367 ms        36386 ms
+  //
+  // 300 cells is therefore the last shape whose keystroke still costs about
+  // one 16 ms frame rather than a multiple of it. The previous QTableView
+  // sheet could afford 200000 because it was virtualized and fitted only the
+  // rows it actually showed; this substrate cannot, so the bound is roughly
+  // three orders of magnitude lower. A table over it is left to the static
+  // source rendering, exactly as before.
   static const int c_maxCells;
 
-  static const int c_maxRows;
-
+  // Upper bound on the number of columns.
+  //
+  // Not a latency bound - at a constant cell count the shape does not affect
+  // the layout cost at all - but it still binds on its own for a short table:
+  // a one-row 250-column table is 250 cells, inside the bound above, and is
+  // refused here. Inherited unchanged from the QTableView sheet.
+  //
+  // There is deliberately no matching row bound: with c_maxCells at 300, more
+  // than 300 rows already means more than 300 cells for any table with at
+  // least one column, so a row bound could never decide anything.
   static const int c_maxColumns;
 
   // Upper bound on the readable padding of one column. Longer cells are still
   // emitted in full - leftJustified() only pads - but they stop widening every
   // other row, which is what turns one very wide cell into a rows x width
-  // blow-up the cell count limits above do not bound.
+  // blow-up the cell count limit above does not bound.
   static const int c_maxPaddedWidth;
 
   // Whether the normalized sheet of @p_table stays inside every bound above.
@@ -74,20 +118,27 @@ public:
   // The width the normalized sheet of @p_table would have.
   static int normalizedColumnCount(const TablePreview &p_table);
 
-  explicit TablePreviewModel(QObject *p_parent = nullptr);
+  TablePreviewDocument();
 
+  ~TablePreviewDocument();
+
+  // Never null. Not parented, so whoever renders it must not outlive this.
+  QTextDocument *document() const;
+
+  // Null until the first setTable().
+  QTextTable *table() const;
+
+  // Rebuild the document from @p_table, normalizing the ragged matrix exactly
+  // as the source snapshot describes it: every row padded to the widest row,
+  // the alignments extended with PreviewTableAlignment::None.
   void setTable(const QSharedPointer<const TablePreview> &p_table);
 
-  int rowCount(const QModelIndex &p_parent = QModelIndex()) const Q_DECL_OVERRIDE;
+  int rowCount() const;
 
-  int columnCount(const QModelIndex &p_parent = QModelIndex()) const Q_DECL_OVERRIDE;
+  int columnCount() const;
 
-  QVariant data(const QModelIndex &p_index, int p_role = Qt::DisplayRole) const Q_DECL_OVERRIDE;
-
-  bool setData(const QModelIndex &p_index, const QVariant &p_value,
-               int p_role = Qt::EditRole) Q_DECL_OVERRIDE;
-
-  Qt::ItemFlags flags(const QModelIndex &p_index) const Q_DECL_OVERRIDE;
+  // The cell matrix, derived from the live table.
+  QVector<QVector<QString>> cells() const;
 
   // Whether the contents can be written back without changing what the table
   // renders to. A body row wider than the header declares would otherwise
@@ -95,18 +146,49 @@ public:
   // giving the table a column GFM currently ignores.
   bool isRoundTrippable() const;
 
-  // Canonical Markdown of the current model contents.
+  // Whether the document still holds a table at all.
+  //
+  // The last line of defence. Every mutation is supposed to be confined to one
+  // cell, because removing a selection which crosses a frame boundary removes
+  // the frame - and this object would then be holding a dangling QTextTable.
+  // Re-resolved from the document rather than compared against the cached
+  // pointer, which is exactly what dangles in the case this detects.
+  bool isIntact() const;
+
+  // Canonical Markdown of the current document contents.
   QString toMarkdown() const;
 
-signals:
-  // A cell actually changed value.
-  void cellCommitted();
+  // Re-apply the per-cell formats - the column alignment and the header
+  // weight - without touching a single character of cell text.
+  //
+  // A font, palette or style change has to be answered without rebuilding the
+  // document: rebuilding would destroy the caret and any selection, which for
+  // a theme switch during typing is a silent loss of the user's place.
+  void applyCellFormats();
+
+  // The one colour the table itself owns. Separate from applyCellFormats()
+  // because a rebuild has just written every per-cell format and only this is
+  // still owed.
+  void applyPalette(const QPalette &p_palette);
 
 private:
-  // Pad every row to the model width and expand the header/alignment rows.
-  void normalize();
+  void build();
 
-  QVector<QVector<QString>> m_cells;
+  // The single writer of one cell's formats, so build() and applyCellFormats()
+  // cannot drift apart.
+  void applyCellFormat(int p_row, int p_column);
+
+  // The block format one column's cells carry.
+  Qt::Alignment blockAlignment(int p_column) const;
+
+  QScopedPointer<QTextDocument> m_doc;
+
+  // Owned by m_doc.
+  QTextTable *m_table = nullptr;
+
+  // The raw matrix of the bound snapshot, normalized. Only used to build the
+  // document; cells() reads the document itself afterwards.
+  QVector<QVector<QString>> m_source;
 
   QVector<PreviewTableAlignment> m_alignments;
 
@@ -114,303 +196,227 @@ private:
 
   QString m_delimiterPrefix;
 
+  int m_rowCount = 0;
+
   int m_columnCount = 0;
 
   // Column count declared by the header and delimiter rows of the source.
   int m_declaredColumnCount = 0;
 };
 
-// Table view which wraps its cells, plans its own section geometry and only
-// consumes wheel movement it can actually use.
-class TablePreviewView : public QTableView {
+// The QTextEdit the sheet is rendered and edited in.
+//
+// One caret roams every cell, there is no edit mode, and wrapping plus
+// height-for-width come from Qt's rich text layout rather than a bespoke
+// solver. It never scrolls internally: both bars are off, the sheet renders at
+// its full natural height and every wheel movement belongs to the editor
+// underneath.
+class TablePreviewSheet : public QTextEdit {
   Q_OBJECT
 public:
-  static const QAbstractItemView::EditTriggers c_defaultEditTriggers;
+  explicit TablePreviewSheet(QWidget *p_parent = nullptr);
 
-  // Readable floor of one column, expressed in average characters of the
-  // table font. Below this a compressed column stops being a column and
-  // becomes a vertical ribbon of single letters.
-  static const int c_minimumColumnCharacters;
+  // The document this sheet renders. Not owned.
+  void setTableDocument(TablePreviewDocument *p_document);
 
-  explicit TablePreviewView(QWidget *p_parent = nullptr);
+  // The height the sheet needs when its *outer* width is p_outerWidth. The
+  // conversion to a document text width is not optional: assigning the outer
+  // width straight to QTextDocument::setTextWidth() under-measures, and with
+  // the scroll bars off the clipped content would be unreachable.
+  int heightForWidth(int p_outerWidth) const Q_DECL_OVERRIDE;
 
-  void setModel(QAbstractItemModel *p_model) Q_DECL_OVERRIDE;
+  bool hasHeightForWidth() const Q_DECL_OVERRIDE;
 
-  void setVisibleRows(int p_rows);
-
-  // Intrinsic preferred size: the natural column widths, and the preferred
-  // band measured against exactly those widths.
-  QSize preferredSize() const;
-
-  // The size the sheet settles on when its outer width is p_maxWidth,
-  // including the horizontal scroll bar's height when even the column minimums
-  // cannot fit. The host clamps the band to that width, so the bar the clamp
-  // brings with it has to be reserved before the band is sized.
-  QSize preferredSizeWithin(int p_maxWidth) const;
-
+  // Width 0 on purpose: preferredWidthFraction() is 1.0, so the host resolves
+  // the band to the full available content width.
   QSize sizeHint() const Q_DECL_OVERRIDE;
 
-  // Re-measure the contents and re-plan every section against the assigned
-  // width. Supersedes resizeColumnsToContents(): it writes every section too,
-  // but compressed into the width the sheet actually got, and it fits the
-  // preferred band against exactly those widths afterwards.
+  QSize minimumSizeHint() const Q_DECL_OVERRIDE;
+
+  // Row major index of the cell holding the caret, or -1 when it is outside
+  // the table.
+  int currentCellIndex() const;
+
+  // Commit whatever the input method is still holding in a preedit.
   //
-  // Fitting *every* row would walk the delegate over the whole model, and the
-  // model is only bounded at c_maxRows, so on a large table it would cost
-  // hundreds of thousands of size hints per reset - once per parse generation
-  // while typing. Only the band feeds the geometry preferredSize() reports;
-  // rows scrolled to later are fitted lazily by the row-fit pass.
-  void layoutColumns();
+  // A preedit is not in the document yet, so serializing across one would
+  // silently drop the characters the user has already typed. A no-op unless
+  // this sheet owns the input focus: QInputMethod acts on the application's
+  // focus object, and a flush also runs on background sheets.
+  void commitPreedit();
 
-  // Measuring walks every cell of the band through the delegate, and Qt
-  // queries sizeHint() far more often than the contents change, so the result
-  // is cached until something it depends on moves. Invalidating also arms the
-  // host notification and drops the lazily fitted rows, whose heights were
-  // measured against contents which no longer exist.
-  void invalidatePreferredSize();
+  // Cancel an open composition, on the platform and in the text control.
+  //
+  // Called just before the sheet becomes a viewer, which refuses every input
+  // method event outright: a preedit still installed at that point would be
+  // left rendered over a sheet which can never accept it, and the platform and
+  // the control would start the next composition from different states.
+  void cancelComposition();
 
-  // The readable floor one column is compressed to at most.
-  int minimumColumnWidth() const;
+  // Re-apply everything derived from the palette and the font, including the
+  // per-cell formats.
+  void refreshFormats();
 
-  // Unhides the inherited overload set, which the three argument form below
-  // would otherwise hide from callers of the one argument slot.
-  using QTableView::edit;
+  // Only the palette-derived parts. Used right after a rebuild, which has
+  // already written every per-cell format.
+  void refreshPalette();
+
+  // Put the caret back inside the table when something parked it in the empty
+  // block a QTextDocument always keeps after a table.
+  void clampCursorIntoTable();
+
+  // Confine a selection to the cell holding the caret.
+  //
+  // QTextCursor::removeSelectedText() over a range which crosses a frame
+  // boundary removes the frame, so a Ctrl+A followed by one keystroke, a
+  // Delete, a Cut, a paste or an internal drag would take the whole table out
+  // of the document - and TablePreviewDocument would be left holding a
+  // dangling QTextTable. Clamping the selection itself is the single gate
+  // which covers every one of those paths, including the ones which come from
+  // QTextEdit's own context menu and never pass through keyPressEvent(). The
+  // retired QTableView sheet was SingleSelection for the same reason, so no
+  // affordance is lost.
+  void clampSelectionIntoOneCell();
 
 signals:
-  // The preferred geometry settled on something the host has not been told
-  // about yet. Emitted only after an intrinsic invalidation, never for a
-  // geometry-only pass, so applying the answer cannot feed back into it.
+  // The document's laid out size settled on something the host has not been
+  // told about yet.
   void preferredGeometryChanged();
 
+  void focusEscapeRequested(vte::FocusEscapeDirection p_direction);
+
+  void undoRequested();
+
+  void redoRequested();
+
+  // The caret left the cell it was in, which commits that cell.
+  void cellLeft();
+
+  void focusLost();
+
 protected:
+  void keyPressEvent(QKeyEvent *p_event) Q_DECL_OVERRIDE;
+
+  // Every wheel movement belongs to the editor underneath: the sheet has no
+  // scroll bars and nothing it could scroll.
   void wheelEvent(QWheelEvent *p_event) Q_DECL_OVERRIDE;
 
-  // A cell holds one line of plain text, so pointing at it is enough to start
-  // editing it - the way clicking into a paragraph does. Qt would otherwise
-  // need a second click or a double click, and would open the editor with the
-  // whole value selected.
+  void focusInEvent(QFocusEvent *p_event) Q_DECL_OVERRIDE;
+
+  void focusOutEvent(QFocusEvent *p_event) Q_DECL_OVERRIDE;
+
   void mousePressEvent(QMouseEvent *p_event) Q_DECL_OVERRIDE;
 
-  // Overridden only to settle the editor once it exists, whichever trigger
-  // brought it up.
-  bool edit(const QModelIndex &p_index, EditTrigger p_trigger,
-            QEvent *p_event) Q_DECL_OVERRIDE;
+  void resizeEvent(QResizeEvent *p_event) Q_DECL_OVERRIDE;
 
-  void changeEvent(QEvent *p_event) Q_DECL_OVERRIDE;
+  // A committed input method string is an insertion like any other: it can
+  // carry a line separator, and both its replacement range and any Selection
+  // attribute it carries are resolved by the base handler in an intermediate
+  // document state, independently of the selection - so neither is covered by
+  // the clamp and both are handled here.
+  void inputMethodEvent(QInputMethodEvent *p_event) Q_DECL_OVERRIDE;
 
-  // Re-runs the layout, which is based on the viewport width. This is the hook
-  // rather than resizeEvent() because the viewport also changes width on its
-  // own: dropping the vertical scroll bar happens in the deferred geometry
-  // pass, and on a widget which is not visible yet Qt only marks the resize
-  // event as pending instead of delivering it. Missing that leaves the sheet
-  // planned for a viewport it no longer has.
-  void updateGeometries() Q_DECL_OVERRIDE;
+  // Plain text only, and never a line separator: the serializer rejects
+  // '\n', '\r', U+2028 and U+2029, so a cell which contains one can no longer
+  // be written back at all.
+  bool canInsertFromMimeData(const QMimeData *p_source) const Q_DECL_OVERRIDE;
 
-  // Rows outside the preferred band still carry their default height, so
-  // scrolling one into view is what asks for it to be fitted.
-  void scrollContentsBy(int p_dx, int p_dy) Q_DECL_OVERRIDE;
+  void insertFromMimeData(const QMimeData *p_source) Q_DECL_OVERRIDE;
+
+private slots:
+  void handleDocumentSizeChanged();
+
+  void handleCursorPositionChanged();
+
+  // QTextEdit::selectAll() - and therefore Ctrl+A and the context menu's
+  // Select All - moves the anchor without moving the caret's *position*, so it
+  // emits selectionChanged() and no cursorPositionChanged() at all. The
+  // selection clamp has to be reachable from both.
+  void handleSelectionChanged();
 
 private:
-  // The cheap inputs the measurement depends on besides the cell contents.
-  // Comparing them costs a handful of integer reads and catches the inherited
-  // mutations which have no signal of their own (frame style, header minimum
-  // section size, a swapped delegate), so the cache cannot go stale silently.
-  struct PreferredSizeKey {
-    int m_frame = -1;
+  // What the frame and the viewport margins take off the outer width and
+  // height. Read from the live geometry once there is one, because a style may
+  // inset the viewport by more than the frame width alone.
+  int horizontalChrome() const;
 
-    int m_minColumnWidth = -1;
+  int verticalChrome() const;
 
-    int m_minRowHeight = -1;
+  // Move the caret to the next or previous cell, wrapping at the last/first
+  // one. Returns false when there is no table to move in.
+  bool moveToAdjacentCell(bool p_forward);
 
-    int m_rows = -1;
+  // Perform one of the delete shortcuts here, bounded by the caret's cell.
+  //
+  // QWidgetTextControl answers these by building a selection *and* removing it
+  // inside the same call, on its own cursor and without emitting a signal in
+  // between - so a clamp before the base handler sees no selection yet and the
+  // signal-driven clamps never run at all. Ctrl+Delete at the end of a cell
+  // selects into the next one, and at the end of the last cell out of the
+  // table entirely, where QTextCursor expands the range to the whole frame.
+  // Returns true when @p_event was one of them and has been handled.
+  bool deleteWithinCell(const QKeyEvent *p_event);
 
-    int m_columns = -1;
+  // Whether the caret is on the first visual line of the first row, or the
+  // last visual line of the last row - the two edges at which an arrow key
+  // hands the caret back to the editor.
+  bool isAtTopEdge() const;
 
-    int m_visibleRows = -1;
+  bool isAtBottomEdge() const;
 
-    // Qt adds a pixel to every section hint while the grid is drawn.
-    bool m_showGrid = false;
+  // Re-seed the sheet's palette from its parent and hand the derived colours
+  // to the document. Returns the effective palette.
+  QPalette applyPalette();
 
-    bool m_wordWrap = false;
+  // Not owned.
+  TablePreviewDocument *m_document = nullptr;
 
-    const QAbstractItemDelegate *m_delegate = nullptr;
+  // heightForWidth() lays the live document out, which synchronously emits
+  // documentSizeChanged. Reporting that back to the host is how a measurement
+  // loop starts.
+  mutable bool m_measuring = false;
 
-    bool operator==(const PreferredSizeKey &p_other) const {
-      return m_frame == p_other.m_frame && m_minColumnWidth == p_other.m_minColumnWidth &&
-             m_minRowHeight == p_other.m_minRowHeight && m_rows == p_other.m_rows &&
-             m_columns == p_other.m_columns && m_visibleRows == p_other.m_visibleRows &&
-             m_showGrid == p_other.m_showGrid && m_wordWrap == p_other.m_wordWrap &&
-             m_delegate == p_other.m_delegate;
-    }
-  };
+  // Set while the sheet is applying a geometry the host chose, for the same
+  // reason.
+  bool m_applyingGeometry = false;
 
-  // One complete answer of the pure geometry solver. Nothing here touches the
-  // live sections, so the same routine serves both the measurement the host
-  // asks for and the layout pass which applies it.
-  struct Solution {
-    QVector<int> m_columnWidths;
+  // Set while refreshFormats() rewrites the character and block formats, which
+  // is a document change the commit machinery must not see as an edit.
+  bool m_applyingFormats = false;
 
-    // Only the preferred band; the rows below it are fitted lazily.
-    QVector<int> m_rowHeights;
+  // The last (outer width, height) pair reported to the host. An unchanged
+  // pass terminates here instead of looping against the host's own cache.
+  int m_notifiedOuterWidth = -1;
 
-    int m_viewportWidth = 0;
+  int m_notifiedHeight = -1;
 
-    int m_bandHeight = 0;
+  // Set while a clamp is rewriting the cursor, whose own
+  // cursorPositionChanged would otherwise re-enter it.
+  bool m_clampingCursor = false;
 
-    // The planned columns do not fit, so a horizontal scroll bar appears and
-    // eats into the band.
-    bool m_horizontalScrollBar = false;
-  };
+  // Set across QInputMethod::reset(), which several platforms answer by
+  // sending this very widget a synchronous commit or clearing event.
+  bool m_cancellingComposition = false;
 
-  PreferredSizeKey currentPreferredSizeKey() const;
-
-  // A style option carrying this view's font, palette, direction and state,
-  // built once per measurement sweep because initViewItemOption() is far from
-  // free and every cell of the band goes through it.
-  QStyleOptionViewItem baseViewOption() const;
-
-  // The delegate's hint for one cell. A width of -1 asks for the natural,
-  // unwrapped size; anything else is the width the text may occupy.
-  QSize cellHint(const QStyleOptionViewItem &p_base, int p_row, int p_column,
-                 int p_width) const;
-
-  // The section height one row needs when the columns have p_widths.
-  int rowHeightFor(const QStyleOptionViewItem &p_base, int p_row,
-                   const QVector<int> &p_widths) const;
-
-  // What the vertical or horizontal bar actually takes from the viewport.
-  // Answered from the live geometry once the sheet has been laid out with that
-  // bar shown, because the arithmetic QAbstractScrollArea lays its children
-  // out by is private and style dependent; until then, from the two rules that
-  // arithmetic follows.
-  int scrollBarExtent(Qt::Orientation p_orientation) const;
-
-  // Learn the real chrome from the geometry the view just settled on, and flag
-  // the answers the host already has when it disagrees with the estimate.
-  void observeScrollBarChrome();
-
-  int bandRowCount() const;
-
-  // The open cell editor, if p_index has one. Qt keeps no public handle on it,
-  // so it is found among the viewport's children by the geometry it was given
-  // - which is exactly the cell's.
-  QLineEdit *cellEditor(const QModelIndex &p_index) const;
-
-  // Drop the selection Qt makes when the editor takes focus and put the caret
-  // where the user pointed, or at the end when the editor was not opened by a
-  // click. Selecting the whole value would turn the next keystroke into a
-  // replace of the cell rather than an edit of it.
-  void placeCursor(const QModelIndex &p_index, const QEvent *p_event);
-
-  // Refresh the natural widths, the intrinsic band heights and the cached
-  // preferred size when anything they depend on moved.
-  void ensureMeasured() const;
-
-  // Plan the sections for an outer width of p_outerWidth. A p_viewportWidth of
-  // -1 derives the viewport from the outer width; passing an observed one is
-  // how the live pass converges onto a style whose chrome does not match the
-  // derivation. A non-positive p_outerWidth asks for the natural plan.
-  Solution solveGeometry(int p_outerWidth, int p_viewportWidth) const;
-
-  // The band a settled plan occupies at an outer width of p_width: the frame,
-  // the rows, and whatever the horizontal bar takes when the columns cannot
-  // fit. The single source of that arithmetic, because both the measurement
-  // the host asks for and the layout pass seed the same memo with it.
-  QSize constrainedSizeFor(const Solution &p_solution, int p_width) const;
-
-  // Apply the plan - columns first, then the band rows, because Qt measures
-  // wrapped rows against the current column widths.
-  void applyLayout();
-
-  // Const because the measurement notices inherited mutations which have no
-  // signal of their own, and it has to be able to ask for a pass from there.
-  void scheduleLayout() const;
-
-  void scheduleRowFit();
-
-  // Fit the rows around the viewport in bounded batches.
-  void fitRowsAroundViewport();
-
-  // Compare the settled geometry against what the host was last told, and
-  // report a real change once.
-  void notifyPreferredGeometry(const Solution &p_solution);
-
-  int m_visibleRows = 10;
-
-  // Only the connections this view made itself, so dropping a model cannot
-  // tear down QTableView's own model connections.
-  QVector<QMetaObject::Connection> m_modelConnections;
-
-  mutable QSize m_cachedPreferredSize;
-
-  // The per-column natural widths behind m_cachedPreferredSize, refreshed
-  // under the same key guard. Reused by the solver because measuring walks the
-  // delegate over the whole band and would otherwise run on every resize.
-  mutable QVector<int> m_cachedColumnWidths;
-
-  mutable QVector<int> m_cachedRowHeights;
-
-  mutable PreferredSizeKey m_cachedPreferredSizeKey;
-
-  mutable bool m_preferredSizeDirty = true;
-
-  // preferredSizeWithin() is answered on every publish, so the constrained
-  // answer is memoized per width alongside the intrinsic one.
-  mutable int m_constrainedWidthKey = -1;
-
-  mutable QSize m_constrainedSize;
-
-  // setColumnWidth() can drop the vertical scroll bar, which resizes the
-  // viewport and re-enters the geometry hooks below from inside the pass.
-  bool m_layingOut = false;
-
-  // setRowHeight() scrolls, which asks for another fitting pass from inside
-  // the one already running.
-  bool m_fittingRows = false;
-
-  // The viewport width the live sections were last planned against. Writing a
-  // section makes Qt post a geometry update for the very sections the pass
-  // just wrote, and re-planning for that would only produce the same plan.
-  int m_plannedViewportWidth = -1;
-
-  // The chrome each bar was seen to take, or -1 while it is still estimated.
-  int m_observedVerticalChrome = -1;
-
-  int m_observedHorizontalChrome = -1;
-
-  // Measurement bookkeeping, so an inherited mutation noticed from a const
-  // query can drop it: the exact column widths m_fittedRows were measured
-  // against, and the rows which are fitted for them. A row fitted for a
-  // narrower plan is stale, not done.
-  mutable QVector<int> m_fittedColumnWidths;
-
-  mutable QSet<int> m_fittedRows;
-
-  // Whether an intrinsic invalidation is still owed a notification.
-  mutable bool m_notificationArmed = false;
-
-  bool m_settlementEstablished = false;
-
-  QSize m_settledPreferredSize;
-
-  int m_settledConstrainedHeight = -1;
-
-  // Managed by QObject.
-  QTimer *m_layoutTimer = nullptr;
-
-  // Managed by QObject.
-  QTimer *m_rowFitTimer = nullptr;
+  // The cell the caret was last seen in, so cellLeft() fires once per move
+  // rather than once per keystroke.
+  int m_lastCellIndex = -1;
 };
 
 class TablePreviewWidget : public PreviewWidget {
   Q_OBJECT
 public:
-  // Share of the available content width a sheet spans at least. Without it a
-  // short table renders as a small box hugging the left margin, because the
-  // host reserves a band exactly as wide as the natural contents.
+  // Share of the available content width a sheet spans. The whole band: the
+  // column widths are owned by Qt's table layout now, which distributes
+  // whatever width it is given, so there is no natural width to fall back to.
   static const qreal c_widthFraction;
 
+  // Idle time after the last keystroke before the sheet writes itself back.
+  static const int c_commitDebounceMs;
+
   TablePreviewWidget(PreviewWidgetContext *p_context, QWidget *p_parent);
+
+  ~TablePreviewWidget() Q_DECL_OVERRIDE;
 
   QVector<PreviewElementType> supportedTypes() const Q_DECL_OVERRIDE;
 
@@ -418,11 +424,22 @@ public:
 
   qreal preferredWidthFraction() const Q_DECL_OVERRIDE;
 
-  void setVisibleRows(int p_rows);
-
   // Mirror the editor's read-only state so the sheet cannot swallow edits the
   // host is going to reject anyway.
   void setReadOnly(bool p_readOnly);
+
+  // Write back anything the debounce still owes, while this sheet's context
+  // and anchor are still authoritative. The host calls it immediately before
+  // it drops the identity, and again before it snapshots the live anchors for
+  // a rebuild - an accepted flush retargets the anchor, and a copy taken
+  // beforehand would have been collapsed by the very edit it applies.
+  void flushNow();
+
+  // The host has revoked this sheet's authority: the identity is about to be
+  // erased, so every remaining commit path has to become a no-op. A late
+  // timeout, a hide, a focus-out and the deferred deletion all pass through
+  // here.
+  void revokeAuthority();
 
   QSize sizeHint() const Q_DECL_OVERRIDE;
 
@@ -430,42 +447,107 @@ public:
 
   int heightForWidth(int p_width) const Q_DECL_OVERRIDE;
 
-  // The host's event filter watches this widget rather than the view inside
+  // The host's event filter watches this widget rather than the sheet inside
   // it, so the sheet's own layout request has to be posted here.
   bool event(QEvent *p_event) Q_DECL_OVERRIDE;
+
+signals:
+  void focusEscapeRequested(vte::FocusEscapeDirection p_direction);
+
+  void undoRequested();
+
+  void redoRequested();
 
 protected:
   void changeEvent(QEvent *p_event) Q_DECL_OVERRIDE;
 
 private slots:
-  void handleCellCommitted();
+  void handleContentsChanged();
+
+  void handleCellLeft();
+
+  void handleFocusLost();
+
+  void handleEscapeRequested(vte::FocusEscapeDirection p_direction);
+
+  void handleUndoRequested();
+
+  void handleRedoRequested();
 
   void handleReplacementFinished(const vte::PreviewReplacementResult &p_result);
 
   // The sheet settled on a geometry the host has not measured yet.
   void handlePreferredGeometryChanged();
 
+  void handleCommitTimeout();
+
 private:
   void resetFromSource();
 
+  // Take the bound snapshot from the context, which is the authoritative
+  // binding: an accepted replacement rebases it onto the text now in the
+  // document, and the cached one still describes the pre-commit source.
+  void rebindFromContext();
+
+  // Restart the idle debounce.
+  void armCommit();
+
+  // Write the sheet back now. Returns false only when a commit was owed and
+  // was rejected; "nothing to commit" is a success.
+  bool flushPendingCommit();
+
   // A sheet only offers editing when the host would accept the commit.
-  void applyEditTriggers();
+  void applyEditability();
 
   // Managed by QObject.
-  TablePreviewView *m_view = nullptr;
+  TablePreviewSheet *m_sheet = nullptr;
+
+  // Destroyed after m_sheet, which renders it. See the destructor.
+  QScopedPointer<TablePreviewDocument> m_document;
 
   // Managed by QObject.
-  TablePreviewModel *m_model = nullptr;
+  QTimer *m_commitTimer = nullptr;
 
   QSharedPointer<const TablePreview> m_table;
 
+  // Set while the sheet is being rewritten from the bound snapshot, so the
+  // resulting document changes are not mistaken for user edits.
   bool m_applyingSource = false;
 
   bool m_readOnly = false;
 
+  // Whether the bound snapshot still describes the document. Cleared by a
+  // rejection the sheet cannot recover from, restored by the next snapshot.
+  bool m_authoritative = true;
+
+  // Set by revokeAuthority(). Terminal: nothing clears it.
+  bool m_suppressed = false;
+
   // One posted layout request at a time, so a burst of settlements cannot
   // queue a burst of host measurements.
   bool m_layoutRequestPending = false;
+
+  // Monotonic counter of accepted document changes. The commit machinery
+  // compares generations rather than text, because the document can move on
+  // while a replacement is in flight.
+  quint64 m_editGeneration = 0;
+
+  // The generation the last accepted commit carried.
+  quint64 m_committedGeneration = 0;
+
+  quint64 m_inFlightGeneration = 0;
+
+  bool m_commitInFlight = false;
+
+  QString m_inFlightMarkdown;
+
+  // The Markdown this sheet last knew the document to hold: the canonical form
+  // of the bound source at bind time, and the accepted replacement after every
+  // successful commit. It is both the "nothing changed" baseline a flush
+  // compares against and the echo baseline setPreview() needs, so a parse
+  // generation which merely replays this sheet's own commit is not mistaken
+  // for an authoritative external change.
+  QString m_committedMarkdown;
 };
 
 class TablePreviewWidgetFactory : public PreviewWidgetFactory {
@@ -479,16 +561,22 @@ public:
                               const QSharedPointer<const Preview> &p_preview,
                               QWidget *p_parent) Q_DECL_OVERRIDE;
 
-  void setVisibleRows(int p_rows);
-
   // Mirror the editor's read-only state onto every live sheet.
   void setReadOnly(bool p_readOnly);
+
+signals:
+  // Relayed from a live sheet, carrying the widget so the host can resolve the
+  // identity - and therefore the live anchor - it belongs to.
+  void focusEscapeRequested(vte::TablePreviewWidget *p_widget,
+                            vte::FocusEscapeDirection p_direction);
+
+  void undoRequested(vte::TablePreviewWidget *p_widget);
+
+  void redoRequested(vte::TablePreviewWidget *p_widget);
 
 private:
   // Drop the entries whose sheet has been destroyed.
   void pruneWidgets();
-
-  int m_visibleRows = 10;
 
   bool m_readOnly = false;
 

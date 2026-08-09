@@ -20,9 +20,15 @@ class QTimer;
 class QTextDocument;
 
 namespace vte {
+class TablePreviewWidget;
 class TablePreviewWidgetFactory;
 class VMarkdownEditor;
 class VTextEdit;
+
+// Defined in tablepreviewwidget.h. Only ever passed by value through plain
+// member functions below, never through a signal or slot, so moc never has to
+// see the definition.
+enum class FocusEscapeDirection;
 
 // Owns every interactive preview widget of one VMarkdownEditor.
 //
@@ -49,10 +55,6 @@ public:
   void setTypeEnabled(PreviewElementType p_type, bool p_enabled);
 
   bool isTypeEnabled(PreviewElementType p_type) const;
-
-  int tablePreviewVisibleRows() const;
-
-  void setTablePreviewVisibleRows(int p_rows);
 
   // Dynamic property carrying the enabled element type mask to the
   // highlighter. A property avoids adding a data member to the exported
@@ -190,6 +192,22 @@ private:
 
   QWidget *viewport() const;
 
+  // A sheet is handing the caret back to the editor. The destination is
+  // resolved here rather than in the sheet: only this host holds a live anchor
+  // for the source, and the snapshot positions a sheet knows go stale on any
+  // unrelated edit.
+  void handleFocusEscape(TablePreviewWidget *p_widget, FocusEscapeDirection p_direction);
+
+  // A sheet relays undo/redo instead of handling it, because the inner
+  // document has no undo stack: the granularity is one whole-table replacement
+  // on the editor's own stack.
+  void handleSheetUndo(TablePreviewWidget *p_widget);
+
+  void handleSheetRedo(TablePreviewWidget *p_widget);
+
+  // The identity of the item @p_widget belongs to, or 0.
+  quint64 identityOf(const PreviewWidget *p_widget) const;
+
   // A snapshot of the active factories in resolution order. Returned by value
   // because a factory may mutate the registry from inside its own callback.
   QVector<FactoryEntry> orderedFactories() const;
@@ -265,6 +283,10 @@ private:
                        int p_endPos) const;
 
   QTextCursor makeAnchor(int p_startPos, int p_endPos) const;
+
+  // Ask every live table sheet to write back what its debounce still owes,
+  // while its context and its anchor are still authoritative.
+  void flushDirtySheets();
 
   // Rebuild every item, carrying the live anchors across so a factory or
   // enablement change never re-anchors at superseded parse positions.
@@ -349,8 +371,6 @@ private:
 
   // Set while the factory registry itself is being mutated.
   bool m_mutatingFactories = false;
-
-  int m_tablePreviewVisibleRows = 10;
 
   // Set by syncWidgetGeometry() so publish() can tell whether the layout
   // already drove a sync through widgetPreviewGeometryChanged.

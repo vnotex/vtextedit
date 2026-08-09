@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(VTextEdit VERSION 1.0 LANGUAGES C CXX)
+project(VTextEdit VERSION 2.0.0 LANGUAGES C CXX)
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
@@ -170,6 +170,15 @@ if((QT_DEFAULT_MAJOR_VERSION GREATER 5))
         Qt::Core5Compat
     )
 endif()
+
+# 2.0: VMarkdownEditor::tablePreviewVisibleRows()/setTablePreviewVisibleRows()
+# were removed, so an already-linked consumer must not resolve against this
+# build. Without a SOVERSION that failure would surface as a missing symbol at
+# load time instead of at link time.
+set_target_properties(VTextEdit PROPERTIES
+    VERSION ${PROJECT_VERSION}
+    SOVERSION ${PROJECT_VERSION_MAJOR}
+)
 
 install(TARGETS VTextEdit
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}

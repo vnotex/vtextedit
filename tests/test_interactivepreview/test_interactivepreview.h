@@ -162,7 +162,6 @@ private slots:
   void testTableEditCommitsCanonicalMarkdown();
   void testSourceBitDisablesTablePreview();
   void testGlobalDisableRemovesWidgets();
-  void testTablePreviewVisibleRows();
   void testDuplicateTablesGetDistinctIdentities();
   void testWidgetGeometryFollowsScrolling();
 
@@ -184,7 +183,6 @@ private slots:
   void testOversizedTableFallsBackToSource();
   void testReadOnlyEditorDisablesCellEditing();
   void testNoSnapshotWorkWithoutAClaimableFactory();
-  void testTableSheetFitsWithoutScrollBars();
   void testTableSheetRefitsAfterFontChange();
   void testTableSheetFitsWithALargeThemeFont();
   void testTableSheetUsesTheThemeGenericFont();
@@ -200,16 +198,19 @@ private slots:
   // Sheet geometry.
   void testClickEditsACellInPlace();
   void testTableSheetHeightMatchesItsRows();
-  void testWideTableSheetScrollsHorizontally();
-  void testASingleOverflowingColumnScrollsToItsEnd();
-  void testSheetReservesTheScrollBarAcrossAResize();
-  void testWideSheetConsumesHorizontalWheel();
   void testTableSheetSpansContentWidth();
   void testTableSheetKeepsANaturalWidthInsideTheBand();
   void testInlinePreviewIgnoresTheWidthFraction();
   void testTableColumnsShareTheExtraWidth();
   void testSingleColumnTableFillsTheSheet();
   void testTableWidthFollowsEditorResize();
+
+  // Debounced write-back against the host's item lifecycle.
+  void testRemovalDuringTheDebounceKeepsTheEdit();
+  void testRebuildDuringTheDebounceKeepsTheEdit();
+  void testEditorDestructionFlushesADirtySheet();
+  void testUndoReachesTheEditorAfterTheFlush();
+  void testArrowOutMovesTheEditorCaretToTheLiveAnchor();
 
   // Review fixes.
   void testRejectionAfterAcceptKeepsCommittedValues();

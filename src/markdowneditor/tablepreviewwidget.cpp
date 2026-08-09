@@ -1,22 +1,26 @@
 #include "tablepreviewwidget.h"
 
-#include <algorithm>
-#include <cmath>
-
 #include <QApplication>
+#include <QAbstractTextDocumentLayout>
+#include <QFocusEvent>
 #include <QFont>
-#include <QFontMetricsF>
-#include <QHeaderView>
-#include <QLineEdit>
-#include <QPainter>
+#include <QGuiApplication>
+#include <QInputMethod>
+#include <QKeyEvent>
+#include <QMimeData>
+#include <QMouseEvent>
+#include <QPalette>
 #include <QScopedValueRollback>
-#include <QScrollBar>
 #include <QStringList>
-#include <QStyle>
-#include <QStyleOption>
-#include <QStyledItemDelegate>
+#include <QTextBlock>
+#include <QTextBlockFormat>
+#include <QTextCharFormat>
+#include <QTextCursor>
+#include <QTextDocument>
+#include <QTextFrame>
 #include <QTextLayout>
-#include <QTextOption>
+#include <QTextTable>
+#include <QTextTableCell>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWheelEvent>
@@ -110,10 +114,16 @@ static QString alignmentMarker(PreviewTableAlignment p_alignment, int p_width) {
   }
 }
 
+// Whether @p_code is one of the separators a table row can never carry: the
+// serializer emits one source line per row, and every one of these would end
+// that line early.
+static bool isLineSeparator(ushort p_code) {
+  return p_code == '\n' || p_code == '\r' || p_code == 0x2028 || p_code == 0x2029;
+}
+
 static bool hasLineSeparator(const QString &p_text) {
   for (int i = 0; i < p_text.size(); ++i) {
-    const ushort code = p_text.at(i).unicode();
-    if (code == '\n' || code == '\r' || code == 0x2028 || code == 0x2029) {
+    if (isLineSeparator(p_text.at(i).unicode())) {
       return true;
     }
   }
@@ -167,7 +177,7 @@ QString TablePreviewSerializer::serialize(const QVector<QVector<QString>> &p_cel
     widths[c] = qMax(widths[c], alignmentMinimumWidth(alignment));
     // The alignment minimums are far below the cap, so the delimiter markers
     // are unaffected by the clamp.
-    widths[c] = qMin(widths[c], TablePreviewModel::c_maxPaddedWidth);
+    widths[c] = qMin(widths[c], TablePreviewDocument::c_maxPaddedWidth);
   }
 
   auto emitRow = [&](const QString &p_prefix, int p_rowIdx) {
@@ -205,20 +215,29 @@ QString TablePreviewSerializer::serialize(const QVector<QVector<QString>> &p_cel
 }
 
 // ---------------------------------------------------------------------------
-// TablePreviewModel
+// TablePreviewDocument
 // ---------------------------------------------------------------------------
 
-TablePreviewModel::TablePreviewModel(QObject *p_parent) : QAbstractTableModel(p_parent) {}
+// See the header for how these were measured.
+const int TablePreviewDocument::c_maxCells = 300;
 
-const int TablePreviewModel::c_maxCells = 200000;
+const int TablePreviewDocument::c_maxColumns = 200;
 
-const int TablePreviewModel::c_maxRows = 2000;
+const int TablePreviewDocument::c_maxPaddedWidth = 80;
 
-const int TablePreviewModel::c_maxColumns = 200;
+namespace {
+// Padding inside one cell, in pixels. Small enough that a compact table does
+// not turn into a spreadsheet, large enough that the text does not touch the
+// border.
+const qreal c_cellPadding = 3;
 
-const int TablePreviewModel::c_maxPaddedWidth = 80;
+// The margin the document keeps around the table. The table itself spans the
+// whole remaining width, so this is the only gap between the border and the
+// edge of the band.
+const qreal c_documentMargin = 2;
+} // namespace
 
-int TablePreviewModel::normalizedColumnCount(const TablePreview &p_table) {
+int TablePreviewDocument::normalizedColumnCount(const TablePreview &p_table) {
   int columns = p_table.alignments().size();
   for (const auto &row : p_table.cells()) {
     columns = qMax(columns, row.size());
@@ -227,43 +246,77 @@ int TablePreviewModel::normalizedColumnCount(const TablePreview &p_table) {
   return columns;
 }
 
-qint64 TablePreviewModel::normalizedCellCount(const TablePreview &p_table) {
+qint64 TablePreviewDocument::normalizedCellCount(const TablePreview &p_table) {
   return static_cast<qint64>(normalizedColumnCount(p_table)) *
          static_cast<qint64>(p_table.cells().size());
 }
 
-bool TablePreviewModel::isWithinLimits(const TablePreview &p_table) {
-  return p_table.cells().size() <= c_maxRows && normalizedColumnCount(p_table) <= c_maxColumns &&
+bool TablePreviewDocument::isWithinLimits(const TablePreview &p_table) {
+  return normalizedColumnCount(p_table) <= c_maxColumns &&
          normalizedCellCount(p_table) <= c_maxCells;
 }
 
-void TablePreviewModel::setTable(const QSharedPointer<const TablePreview> &p_table) {
-  beginResetModel();
+TablePreviewDocument::TablePreviewDocument() : m_doc(new QTextDocument()) {
+  // The sheet's undo granularity is one whole-table replacement on the
+  // editor's own stack, so the inner document must not accumulate a second,
+  // invisible one.
+  m_doc->setUndoRedoEnabled(false);
+  m_doc->setDocumentMargin(c_documentMargin);
+
+  QTextOption option = m_doc->defaultTextOption();
+  // WordWrap alone cannot break an unbroken token and would leave a long URL
+  // or identifier overflowing its column, which with no horizontal scrolling
+  // means unreachable.
+  option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+  m_doc->setDefaultTextOption(option);
+}
+
+TablePreviewDocument::~TablePreviewDocument() = default;
+
+QTextDocument *TablePreviewDocument::document() const { return m_doc.data(); }
+
+QTextTable *TablePreviewDocument::table() const { return m_table; }
+
+int TablePreviewDocument::rowCount() const { return m_rowCount; }
+
+int TablePreviewDocument::columnCount() const { return m_columnCount; }
+
+Qt::Alignment TablePreviewDocument::blockAlignment(int p_column) const {
+  switch (m_alignments.value(p_column, PreviewTableAlignment::None)) {
+  case PreviewTableAlignment::Center:
+    return Qt::AlignHCenter;
+  case PreviewTableAlignment::Right:
+    return Qt::AlignRight;
+  default:
+    return Qt::AlignLeft;
+  }
+}
+
+void TablePreviewDocument::setTable(const QSharedPointer<const TablePreview> &p_table) {
   if (p_table) {
-    m_cells = p_table->cells();
+    m_source = p_table->cells();
     m_alignments = p_table->alignments();
     m_rowPrefixes = p_table->rowPrefixes();
     m_delimiterPrefix = p_table->delimiterPrefix();
     m_declaredColumnCount = p_table->columnCount();
   } else {
-    m_cells.clear();
+    m_source.clear();
     m_alignments.clear();
     m_rowPrefixes.clear();
     m_delimiterPrefix.clear();
     m_declaredColumnCount = 0;
   }
 
-  normalize();
-  endResetModel();
-}
-
-void TablePreviewModel::normalize() {
+  // Normalize exactly as the snapshot describes it: pad every row to the
+  // widest one and extend the alignments. Nothing is ever discarded, so a body
+  // row wider than the header stays visible - it is isRoundTrippable() which
+  // then refuses to write it back.
   m_columnCount = m_alignments.size();
-  for (const auto &row : m_cells) {
+  for (const auto &row : m_source) {
     m_columnCount = qMax(m_columnCount, row.size());
   }
 
-  for (auto &row : m_cells) {
+  for (auto &row : m_source) {
     while (row.size() < m_columnCount) {
       row.append(QString());
     }
@@ -272,83 +325,127 @@ void TablePreviewModel::normalize() {
   while (m_alignments.size() < m_columnCount) {
     m_alignments.append(PreviewTableAlignment::None);
   }
+
+  m_rowCount = m_source.size();
+
+  build();
 }
 
-int TablePreviewModel::rowCount(const QModelIndex &p_parent) const {
-  return p_parent.isValid() ? 0 : m_cells.size();
-}
+void TablePreviewDocument::build() {
+  m_table = nullptr;
+  m_doc->clear();
+  // clear() rebuilds the document, which restores the default undo behavior.
+  m_doc->setUndoRedoEnabled(false);
 
-int TablePreviewModel::columnCount(const QModelIndex &p_parent) const {
-  return p_parent.isValid() ? 0 : m_columnCount;
-}
-
-QVariant TablePreviewModel::data(const QModelIndex &p_index, int p_role) const {
-  if (!p_index.isValid() || p_index.row() >= m_cells.size() ||
-      p_index.column() >= m_columnCount) {
-    return QVariant();
+  if (m_rowCount <= 0 || m_columnCount <= 0) {
+    return;
   }
 
-  switch (p_role) {
-  case Qt::DisplayRole:
-  case Qt::EditRole:
-  case Qt::ToolTipRole:
-    return m_cells[p_index.row()].value(p_index.column());
+  QTextTableFormat format;
+  // The band is the sheet's whole width, and the column widths are owned by
+  // Qt: every column is a VariableLength constraint, so the layout shares the
+  // width out by content instead of the retired proportional-compression pass.
+  format.setWidth(QTextLength(QTextLength::PercentageLength, 100));
+  format.setColumnWidthConstraints(
+      QVector<QTextLength>(m_columnCount, QTextLength(QTextLength::VariableLength, 0)));
+  format.setCellPadding(c_cellPadding);
+  format.setCellSpacing(0);
+  format.setBorder(1);
+  format.setBorderStyle(QTextFrameFormat::BorderStyle_Solid);
+  format.setHeaderRowCount(1);
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+  // One shared line between neighbouring cells rather than two abutting ones.
+  format.setBorderCollapse(true);
+#endif
 
-  case Qt::TextAlignmentRole: {
-    const auto alignment = m_alignments.value(p_index.column(), PreviewTableAlignment::None);
-    switch (alignment) {
-    case PreviewTableAlignment::Center:
-      return static_cast<int>(Qt::AlignCenter);
-    case PreviewTableAlignment::Right:
-      return static_cast<int>(Qt::AlignRight | Qt::AlignVCenter);
-    default:
-      return static_cast<int>(Qt::AlignLeft | Qt::AlignVCenter);
+  QTextCursor cursor(m_doc.data());
+  // One edit block for the whole build: QTextDocumentLayout relayouts the
+  // frame an edit lands in, and the frame here is the table.
+  cursor.beginEditBlock();
+  m_table = cursor.insertTable(m_rowCount, m_columnCount, format);
+  if (!m_table) {
+    cursor.endEditBlock();
+    return;
+  }
+
+  for (int r = 0; r < m_rowCount; ++r) {
+    const auto &row = m_source.at(r);
+    for (int c = 0; c < m_columnCount; ++c) {
+      QTextTableCell cell = m_table->cellAt(r, c);
+      if (!cell.isValid()) {
+        continue;
+      }
+
+      const QString text = row.value(c);
+      if (!text.isEmpty()) {
+        cell.firstCursorPosition().insertText(text);
+      }
+
+      // The same writer applyCellFormats() uses, so the two cannot disagree
+      // about what a cell looks like.
+      applyCellFormat(r, c);
     }
   }
 
-  case Qt::FontRole:
-    if (p_index.row() == 0) {
-      QFont font;
-      font.setBold(true);
-      return font;
+  // A QTextDocument's root frame always ends with a block, so the table is
+  // necessarily followed by an empty paragraph. At the editor's font that
+  // would add a whole empty line under the sheet and give the caret a resting
+  // place outside every cell; shrink it to a single pixel instead. The caret
+  // is kept out of it by TablePreviewSheet::clampCursorIntoTable().
+  QTextCursor tail(m_doc.data());
+  tail.movePosition(QTextCursor::End);
+  QTextCharFormat tailChar;
+  tailChar.setFontPointSize(1);
+  tail.setCharFormat(tailChar);
+
+  QTextBlockFormat tailBlock = tail.blockFormat();
+  tailBlock.setTopMargin(0);
+  tailBlock.setBottomMargin(0);
+  tailBlock.setLineHeight(1, QTextBlockFormat::FixedHeight);
+  tail.setBlockFormat(tailBlock);
+
+  cursor.endEditBlock();
+}
+
+QVector<QVector<QString>> TablePreviewDocument::cells() const {
+  QVector<QVector<QString>> matrix;
+  if (!m_table) {
+    return matrix;
+  }
+
+  const int rows = m_table->rows();
+  const int columns = m_table->columns();
+  matrix.reserve(rows);
+
+  for (int r = 0; r < rows; ++r) {
+    QVector<QString> row;
+    row.reserve(columns);
+    for (int c = 0; c < columns; ++c) {
+      const QTextTableCell cell = m_table->cellAt(r, c);
+      if (!cell.isValid()) {
+        row.append(QString());
+        continue;
+      }
+
+      QTextCursor cursor = cell.firstCursorPosition();
+      cursor.setPosition(cell.lastCursorPosition().position(), QTextCursor::KeepAnchor);
+      // selectedText() reports a block boundary as U+2029, which the
+      // serializer rejects. A cell can only ever hold one block - Enter is
+      // swallowed and every paste is sanitized - so this is defence in depth
+      // rather than an expected shape.
+      row.append(cursor.selectedText());
     }
-    return QVariant();
 
-  default:
-    return QVariant();
+    matrix.append(row);
   }
+
+  return matrix;
 }
 
-bool TablePreviewModel::setData(const QModelIndex &p_index, const QVariant &p_value, int p_role) {
-  if (p_role != Qt::EditRole || !p_index.isValid() || p_index.row() >= m_cells.size() ||
-      p_index.column() >= m_columnCount) {
-    return false;
-  }
-
-  const QString newValue = p_value.toString();
-  if (m_cells[p_index.row()][p_index.column()] == newValue) {
-    // Only actual value changes are committed.
-    return false;
-  }
-
-  m_cells[p_index.row()][p_index.column()] = newValue;
-  emit dataChanged(p_index, p_index);
-  emit cellCommitted();
-  return true;
-}
-
-Qt::ItemFlags TablePreviewModel::flags(const QModelIndex &p_index) const {
-  if (!p_index.isValid()) {
-    return Qt::NoItemFlags;
-  }
-
-  return Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable;
-}
-
-bool TablePreviewModel::isRoundTrippable() const {
-  if (m_cells.isEmpty() || m_declaredColumnCount <= 0) {
-    qCDebug(previewTableLog) << "not round-trippable: rows" << m_cells.size()
-                             << "declared columns" << m_declaredColumnCount;
+bool TablePreviewDocument::isRoundTrippable() const {
+  if (m_rowCount <= 0 || m_declaredColumnCount <= 0) {
+    qCDebug(previewTableLog) << "not round-trippable: rows" << m_rowCount << "declared columns"
+                             << m_declaredColumnCount;
     return false;
   }
 
@@ -370,1128 +467,916 @@ bool TablePreviewModel::isRoundTrippable() const {
   return true;
 }
 
-QString TablePreviewModel::toMarkdown() const {
+bool TablePreviewDocument::isIntact() const {
+  if (m_rowCount <= 0 || m_columnCount <= 0) {
+    // Nothing was ever built, so nothing can have been taken apart.
+    return true;
+  }
+
+  if (!m_doc || !m_doc->rootFrame()) {
+    return false;
+  }
+
+  // Deliberately re-resolved instead of compared against m_table: that pointer
+  // is what dangles in exactly the case this detects. The document only ever
+  // holds the one table this object built, so "a table is still there" is the
+  // whole question.
+  for (auto frame : m_doc->rootFrame()->childFrames()) {
+    if (qobject_cast<QTextTable *>(frame)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+QString TablePreviewDocument::toMarkdown() const {
   if (!isRoundTrippable()) {
     return QString();
   }
 
-  return TablePreviewSerializer::serialize(m_cells, m_alignments, m_rowPrefixes,
+  return TablePreviewSerializer::serialize(cells(), m_alignments, m_rowPrefixes,
                                            m_delimiterPrefix);
 }
 
-// ---------------------------------------------------------------------------
-// TablePreviewView
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// TablePreviewDelegate
-// ---------------------------------------------------------------------------
-
-namespace {
-// Line width standing in for "no constraint". QTextLine works in 26.6 fixed
-// point, so this stays far away from the overflow QFIXED_MAX guards against
-// while being wider than any cell a Markdown table can hold.
-const qreal c_unboundedLineWidth = 1 << 22;
-
-// The horizontal inset QCommonStyle applies on each side of an item's text.
-// Using the very same expression here is what keeps the delegate's own
-// painting, its size hints and the column floor from disagreeing by a pixel.
-int itemTextMargin(const QStyle *p_style, const QStyleOption &p_option, const QWidget *p_widget) {
-  return p_style->pixelMetric(QStyle::PM_FocusFrameHMargin, &p_option, p_widget) + 1;
-}
-
-// Lay @p_layout out at @p_width and return the bounds it occupies. Only
-// QTextLine::height() is accumulated: a QTextDocument would add paragraph and
-// document margins, which is exactly the stale vertical space this sheet must
-// not have.
-QSizeF layoutLines(QTextLayout &p_layout, qreal p_width) {
-  qreal height = 0;
-  qreal widthUsed = 0;
-
-  p_layout.beginLayout();
-  forever {
-    QTextLine line = p_layout.createLine();
-    if (!line.isValid()) {
-      break;
-    }
-
-    // An empty cell has one zero-length line. Mirroring QCommonStyle and
-    // stopping here keeps such a row at the vertical header's minimum instead
-    // of reserving a line box for text which is not there.
-    if (line.textLength() == 0) {
-      break;
-    }
-
-    line.setLineWidth(p_width);
-    line.setPosition(QPointF(0, height));
-    height += line.height();
-    widthUsed = qMax(widthUsed, line.naturalTextWidth());
-  }
-  p_layout.endLayout();
-
-  return QSizeF(widthUsed, height);
-}
-
-// Prepare @p_layout for one cell and lay it out into @p_width, or naturally
-// when @p_width is not positive.
-QSizeF layoutCellText(QTextLayout &p_layout, const QStyleOptionViewItem &p_option, int p_width) {
-  QTextOption textOption;
-  // Qt's own item delegates use QTextOption::WordWrap, which cannot break an
-  // unbroken token and leaves it elided instead. A cell holding a long URL or
-  // an identifier is exactly the case this sheet has to show in full.
-  textOption.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
-  textOption.setTextDirection(p_option.direction);
-  textOption.setAlignment(QStyle::visualAlignment(p_option.direction, p_option.displayAlignment));
-
-  p_layout.setText(p_option.text);
-  p_layout.setFont(p_option.font);
-  p_layout.setTextOption(textOption);
-
-  return layoutLines(p_layout, p_width > 0 ? qreal(p_width) : c_unboundedLineWidth);
-}
-
-// Item delegate which wraps rather than elides.
-//
-// Only display painting and sizing are replaced; editor creation, the commit
-// path and every data role stay with QStyledItemDelegate, so a cell is still
-// edited as the single line of raw Markdown it is.
-class TablePreviewDelegate : public QStyledItemDelegate {
-public:
-  explicit TablePreviewDelegate(QObject *p_parent = nullptr) : QStyledItemDelegate(p_parent) {}
-
-  void paint(QPainter *p_painter, const QStyleOptionViewItem &p_option,
-             const QModelIndex &p_index) const Q_DECL_OVERRIDE;
-
-  // The width of p_option.rect is read as the section width the cell has to
-  // fit into; a non-positive one asks for the natural, unwrapped size.
-  QSize sizeHint(const QStyleOptionViewItem &p_option,
-                 const QModelIndex &p_index) const Q_DECL_OVERRIDE;
-};
-
-void TablePreviewDelegate::paint(QPainter *p_painter, const QStyleOptionViewItem &p_option,
-                                 const QModelIndex &p_index) const {
-  QStyleOptionViewItem option = p_option;
-  initStyleOption(&option, p_index);
-
-  const QWidget *widget = option.widget;
-  QStyle *style = widget ? widget->style() : QApplication::style();
-
-  p_painter->save();
-  // Intersect rather than replace: the view has already clipped to the region
-  // it is repainting, and dropping that would let a cell paint over its
-  // neighbours.
-  p_painter->setClipRect(option.rect, Qt::IntersectClip);
-
-  // The native panel first: background, alternating rows, selection and hover
-  // all come from the style, so a themed sheet keeps looking like one.
-  style->drawPrimitive(QStyle::PE_PanelItemViewItem, &option, p_painter, widget);
-
-  QPalette::ColorGroup group =
-      option.state & QStyle::State_Enabled ? QPalette::Normal : QPalette::Disabled;
-  if (group == QPalette::Normal && !(option.state & QStyle::State_Active)) {
-    group = QPalette::Inactive;
-  }
-
-  if (!option.text.isEmpty()) {
-    p_painter->setPen(option.palette.color(group, option.state & QStyle::State_Selected
-                                                      ? QPalette::HighlightedText
-                                                      : QPalette::Text));
-
-    // The sheet carries neither decorations nor check indicators, so the text
-    // occupies the whole item minus the style's own horizontal inset. Taking
-    // SE_ItemViewItemText and insetting it again would count that inset twice.
-    const int margin = itemTextMargin(style, option, widget);
-    const QRect textRect = option.rect.adjusted(margin, 0, -margin, 0);
-
-    QTextLayout layout;
-    const QSizeF bounds = layoutCellText(layout, option, textRect.width());
-    // Horizontal alignment lives inside the layout, which is why the layout
-    // rectangle spans the full text width; only the vertical placement of the
-    // whole block is decided here.
-    const QRect layoutRect =
-        QStyle::alignedRect(option.direction, option.displayAlignment,
-                            QSize(textRect.width(), qCeil(bounds.height())), textRect);
-    layout.draw(p_painter, layoutRect.topLeft());
-  }
-
-  if (option.state & QStyle::State_HasFocus) {
-    QStyleOptionFocusRect focus;
-    focus.QStyleOption::operator=(option);
-    focus.rect = style->subElementRect(QStyle::SE_ItemViewItemFocusRect, &option, widget);
-    focus.state |= QStyle::State_KeyboardFocusChange;
-    focus.state |= QStyle::State_Item;
-    focus.backgroundColor = option.palette.color(
-        group, option.state & QStyle::State_Selected ? QPalette::Highlight : QPalette::Window);
-    style->drawPrimitive(QStyle::PE_FrameFocusRect, &focus, p_painter, widget);
-  }
-
-  p_painter->restore();
-}
-
-QSize TablePreviewDelegate::sizeHint(const QStyleOptionViewItem &p_option,
-                                     const QModelIndex &p_index) const {
-  QStyleOptionViewItem option = p_option;
-  initStyleOption(&option, p_index);
-
-  const QWidget *widget = option.widget;
-  const QStyle *style = widget ? widget->style() : QApplication::style();
-  const int margin = itemTextMargin(style, option, widget);
-
-  int available = -1;
-  if (option.rect.width() > 0) {
-    // A section narrower than its own padding still has to lay out, otherwise
-    // the wrap loop would never place a character.
-    available = qMax(1, option.rect.width() - 2 * margin);
-  }
-
-  QTextLayout layout;
-  const QSizeF bounds = layoutCellText(layout, option, available);
-  return QSize(qCeil(bounds.width()) + 2 * margin, qCeil(bounds.height()));
-}
-} // namespace
-
-// ---------------------------------------------------------------------------
-// TablePreviewView
-// ---------------------------------------------------------------------------
-
-namespace {
-// How often one layout pass may re-run against a viewport its own writes
-// resized. Two passes are what dropping the vertical scroll bar costs; the
-// third is slack.
-const int c_maxLayoutPasses = 3;
-
-// Bounds on one lazy row-fitting pass. Enough to cover a viewport in a couple
-// of event loop turns, small enough that a table at the model limits cannot
-// stall the GUI thread while the user drags the scroll bar.
-const int c_rowFitBatch = 8;
-
-const int c_rowFitRounds = 8;
-
-// Rows fitted on either side of the viewport, so a small scroll step never
-// shows an unfitted row.
-const int c_rowFitOverscan = 2;
-
-// A wheel movement can be consumed only while the bar it targets still has
-// room in that direction; otherwise the editor underneath keeps scrolling.
-bool canScroll(const QScrollBar *p_bar, int p_delta) {
-  return p_bar && ((p_delta < 0 && p_bar->value() < p_bar->maximum()) ||
-                   (p_delta > 0 && p_bar->value() > p_bar->minimum()));
-}
-
-// Whether a wheel movement asks the sheet to scroll sideways, and which axis
-// carries the amount. A horizontal axis speaks for itself when it dominates -
-// the same rule QAbstractScrollArea uses to pick a bar - and shift with a
-// vertical one is how a plain wheel asks for horizontal movement. Only
-// angleDelta() decides, because that is all QAbstractSlider acts on, so a
-// movement Qt cannot scroll with cannot scroll a sheet either.
-enum class HorizontalIntent { None, FromHorizontalAxis, FromVerticalAxis };
-
-HorizontalIntent horizontalIntent(const QWheelEvent &p_event) {
-  const QPoint delta = p_event.angleDelta();
-  if (p_event.modifiers().testFlag(Qt::ShiftModifier) && delta.y() != 0 &&
-      qAbs(delta.y()) >= qAbs(delta.x())) {
-    return HorizontalIntent::FromVerticalAxis;
-  }
-
-  return qAbs(delta.x()) > qAbs(delta.y()) ? HorizontalIntent::FromHorizontalAxis
-                                           : HorizontalIntent::None;
-}
-
-// The same movement carried on the horizontal axis, so a slider oriented that
-// way acts on it.
-QPoint onHorizontalAxis(const QPoint &p_delta, HorizontalIntent p_intent) {
-  return QPoint(p_intent == HorizontalIntent::FromVerticalAxis ? p_delta.y() : p_delta.x(), 0);
-}
-
-// Where a mouse event happened, in the receiving widget's coordinates.
-QPoint mousePosition(const QMouseEvent &p_event) {
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-  return p_event.position().toPoint();
-#else
-  return p_event.pos();
-#endif
-}
-
-// Fill @p_available exactly with widths proportional to @p_natural, never
-// letting a column fall below @p_minimum.
-//
-// Compressing proportionally on its own would push a narrow column under the
-// floor, and simply clamping it afterwards would overshoot the target. So the
-// columns which hit the floor are frozen one round at a time and the rest are
-// rescaled against what is left, which is the standard apportionment fixed
-// point. The final integer split uses largest remainders so the sections cover
-// the viewport to the pixel however the rounding fell.
-QVector<int> planColumnWidths(const QVector<int> &p_natural, int p_minimum, int p_available) {
-  const int count = p_natural.size();
-  QVector<int> widths(count, p_minimum);
-  if (count <= 0) {
-    return widths;
-  }
-
-  // Not even the floors fit: hand out the floors and let the sheet scroll.
-  if (p_available <= count * p_minimum) {
-    return widths;
-  }
-
-  qint64 freeTotal = 0;
-  for (int width : p_natural) {
-    freeTotal += qMax(width, p_minimum);
-  }
-  if (freeTotal <= 0) {
-    return widths;
-  }
-
-  QVector<bool> frozen(count, false);
-  int remaining = p_available;
-  bool changed = true;
-  while (changed && freeTotal > 0) {
-    changed = false;
-    for (int c = 0; c < count; ++c) {
-      if (frozen[c] || freeTotal <= 0) {
-        continue;
-      }
-
-      const qreal scaled = qreal(remaining) * qMax(p_natural.at(c), p_minimum) / freeTotal;
-      if (scaled < p_minimum) {
-        frozen[c] = true;
-        freeTotal -= qMax(p_natural.at(c), p_minimum);
-        remaining -= p_minimum;
-        changed = true;
-      }
-    }
-  }
-
-  QVector<QPair<double, int>> remainders;
-  qint64 assigned = 0;
-  for (int c = 0; c < count; ++c) {
-    if (frozen[c]) {
-      continue;
-    }
-
-    const double exact =
-        freeTotal > 0 ? double(remaining) * qMax(p_natural.at(c), p_minimum) / freeTotal : 0.0;
-    const int base = qMax(p_minimum, int(std::floor(exact)));
-    widths[c] = base;
-    assigned += base;
-    remainders.append(qMakePair(exact - std::floor(exact), c));
-  }
-
-  if (remainders.isEmpty()) {
-    // Every column froze, which the arithmetic above rules out. Keep the
-    // contract anyway: the sections must cover the viewport.
-    widths[count - 1] += p_available - count * p_minimum;
-    return widths;
-  }
-
-  std::sort(remainders.begin(), remainders.end(),
-            [](const QPair<double, int> &p_a, const QPair<double, int> &p_b) {
-              return p_a.first != p_b.first ? p_a.first > p_b.first : p_a.second < p_b.second;
-            });
-
-  int leftover = remaining - int(assigned);
-  for (int i = 0; leftover > 0; ++i, --leftover) {
-    ++widths[remainders.at(i % remainders.size()).second];
-  }
-
-  // Only reachable through floating point drift, and only ever by a pixel or
-  // two; take it back from the columns which rounded up last.
-  for (int i = remainders.size() - 1; leftover < 0 && i >= 0; --i) {
-    const int c = remainders.at(i).second;
-    const int take = qMin(widths[c] - p_minimum, -leftover);
-    widths[c] -= take;
-    leftover += take;
-  }
-
-  return widths;
-}
-} // namespace
-
-const QAbstractItemView::EditTriggers TablePreviewView::c_defaultEditTriggers =
-    QAbstractItemView::DoubleClicked | QAbstractItemView::SelectedClicked |
-    QAbstractItemView::EditKeyPressed | QAbstractItemView::AnyKeyPressed;
-
-const int TablePreviewView::c_minimumColumnCharacters = 12;
-
-TablePreviewView::TablePreviewView(QWidget *p_parent) : QTableView(p_parent) {
-  horizontalHeader()->hide();
-  verticalHeader()->hide();
-  // Every section is written by the layout pass, including the last one, so
-  // the stretch would only ever overwrite a planned width with a viewport it
-  // was not planned against.
-  horizontalHeader()->setStretchLastSection(false);
-  setSelectionMode(QAbstractItemView::SingleSelection);
-  setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-  // Per pixel, because per item cannot reveal the tail of a single column
-  // wider than the viewport - which is exactly the cell that overflowed. The
-  // vertical axis is per pixel too, so a tall wrapped row can be scrolled
-  // through instead of jumping past it.
-  setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
-  setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
-  setEditTriggers(c_defaultEditTriggers);
-
-  // A cell wider than its column is shown in full rather than elided, which
-  // is what makes a row's height depend on the width its columns end up with.
-  // The layout pass below is what keeps the two in step: columns are planned
-  // first, and the rows are then fitted against exactly those widths.
-  setWordWrap(true);
-  setItemDelegate(new TablePreviewDelegate(this));
-
-  m_layoutTimer = new QTimer(this);
-  m_layoutTimer->setSingleShot(true);
-  m_layoutTimer->setInterval(0);
-  connect(m_layoutTimer, &QTimer::timeout, this, &TablePreviewView::applyLayout);
-
-  m_rowFitTimer = new QTimer(this);
-  m_rowFitTimer->setSingleShot(true);
-  m_rowFitTimer->setInterval(0);
-  connect(m_rowFitTimer, &QTimer::timeout, this, &TablePreviewView::fitRowsAroundViewport);
-}
-
-void TablePreviewView::setModel(QAbstractItemModel *p_model) {
-  // Drop only this view's own connections: QTableView keeps model connections
-  // of its own which must survive.
-  for (const auto &connection : m_modelConnections) {
-    disconnect(connection);
-  }
-  m_modelConnections.clear();
-
-  QTableView::setModel(p_model);
-  invalidatePreferredSize();
-
-  if (!p_model) {
+void TablePreviewDocument::applyCellFormat(int p_row, int p_column) {
+  if (!m_table) {
     return;
   }
 
-  // A committed cell edit only emits dataChanged: the parse generation which
-  // echoes it takes the "unchanged snapshot" path, so resetFromSource() never
-  // runs. Re-laying out explicitly keeps the edited column from holding the
-  // proportions of a value it no longer has, instead of relying on Qt to
-  // schedule an items layout for the changed size hint.
-  auto invalidate = [this]() {
-    invalidatePreferredSize();
-    scheduleLayout();
-  };
-  m_modelConnections
-      << connect(p_model, &QAbstractItemModel::modelReset, this, invalidate)
-      << connect(p_model, &QAbstractItemModel::layoutChanged, this, invalidate)
-      << connect(p_model, &QAbstractItemModel::dataChanged, this, invalidate)
-      << connect(p_model, &QAbstractItemModel::rowsInserted, this, invalidate)
-      << connect(p_model, &QAbstractItemModel::rowsRemoved, this, invalidate)
-      << connect(p_model, &QAbstractItemModel::rowsMoved, this, invalidate)
-      << connect(p_model, &QAbstractItemModel::columnsInserted, this, invalidate)
-      << connect(p_model, &QAbstractItemModel::columnsRemoved, this, invalidate)
-      << connect(p_model, &QAbstractItemModel::columnsMoved, this, invalidate);
+  const QTextTableCell cell = m_table->cellAt(p_row, p_column);
+  if (!cell.isValid()) {
+    return;
+  }
+
+  QTextCursor cursor = cell.firstCursorPosition();
+  cursor.setPosition(cell.lastCursorPosition().position(), QTextCursor::KeepAnchor);
+
+  QTextBlockFormat blockFormat = cursor.blockFormat();
+  blockFormat.setAlignment(blockAlignment(p_column));
+  cursor.setBlockFormat(blockFormat);
+
+  if (p_row != 0) {
+    return;
+  }
+
+  // The header is bold as a character format, not as Markdown: a cell holds
+  // its raw source, so '**' here would be two literal asterisks. Both halves
+  // are needed - the block's char format so a cell which is empty in the
+  // source is still bold once it is typed into, and the merge so text which is
+  // already there is restyled.
+  QTextCharFormat headerFormat;
+  headerFormat.setFontWeight(QFont::Bold);
+  cursor.setBlockCharFormat(headerFormat);
+  cursor.mergeCharFormat(headerFormat);
 }
 
-TablePreviewView::PreferredSizeKey TablePreviewView::currentPreferredSizeKey() const {
-  PreferredSizeKey key;
-  key.m_frame = frameWidth() * 2;
-  key.m_minColumnWidth = minimumColumnWidth();
-  key.m_minRowHeight = qMax(1, verticalHeader()->minimumSectionSize());
-  key.m_rows = model() ? model()->rowCount() : 0;
-  key.m_columns = model() ? model()->columnCount() : 0;
-  key.m_visibleRows = m_visibleRows;
-  key.m_showGrid = showGrid();
-  key.m_wordWrap = wordWrap();
-  key.m_delegate = itemDelegate();
-  return key;
+void TablePreviewDocument::applyCellFormats() {
+  if (!m_table) {
+    return;
+  }
+
+  const int rows = m_table->rows();
+  const int columns = m_table->columns();
+  for (int r = 0; r < rows; ++r) {
+    for (int c = 0; c < columns; ++c) {
+      applyCellFormat(r, c);
+    }
+  }
 }
 
-void TablePreviewView::invalidatePreferredSize() {
-  m_preferredSizeDirty = true;
-  m_constrainedWidthKey = -1;
-  // Every lazily fitted row was measured against contents which may just have
-  // changed, and row identities do not survive a reset or a reorder either.
-  m_fittedRows.clear();
-  m_fittedColumnWidths.clear();
-  m_notificationArmed = true;
+void TablePreviewDocument::applyPalette(const QPalette &p_palette) {
+  if (!m_table) {
+    return;
+  }
+
+  QTextTableFormat format = m_table->format().toTableFormat();
+  // The only colour the table itself owns: everything else (text, selection,
+  // the band behind it) is resolved from the palette by the paint path.
+  format.setBorderBrush(p_palette.brush(QPalette::Mid));
+  m_table->setFormat(format);
 }
 
-void TablePreviewView::changeEvent(QEvent *p_event) {
-  switch (p_event->type()) {
-  case QEvent::StyleChange:
-    // A different style lays its scroll bars out differently, so what the old
-    // one was seen to take says nothing about the new one.
-    m_observedVerticalChrome = -1;
-    m_observedHorizontalChrome = -1;
-    invalidatePreferredSize();
-    scheduleLayout();
+// ---------------------------------------------------------------------------
+// TablePreviewSheet
+// ---------------------------------------------------------------------------
+
+namespace {
+// Whether @p_text holds anything a cell could keep once every line separator
+// has been taken out of it.
+bool hasCellContent(const QString &p_text) {
+  for (int i = 0; i < p_text.size(); ++i) {
+    if (!isLineSeparator(p_text.at(i).unicode())) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// Every separator the serializer rejects, collapsed into a single space, so a
+// pasted paragraph still lands in the cell as the one line a table row is.
+QString sanitizeForCell(const QString &p_text) {
+  QString result;
+  result.reserve(p_text.size());
+
+  bool afterSeparator = false;
+  for (int i = 0; i < p_text.size(); ++i) {
+    const QChar ch = p_text.at(i);
+    if (isLineSeparator(ch.unicode())) {
+      // One space for a whole run, so a CRLF pair and a blank line between two
+      // paragraphs both come out as a single gap.
+      if (!afterSeparator) {
+        result.append(QLatin1Char(' '));
+      }
+      afterSeparator = true;
+      continue;
+    }
+
+    afterSeparator = false;
+    result.append(ch);
+  }
+
+  return result;
+}
+} // namespace
+
+TablePreviewSheet::TablePreviewSheet(QWidget *p_parent) : QTextEdit(p_parent) {
+  setFrameShape(QFrame::NoFrame);
+  setLineWrapMode(QTextEdit::WidgetWidth);
+  // The sheet renders at its full natural height, so there is never anything
+  // to scroll to: the editor underneath owns the whole vertical axis.
+  setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  setAcceptRichText(false);
+  // WordWrap alone cannot break an unbroken token and would leave a long URL
+  // or identifier overflowing its column, which with no horizontal scrolling
+  // means unreachable. QTextEdit applies its own mode to whatever document it
+  // is given, so this has to be stated here as well as on the document.
+  setWordWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+  // Tab is intercepted in keyPressEvent() before Qt's focus chain sees it.
+  setTabChangesFocus(false);
+  setFocusPolicy(Qt::StrongFocus);
+
+  QSizePolicy policy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+  policy.setHeightForWidth(true);
+  setSizePolicy(policy);
+
+  connect(this, &QTextEdit::cursorPositionChanged, this,
+          &TablePreviewSheet::handleCursorPositionChanged);
+  connect(this, &QTextEdit::selectionChanged, this,
+          &TablePreviewSheet::handleSelectionChanged);
+}
+
+void TablePreviewSheet::setTableDocument(TablePreviewDocument *p_document) {
+  m_document = p_document;
+  if (!p_document || !p_document->document()) {
+    return;
+  }
+
+  // QTextEdit only takes ownership of a document it parented itself, and this
+  // one belongs to TablePreviewDocument.
+  setDocument(p_document->document());
+  // QTextEdit pushes its own undo setting onto whatever document it is given,
+  // and this one must not accumulate a second, invisible undo stack: the
+  // granularity the user sees is one whole-table replacement on the editor's.
+  setUndoRedoEnabled(false);
+
+  if (auto layout = p_document->document()->documentLayout()) {
+    connect(layout, &QAbstractTextDocumentLayout::documentSizeChanged, this,
+            &TablePreviewSheet::handleDocumentSizeChanged);
+  }
+}
+
+int TablePreviewSheet::horizontalChrome() const {
+  // What the frame and the viewport margins really take. Read from the live
+  // geometry once there is one, because a style may inset the viewport by more
+  // than the frame width alone; both scroll bars are off, so neither can
+  // inflate this.
+  const int live = viewport() ? width() - viewport()->width() : 0;
+  return live > 0 ? live : frameWidth() * 2;
+}
+
+int TablePreviewSheet::verticalChrome() const {
+  const int live = viewport() ? height() - viewport()->height() : 0;
+  return live > 0 ? live : frameWidth() * 2;
+}
+
+bool TablePreviewSheet::hasHeightForWidth() const { return true; }
+
+int TablePreviewSheet::heightForWidth(int p_outerWidth) const {
+  auto doc = document();
+  if (!doc) {
+    return 0;
+  }
+
+  // The width conversion is not optional. p_outerWidth is the width the host
+  // is about to assign to the *widget*; the document lays out inside the
+  // viewport, so assigning it straight to setTextWidth() would measure a
+  // narrower band than the sheet gets - and with the scroll bars off, the
+  // content clipped by that mistake would be unreachable.
+  const int chrome = horizontalChrome();
+  const qreal textWidth = p_outerWidth > chrome ? qreal(p_outerWidth - chrome) : qreal(-1);
+
+  // Laying the document out synchronously emits documentSizeChanged, and
+  // handing that straight back to the host is how a measurement loop starts.
+  QScopedValueRollback<bool> guard(m_measuring, true);
+
+  if (textWidth > 0 && !qFuzzyCompare(doc->textWidth() + 1, textWidth + 1)) {
+    doc->setTextWidth(textWidth);
+  }
+
+  const int height = qCeil(doc->documentLayout()->documentSize().height()) + verticalChrome();
+
+  // The probed width is deliberately left on the document. The host measures
+  // at the width it is about to assign - preferredSize() feeds the same value
+  // into the reservation, which becomes the widget's geometry in the same call
+  // stack, with no paint in between - so restoring the previous width here
+  // would only pay for a second full relayout and then a third from the
+  // resizeEvent. At the measured cost per cell that is the single most
+  // expensive thing this function could do on an interactive resize.
+  return height;
+}
+
+QSize TablePreviewSheet::sizeHint() const {
+  // Width 0 on purpose: TablePreviewWidget::preferredWidthFraction() is 1.0,
+  // so the host resolves the band to the full available content width rather
+  // than to a natural width the sheet would then have to be re-measured
+  // against. Only the height carries information here, and even that is a
+  // fallback - the host asks heightForWidth() whenever it has a width.
+  return QSize(0, heightForWidth(width()));
+}
+
+QSize TablePreviewSheet::minimumSizeHint() const {
+  // QAbstractScrollArea's own minimum reserves room for scroll bars and a few
+  // characters of text, which would stop the band from ever being narrow.
+  return QSize(0, 0);
+}
+
+int TablePreviewSheet::currentCellIndex() const {
+  const QTextCursor cursor = textCursor();
+  QTextTable *table = cursor.currentTable();
+  if (!table) {
+    return -1;
+  }
+
+  const QTextTableCell cell = table->cellAt(cursor);
+  if (!cell.isValid()) {
+    return -1;
+  }
+
+  return cell.row() * table->columns() + cell.column();
+}
+
+void TablePreviewSheet::commitPreedit() {
+  // QInputMethod has no receiver: it acts on the application's focus object,
+  // exactly as reset() does. A flush runs on background sheets too - the host
+  // flushes every sheet it removes, and every focus-out and debounce timeout
+  // lands here - so committing from a sheet which does not own the focus would
+  // finalize the composition of whatever widget really does. A sheet without
+  // the focus has no composition of its own to lose either.
+  if (QGuiApplication::focusObject() != this) {
+    return;
+  }
+
+  if (auto method = QGuiApplication::inputMethod()) {
+    // The preedit is not in the document yet, so serializing across one would
+    // silently drop whatever the user has already typed into it.
+    method->commit();
+  }
+}
+
+void TablePreviewSheet::cancelComposition() {
+  // QInputMethod has no receiver: it acts on the application's focus object.
+  // Resetting from a sheet which does not own the focus would cancel - or on
+  // some platforms commit - the composition of whatever widget really does,
+  // and a background sheet is revoked on every preview rebuild.
+  if (QGuiApplication::focusObject() != this) {
+    return;
+  }
+
+  // Collapse first. Installing a changed preedit makes QWidgetTextControl
+  // remove the current selection before anything else, and here that would be
+  // a real deletion - both for a synchronous callback from the reset below and
+  // for the explicit clear further down.
+  QTextCursor collapsed = textCursor();
+  if (collapsed.hasSelection()) {
+    collapsed.setPosition(collapsed.position());
+    setTextCursor(collapsed);
+  }
+
+  const int caret = textCursor().position();
+
+  {
+    // The Windows input context hands the composition back as a *commit* event
+    // before it cancels the native context, and other platforms send an empty
+    // clearing event instead. Both re-enter this sheet - which is still
+    // writable, deliberately, so the clear below can reach the control - and
+    // would change the document, which is the opposite of cancelling.
+    QScopedValueRollback<bool> guard(m_cancellingComposition, true);
+    if (auto method = QGuiApplication::inputMethod()) {
+      method->reset();
+    }
+  }
+
+  // reset() only tells the platform. What the text control was already given
+  // lives in the block's QTextLayout, and nothing above clears that, so a
+  // platform which sends no clearing event of its own would leave the preedit
+  // rendered. Delegated straight to the base, so the guard above does not
+  // swallow it.
+  const QTextBlock block = textCursor().block();
+  if (block.isValid() && block.layout() && !block.layout()->preeditAreaText().isEmpty()) {
+    QInputMethodEvent clear;
+    QTextEdit::inputMethodEvent(&clear);
+  }
+
+  QTextCursor restored = textCursor();
+  restored.setPosition(qBound(0, caret, qMax(0, document()->characterCount() - 1)));
+  setTextCursor(restored);
+  clampCursorIntoTable();
+}
+
+QPalette TablePreviewSheet::applyPalette() {
+  // The host propagates the editor font and nothing else, so every colour has
+  // to come from this sheet's own effective palette. Re-seed it from the
+  // parent on every pass: setPalette() marks the palette as explicitly set,
+  // which would otherwise stop a later theme change from reaching the sheet.
+  QPalette effective = parentWidget() ? parentWidget()->palette() : QApplication::palette();
+  // The band belongs to the editor. A sheet which fills its own background
+  // would paint an opaque rectangle over whatever the editor draws there.
+  effective.setBrush(QPalette::Base, Qt::transparent);
+  setPalette(effective);
+  if (viewport()) {
+    viewport()->setAutoFillBackground(false);
+  }
+
+  if (m_document) {
+    m_document->applyPalette(effective);
+  }
+
+  return effective;
+}
+
+void TablePreviewSheet::refreshPalette() {
+  if (m_applyingFormats) {
+    return;
+  }
+
+  QScopedValueRollback<bool> guard(m_applyingFormats, true);
+  applyPalette();
+}
+
+void TablePreviewSheet::refreshFormats() {
+  if (m_applyingFormats) {
+    return;
+  }
+
+  QScopedValueRollback<bool> guard(m_applyingFormats, true);
+  applyPalette();
+
+  if (m_document) {
+    m_document->applyCellFormats();
+  }
+}
+
+void TablePreviewSheet::clampCursorIntoTable() {
+  QTextTable *table = m_document ? m_document->table() : nullptr;
+  if (!table) {
+    return;
+  }
+
+  QTextCursor cursor = textCursor();
+  if (cursor.currentTable() == table) {
+    return;
+  }
+
+  // Everything outside the table is the shrunken block a QTextDocument always
+  // keeps after one, so the nearest cell is either the first or the last.
+  const QTextTableCell cell = cursor.position() <= table->firstPosition()
+                                  ? table->cellAt(0, 0)
+                                  : table->cellAt(table->rows() - 1, table->columns() - 1);
+  if (!cell.isValid()) {
+    return;
+  }
+
+  setTextCursor(cursor.position() <= table->firstPosition() ? cell.firstCursorPosition()
+                                                            : cell.lastCursorPosition());
+}
+
+void TablePreviewSheet::clampSelectionIntoOneCell() {
+  QTextTable *table = m_document ? m_document->table() : nullptr;
+  if (!table) {
+    return;
+  }
+
+  QTextCursor cursor = textCursor();
+  if (!cursor.hasSelection()) {
+    return;
+  }
+
+  const QTextTableCell anchorCell = table->cellAt(cursor.anchor());
+  const QTextTableCell caretCell = table->cellAt(cursor.position());
+  if (caretCell.isValid() && anchorCell.isValid() && anchorCell == caretCell) {
+    return;
+  }
+
+  // Keep the end the caret is at; the selection is what has to shrink.
+  QTextTableCell target = caretCell.isValid() ? caretCell : anchorCell;
+  if (!target.isValid() && m_lastCellIndex >= 0 && table->columns() > 0) {
+    // Neither end is in a cell at all, which is what Ctrl+A produces: the
+    // anchor lands before the table and the caret in the block after it. Fall
+    // back to the cell the caret was last seen in.
+    target = table->cellAt(m_lastCellIndex / table->columns(),
+                           m_lastCellIndex % table->columns());
+  }
+
+  if (!target.isValid()) {
+    clampCursorIntoTable();
+    return;
+  }
+
+  const int first = target.firstPosition();
+  const int last = target.lastPosition();
+  int anchor = first;
+  int caret = last;
+  if (caretCell.isValid() || anchorCell.isValid()) {
+    anchor = qBound(first, cursor.anchor(), last);
+    caret = qBound(first, cursor.position(), last);
+  }
+  // Otherwise the whole cell, which is what "select all" means once it can
+  // only mean "inside this cell".
+
+  cursor.setPosition(anchor);
+  cursor.setPosition(caret, QTextCursor::KeepAnchor);
+  setTextCursor(cursor);
+}
+
+void TablePreviewSheet::handleCursorPositionChanged() {
+  if (!m_clampingCursor) {
+    // Both clamps rewrite the cursor, which re-enters this slot.
+    QScopedValueRollback<bool> guard(m_clampingCursor, true);
+    clampCursorIntoTable();
+    clampSelectionIntoOneCell();
+  }
+
+  const int index = currentCellIndex();
+  if (index == m_lastCellIndex) {
+    return;
+  }
+
+  const bool leftACell = m_lastCellIndex >= 0;
+  m_lastCellIndex = index;
+  if (leftACell) {
+    emit cellLeft();
+  }
+}
+
+void TablePreviewSheet::handleSelectionChanged() {
+  if (m_clampingCursor) {
+    return;
+  }
+
+  // Only the selection: collapsing the caret here would undo a legitimate
+  // in-cell selection the user is still dragging out.
+  QScopedValueRollback<bool> guard(m_clampingCursor, true);
+  clampSelectionIntoOneCell();
+}
+
+void TablePreviewSheet::handleDocumentSizeChanged() {
+  if (m_measuring || m_applyingGeometry || m_applyingFormats) {
+    // Either this sheet is measuring itself, or it is answering a geometry the
+    // host has just chosen. Reporting either one back would feed the
+    // measurement into itself.
+    return;
+  }
+
+  const int outerWidth = width();
+  const int height = heightForWidth(outerWidth);
+  if (outerWidth == m_notifiedOuterWidth && height == m_notifiedHeight) {
+    // The host caches its measurements and re-publishes on a layout request,
+    // so an unchanged answer has to terminate here rather than bounce.
+    return;
+  }
+
+  m_notifiedOuterWidth = outerWidth;
+  m_notifiedHeight = height;
+
+  qCDebug(previewTableLog) << "the sheet settled on" << height << "at width" << outerWidth;
+  emit preferredGeometryChanged();
+}
+
+bool TablePreviewSheet::moveToAdjacentCell(bool p_forward) {
+  QTextTable *table = m_document ? m_document->table() : nullptr;
+  if (!table || table->rows() <= 0 || table->columns() <= 0) {
+    return false;
+  }
+
+  // Leaving a cell commits it, so whatever the input method still holds has to
+  // land in the document first.
+  commitPreedit();
+  clampCursorIntoTable();
+
+  QTextCursor cursor = textCursor();
+  if (!cursor.movePosition(p_forward ? QTextCursor::NextCell : QTextCursor::PreviousCell)) {
+    // Wrap: past the last cell is the first one, and before the first is the
+    // last.
+    const QTextTableCell target = p_forward
+                                      ? table->cellAt(0, 0)
+                                      : table->cellAt(table->rows() - 1, table->columns() - 1);
+    if (!target.isValid()) {
+      return false;
+    }
+
+    cursor = target.firstCursorPosition();
+  }
+
+  setTextCursor(cursor);
+  return true;
+}
+
+bool TablePreviewSheet::deleteWithinCell(const QKeyEvent *p_event) {
+  QTextTable *table = m_document ? m_document->table() : nullptr;
+  if (!table) {
+    return false;
+  }
+
+  const bool completeLine = p_event->matches(QKeySequence::DeleteCompleteLine);
+  QTextCursor::MoveOperation operation = QTextCursor::NoMove;
+  if (p_event->matches(QKeySequence::DeleteEndOfWord)) {
+    operation = QTextCursor::NextWord;
+  } else if (p_event->matches(QKeySequence::DeleteStartOfWord)) {
+    operation = QTextCursor::PreviousWord;
+  } else if (p_event->matches(QKeySequence::DeleteEndOfLine)) {
+    operation = QTextCursor::EndOfLine;
+  } else if (!completeLine) {
+    return false;
+  }
+
+  clampCursorIntoTable();
+  clampSelectionIntoOneCell();
+
+  QTextCursor cursor = textCursor();
+  const QTextTableCell cell = table->cellAt(cursor.position());
+  if (!cell.isValid()) {
+    // Swallowed rather than handed to the base, which would delete outside the
+    // table.
+    return true;
+  }
+
+  const int first = cell.firstPosition();
+  const int last = cell.lastPosition();
+
+  if (!cursor.hasSelection()) {
+    if (completeLine) {
+      // A cell is one block, so "the whole line" is the whole cell.
+      cursor.setPosition(first);
+      cursor.setPosition(last, QTextCursor::KeepAnchor);
+    } else {
+      cursor.movePosition(operation, QTextCursor::KeepAnchor);
+    }
+  }
+
+  // Whatever the move reached for, the deletion stays inside the cell.
+  const int anchor = qBound(first, cursor.anchor(), last);
+  const int position = qBound(first, cursor.position(), last);
+
+  cursor.setPosition(anchor);
+  if (anchor != position) {
+    cursor.setPosition(position, QTextCursor::KeepAnchor);
+    cursor.removeSelectedText();
+  }
+
+  setTextCursor(cursor);
+  return true;
+}
+
+bool TablePreviewSheet::isAtTopEdge() const {
+  QTextCursor probe = textCursor();
+  if (!probe.currentTable()) {
+    return true;
+  }
+
+  // Ask the layout rather than counting rows: a wrapped cell has several
+  // visual lines and only the first one is an edge.
+  if (!probe.movePosition(QTextCursor::Up)) {
+    return true;
+  }
+
+  return probe.currentTable() == nullptr;
+}
+
+bool TablePreviewSheet::isAtBottomEdge() const {
+  QTextCursor probe = textCursor();
+  if (!probe.currentTable()) {
+    return true;
+  }
+
+  if (!probe.movePosition(QTextCursor::Down)) {
+    return true;
+  }
+
+  return probe.currentTable() == nullptr;
+}
+
+void TablePreviewSheet::keyPressEvent(QKeyEvent *p_event) {
+  // Undo and redo belong to the editor: the inner document has no undo stack
+  // precisely so the granularity is one whole-table replacement. Both are
+  // relayed rather than forwarded, because a pending edit has to be written
+  // back before the editor's stack is moved.
+  if (p_event->matches(QKeySequence::Undo)) {
+    emit undoRequested();
+    p_event->accept();
+    return;
+  }
+
+  if (p_event->matches(QKeySequence::Redo)) {
+    emit redoRequested();
+    p_event->accept();
+    return;
+  }
+
+  const Qt::KeyboardModifiers modifiers = p_event->modifiers();
+  switch (p_event->key()) {
+  case Qt::Key_Return:
+  case Qt::Key_Enter:
+    // One cell is one line: a table row is a single source line, and every
+    // separator that could end it is rejected by the serializer.
+    p_event->accept();
+    return;
+
+  case Qt::Key_Tab:
+    if (!modifiers.testFlag(Qt::ControlModifier) && moveToAdjacentCell(true)) {
+      p_event->accept();
+      return;
+    }
     break;
 
-  case QEvent::FontChange:
-  case QEvent::ApplicationFontChange:
-  case QEvent::LayoutDirectionChange:
-    // The measurement is derived from font and style metrics.
-    invalidatePreferredSize();
-    scheduleLayout();
+  case Qt::Key_Backtab:
+    if (!modifiers.testFlag(Qt::ControlModifier) && moveToAdjacentCell(false)) {
+      p_event->accept();
+      return;
+    }
+    break;
+
+  case Qt::Key_Escape:
+    commitPreedit();
+    emit focusEscapeRequested(FocusEscapeDirection::Keep);
+    p_event->accept();
+    return;
+
+  case Qt::Key_Up:
+    if (modifiers == Qt::NoModifier && isAtTopEdge()) {
+      commitPreedit();
+      emit focusEscapeRequested(FocusEscapeDirection::Up);
+      p_event->accept();
+      return;
+    }
+    break;
+
+  case Qt::Key_Down:
+    if (modifiers == Qt::NoModifier && isAtBottomEdge()) {
+      commitPreedit();
+      emit focusEscapeRequested(FocusEscapeDirection::Down);
+      p_event->accept();
+      return;
+    }
     break;
 
   default:
     break;
   }
 
-  QTableView::changeEvent(p_event);
-}
+  // Defence in depth. The selection is already confined whenever the cursor
+  // moves, but a mutating key is the one thing which must never see a
+  // selection which crosses a cell boundary.
+  if (!isReadOnly()) {
+    clampSelectionIntoOneCell();
 
-void TablePreviewView::setVisibleRows(int p_rows) {
-  m_visibleRows = qMax(1, p_rows);
-  // The window may have grown over rows which were never fitted, and it also
-  // decides whether a vertical scroll bar is reserved, which moves the width
-  // the columns have to share.
-  invalidatePreferredSize();
-  applyLayout();
-  updateGeometry();
-}
-
-int TablePreviewView::bandRowCount() const {
-  if (!model()) {
-    return 0;
-  }
-
-  return qMin(model()->rowCount(), qMax(1, m_visibleRows));
-}
-
-QStyleOptionViewItem TablePreviewView::baseViewOption() const {
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-  QStyleOptionViewItem option;
-  initViewItemOption(&option);
-#else
-  QStyleOptionViewItem option = viewOptions();
-#endif
-  return option;
-}
-
-QSize TablePreviewView::cellHint(const QStyleOptionViewItem &p_base, int p_row, int p_column,
-                                 int p_width) const {
-  if (!model()) {
-    return QSize();
-  }
-
-  const QModelIndex index = model()->index(p_row, p_column);
-  if (!index.isValid()) {
-    return QSize();
-  }
-
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-  const QAbstractItemDelegate *delegate = itemDelegateForIndex(index);
-#else
-  const QAbstractItemDelegate *delegate = itemDelegate(index);
-#endif
-  if (!delegate) {
-    return QSize();
-  }
-
-  QStyleOptionViewItem option = p_base;
-  option.rect = QRect(0, 0, qMax(0, p_width), 0);
-  return delegate->sizeHint(option, index);
-}
-
-int TablePreviewView::rowHeightFor(const QStyleOptionViewItem &p_base, int p_row,
-                                   const QVector<int> &p_widths) const {
-  // QTableView's own accounting is asymmetric but exact: a cell is painted
-  // into the section minus the grid line, while the section itself is the
-  // tallest cell plus it.
-  const int grid = showGrid() ? 1 : 0;
-  int hint = 0;
-  for (int c = 0; c < p_widths.size(); ++c) {
-    hint = qMax(hint, cellHint(p_base, p_row, c, p_widths.at(c) - grid).height());
-  }
-
-  return qMax(qMax(1, verticalHeader()->minimumSectionSize()), hint + grid);
-}
-
-int TablePreviewView::minimumColumnWidth() const {
-  const int headerMinimum = qMax(1, horizontalHeader()->minimumSectionSize());
-
-  QStyleOption option;
-  option.initFrom(this);
-  const int margin = itemTextMargin(style(), option, this);
-  const int grid = showGrid() ? 1 : 0;
-  const int text = qCeil(c_minimumColumnCharacters * QFontMetricsF(font()).averageCharWidth());
-
-  return qMax(headerMinimum, text + 2 * margin + grid);
-}
-
-int TablePreviewView::scrollBarExtent(Qt::Orientation p_orientation) const {
-  const int observed =
-      p_orientation == Qt::Vertical ? m_observedVerticalChrome : m_observedHorizontalChrome;
-  if (observed >= 0) {
-    return observed;
-  }
-
-  const QScrollBar *bar =
-      p_orientation == Qt::Vertical ? verticalScrollBar() : horizontalScrollBar();
-  if (!bar) {
-    return 0;
-  }
-
-  QStyleOption option;
-  option.initFrom(this);
-
-  // The estimate until a pass has seen the real thing, following the two rules
-  // QAbstractScrollArea lays its children out by: a bar which overlaps the
-  // content takes none of the viewport's extent, and a frame drawn around the
-  // contents only leaves the bar outside the frame, together with the style's
-  // scroll view spacing.
-  const int overlap = style()->pixelMetric(QStyle::PM_ScrollView_ScrollBarOverlap, &option, this);
-  const QSize hint = bar->sizeHint();
-  const int extent = p_orientation == Qt::Vertical ? hint.width() : hint.height();
-
-  int consumed = overlap == 0 ? extent : 0;
-  if (frameWidth() > 0 &&
-      style()->styleHint(QStyle::SH_ScrollView_FrameOnlyAroundContents, &option, this)) {
-    consumed +=
-        overlap + style()->pixelMetric(QStyle::PM_ScrollView_ScrollBarSpacing, &option, this);
-  }
-
-  return qMax(0, consumed);
-}
-
-void TablePreviewView::observeScrollBarChrome() {
-  const int frame = frameWidth() * 2;
-  bool changed = false;
-
-  // Only a bar which is actually shown says anything about what it costs.
-  if (verticalScrollBar()->isVisible()) {
-    const int chrome = qMax(0, width() - frame - viewport()->width());
-    changed = changed || chrome != scrollBarExtent(Qt::Vertical);
-    m_observedVerticalChrome = chrome;
-  }
-
-  if (horizontalScrollBar()->isVisible()) {
-    const int chrome = qMax(0, height() - frame - viewport()->height());
-    changed = changed || chrome != scrollBarExtent(Qt::Horizontal);
-    m_observedHorizontalChrome = chrome;
-  }
-
-  if (!changed) {
-    return;
-  }
-
-  // Every answer the host holds was derived from the estimate this just
-  // replaced, so they all have to be measured again and reported.
-  qCDebug(previewTableLog) << "the sheet's scroll bar chrome is really"
-                           << m_observedVerticalChrome << "x" << m_observedHorizontalChrome;
-  m_preferredSizeDirty = true;
-  m_constrainedWidthKey = -1;
-  m_notificationArmed = true;
-}
-
-void TablePreviewView::ensureMeasured() const {
-  const PreferredSizeKey key = currentPreferredSizeKey();
-  if (!m_preferredSizeDirty && key == m_cachedPreferredSizeKey) {
-    return;
-  }
-
-  // A key which moved without an explicit invalidation is one of the inherited
-  // mutations that have no signal of their own - a swapped delegate, the grid
-  // being turned off, a new header minimum. They change what the sheet reports
-  // and what its sections should be, so they owe a pass and a notification
-  // just as a content change does.
-  if (!m_preferredSizeDirty) {
-    qCDebug(previewTableLog) << "the sheet was mutated behind its own back - re-planning";
-    m_fittedRows.clear();
-    m_fittedColumnWidths.clear();
-    m_notificationArmed = true;
-    scheduleLayout();
-  }
-
-  const int frame = key.m_frame;
-  int width = frame;
-  int height = frame;
-
-  m_cachedColumnWidths.clear();
-  m_cachedRowHeights.clear();
-
-  if (model() && model()->columnCount() > 0 && model()->rowCount() > 0) {
-    const QStyleOptionViewItem base = baseViewOption();
-    const int grid = key.m_showGrid ? 1 : 0;
-    const int columns = model()->columnCount();
-    const int band = bandRowCount();
-
-    // Derive from the contents, never from the currently assigned geometry:
-    // the columns are planned against the width the sheet gets, so consulting
-    // columnWidth() here would feed that width straight back into the natural
-    // one. Only the band is measured - a row the sheet cannot show has no say
-    // in the geometry it reserves.
-    m_cachedColumnWidths.resize(columns);
-    for (int c = 0; c < columns; ++c) {
-      int hint = 0;
-      for (int r = 0; r < band; ++r) {
-        hint = qMax(hint, cellHint(base, r, c, -1).width());
-      }
-
-      m_cachedColumnWidths[c] = qMax(key.m_minColumnWidth, hint + grid);
-      width += m_cachedColumnWidths.at(c);
-    }
-
-    m_cachedRowHeights.resize(band);
-    for (int r = 0; r < band; ++r) {
-      m_cachedRowHeights[r] = rowHeightFor(base, r, m_cachedColumnWidths);
-      height += m_cachedRowHeights.at(r);
-    }
-
-    if (model()->rowCount() > band) {
-      width += scrollBarExtent(Qt::Vertical);
-    }
-  }
-
-  m_cachedPreferredSize = QSize(qMax(width, frame + 1), qMax(height, frame + 1));
-  m_cachedPreferredSizeKey = key;
-  m_preferredSizeDirty = false;
-  m_constrainedWidthKey = -1;
-
-  qCDebug(previewTableLog) << "measured the sheet ->" << m_cachedPreferredSize << "for"
-                           << key.m_rows << "x" << key.m_columns << "cell(s), showing at most"
-                           << key.m_visibleRows << "row(s); frame" << key.m_frame
-                           << "minimum section" << key.m_minColumnWidth << "x"
-                           << key.m_minRowHeight;
-}
-
-QSize TablePreviewView::preferredSize() const {
-  ensureMeasured();
-  return m_cachedPreferredSize;
-}
-
-QSize TablePreviewView::sizeHint() const { return preferredSize(); }
-
-TablePreviewView::Solution TablePreviewView::solveGeometry(int p_outerWidth,
-                                                           int p_viewportWidth) const {
-  ensureMeasured();
-
-  Solution solution;
-  const int frame = frameWidth() * 2;
-  if (!model() || model()->columnCount() <= 0 || model()->rowCount() <= 0) {
-    solution.m_viewportWidth = qMax(0, p_outerWidth - frame);
-    return solution;
-  }
-
-  const int band = bandRowCount();
-  // Only ever consulted here: the band is what decides whether the rows below
-  // it need a bar, and the bar is what the columns have to share the width
-  // with.
-  const bool verticalScrollBar = model()->rowCount() > band;
-
-  int viewport = -1;
-  if (p_viewportWidth >= 0) {
-    viewport = p_viewportWidth;
-  } else if (p_outerWidth > 0) {
-    viewport = p_outerWidth - frame - (verticalScrollBar ? scrollBarExtent(Qt::Vertical) : 0);
-    viewport = qMax(0, viewport);
-  }
-
-  const int minimum = minimumColumnWidth();
-  if (viewport < 0) {
-    // The natural plan: what the sheet would like to be before anything clamps
-    // it. Whether the frame arrangement puts the scroll bars inside or outside
-    // it (SH_ScrollView_FrameOnlyAroundContents) changes where they are drawn,
-    // not how much of the outer width they consume, so one formula covers both.
-    solution.m_columnWidths = m_cachedColumnWidths;
-    int total = 0;
-    for (int w : solution.m_columnWidths) {
-      total += w;
-    }
-    solution.m_viewportWidth = total;
-  } else {
-    solution.m_columnWidths = planColumnWidths(m_cachedColumnWidths, minimum, viewport);
-    solution.m_viewportWidth = viewport;
-    solution.m_horizontalScrollBar = m_cachedColumnWidths.size() * minimum > viewport;
-  }
-
-  // Measure the band against exactly the widths just planned. Qt sizes a
-  // wrapped row from the *current* sections, which is why nothing may fit a
-  // row before its columns are decided.
-  //
-  // Whenever the plan came out at the natural widths - the whole
-  // p_outerWidth <= 0 branch, and every viewport roomy enough not to compress
-  // anything - ensureMeasured() has already measured the band against those
-  // very widths. Walking every cell of the band through the delegate a second
-  // time for the same answer is the single most expensive thing this solver
-  // could do, and it runs once per parse generation while the user types.
-  if (solution.m_columnWidths == m_cachedColumnWidths) {
-    solution.m_rowHeights = m_cachedRowHeights;
-    for (int height : solution.m_rowHeights) {
-      solution.m_bandHeight += height;
-    }
-  } else {
-    const QStyleOptionViewItem base = baseViewOption();
-    solution.m_rowHeights.resize(band);
-    for (int r = 0; r < band; ++r) {
-      solution.m_rowHeights[r] = rowHeightFor(base, r, solution.m_columnWidths);
-      solution.m_bandHeight += solution.m_rowHeights.at(r);
-    }
-  }
-
-  return solution;
-}
-
-QSize TablePreviewView::constrainedSizeFor(const Solution &p_solution, int p_width) const {
-  const int frame = frameWidth() * 2;
-  int height = frame + p_solution.m_bandHeight;
-  if (p_solution.m_horizontalScrollBar) {
-    height += scrollBarExtent(Qt::Horizontal);
-  }
-
-  return QSize(qMin(preferredSize().width(), p_width), qMax(height, frame + 1));
-}
-
-QSize TablePreviewView::preferredSizeWithin(int p_maxWidth) const {
-  if (p_maxWidth <= 0) {
-    return preferredSize();
-  }
-
-  // Before the memo, never after: ensureMeasured() is what notices the
-  // inherited mutations which drop it, and answering from a memo the sheet has
-  // already outgrown is exactly the stale reservation this has to avoid.
-  ensureMeasured();
-  if (m_constrainedWidthKey == p_maxWidth) {
-    return m_constrainedSize;
-  }
-
-  const Solution solution = solveGeometry(p_maxWidth, -1);
-  m_constrainedSize = constrainedSizeFor(solution, p_maxWidth);
-  m_constrainedWidthKey = p_maxWidth;
-  return m_constrainedSize;
-}
-
-void TablePreviewView::wheelEvent(QWheelEvent *p_event) {
-  const Qt::KeyboardModifiers modifiers = p_event->modifiers();
-  // Control is the editor's zoom gesture, which VTextEdit deliberately ignores
-  // so the application can act on it. The sheet must not swallow it whatever
-  // it could otherwise do with the movement.
-  const HorizontalIntent intent = modifiers.testFlag(Qt::ControlModifier)
-                                      ? HorizontalIntent::None
-                                      : horizontalIntent(*p_event);
-  if (intent != HorizontalIntent::None) {
-    // Hand the movement to the bar itself. QTableView picks its target from
-    // the event's dominant axis, and a slider only acts on the axis it is
-    // oriented along, so a shift+wheel has to be turned into a horizontal
-    // movement first. Going through the slider rather than setValue() keeps
-    // its inversion handling and its accumulation of high resolution deltas.
-    // A bar with no room left leaves the event ignored, so the fall through
-    // still reaches the editor.
-    const QPoint angleDelta = onHorizontalAxis(p_event->angleDelta(), intent);
-    const QPoint pixelDelta = onHorizontalAxis(p_event->pixelDelta(), intent);
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-    QWheelEvent horizontal(p_event->position(), p_event->globalPosition(), pixelDelta, angleDelta,
-                           p_event->buttons(), modifiers, p_event->phase(), p_event->inverted(),
-                           p_event->source());
-#else
-    QWheelEvent horizontal(QPointF(p_event->pos()), p_event->globalPosF(), pixelDelta, angleDelta,
-                           p_event->buttons(), modifiers, p_event->phase(), p_event->inverted(),
-                           p_event->source());
-#endif
-    horizontal.setAccepted(false);
-    QCoreApplication::sendEvent(horizontalScrollBar(), &horizontal);
-    if (horizontal.isAccepted()) {
+    // The delete shortcuts are the exception the clamps cannot cover: they
+    // build their selection and remove it in one base-handler call. See
+    // deleteWithinCell().
+    if (deleteWithinCell(p_event)) {
       p_event->accept();
       return;
     }
   }
 
-  const int delta = p_event->angleDelta().y();
-  if (!canScroll(verticalScrollBar(), delta) || modifiers != Qt::NoModifier) {
-    // Let Qt propagate the unconsumed movement up to the editor viewport.
-    p_event->ignore();
+  QTextEdit::keyPressEvent(p_event);
+}
+
+void TablePreviewSheet::wheelEvent(QWheelEvent *p_event) {
+  // Nothing to scroll and nothing to zoom: the movement is the editor's.
+  p_event->ignore();
+}
+
+void TablePreviewSheet::focusInEvent(QFocusEvent *p_event) {
+  QTextEdit::focusInEvent(p_event);
+  clampCursorIntoTable();
+  m_lastCellIndex = currentCellIndex();
+}
+
+void TablePreviewSheet::focusOutEvent(QFocusEvent *p_event) {
+  commitPreedit();
+  QTextEdit::focusOutEvent(p_event);
+  emit focusLost();
+}
+
+void TablePreviewSheet::mousePressEvent(QMouseEvent *p_event) {
+  // The base handler puts the caret at the exact character under the pointer,
+  // which is the whole point of this substrate; it can also park it in the
+  // block after the table when the click lands below the last row.
+  QTextEdit::mousePressEvent(p_event);
+  clampCursorIntoTable();
+}
+
+void TablePreviewSheet::resizeEvent(QResizeEvent *p_event) {
+  // QTextEdit re-lays the document out for the new viewport width, which emits
+  // documentSizeChanged for a size the host itself chose.
+  QScopedValueRollback<bool> guard(m_applyingGeometry, true);
+  QTextEdit::resizeEvent(p_event);
+}
+
+void TablePreviewSheet::inputMethodEvent(QInputMethodEvent *p_event) {
+  if (!p_event) {
+    QTextEdit::inputMethodEvent(p_event);
     return;
   }
 
-  QTableView::wheelEvent(p_event);
-}
-
-void TablePreviewView::updateGeometries() {
-  QTableView::updateGeometries();
-  if (m_layingOut || m_fittingRows) {
+  if (m_cancellingComposition) {
+    // A platform callback from inside cancelComposition()'s reset(). Cancelling
+    // is neither committing nor deleting, so it is discarded outright.
+    qCDebug(previewTableLog) << "discarded an input method event raised by the reset";
+    p_event->accept();
     return;
   }
 
-  // Writing a section makes QTableView post a deferred geometry update for the
-  // very sections the pass just wrote, and that update lands after the guard
-  // above has been rolled back. Re-planning for it would walk every cell of
-  // the band through the delegate again only to produce the identical plan.
-  if (!m_preferredSizeDirty && viewport()->width() == m_plannedViewportWidth) {
+  if (isReadOnly()) {
+    // Qt does not enforce read-only on this path at all: a read-only QTextEdit
+    // keeps Qt::TextSelectableByMouse, and QWidgetTextControl accepts an input
+    // method event for a selectable control. Stripping the commit is not
+    // enough either - installing a *changed* preedit removes the current
+    // selection first, so even a commit-free event would delete cell text. So
+    // the whole event is refused, and a composition which was still open when
+    // the sheet became a viewer is cancelled by the reset in
+    // TablePreviewWidget::applyEditability().
+    qCDebug(previewTableLog) << "refused an input method event on a read-only sheet";
+    p_event->accept();
     return;
   }
 
-  scheduleLayout();
-}
-
-void TablePreviewView::mousePressEvent(QMouseEvent *p_event) {
-  QTableView::mousePressEvent(p_event);
-
-  // NoEditTriggers is how a read-only editor, and a table which cannot be
-  // written back, turn editing off. Neither may be opened by a click either.
-  if (p_event->button() != Qt::LeftButton || editTriggers() == QAbstractItemView::NoEditTriggers) {
-    return;
-  }
-
-  const QModelIndex index = indexAt(mousePosition(*p_event));
-  if (!index.isValid() || !index.flags().testFlag(Qt::ItemIsEditable)) {
-    return;
-  }
-
-  // One click is enough, and the caret lands under the pointer. A second click
-  // never reaches here: the editor covers its own cell by then.
-  edit(index, QAbstractItemView::AllEditTriggers, p_event);
-}
-
-bool TablePreviewView::edit(const QModelIndex &p_index, EditTrigger p_trigger, QEvent *p_event) {
-  const bool editing = QTableView::edit(p_index, p_trigger, p_event);
-  if (editing) {
-    // The base has already shown the editor and given it focus, so whatever
-    // selection that produced is in place and can be replaced with a caret.
-    placeCursor(p_index, p_event);
-  }
-
-  return editing;
-}
-
-QLineEdit *TablePreviewView::cellEditor(const QModelIndex &p_index) const {
-  const QRect cell = visualRect(p_index);
-  if (!cell.isValid()) {
-    return nullptr;
-  }
-
-  for (auto editor : viewport()->findChildren<QLineEdit *>()) {
-    if (editor->isVisible() && cell.intersects(editor->geometry())) {
-      return editor;
-    }
-  }
-
-  return nullptr;
-}
-
-void TablePreviewView::placeCursor(const QModelIndex &p_index, const QEvent *p_event) {
-  auto editor = cellEditor(p_index);
-  if (!editor) {
-    return;
-  }
-
-  int position = editor->text().size();
-  if (p_event && p_event->type() == QEvent::MouseButtonPress) {
-    // The editor is a child of the viewport and covers the cell, so the click
-    // it was opened by maps straight onto a character in it.
-    const QPoint pos = mousePosition(*static_cast<const QMouseEvent *>(p_event));
-    position = editor->cursorPositionAt(editor->mapFrom(viewport(), pos));
-  }
-
-  editor->deselect();
-  editor->setCursorPosition(position);
-}
-
-void TablePreviewView::scrollContentsBy(int p_dx, int p_dy) {
-  QTableView::scrollContentsBy(p_dx, p_dy);
-  if (p_dy != 0 && !m_fittingRows) {
-    scheduleRowFit();
-  }
-}
-
-void TablePreviewView::layoutColumns() {
-  invalidatePreferredSize();
-  applyLayout();
-}
-
-void TablePreviewView::scheduleLayout() const {
-  if (m_layoutTimer && !m_layoutTimer->isActive()) {
-    m_layoutTimer->start();
-  }
-}
-
-void TablePreviewView::scheduleRowFit() {
-  if (m_rowFitTimer && !m_rowFitTimer->isActive()) {
-    m_rowFitTimer->start();
-  }
-}
-
-void TablePreviewView::applyLayout() {
-  if (m_layingOut || !model() || model()->columnCount() <= 0 || model()->rowCount() <= 0) {
-    return;
-  }
-
-  if (m_layoutTimer) {
-    m_layoutTimer->stop();
-  }
-
-  QScopedValueRollback<bool> guard(m_layingOut, true);
-
-  Solution solution;
-  int observedViewport = -1;
-  for (int pass = 0; pass < c_maxLayoutPasses; ++pass) {
-    solution = solveGeometry(width(), observedViewport);
-
-    // Columns first: Qt measures a wrapped row against the sections it finds,
-    // so fitting rows before the widths are decided is what reserves a band
-    // for text which then fits on fewer lines.
-    for (int c = 0; c < solution.m_columnWidths.size(); ++c) {
-      setColumnWidth(c, solution.m_columnWidths.at(c));
+  // A Selection attribute is resolved by QWidgetTextControl in an intermediate
+  // document state - after the current selection has been removed and after
+  // the commit has been applied - which no pre-flight check can predict, and
+  // it emits neither cursorPositionChanged() nor selectionChanged() when only
+  // the anchor moves, so neither clamp would catch the result. Honoring one
+  // which leaves the cell would hand a cross-frame selection to the next Cut
+  // or Delete, and removing a selection across a frame boundary removes the
+  // frame. So they are dropped rather than guessed at, and an ordinary
+  // composition only needs the caret to follow the commit, which it does.
+  bool droppedSelection = false;
+  QList<QInputMethodEvent::Attribute> attributes;
+  attributes.reserve(p_event->attributes().size());
+  for (const auto &attribute : p_event->attributes()) {
+    if (attribute.type == QInputMethodEvent::Selection) {
+      droppedSelection = true;
+      continue;
     }
 
-    for (int r = 0; r < solution.m_rowHeights.size(); ++r) {
-      setRowHeight(r, solution.m_rowHeights.at(r));
-    }
-
-    // Writing the sections can add or drop a scroll bar, which resizes the
-    // viewport from underneath the plan. Ask Qt to settle, then compare: the
-    // plan is only authoritative if the viewport it assumed is the one the
-    // sheet actually has. The retry is bounded so an unusual style cannot spin.
-    QTableView::updateGeometries();
-    observeScrollBarChrome();
-
-    const int actual = viewport()->width();
-    if (actual == solution.m_viewportWidth || actual == observedViewport) {
-      break;
-    }
-
-    observedViewport = actual;
+    attributes.append(attribute);
   }
 
-  m_plannedViewportWidth = viewport()->width();
+  // Forward everything except the commit, so the composition state stays
+  // consistent while the document contents are left alone.
+  auto forwardWithoutTheCommit = [this, p_event, &attributes]() {
+    QInputMethodEvent filtered(p_event->preeditString(), attributes);
+    QTextEdit::inputMethodEvent(&filtered);
+    p_event->accept();
+  };
 
-  // Only a different plan makes the rows fitted for the previous one stale. A
-  // pass which lands on the same widths - the common one, since most passes
-  // answer a geometry update rather than a content change - would otherwise
-  // throw away every lazily fitted row and measure it all over again.
-  if (m_fittedColumnWidths != solution.m_columnWidths) {
-    m_fittedColumnWidths = solution.m_columnWidths;
-    m_fittedRows.clear();
-  }
-
-  for (int r = 0; r < solution.m_rowHeights.size(); ++r) {
-    m_fittedRows.insert(r);
-  }
-
-  notifyPreferredGeometry(solution);
-
-  // Whatever is on screen below the band still carries a default height.
-  if (model()->rowCount() > solution.m_rowHeights.size()) {
-    scheduleRowFit();
-  }
-}
-
-void TablePreviewView::fitRowsAroundViewport() {
-  if (m_fittingRows || m_layingOut || !model() || model()->columnCount() <= 0 ||
-      model()->rowCount() <= 0) {
-    return;
-  }
-
-  if (m_fittedColumnWidths.size() != model()->columnCount()) {
-    // No authoritative plan yet, and fitting against sections the pass is
-    // about to rewrite would only have to be undone.
-    scheduleLayout();
-    return;
-  }
-
-  QScopedValueRollback<bool> guard(m_fittingRows, true);
-  const QStyleOptionViewItem base = baseViewOption();
-  const int rows = model()->rowCount();
-  auto vbar = verticalScrollBar();
-
-  for (int round = 0; round < c_rowFitRounds; ++round) {
-    // Recomputed every round: fitting a row moves the ones below it, so the
-    // interval the viewport covers is not the one it covered before.
-    int first = rowAt(0);
-    if (first < 0) {
-      first = 0;
-    }
-    int last = rowAt(qMax(0, viewport()->height() - 1));
-    if (last < 0) {
-      last = rows - 1;
-    }
-    first = qMax(0, first - c_rowFitOverscan);
-    last = qMin(rows - 1, last + c_rowFitOverscan);
-
-    QVector<int> pending;
-    for (int r = first; r <= last && pending.size() < c_rowFitBatch; ++r) {
-      if (!m_fittedRows.contains(r)) {
-        pending.append(r);
-      }
-    }
-
-    if (pending.isEmpty()) {
+  const QString commit = p_event->commitString();
+  const int replacementLength = p_event->replacementLength();
+  // An empty commit string with a replacement length is not a pure preedit -
+  // that is how an input method deletes surrounding text.
+  if (commit.isEmpty() && replacementLength == 0) {
+    // A preedit is not in the document at all, so nothing else has to be
+    // confined; normal handling has to be preserved so composition works.
+    if (!droppedSelection) {
+      QTextEdit::inputMethodEvent(p_event);
       return;
     }
 
-    // Keep whatever the user is looking at where it is: the rows being fitted
-    // change the content height above the viewport as well as inside it.
-    const int anchorRow = qBound(0, rowAt(0), rows - 1);
-    const int anchorBefore = rowViewportPosition(anchorRow);
-
-    for (int r : pending) {
-      setRowHeight(r, rowHeightFor(base, r, m_fittedColumnWidths));
-      m_fittedRows.insert(r);
-    }
-
-    // setRowHeight() only *posts* the scroll bar's range update, so without
-    // this the bar would still be bounded by the content height the rows just
-    // grew past, and the correction below would be clamped away - which is a
-    // visible jump for anyone fitting rows near the end of a long table.
-    QTableView::updateGeometries();
-
-    if (vbar) {
-      const int anchorAfter = rowViewportPosition(anchorRow);
-      vbar->setValue(vbar->value() + (anchorAfter - anchorBefore));
-    }
-  }
-
-  // Bounded work per pass; the rest continues on the next event loop turn.
-  scheduleRowFit();
-}
-
-void TablePreviewView::notifyPreferredGeometry(const Solution &p_solution) {
-  const QSize preferred = preferredSize();
-  const QSize constrained =
-      constrainedSizeFor(p_solution, width() > 0 ? width() : preferred.width());
-
-  // The pass just measured the band against the width the sheet actually has,
-  // so seed the memo rather than measuring it all over again. Taken after the
-  // intrinsic measurement, which drops the memo when it has to re-run.
-  if (width() > 0) {
-    m_constrainedSize = constrained;
-    m_constrainedWidthKey = width();
-  }
-
-  const bool armed = m_notificationArmed;
-  const bool changed = preferred != m_settledPreferredSize ||
-                       constrained.height() != m_settledConstrainedHeight;
-
-  m_notificationArmed = false;
-  m_settledPreferredSize = preferred;
-  m_settledConstrainedHeight = constrained.height();
-
-  if (!m_settlementEstablished) {
-    // The first settlement is the baseline the host measured on its own.
-    m_settlementEstablished = true;
+    qCDebug(previewTableLog) << "dropped an input method selection";
+    forwardWithoutTheCommit();
     return;
   }
 
-  // A geometry-only pass answers a width the host chose; telling it about the
-  // answer it asked for is how a measurement loop starts.
-  if (!armed || !changed) {
+  // Classify before touching the document. A payload which is nothing but
+  // line separators is refused exactly as a paste is, and refusing it must not
+  // delete what is selected - which is why this comes before the removal
+  // below. The same separator policy otherwise: a cell holds one block.
+  const QString sanitized =
+      hasLineSeparator(commit)
+          ? (hasCellContent(commit) ? sanitizeForCell(commit) : QString())
+          : commit;
+  if (sanitized.isEmpty() && replacementLength == 0) {
+    qCDebug(previewTableLog) << "refused an input method commit which is nothing but line"
+                             << "separators";
+    forwardWithoutTheCommit();
     return;
   }
 
-  qCDebug(previewTableLog) << "the sheet settled on" << preferred << "and" << constrained
-                           << "at width" << width();
-  emit preferredGeometryChanged();
+  if (sanitized != commit) {
+    qCDebug(previewTableLog) << "sanitized a committed input method string";
+  }
+
+  // Everything below changes the document.
+  clampCursorIntoTable();
+  clampSelectionIntoOneCell();
+
+  // Remove the - by now confined - selection here rather than letting the base
+  // do it. QWidgetTextControl resolves replacementStart()/replacementLength()
+  // against the cursor it is left with *after* that removal, so collapsing it
+  // first is what makes the interval computed below the one it will really
+  // use; clamping against the pre-removal caret would not bound anything.
+  {
+    QTextCursor selection = textCursor();
+    if (selection.hasSelection()) {
+      selection.removeSelectedText();
+      setTextCursor(selection);
+    }
+  }
+
+  QTextTable *table = m_document ? m_document->table() : nullptr;
+  const QTextCursor cursor = textCursor();
+  const QTextTableCell cell = table ? table->cellAt(cursor.position()) : QTextTableCell();
+  if (!cell.isValid()) {
+    // Nothing to anchor the replacement against, and letting it land outside
+    // the table is exactly what must not happen.
+    p_event->accept();
+    return;
+  }
+
+  const int position = cursor.position();
+  const int first = cell.firstPosition();
+  const int last = cell.lastPosition();
+
+  // The range the base will apply, now that the cursor is collapsed:
+  // [position + replacementStart(), + replacementLength()). A negative start
+  // or an overlong length would reach across the frame boundary.
+  const int rawStart = position + p_event->replacementStart();
+  const int start = qBound(first, rawStart, last);
+  const int end = qBound(start, rawStart + replacementLength, last);
+
+  QInputMethodEvent replacement(p_event->preeditString(), attributes);
+  replacement.setCommitString(sanitized, start - position, end - start);
+  QTextEdit::inputMethodEvent(&replacement);
+  p_event->accept();
 }
 
+bool TablePreviewSheet::canInsertFromMimeData(const QMimeData *p_source) const {
+  // Plain text only. A cell holds raw Markdown, so rich text would either be
+  // flattened anyway or land in the document as structure a table row cannot
+  // express.
+  return p_source && p_source->hasText() && hasCellContent(p_source->text());
+}
+
+void TablePreviewSheet::insertFromMimeData(const QMimeData *p_source) {
+  if (!p_source || isReadOnly()) {
+    return;
+  }
+
+  // A drop puts the caret where it landed, which can be the block after the
+  // table, and a paste replaces whatever is selected.
+  clampCursorIntoTable();
+  clampSelectionIntoOneCell();
+
+  const QString text = p_source->text();
+  if (!hasCellContent(text)) {
+    qCDebug(previewTableLog) << "refused a payload which is nothing but line separators";
+    return;
+  }
+
+  // Drops arrive here too, so one validator covers both.
+  insertPlainText(sanitizeForCell(text));
+}
 
 // ---------------------------------------------------------------------------
 // TablePreviewWidget
 // ---------------------------------------------------------------------------
 
-const qreal TablePreviewWidget::c_widthFraction = 0.9;
+const qreal TablePreviewWidget::c_widthFraction = 1.0;
+
+const int TablePreviewWidget::c_commitDebounceMs = 400;
 
 TablePreviewWidget::TablePreviewWidget(PreviewWidgetContext *p_context, QWidget *p_parent)
-    : PreviewWidget(p_context, p_parent) {
+    : PreviewWidget(p_context, p_parent), m_document(new TablePreviewDocument()) {
   auto layout = new QVBoxLayout(this);
   layout->setContentsMargins(0, 0, 0, 0);
   layout->setSpacing(0);
 
-  m_model = new TablePreviewModel(this);
-  m_view = new TablePreviewView(this);
-  m_view->setModel(m_model);
-  layout->addWidget(m_view);
+  m_sheet = new TablePreviewSheet(this);
+  m_sheet->setTableDocument(m_document.data());
+  layout->addWidget(m_sheet);
 
   // The host only consults heightForWidth() when the policy advertises it, and
   // that is the only hook which sees the width the band actually gets.
@@ -1499,18 +1384,41 @@ TablePreviewWidget::TablePreviewWidget(PreviewWidgetContext *p_context, QWidget 
   policy.setHeightForWidth(true);
   setSizePolicy(policy);
 
-  connect(m_model, &TablePreviewModel::cellCommitted, this,
-          &TablePreviewWidget::handleCellCommitted);
+  m_commitTimer = new QTimer(this);
+  m_commitTimer->setSingleShot(true);
+  m_commitTimer->setInterval(c_commitDebounceMs);
+  connect(m_commitTimer, &QTimer::timeout, this, &TablePreviewWidget::handleCommitTimeout);
 
-  // The host's event filter watches this widget, not the view inside it, so
+  connect(m_document->document(), &QTextDocument::contentsChanged, this,
+          &TablePreviewWidget::handleContentsChanged);
+  connect(m_sheet, &TablePreviewSheet::cellLeft, this, &TablePreviewWidget::handleCellLeft);
+  connect(m_sheet, &TablePreviewSheet::focusLost, this, &TablePreviewWidget::handleFocusLost);
+  connect(m_sheet, &TablePreviewSheet::focusEscapeRequested, this,
+          &TablePreviewWidget::handleEscapeRequested);
+  connect(m_sheet, &TablePreviewSheet::undoRequested, this,
+          &TablePreviewWidget::handleUndoRequested);
+  connect(m_sheet, &TablePreviewSheet::redoRequested, this,
+          &TablePreviewWidget::handleRedoRequested);
+
+  // The host's event filter watches this widget, not the sheet inside it, so
   // the sheet cannot reach it through updateGeometry() alone.
-  connect(m_view, &TablePreviewView::preferredGeometryChanged, this,
+  connect(m_sheet, &TablePreviewSheet::preferredGeometryChanged, this,
           &TablePreviewWidget::handlePreferredGeometryChanged);
 
   if (p_context) {
     connect(p_context, &PreviewWidgetContext::replacementFinished, this,
             &TablePreviewWidget::handleReplacementFinished);
   }
+
+  m_sheet->refreshFormats();
+}
+
+TablePreviewWidget::~TablePreviewWidget() {
+  // The sheet renders the document m_document owns, and members are destroyed
+  // before ~QObject tears the child widgets down. Drop the sheet here so it
+  // can never lay out a document which is already gone.
+  delete m_sheet;
+  m_sheet = nullptr;
 }
 
 QVector<PreviewElementType> TablePreviewWidget::supportedTypes() const {
@@ -1531,38 +1439,59 @@ bool TablePreviewWidget::setPreview(const QSharedPointer<const Preview> &p_previ
     return false;
   }
 
-  // A table too large to materialize is left to the static source rendering
-  // rather than driving a per-edit walk over every section. A refused table
-  // never becomes an active item, so the factory chain is re-walked on every
-  // parse generation: warning here would repeat forever for a static,
-  // by-design condition.
-  if (!TablePreviewModel::isWithinLimits(*table)) {
+  // A table too large to lay out interactively is left to the static source
+  // rendering. A refused table never becomes an active item, so the factory
+  // chain is re-walked on every parse generation: warning here would repeat
+  // forever for a static, by-design condition.
+  if (!TablePreviewDocument::isWithinLimits(*table)) {
     qCDebug(previewTableLog)
         << "refused an oversized table -" << table->cells().size() << "row(s) x"
-        << TablePreviewModel::normalizedColumnCount(*table) << "column(s) ="
-        << TablePreviewModel::normalizedCellCount(*table) << "cells; limits are"
-        << TablePreviewModel::c_maxRows << "x" << TablePreviewModel::c_maxColumns << "and"
-        << TablePreviewModel::c_maxCells << "cells";
+        << TablePreviewDocument::normalizedColumnCount(*table) << "column(s) ="
+        << TablePreviewDocument::normalizedCellCount(*table) << "cells; limits are"
+        << TablePreviewDocument::c_maxCells << "cells and"
+        << TablePreviewDocument::c_maxColumns << "columns";
     return false;
   }
 
-  // Nothing changed: keep the model, the selection and any open cell editor.
-  // The snapshot which merely echoes this sheet's own accepted commit counts
-  // as unchanged too, otherwise every committed cell edit would tear the
-  // editing state down one parse generation later.
-  if (m_table && m_view->isEnabled()) {
-    bool unchanged = m_table->sourceMarkdown() == table->sourceMarkdown();
-    const bool identical = unchanged;
+  // Nothing authoritative changed: keep the live document, the caret and any
+  // selection. Three things count as unchanged, and the third one is what
+  // makes debounced editing safe:
+  //
+  //  - the same source as the snapshot currently bound,
+  //  - what the document would serialize to right now,
+  //  - the last Markdown this sheet successfully committed.
+  //
+  // Without the last one, committing A and then typing B before A's parse
+  // echo arrives would rebuild the document from A and destroy both B and the
+  // caret, because the incoming snapshot matches neither of the first two.
+  if (m_table && m_authoritative) {
+    const QString incoming = table->sourceMarkdown();
+    bool unchanged = m_table->sourceMarkdown() == incoming;
+    const char *reason = "identical source";
+
     if (!unchanged) {
-      const QString committed = m_model->toMarkdown();
-      unchanged = !committed.isEmpty() && committed == table->sourceMarkdown();
+      const QString current = m_document->toMarkdown();
+      unchanged = !current.isEmpty() && current == incoming;
+      reason = "the sheet's own contents";
+    }
+
+    if (!unchanged && !m_committedMarkdown.isEmpty() && m_committedMarkdown == incoming) {
+      unchanged = true;
+      reason = "echo of this sheet's own commit";
     }
 
     if (unchanged) {
-      qCDebug(previewTableLog) << "bound an unchanged snapshot - kept the model and the editing"
-                               << "state" << (identical ? "(identical source)"
-                                                        : "(echo of this sheet's own commit)");
+      qCDebug(previewTableLog) << "bound an unchanged snapshot - kept the document and the caret"
+                               << "(" << reason << ")";
       m_table = table;
+
+      // The document may already hold edits newer than the commit this
+      // snapshot echoes. They are still owed a write-back, so re-arm rather
+      // than let them be stranded by a debounce which has already fired.
+      if (m_editGeneration != m_committedGeneration) {
+        armCommit();
+      }
+
       return true;
     }
   }
@@ -1572,10 +1501,9 @@ bool TablePreviewWidget::setPreview(const QSharedPointer<const Preview> &p_previ
                            << table->sourceMarkdown().left(60);
 
   m_table = table;
+  // The next snapshot is what a rejected sheet waits for.
+  m_authoritative = true;
   resetFromSource();
-  // setEnabled() tracks whether the bound snapshot is still authoritative;
-  // read-only is expressed through the edit triggers instead.
-  m_view->setEnabled(true);
   return true;
 }
 
@@ -1585,63 +1513,327 @@ void TablePreviewWidget::setReadOnly(bool p_readOnly) {
   }
 
   m_readOnly = p_readOnly;
-  applyEditTriggers();
+  applyEditability();
 }
 
-void TablePreviewWidget::applyEditTriggers() {
+void TablePreviewWidget::applyEditability() {
+  if (!m_sheet) {
+    return;
+  }
+
   // Present the sheet as a viewer instead of silently swallowing edits which
   // the host would reject, or which could not be written back without changing
-  // what the table renders to.
-  const bool roundTrippable = m_model->isRoundTrippable();
-  const bool editable = !m_readOnly && roundTrippable;
-  qCDebug(previewTableLog) << "edit triggers:" << (editable ? "editable" : "viewer only")
-                           << "- read-only" << m_readOnly << "round-trippable" << roundTrippable;
-  m_view->setEditTriggers(editable ? TablePreviewView::c_defaultEditTriggers
-                                   : QAbstractItemView::NoEditTriggers);
+  // what the table renders to. Read-only still allows the caret, selection and
+  // copy, which the retired NoEditTriggers did not.
+  const bool roundTrippable = m_document->isRoundTrippable();
+  const bool editable = !m_readOnly && roundTrippable && m_authoritative && !m_suppressed;
+  qCDebug(previewTableLog) << "sheet is" << (editable ? "editable" : "viewer only")
+                           << "- read-only" << m_readOnly << "round-trippable" << roundTrippable
+                           << "authoritative" << m_authoritative << "suppressed" << m_suppressed;
+
+  const bool wasReadOnly = m_sheet->isReadOnly();
+
+  if (!wasReadOnly && !editable) {
+    // While the sheet can still take the event: a viewer refuses every input
+    // method event outright, so a composition which is still open has to be
+    // cancelled here rather than left rendered over it.
+    m_sheet->cancelComposition();
+  }
+
+  m_sheet->setReadOnly(!editable);
+
+  if (wasReadOnly && editable) {
+    // Defence in depth on the way back to writable: nothing in a viewer can
+    // exploit a caret or a selection which left its cell, so re-establish both
+    // invariants before an edit can.
+    m_sheet->clampCursorIntoTable();
+    m_sheet->clampSelectionIntoOneCell();
+  }
+}
+
+void TablePreviewWidget::rebindFromContext() {
+  // The context is the authoritative binding: an accepted replacement rebases
+  // it onto the text which is now in the document, while a cached snapshot
+  // still describes the pre-commit source.
+  auto context = previewContext();
+  if (!context) {
+    return;
+  }
+
+  const auto bound = context->preview();
+  if (bound && bound->type() == PreviewElementType::Table) {
+    m_table = bound.staticCast<const TablePreview>();
+  }
 }
 
 void TablePreviewWidget::resetFromSource() {
-  // The context is the authoritative binding: an accepted replacement rebases
-  // it onto the text now in the document, while this cached snapshot still
-  // describes the pre-commit source. Restoring from the cache would undo a
-  // commit the host has already applied, and the sheet would then serialize
-  // the reverted matrix over the user's accepted change.
-  if (auto context = previewContext()) {
-    const auto bound = context->preview();
-    if (bound && bound->type() == PreviewElementType::Table) {
-      m_table = bound.staticCast<const TablePreview>();
+  // Restoring from a stale cache would undo a commit the host has already
+  // applied, and the sheet would then serialize the reverted matrix over the
+  // user's accepted change.
+  rebindFromContext();
+
+  {
+    QScopedValueRollback<bool> guard(m_applyingSource, true);
+    m_document->setTable(m_table);
+    if (m_sheet) {
+      // Only the palette: build() has just written every per-cell format, and
+      // repeating that pass is O(cells) of pure duplicate work.
+      m_sheet->refreshPalette();
     }
   }
 
-  m_applyingSource = true;
-  m_model->setTable(m_table);
-  // Plans the columns and fits the band against them, in that order.
-  m_view->layoutColumns();
-  m_applyingSource = false;
+  if (m_commitTimer) {
+    m_commitTimer->stop();
+  }
 
-  applyEditTriggers();
+  // The document is the bound source again, so nothing is owed and no
+  // self-commit is outstanding. The baseline is the source's *canonical* form
+  // rather than the source itself: that is what a flush compares against, so
+  // an edit which puts the cell back where it started - or a re-typed
+  // identical value - stops there instead of rewriting the document with a
+  // semantically identical table and pushing an undo step for it.
+  m_editGeneration = 0;
+  m_committedGeneration = 0;
+  m_inFlightGeneration = 0;
+  m_commitInFlight = false;
+  m_inFlightMarkdown.clear();
+  m_committedMarkdown = m_document->toMarkdown();
+
+  applyEditability();
   updateGeometry();
 
-  qCDebug(previewTableLog) << "sheet reset to" << m_model->rowCount() << "x"
-                           << m_model->columnCount() << "- preferred size" << sizeHint();
-}
-void TablePreviewWidget::setVisibleRows(int p_rows) {
-  m_view->setVisibleRows(p_rows);
-  updateGeometry();
+  qCDebug(previewTableLog) << "sheet reset to" << m_document->rowCount() << "x"
+                           << m_document->columnCount();
 }
 
-QSize TablePreviewWidget::sizeHint() const { return m_view->preferredSize(); }
+void TablePreviewWidget::armCommit() {
+  if (m_suppressed || !m_commitTimer) {
+    return;
+  }
+
+  m_commitTimer->start();
+}
+
+void TablePreviewWidget::handleContentsChanged() {
+  if (m_applyingSource || m_suppressed) {
+    return;
+  }
+
+  if (!m_document->isIntact()) {
+    // Something took the table out of the document. Every guard which should
+    // have made that impossible is upstream of here; this is the last one, and
+    // rebuilding is the only safe answer - serializing a document which no
+    // longer has a table would write an empty replacement, and the sheet would
+    // be left holding a dangling QTextTable.
+    qCWarning(previewTableLog) << "the sheet's table was removed from its document -"
+                               << "rebuilding from the source";
+    resetFromSource();
+    return;
+  }
+
+  ++m_editGeneration;
+  // Restarts, so a burst of keystrokes writes back once.
+  armCommit();
+}
+
+void TablePreviewWidget::handleCellLeft() {
+  // Leaving a cell commits it immediately: the debounce exists to coalesce
+  // keystrokes inside one cell, not to hold an edit the user has visibly
+  // finished.
+  flushPendingCommit();
+}
+
+void TablePreviewWidget::handleFocusLost() { flushPendingCommit(); }
+
+void TablePreviewWidget::handleCommitTimeout() { flushPendingCommit(); }
+
+bool TablePreviewWidget::flushPendingCommit() {
+  if (m_suppressed || m_applyingSource || !m_table) {
+    if (m_commitTimer) {
+      m_commitTimer->stop();
+    }
+
+    return true;
+  }
+
+  if (m_sheet) {
+    // Before the generation check, never after it. A preedit is not in the
+    // document yet, so it has not advanced the generation either: testing
+    // first would report a composing sheet as clean, and the host's
+    // pre-removal flush would then revoke authority and lose the composition.
+    // Committing it is itself a document change, so the generation below is
+    // read afterwards.
+    m_sheet->commitPreedit();
+  }
+
+  // After the commit, which re-arms the debounce through contentsChanged.
+  if (m_commitTimer) {
+    m_commitTimer->stop();
+  }
+
+  if (m_editGeneration == m_committedGeneration) {
+    // Nothing new since the last accepted commit.
+    return true;
+  }
+
+  const QString markdown = m_document->toMarkdown();
+  if (markdown.isEmpty()) {
+    // Unsafe to rewrite: restore the source view.
+    qCWarning(previewTableLog) << "the sheet was edited but cannot be serialized safely -"
+                               << "restoring the source";
+    resetFromSource();
+    return false;
+  }
+
+  auto context = previewContext();
+  if (!context) {
+    qCDebug(previewTableLog) << "the sheet was edited but has no context to write through";
+    return true;
+  }
+
+  const quint64 generation = m_editGeneration;
+  if (markdown == m_committedMarkdown) {
+    // The document already holds what was last written - the edits cancelled
+    // out, or a cell was re-typed with the value it had. Nothing to send, and
+    // the generation is settled.
+    m_committedGeneration = generation;
+    return true;
+  }
+
+  m_inFlightMarkdown = markdown;
+  m_inFlightGeneration = generation;
+  m_commitInFlight = true;
+
+  qCDebug(previewTableLog) << "committing generation" << generation << "->" << markdown.left(80);
+  context->requestSourceReplacement(markdown);
+
+  // The host answers synchronously, so by now handleReplacementFinished() has
+  // already run and recorded the outcome.
+  return m_committedGeneration >= generation;
+}
+
+void TablePreviewWidget::handleReplacementFinished(const vte::PreviewReplacementResult &p_result) {
+  const bool wasInFlight = m_commitInFlight;
+  m_commitInFlight = false;
+
+  if (p_result.isAccepted()) {
+    qCDebug(previewTableLog) << "the commit was accepted";
+    m_authoritative = true;
+
+    // The host has just rebased the context onto the text which is now in the
+    // document. Leaving the cached snapshot describing the pre-commit source
+    // would make setPreview()'s first test - "the incoming source equals the
+    // bound one" - match an authoritative *revert* back to that very source,
+    // which is precisely what the undo relay produces: the sheet would keep
+    // rendering the committed table over a source which no longer holds it.
+    rebindFromContext();
+
+    if (wasInFlight) {
+      m_committedMarkdown = m_inFlightMarkdown;
+      // Deliberately the in-flight generation, never the current one: the user
+      // may have typed again while this was on the wire, and that edit is
+      // still owed a write-back of its own.
+      m_committedGeneration = m_inFlightGeneration;
+    }
+
+    applyEditability();
+
+    if (m_editGeneration != m_committedGeneration) {
+      armCommit();
+    }
+
+    return;
+  }
+
+  switch (p_result.status()) {
+  case PreviewReplacementResult::StaleSnapshot:
+  case PreviewReplacementResult::SourceMismatch:
+  case PreviewReplacementResult::InvalidRange:
+  case PreviewReplacementResult::UnknownIdentity:
+    // External source always wins and this snapshot no longer describes the
+    // document. Stop presenting it as the truth and wait for the authoritative
+    // snapshot instead of restoring stale values.
+    // The host already warned about the rejection itself.
+    qCDebug(previewTableLog) << "this sheet is no longer authoritative - read-only until the"
+                             << "next snapshot";
+    m_authoritative = false;
+    applyEditability();
+    break;
+
+  default:
+    // The document was not touched, so the bound snapshot is still the source
+    // of truth: discard the edit.
+    qCDebug(previewTableLog) << "the document was not touched - discarding the edit";
+    resetFromSource();
+    break;
+  }
+}
+
+void TablePreviewWidget::handleEscapeRequested(vte::FocusEscapeDirection p_direction) {
+  flushPendingCommit();
+  emit focusEscapeRequested(p_direction);
+}
+
+void TablePreviewWidget::handleUndoRequested() {
+  // Forwarding straight through would undo an unrelated earlier operation
+  // whenever the debounce has not fired yet, and the pending table edit would
+  // then still be committed on top of whatever the undo restored.
+  if (m_editGeneration != m_committedGeneration) {
+    if (!flushPendingCommit()) {
+      qCDebug(previewTableLog) << "the pending edit could not be committed - not undoing";
+      return;
+    }
+  }
+
+  emit undoRequested();
+}
+
+void TablePreviewWidget::handleRedoRequested() {
+  if (m_editGeneration != m_committedGeneration) {
+    // Committing a new edit necessarily clears the editor's redo stack, so
+    // there is nothing left to redo afterwards. Drop the redo rather than
+    // apply it to a stack the flush has just invalidated.
+    qCDebug(previewTableLog) << "flushing a pending edit - the redo is dropped";
+    flushPendingCommit();
+    return;
+  }
+
+  emit redoRequested();
+}
+
+void TablePreviewWidget::flushNow() {
+  if (m_suppressed) {
+    return;
+  }
+
+  qCDebug(previewTableLog) << "flushing while this sheet is still authoritative";
+  flushPendingCommit();
+}
+
+void TablePreviewWidget::revokeAuthority() {
+  if (m_suppressed) {
+    return;
+  }
+
+  m_suppressed = true;
+  if (m_commitTimer) {
+    m_commitTimer->stop();
+  }
+
+  qCDebug(previewTableLog) << "this sheet's authority has been revoked";
+  applyEditability();
+}
+
+QSize TablePreviewWidget::sizeHint() const {
+  // Width 0: see TablePreviewSheet::sizeHint().
+  return m_sheet ? m_sheet->sizeHint() : QSize(0, 0);
+}
 
 bool TablePreviewWidget::hasHeightForWidth() const { return true; }
 
 int TablePreviewWidget::heightForWidth(int p_width) const {
-  // The host clamps the band to the text column, and a sheet whose columns
-  // cannot even be compressed to their readable floor gets a horizontal
-  // scroll bar which eats into the viewport. Reserving its height here rather
-  // than in sizeHint() is what makes the reserve track the clamp: the width
-  // passed in is the one the band ends up with, whereas the widget's own
-  // geometry context still holds the previous layout pass at measuring time.
-  return m_view->preferredSizeWithin(p_width).height();
+  // The layout has no margins, so the sheet's outer width is this widget's.
+  return m_sheet ? m_sheet->heightForWidth(p_width) : 0;
 }
 
 bool TablePreviewWidget::event(QEvent *p_event) {
@@ -1668,74 +1860,37 @@ void TablePreviewWidget::handlePreferredGeometryChanged() {
 }
 
 void TablePreviewWidget::changeEvent(QEvent *p_event) {
-  if (p_event->type() == QEvent::FontChange && m_view) {
-    // Qt's style sheet machinery does not hand an application's editor font
-    // down to a view nested inside a styled ancestor, so the view would keep
-    // measuring itself with the application default while being painted with
-    // the inherited font. Forward it explicitly and re-fit.
-    if (m_view->font() != font()) {
-      m_view->setFont(font());
-      m_view->layoutColumns();
+  switch (p_event->type()) {
+  case QEvent::FontChange:
+  case QEvent::PaletteChange:
+  case QEvent::StyleChange:
+    if (m_sheet) {
+      // Qt's style sheet machinery does not hand an application's editor font
+      // down to a widget nested inside a styled ancestor, so the sheet would
+      // keep measuring itself with the application default while being painted
+      // with the inherited font. Forward it explicitly.
+      if (p_event->type() == QEvent::FontChange && m_sheet->font() != font()) {
+        m_sheet->setFont(font());
+      }
+
+      {
+        // Formats only, never the cell text: rebuilding would destroy the
+        // caret, which for a theme switch during typing is a silent loss of
+        // the user's place. The guard keeps the format writes from being
+        // mistaken for user edits.
+        QScopedValueRollback<bool> guard(m_applyingSource, true);
+        m_sheet->refreshFormats();
+      }
+
       updateGeometry();
     }
-  }
-
-  PreviewWidget::changeEvent(p_event);
-}
-
-void TablePreviewWidget::handleCellCommitted() {
-  if (m_applyingSource || !m_table) {
-    return;
-  }
-
-  const QString markdown = m_model->toMarkdown();
-  if (markdown.isEmpty()) {
-    // Unsafe to rewrite: restore the source view.
-    qCWarning(previewTableLog) << "a cell was committed but the sheet cannot be serialized"
-                               << "safely - restoring the source";
-    resetFromSource();
-    return;
-  }
-
-  auto context = previewContext();
-  if (!context) {
-    qCDebug(previewTableLog) << "a cell was committed but the sheet has no context to write"
-                             << "through";
-    return;
-  }
-
-  qCDebug(previewTableLog) << "committing a cell edit ->" << markdown.left(80);
-  context->requestSourceReplacement(markdown);
-}
-
-void TablePreviewWidget::handleReplacementFinished(const vte::PreviewReplacementResult &p_result) {
-  if (p_result.isAccepted()) {
-    qCDebug(previewTableLog) << "the commit was accepted";
-    m_view->setEnabled(true);
-    return;
-  }
-
-  switch (p_result.status()) {
-  case PreviewReplacementResult::StaleSnapshot:
-  case PreviewReplacementResult::SourceMismatch:
-  case PreviewReplacementResult::InvalidRange:
-  case PreviewReplacementResult::UnknownIdentity:
-    // External source always wins and this snapshot no longer describes the
-    // document. Stop presenting it as the truth and wait for the authoritative
-    // snapshot instead of restoring stale values.
-    // The host already warned about the rejection itself.
-    qCDebug(previewTableLog) << "this sheet is no longer authoritative - disabling it until the"
-                             << "next snapshot";
-    m_view->setEnabled(false);
     break;
 
   default:
-    // The document was not touched, so the bound snapshot is still the source
-    // of truth: discard the edit.
-    qCDebug(previewTableLog) << "the document was not touched - discarding the edit";
-    resetFromSource();
     break;
   }
+
+  PreviewWidget::changeEvent(p_event);
 }
 
 // ---------------------------------------------------------------------------
@@ -1758,13 +1913,24 @@ TablePreviewWidgetFactory::createWidget(PreviewWidgetContext *p_context,
   }
 
   auto widget = new TablePreviewWidget(p_context, p_parent);
-  widget->setVisibleRows(m_visibleRows);
   widget->setReadOnly(m_readOnly);
 
-  // Every host rebuild destroys the previous sheets. setVisibleRows() and
-  // setReadOnly() do compact the list, but both early-return when the value is
-  // unchanged, which is the steady state - so without this the vector would
-  // grow for the whole lifetime of the editor.
+  // Relay the sheet's requests upwards with the widget attached: only the host
+  // can resolve which identity - and therefore which live anchor - they belong
+  // to.
+  connect(widget, &TablePreviewWidget::focusEscapeRequested, this,
+          [this, widget](FocusEscapeDirection p_direction) {
+            emit focusEscapeRequested(widget, p_direction);
+          });
+  connect(widget, &TablePreviewWidget::undoRequested, this,
+          [this, widget]() { emit undoRequested(widget); });
+  connect(widget, &TablePreviewWidget::redoRequested, this,
+          [this, widget]() { emit redoRequested(widget); });
+
+  // Every host rebuild destroys the previous sheets. setReadOnly() does
+  // compact the list, but it early-returns when the value is unchanged, which
+  // is the steady state - so without this the vector would grow for the whole
+  // lifetime of the editor.
   pruneWidgets();
   m_widgets.append(QPointer<TablePreviewWidget>(widget));
   return widget;
@@ -1775,20 +1941,6 @@ void TablePreviewWidgetFactory::pruneWidgets() {
     if (m_widgets[i].isNull()) {
       m_widgets.removeAt(i);
     }
-  }
-}
-
-void TablePreviewWidgetFactory::setVisibleRows(int p_rows) {
-  const int rows = qMax(1, p_rows);
-  if (m_visibleRows == rows) {
-    return;
-  }
-
-  m_visibleRows = rows;
-
-  pruneWidgets();
-  for (auto &widget : m_widgets) {
-    widget->setVisibleRows(rows);
   }
 }
 

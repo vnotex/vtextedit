@@ -1,17 +1,22 @@
 #include "test_interactivepreview.h"
 
-#include <QAbstractItemModel>
-#include <QAbstractItemView>
+#include <limits>
+
+#include <QAbstractTextDocumentLayout>
 #include <QApplication>
 #include <QEventLoop>
+#include <QFocusEvent>
 #include <QPointer>
 #include <QScrollBar>
 #include <QSignalSpy>
 #include <QSizePolicy>
-#include <QLineEdit>
-#include <QTableView>
+#include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
+#include <QTextEdit>
+#include <QTextFrame>
+#include <QTextTable>
+#include <QTextTableCell>
 #include <QTimer>
 
 #include <vtextedit/markdowneditorconfig.h>
@@ -219,6 +224,156 @@ QObject *previewHost(VMarkdownEditor &p_editor) {
 int reconcileDeliveries(VMarkdownEditor &p_editor) {
   auto host = previewHost(p_editor);
   return host ? host->property("vte_preview_reconcile_deliveries").toInt() : -1;
+}
+
+// ---------------------------------------------------------------------------
+// The built-in table sheet, reached through the public widget API only
+// ---------------------------------------------------------------------------
+
+// The sheet is a QTextEdit hosting one QTextTable. This target deliberately
+// cannot reach the internal header, so everything below is expressed through
+// Qt's own rich text API.
+
+// TablePreviewWidget::c_commitDebounceMs: the idle window after the last
+// keystroke before a sheet writes itself back.
+const int c_commitDebounceMs = 400;
+
+QTextEdit *sheetView(PreviewWidget *p_widget) {
+  return p_widget ? p_widget->findChild<QTextEdit *>() : nullptr;
+}
+
+QTextTable *sheetTable(QTextEdit *p_sheet) {
+  if (!p_sheet || !p_sheet->document() || !p_sheet->document()->rootFrame()) {
+    return nullptr;
+  }
+
+  for (auto frame : p_sheet->document()->rootFrame()->childFrames()) {
+    if (auto table = qobject_cast<QTextTable *>(frame)) {
+      return table;
+    }
+  }
+
+  return nullptr;
+}
+
+// The raw Markdown one cell holds.
+QString sheetCell(QTextEdit *p_sheet, int p_row, int p_column) {
+  QTextTable *table = sheetTable(p_sheet);
+  if (!table) {
+    return QString();
+  }
+
+  const QTextTableCell cell = table->cellAt(p_row, p_column);
+  if (!cell.isValid()) {
+    return QString();
+  }
+
+  QTextCursor cursor = cell.firstCursorPosition();
+  cursor.setPosition(cell.lastCursorPosition().position(), QTextCursor::KeepAnchor);
+  return cursor.selectedText();
+}
+
+// The laid out content width of every column, taken from the block each header
+// cell holds. Qt's table layout owns the widths now, so this is the only place
+// they exist.
+QVector<qreal> columnWidths(QTextEdit *p_sheet) {
+  QVector<qreal> widths;
+  QTextTable *table = sheetTable(p_sheet);
+  if (!table) {
+    return widths;
+  }
+
+  auto layout = p_sheet->document()->documentLayout();
+  for (int c = 0; c < table->columns(); ++c) {
+    const QTextBlock block = table->cellAt(0, c).firstCursorPosition().block();
+    widths.append(layout->blockBoundingRect(block).width());
+  }
+
+  return widths;
+}
+
+// The height of every row, i.e. of its tallest cell.
+QVector<qreal> rowHeights(QTextEdit *p_sheet) {
+  QVector<qreal> heights;
+  QTextTable *table = sheetTable(p_sheet);
+  if (!table) {
+    return heights;
+  }
+
+  auto layout = p_sheet->document()->documentLayout();
+  for (int r = 0; r < table->rows(); ++r) {
+    qreal height = 0;
+    for (int c = 0; c < table->columns(); ++c) {
+      const QTextBlock block = table->cellAt(r, c).firstCursorPosition().block();
+      height = qMax(height, layout->blockBoundingRect(block).height());
+    }
+
+    heights.append(height);
+  }
+
+  return heights;
+}
+
+qreal totalRowHeight(QTextEdit *p_sheet) {
+  qreal total = 0;
+  for (qreal height : rowHeights(p_sheet)) {
+    total += height;
+  }
+
+  return total;
+}
+
+// The width the whole table was laid out at.
+qreal tableWidth(QTextEdit *p_sheet) {
+  QTextTable *table = sheetTable(p_sheet);
+  return table ? p_sheet->document()->documentLayout()->frameBoundingRect(table).width() : 0;
+}
+
+// The rectangle a cell occupies in viewport coordinates.
+QRect sheetCellRect(QTextEdit *p_sheet, int p_row, int p_column) {
+  QTextTable *table = sheetTable(p_sheet);
+  if (!table) {
+    return QRect();
+  }
+
+  const QTextTableCell cell = table->cellAt(p_row, p_column);
+  if (!cell.isValid()) {
+    return QRect();
+  }
+
+  return p_sheet->cursorRect(cell.firstCursorPosition())
+      .united(p_sheet->cursorRect(cell.lastCursorPosition()));
+}
+
+void putCaretIn(QTextEdit *p_sheet, int p_row, int p_column) {
+  QTextTable *table = sheetTable(p_sheet);
+  if (!table) {
+    return;
+  }
+
+  p_sheet->setTextCursor(table->cellAt(p_row, p_column).lastCursorPosition());
+}
+
+// Replace a cell's whole contents the way selecting it and typing does.
+void editCell(QTextEdit *p_sheet, int p_row, int p_column, const QString &p_text) {
+  QTextTable *table = sheetTable(p_sheet);
+  if (!table) {
+    return;
+  }
+
+  const QTextTableCell cell = table->cellAt(p_row, p_column);
+  QTextCursor cursor = cell.firstCursorPosition();
+  cursor.setPosition(cell.lastCursorPosition().position(), QTextCursor::KeepAnchor);
+  p_sheet->setTextCursor(cursor);
+  cursor.insertText(p_text);
+}
+
+// Write the pending edit back now. The sheet debounces on a 400 ms idle timer,
+// and losing the focus is one of the triggers which flushes it immediately.
+void flushSheet(QTextEdit *p_sheet) {
+  QFocusEvent out(QEvent::FocusOut);
+  QCoreApplication::sendEvent(p_sheet, &out);
+  QCoreApplication::processEvents();
 }
 
 // Collects the warnings Qt emits while it is installed, so a test can assert
@@ -657,20 +812,25 @@ void TestInteractivePreview::testTableEditCommitsCanonicalMarkdown() {
 
   auto widget = singlePreviewWidget(editor);
   QVERIFY(widget);
-  auto model = widget->findChild<QAbstractItemModel *>();
-  QVERIFY(model);
-  QCOMPARE(model->rowCount(), 2);
-  QCOMPARE(model->columnCount(), 2);
-  QCOMPARE(model->data(model->index(0, 0)).toString(), QStringLiteral("h1"));
-  QCOMPARE(model->data(model->index(1, 1)).toString(), QStringLiteral("b"));
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+  auto table = sheetTable(sheet);
+  QVERIFY(table);
+  QCOMPARE(table->rows(), 2);
+  QCOMPARE(table->columns(), 2);
+  QCOMPARE(sheetCell(sheet, 0, 0), QStringLiteral("h1"));
+  QCOMPARE(sheetCell(sheet, 1, 1), QStringLiteral("b"));
 
-  // A no-op commit changes nothing.
+  // A no-op edit changes nothing: the flush compares what the document would
+  // serialize to, so retyping the same value never reaches the document.
   const QString before = editor.document()->toPlainText();
-  QVERIFY(!model->setData(model->index(1, 1), QStringLiteral("b")));
+  editCell(sheet, 1, 1, QStringLiteral("b"));
+  flushSheet(sheet);
   QCOMPARE(editor.document()->toPlainText(), before);
 
   // A real edit is written back in canonical form.
-  QVERIFY(model->setData(model->index(1, 1), QStringLiteral("changed")));
+  editCell(sheet, 1, 1, QStringLiteral("changed"));
+  flushSheet(sheet);
   const QString after = editor.document()->toPlainText();
   QVERIFY2(after.contains(QStringLiteral("| a   | changed |")), qPrintable(after));
   QVERIFY2(after.contains(QStringLiteral("| --- | ------- |")), qPrintable(after));
@@ -713,18 +873,6 @@ void TestInteractivePreview::testGlobalDisableRemovesWidgets() {
   QTest::qWait(50);
   QCoreApplication::processEvents();
   QVERIFY(singlePreviewWidget(editor));
-}
-
-void TestInteractivePreview::testTablePreviewVisibleRows() {
-  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
-  QCOMPARE(editor.tablePreviewVisibleRows(), 10);
-
-  editor.setTablePreviewVisibleRows(3);
-  QCOMPARE(editor.tablePreviewVisibleRows(), 3);
-
-  // Consumed as at least one row.
-  editor.setTablePreviewVisibleRows(0);
-  QCOMPARE(editor.tablePreviewVisibleRows(), 1);
 }
 
 void TestInteractivePreview::testDuplicateTablesGetDistinctIdentities() {
@@ -843,29 +991,29 @@ void TestInteractivePreview::testSourceMismatchDoesNotRestoreStaleValues() {
 
   auto widget = singlePreviewWidget(editor);
   QVERIFY(widget);
-  auto view = widget->findChild<QAbstractItemView *>();
-  QVERIFY(view);
-  QVERIFY(view->isEnabled());
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+  QVERIFY(!sheet->isReadOnly());
 
   // Change the source without letting a new snapshot be published.
   QTextCursor cursor(editor.document());
   cursor.setPosition(3);
   cursor.insertText(QStringLiteral("X"));
 
-  auto model = widget->findChild<QAbstractItemModel *>();
-  QVERIFY(model);
-  QVERIFY(model->setData(model->index(1, 1), QStringLiteral("edited")));
+  editCell(sheet, 1, 1, QStringLiteral("edited"));
+  flushSheet(sheet);
 
   // The live source no longer matches, so the widget must stop presenting the
   // superseded snapshot as the truth instead of restoring its old values.
-  QVERIFY(!view->isEnabled());
+  QVERIFY(sheet->isReadOnly());
+  QCOMPARE(sheetCell(sheet, 1, 1), QStringLiteral("edited"));
   QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("| hX1 | h2 |")));
 
   // The authoritative snapshot re-enables editing.
   settle(editor);
   auto refreshed = singlePreviewWidget(editor);
   QVERIFY(refreshed);
-  QVERIFY(refreshed->findChild<QAbstractItemView *>()->isEnabled());
+  QVERIFY(!sheetView(refreshed)->isReadOnly());
 }
 
 void TestInteractivePreview::testFactoryUnregisteringItselfFromCallback() {
@@ -1161,17 +1309,13 @@ void TestInteractivePreview::testReplacementRejectsExoticLineSeparators() {
 void TestInteractivePreview::testOversizedTableFallsBackToSource() {
   VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
 
-  // One very wide row would otherwise inflate every other row of the sheet.
-  QString wide = QStringLiteral("|");
-  for (int i = 0; i < 900; ++i) {
-    wide += QStringLiteral(" w |");
+  // A QTextTable is not virtualized and relays the whole table out on every
+  // keystroke, so the cell bound is a latency bound. Past it the raw Markdown
+  // stays as the only rendering.
+  QString text = QStringLiteral("| a | b | c | d | e |\n| --- | --- | --- | --- | --- |\n");
+  for (int i = 0; i < 200; ++i) {
+    text += QStringLiteral("| r | r | r | r | r |\n");
   }
-
-  QString text = QStringLiteral("| a |\n| --- |\n");
-  for (int i = 0; i < 900; ++i) {
-    text += QStringLiteral("| r |\n");
-  }
-  text += wide + QStringLiteral("\n");
 
   setTextAndSettle(editor, text);
 
@@ -1186,17 +1330,18 @@ void TestInteractivePreview::testReadOnlyEditorDisablesCellEditing() {
 
   auto widget = singlePreviewWidget(editor);
   QVERIFY(widget);
-  auto view = widget->findChild<QAbstractItemView *>();
-  QVERIFY(view);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
   // The sheet is presented as a viewer rather than swallowing edits the host
-  // would reject at commit time.
-  QCOMPARE(view->editTriggers(), QAbstractItemView::NoEditTriggers);
+  // would reject at commit time. Read-only still allows the caret, a selection
+  // and a copy.
+  QVERIFY(sheet->isReadOnly());
 
   editor.getTextEdit()->setReadOnly(false);
   editor.getHighlighter()->updateHighlight();
   QTest::qWait(50);
   QCoreApplication::processEvents();
-  QVERIFY(view->editTriggers() != QAbstractItemView::NoEditTriggers);
+  QVERIFY(!sheet->isReadOnly());
 }
 
 void TestInteractivePreview::testNoSnapshotWorkWithoutAClaimableFactory() {
@@ -1317,17 +1462,17 @@ void TestInteractivePreview::testReadOnlyToggleReachesLiveSheets() {
 
   auto widget = singlePreviewWidget(editor);
   QVERIFY(widget);
-  auto view = widget->findChild<QAbstractItemView *>();
-  QVERIFY(view);
-  QVERIFY(view->editTriggers() != QAbstractItemView::NoEditTriggers);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+  QVERIFY(!sheet->isReadOnly());
 
   // QTextEdit::setReadOnly() emits no signal and changes no content, so nothing
   // would republish. The sheet still has to stop offering edits immediately.
   editor.getTextEdit()->setReadOnly(true);
-  QCOMPARE(view->editTriggers(), QAbstractItemView::NoEditTriggers);
+  QVERIFY(sheet->isReadOnly());
 
   editor.getTextEdit()->setReadOnly(false);
-  QVERIFY(view->editTriggers() != QAbstractItemView::NoEditTriggers);
+  QVERIFY(!sheet->isReadOnly());
 }
 
 void TestInteractivePreview::testRaggedTableIsNotEditable() {
@@ -1340,21 +1485,24 @@ void TestInteractivePreview::testRaggedTableIsNotEditable() {
 
   auto widget = singlePreviewWidget(editor);
   QVERIFY(widget);
-  auto view = qobject_cast<QTableView *>(widget->findChild<QAbstractItemView *>());
-  QVERIFY(view);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+  auto table = sheetTable(sheet);
+  QVERIFY(table);
 
   // The extra cell stays visible, so nothing is hidden from the user.
-  QCOMPARE(view->model()->columnCount(), 3);
+  QCOMPARE(table->columns(), 3);
 
   // But the sheet is a viewer: it cannot be written back without changing what
   // the table renders to.
-  QCOMPARE(view->editTriggers(), QAbstractItemView::NoEditTriggers);
+  QVERIFY(sheet->isReadOnly());
 
-  // Even a programmatic edit leaves the document untouched.
+  // Even an edit which bypasses the read-only flag leaves the document
+  // untouched, because the flush refuses to serialize a non round-trippable
+  // sheet at all.
   const QString before = editor.document()->toPlainText();
-  QVERIFY(view->model()->setData(view->model()->index(2 % view->model()->rowCount(), 0),
-                                 QStringLiteral("zz"), Qt::EditRole));
-  QCoreApplication::processEvents();
+  editCell(sheet, 1, 0, QStringLiteral("zz"));
+  flushSheet(sheet);
   QCOMPARE(editor.document()->toPlainText(), before);
 }
 
@@ -1364,25 +1512,26 @@ void TestInteractivePreview::testCommitKeepsCellEditorAcrossNextParse() {
 
   auto widget = singlePreviewWidget(editor);
   QVERIFY(widget);
-  auto view = qobject_cast<QTableView *>(widget->findChild<QAbstractItemView *>());
-  QVERIFY(view);
-  auto model = view->model();
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
 
-  QVERIFY(model->setData(model->index(1, 0), QStringLiteral("zz"), Qt::EditRole));
-  QCoreApplication::processEvents();
+  editCell(sheet, 1, 0, QStringLiteral("zz"));
+  flushSheet(sheet);
   QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("zz")));
 
-  // Select a cell, then let the parse generation which merely echoes this
-  // sheet's own commit arrive. A model reset here would drop the selection and
-  // destroy any editor the user has already opened.
-  view->setCurrentIndex(model->index(1, 1));
-  QVERIFY(view->currentIndex().isValid());
+  // Put the caret in another cell, then let the parse generation which merely
+  // echoes this sheet's own commit arrive. Rebuilding the document here would
+  // destroy the caret the user is typing at.
+  putCaretIn(sheet, 1, 1);
+  const int caret = sheet->textCursor().position();
+  QVERIFY(sheet->textCursor().currentTable());
 
   settle(editor);
 
   QCOMPARE(singlePreviewWidget(editor), widget);
-  QCOMPARE(view->currentIndex(), model->index(1, 1));
-  QCOMPARE(model->data(model->index(1, 0), Qt::DisplayRole).toString(), QStringLiteral("zz"));
+  QCOMPARE(sheetView(widget), sheet);
+  QCOMPARE(sheet->textCursor().position(), caret);
+  QCOMPARE(sheetCell(sheet, 1, 0), QStringLiteral("zz"));
 }
 
 void TestInteractivePreview::testTableIsOptInByDefault() {
@@ -1424,30 +1573,27 @@ void TestInteractivePreview::testTableSheetRefitsAfterFontChange() {
 
   auto widget = singlePreviewWidget(editor);
   QVERIFY(widget);
-  auto view = qobject_cast<QTableView *>(widget->findChild<QAbstractItemView *>());
-  QVERIFY(view);
-  auto model = view->model();
-  QCOMPARE(model->columnCount(), 2);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+  QVERIFY(sheetTable(sheet));
+  QCOMPARE(sheetTable(sheet)->columns(), 2);
 
   QTest::qWait(50);
   QCoreApplication::processEvents();
 
   auto fits = [&](const char *p_stage) {
-    // The planned sections are authoritative; re-measuring them here would
-    // overwrite the very layout under test.
-    int total = 0;
-    for (int c = 0; c < model->columnCount(); ++c) {
-      total += view->columnWidth(c);
-    }
-
-    QVERIFY2(view->viewport()->width() >= total,
-             qPrintable(QStringLiteral("%1: viewport width %2 < total column width %3")
+    // Nothing is clipped: the table fits the band it was laid out in, and the
+    // band the host reserved is tall enough for the whole document.
+    QVERIFY2(tableWidth(sheet) <= sheet->viewport()->width() + 2,
+             qPrintable(QStringLiteral("%1: the table is %2 wide inside a %3 viewport")
                             .arg(QLatin1String(p_stage))
-                            .arg(view->viewport()->width())
-                            .arg(total)));
-    QVERIFY2(view->horizontalScrollBar()->value() == 0,
-             qPrintable(QStringLiteral("%1: the view scrolled horizontally, so the first column "
-                                       "is clipped")
+                            .arg(tableWidth(sheet))
+                            .arg(sheet->viewport()->width())));
+    QVERIFY2(sheet->horizontalScrollBar()->maximum() == 0,
+             qPrintable(QStringLiteral("%1: the sheet scrolls sideways, so a column is clipped")
+                            .arg(QLatin1String(p_stage))));
+    QVERIFY2(sheet->verticalScrollBar()->maximum() == 0,
+             qPrintable(QStringLiteral("%1: the band is shorter than the sheet needs")
                             .arg(QLatin1String(p_stage))));
   };
 
@@ -1503,29 +1649,24 @@ void TestInteractivePreview::testTableSheetFitsWithALargeThemeFont() {
 
   auto widget = singlePreviewWidget(editor);
   QVERIFY(widget);
-  auto view = qobject_cast<QTableView *>(widget->findChild<QAbstractItemView *>());
-  QVERIFY(view);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
 
   QTest::qWait(50);
   QCoreApplication::processEvents();
 
   // A theme font much larger than the application default is the case which
   // originally under-reserved: the sheet measured itself with the 9pt default
-  // while being painted with the theme font, the stretched last section
-  // absorbed the shortfall, and clicking it scrolled the first column away.
-  QCOMPARE(view->font().pointSize(), 20);
+  // while being painted with the theme font, and the shortfall clipped the
+  // contents.
+  QCOMPARE(sheet->font().pointSize(), 20);
 
-  auto model = view->model();
-  int totalColumnWidth = 0;
-  for (int c = 0; c < model->columnCount(); ++c) {
-    totalColumnWidth += view->columnWidth(c);
-  }
-
-  QVERIFY2(view->viewport()->width() >= totalColumnWidth,
-           qPrintable(QStringLiteral("viewport width %1 < total column width %2")
-                          .arg(view->viewport()->width())
-                          .arg(totalColumnWidth)));
-  QCOMPARE(view->horizontalScrollBar()->value(), 0);
+  QVERIFY2(tableWidth(sheet) <= sheet->viewport()->width() + 2,
+           qPrintable(QStringLiteral("the table is %1 wide inside a %2 viewport")
+                          .arg(tableWidth(sheet))
+                          .arg(sheet->viewport()->width())));
+  QCOMPARE(sheet->horizontalScrollBar()->maximum(), 0);
+  QCOMPARE(sheet->verticalScrollBar()->maximum(), 0);
 }
 
 void TestInteractivePreview::testTableSheetUsesTheThemeGenericFont() {
@@ -1551,8 +1692,8 @@ void TestInteractivePreview::testTableSheetUsesTheThemeGenericFont() {
 
   auto widget = singlePreviewWidget(editor);
   QVERIFY(widget);
-  auto view = qobject_cast<QTableView *>(widget->findChild<QAbstractItemView *>());
-  QVERIFY(view);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
 
   const auto &generic = editor.theme()->editorStyle(Theme::EditorStyle::Text);
   QCOMPARE(generic.m_fontFamily, QStringLiteral("Courier New, A"));
@@ -1561,89 +1702,29 @@ void TestInteractivePreview::testTableSheetUsesTheThemeGenericFont() {
   // VTextEdit::font() is still the application default. The sheet has to take
   // the font from the theme, otherwise the very first measurement - the one
   // the layout reserves space from - is made with the wrong metrics.
-  QVERIFY2(view->font().family() == generic.m_fontFamily,
+  QVERIFY2(sheet->font().family() == generic.m_fontFamily,
            qPrintable(QStringLiteral("sheet font %1 is not the theme's generic font %2")
-                          .arg(view->font().family(), generic.m_fontFamily)));
+                          .arg(sheet->font().family(), generic.m_fontFamily)));
 
   editor.show();
   QVERIFY(QTest::qWaitForWindowExposed(&editor));
   QTest::qWait(50);
   QCoreApplication::processEvents();
 
-  QCOMPARE(view->font().family(), generic.m_fontFamily);
-  QCOMPARE(view->font().pointSize(), editor.editorFontPointSize());
+  QCOMPARE(sheet->font().family(), generic.m_fontFamily);
+  QCOMPARE(sheet->font().pointSize(), editor.editorFontPointSize());
 
   // Zooming re-sizes the editor, and the sheet has to follow it.
-  const int before = view->font().pointSize();
+  const int before = sheet->font().pointSize();
   editor.zoom(4);
   QTest::qWait(50);
   QCoreApplication::processEvents();
 
-  QCOMPARE(view->font().pointSize(), editor.editorFontPointSize());
-  QVERIFY2(view->font().pointSize() > before,
+  QCOMPARE(sheet->font().pointSize(), editor.editorFontPointSize());
+  QVERIFY2(sheet->font().pointSize() > before,
            qPrintable(QStringLiteral("point size %1 did not grow from %2")
-                          .arg(view->font().pointSize())
+                          .arg(sheet->font().pointSize())
                           .arg(before)));
-}
-
-void TestInteractivePreview::testTableSheetFitsWithoutScrollBars() {
-  // Both a table whose cells are wider than the header's minimum section size
-  // and one whose cells are narrower than it: the reserved band has to cover
-  // the sizes the headers actually assign, not the bare content hints.
-  const QVector<QString> tables{
-      QStringLiteral("| header1 | header2 |\n| --- | --- |\n| hahaha | hahahha |\n"),
-      QStringLiteral("| a | b |\n| --- | --- |\n| c | d |\n")};
-
-  for (const auto &table : tables) {
-    VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
-    editor.resize(600, 400);
-    editor.show();
-    QVERIFY(QTest::qWaitForWindowExposed(&editor));
-
-    // A small table which comfortably fits the default visible row budget.
-    setTextAndSettle(editor, table);
-
-    auto widget = singlePreviewWidget(editor);
-    QVERIFY(widget);
-    auto view = qobject_cast<QTableView *>(widget->findChild<QAbstractItemView *>());
-    QVERIFY(view);
-    auto model = view->model();
-    QVERIFY(model);
-    QCOMPARE(model->rowCount(), 2);
-    QCOMPARE(model->columnCount(), 2);
-
-    QTest::qWait(50);
-    QCoreApplication::processEvents();
-
-    const QSize viewportSize = view->viewport()->size();
-
-    // Even a hidden vertical header floors every row at its minimum section
-    // size, which can exceed what the delegate reports.
-    int totalRowHeight = 0;
-    for (int r = 0; r < model->rowCount(); ++r) {
-      totalRowHeight += view->rowHeight(r);
-    }
-    QVERIFY2(viewportSize.height() >= totalRowHeight,
-             qPrintable(QStringLiteral("viewport height %1 < total row height %2")
-                            .arg(viewportSize.height())
-                            .arg(totalRowHeight)));
-
-    // Otherwise a scroll bar appears and eats the width the last, stretched
-    // column needs, clipping its contents.
-    QVERIFY(!view->verticalScrollBar()->isVisible());
-
-    // The sheet plans every section itself, so the assigned widths are what
-    // has to fit; normalizing them to the content hints first would test a
-    // layout the sheet never uses.
-    int totalColumnWidth = 0;
-    for (int c = 0; c < model->columnCount(); ++c) {
-      totalColumnWidth += view->columnWidth(c);
-    }
-    QVERIFY2(viewportSize.width() >= totalColumnWidth,
-             qPrintable(QStringLiteral("viewport width %1 < total column width %2")
-                            .arg(viewportSize.width())
-                            .arg(totalColumnWidth)));
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1652,70 +1733,25 @@ void TestInteractivePreview::testTableSheetFitsWithoutScrollBars() {
 
 namespace {
 // TablePreviewWidget::c_widthFraction, which lives in an internal header this
-// target deliberately cannot reach.
-const qreal c_expectedWidthFraction = 0.9;
+// target deliberately cannot reach. The sheet now spans the whole band: the
+// column widths are owned by Qt's table layout, which distributes whatever
+// width it is given, so there is no natural width to keep.
+const qreal c_expectedWidthFraction = 1.0;
 
 // The reserved band is a qreal rectangle turned into widget geometry with
 // toAlignedRect(), which can round outwards by a pixel on either edge.
 const int c_widthTolerance = 2;
 
-QTableView *sheetView(PreviewWidget *p_widget) {
-  return qobject_cast<QTableView *>(p_widget->findChild<QAbstractItemView *>());
-}
-
-int totalColumnWidth(QTableView *p_view) {
-  int total = 0;
-  for (int c = 0; c < p_view->model()->columnCount(); ++c) {
-    total += p_view->columnWidth(c);
-  }
-
-  return total;
-}
-
-int totalRowHeight(QTableView *p_view) {
-  int total = 0;
-  for (int r = 0; r < p_view->model()->rowCount(); ++r) {
-    total += p_view->rowHeight(r);
-  }
-
-  return total;
-}
-
-
-// A table with p_columns short columns, so every column ends up at the sheet's
-// readable floor and the only thing which decides whether the sheet overflows
-// is how many of those floors fit in the text column.
-QString makeColumnTable(int p_columns) {
-  QString header;
-  QString delimiter;
-  QString body;
-  for (int c = 0; c < p_columns; ++c) {
-    header += QStringLiteral("| c%1 ").arg(c);
-    delimiter += QStringLiteral("| --- ");
-    body += QStringLiteral("| v%1 ").arg(c);
-  }
-
-  return header + QStringLiteral("|\n") + delimiter + QStringLiteral("|\n") + body +
-         QStringLiteral("|\n");
-}
-
-// The number of columns the sheet is built with in the overflow scenarios.
-// Wide enough that their floors cannot fit a 420 pixel editor whatever the
-// platform font is, since the floor is at least twelve average characters.
-const int c_overflowColumns = 12;
-
-// The whole width contract in one expression: a sheet narrower than the fill
-// grows to it, a wider one keeps its natural width, and one wider than the
-// text column is clamped to it.
+// The whole width contract in one expression: whatever the contents, the sheet
+// spans the text column.
 int expectedSheetWidth(qreal p_available, int p_natural) {
   return qRound(qBound(p_available * c_expectedWidthFraction, qreal(p_natural), p_available));
 }
 } // namespace
 
 void TestInteractivePreview::testTableSheetSpansContentWidth() {
-  // The two outer branches of the contract: far below the fill, and beyond the
-  // text column. The middle one only exists at one particular editor width and
-  // has a test of its own.
+  // Whatever the contents - a table which would be far narrower than the band,
+  // and one whose single cell is far wider than it - the sheet is the band.
   const QVector<QString> tables{
       QStringLiteral("| a | b |\n| --- | --- |\n| c | d |\n"),
       QStringLiteral("| h |\n| --- |\n| ") + QString(300, QLatin1Char('x')) +
@@ -1731,47 +1767,36 @@ void TestInteractivePreview::testTableSheetSpansContentWidth() {
     auto widget = singlePreviewWidget(editor);
     QVERIFY(widget);
     QVERIFY(widget->previewContext());
+    auto sheet = sheetView(widget);
+    QVERIFY(sheet);
 
     const qreal available = widget->previewContext()->availableContentRect().width();
     QVERIFY(available > 0);
 
-    // Unchanged by the fill: the measurement derives from the content hints,
-    // never from the assigned geometry.
+    // Width 0 on purpose: the sheet reports no natural width, so the host
+    // resolves the band from preferredWidthFraction() alone.
     const int natural = widget->sizeHint().width();
-
-    // Assert the branch this source is meant to exercise, otherwise a drifting
-    // font could silently turn both rows into the same case.
-    if (i == 0) {
-      QVERIFY2(natural < available * c_expectedWidthFraction,
-               qPrintable(QStringLiteral("the narrow table is not narrow enough: %1 vs %2")
-                              .arg(natural)
-                              .arg(available * c_expectedWidthFraction)));
-    } else {
-      QVERIFY2(natural > available,
-               qPrintable(QStringLiteral("the wide table is not wider than the text column: "
-                                         "%1 vs %2")
-                              .arg(natural)
-                              .arg(available)));
-    }
+    QCOMPARE(natural, 0);
 
     const int expected = expectedSheetWidth(available, natural);
     QVERIFY2(qAbs(widget->width() - expected) <= c_widthTolerance,
              qPrintable(QStringLiteral("table %1: sheet width %2 is not the expected %3 "
-                                       "(natural %4, available %5)")
+                                       "(available %4)")
                             .arg(i)
                             .arg(widget->width())
                             .arg(expected)
-                            .arg(natural)
                             .arg(available)));
 
-    if (i == 0) {
-      // A no-op implementation would still satisfy the clamp above for the
-      // tables which are naturally wide enough.
-      QVERIFY2(widget->width() > natural,
-               qPrintable(QStringLiteral("the narrow sheet was not widened: %1 <= %2")
-                              .arg(widget->width())
-                              .arg(natural)));
-    }
+    // And the table really occupies that band rather than hugging the margin.
+    QVERIFY2(tableWidth(sheet) > 0.9 * sheet->viewport()->width(),
+             qPrintable(QStringLiteral("table %1: the table is %2 wide inside a %3 viewport")
+                            .arg(i)
+                            .arg(tableWidth(sheet))
+                            .arg(sheet->viewport()->width())));
+
+    // Even the very wide cell is wrapped into the band rather than clipped.
+    QCOMPARE(sheet->horizontalScrollBar()->maximum(), 0);
+    QCOMPARE(sheet->verticalScrollBar()->maximum(), 0);
   }
 }
 
@@ -1790,41 +1815,46 @@ void TestInteractivePreview::testClickEditsACellInPlace() {
 
   auto widget = singlePreviewWidget(editor);
   QVERIFY(widget);
-  auto view = sheetView(widget);
-  QVERIFY(view);
-  QVERIFY(view->viewport()->findChildren<QLineEdit *>().isEmpty());
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+  QVERIFY(!sheet->isReadOnly());
 
   // One click inside the embedded sheet, near the start of the cell's text.
-  const QModelIndex index = view->model()->index(1, 1);
-  const QRect cell = view->visualRect(index);
-  const QPoint pos(cell.left() + 6, cell.center().y());
-  QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, pos);
+  const QRect cell = sheetCellRect(sheet, 1, 1);
+  QVERIFY(cell.isValid());
+  const QPoint pos(cell.left() + 2, cell.center().y());
+  QTest::mouseClick(sheet->viewport(), Qt::LeftButton, Qt::NoModifier, pos);
   QTest::qWait(50);
   QCoreApplication::processEvents();
 
-  const auto editors = view->viewport()->findChildren<QLineEdit *>();
-  QVERIFY2(editors.size() == 1, "one click did not start editing the cell");
+  // There is no edit mode and no cell editor: the click put the one caret at
+  // the exact character under the pointer.
+  const QTextCursor cursor = sheet->textCursor();
+  QVERIFY2(cursor.currentTable(), "the click left the caret outside the table");
+  const QTextTableCell hit = cursor.currentTable()->cellAt(cursor);
+  QCOMPARE(hit.row(), 1);
+  QCOMPARE(hit.column(), 1);
+  QCOMPARE(sheetCell(sheet, 1, 1), QStringLiteral("**bold**"));
 
-  auto cellEditor = editors.first();
-  QCOMPARE(cellEditor->text(), QStringLiteral("**bold**"));
   // Nothing selected, so the value is not sitting there waiting to be wiped by
-  // the next keystroke - and nothing can be hidden behind an unreadable
-  // selection colour either.
-  QVERIFY(cellEditor->selectedText().isEmpty());
-  QVERIFY2(cellEditor->cursorPosition() < cellEditor->text().size(),
+  // the next keystroke.
+  QVERIFY(cursor.selectedText().isEmpty());
+  QCOMPARE(cursor.position(), sheet->cursorForPosition(pos).position());
+  QVERIFY2(cursor.position() < hit.lastCursorPosition().position(),
            qPrintable(QStringLiteral("the caret went to the end (%1) rather than the click")
-                          .arg(cellEditor->cursorPosition())));
+                          .arg(cursor.position())));
 
-  // Typing inserts at the caret, and the commit reaches the source.
-  QTest::keyClicks(cellEditor, QStringLiteral("X"));
-  QCOMPARE(cellEditor->text().size(), QStringLiteral("**bold**").size() + 1);
-  QTest::keyClick(cellEditor, Qt::Key_Return);
-  QTest::qWait(80);
-  QCoreApplication::processEvents();
+  // Typing inserts at the caret, and the flush reaches the source.
+  QTest::keyClicks(sheet, QStringLiteral("X"));
+  QCOMPARE(sheetCell(sheet, 1, 1).size(), QStringLiteral("**bold**").size() + 1);
+  flushSheet(sheet);
 
   QVERIFY2(editor.getTextEdit()->toPlainText().contains(QStringLiteral("bold")),
            "the committed cell lost its value");
+  QVERIFY2(editor.getTextEdit()->toPlainText().contains(QLatin1Char('X')),
+           "the typed character never reached the source");
 }
+
 void TestInteractivePreview::testTableSheetHeightMatchesItsRows() {
   VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
   editor.resize(420, 600);
@@ -1846,14 +1876,14 @@ void TestInteractivePreview::testTableSheetHeightMatchesItsRows() {
 
   auto widget = singlePreviewWidget(editor);
   QVERIFY(widget);
-  auto view = sheetView(widget);
-  QVERIFY(view);
-  QCOMPARE(view->model()->rowCount(), 4);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+  QVERIFY(sheetTable(sheet));
+  QCOMPARE(sheetTable(sheet)->rows(), 4);
 
-  int shortest = INT_MAX;
-  int tallest = 0;
-  for (int r = 0; r < view->model()->rowCount(); ++r) {
-    const int height = view->rowHeight(r);
+  qreal shortest = std::numeric_limits<qreal>::max();
+  qreal tallest = 0;
+  for (qreal height : rowHeights(sheet)) {
     shortest = qMin(shortest, height);
     tallest = qMax(tallest, height);
   }
@@ -1865,13 +1895,14 @@ void TestInteractivePreview::testTableSheetHeightMatchesItsRows() {
                           .arg(tallest)
                           .arg(shortest)));
 
-  // No empty strip under the last row, and no row hidden under the bar: the
-  // viewport is exactly the rows, and the band the host reserved is exactly
-  // the sheet.
-  const int rows = totalRowHeight(view);
-  QCOMPARE(view->viewport()->height(), rows);
-  QCOMPARE(widget->height(), view->height());
-  QVERIFY(!view->verticalScrollBar()->isVisible());
+  // The band the host reserved is exactly the sheet, and the sheet is exactly
+  // the document: no empty strip under the last row, and nothing clipped.
+  QCOMPARE(widget->height(), sheet->height());
+  QCOMPARE(sheet->verticalScrollBar()->maximum(), 0);
+  QVERIFY2(totalRowHeight(sheet) <= sheet->viewport()->height(),
+           qPrintable(QStringLiteral("the rows total %1 inside a %2 viewport")
+                          .arg(totalRowHeight(sheet))
+                          .arg(sheet->viewport()->height())));
 
   // Given room, the same table stops wrapping and the band shrinks with it.
   const int tallBand = widget->height();
@@ -1880,10 +1911,9 @@ void TestInteractivePreview::testTableSheetHeightMatchesItsRows() {
   QTest::qWait(50);
   QCoreApplication::processEvents();
 
-  int wideShortest = INT_MAX;
-  int wideTallest = 0;
-  for (int r = 0; r < view->model()->rowCount(); ++r) {
-    const int height = view->rowHeight(r);
+  qreal wideShortest = std::numeric_limits<qreal>::max();
+  qreal wideTallest = 0;
+  for (qreal height : rowHeights(sheet)) {
     wideShortest = qMin(wideShortest, height);
     wideTallest = qMax(wideTallest, height);
   }
@@ -1896,229 +1926,7 @@ void TestInteractivePreview::testTableSheetHeightMatchesItsRows() {
            qPrintable(QStringLiteral("the band did not shrink: %1 vs %2")
                           .arg(widget->height())
                           .arg(tallBand)));
-  QCOMPARE(view->viewport()->height(), totalRowHeight(view));
-}
-
-void TestInteractivePreview::testWideTableSheetScrollsHorizontally() {
-  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
-  editor.resize(420, 400);
-  editor.show();
-  QVERIFY(QTest::qWaitForWindowExposed(&editor));
-
-  // More columns than their readable floors can fit: compressing further would
-  // turn every column into a ribbon of single letters, so the sheet stops and
-  // the overflow is reached by scrolling instead.
-  setTextAndSettle(editor, makeColumnTable(c_overflowColumns));
-  QTest::qWait(50);
-  QCoreApplication::processEvents();
-
-  auto widget = singlePreviewWidget(editor);
-  QVERIFY(widget);
-  auto view = sheetView(widget);
-  QVERIFY(view);
-  QCOMPARE(view->model()->columnCount(), c_overflowColumns);
-
-  const qreal available = widget->previewContext()->availableContentRect().width();
-  QVERIFY2(qAbs(widget->width() - qRound(available)) <= c_widthTolerance,
-           qPrintable(QStringLiteral("the sheet was not clamped to the text column: %1 vs %2")
-                          .arg(widget->width())
-                          .arg(available)));
-
-  // Every column sits at the same floor, which is what "cannot compress any
-  // further" means.
-  const int floor = view->columnWidth(0);
-  for (int c = 1; c < c_overflowColumns; ++c) {
-    QCOMPARE(view->columnWidth(c), floor);
-  }
-  QVERIFY2(totalColumnWidth(view) > view->viewport()->width(),
-           qPrintable(QStringLiteral("the columns do not overflow: %1 vs viewport %2")
-                          .arg(totalColumnWidth(view))
-                          .arg(view->viewport()->width())));
-
-  // The overflow is reachable rather than silently clipped.
-  auto hbar = view->horizontalScrollBar();
-  QVERIFY(hbar->isVisible());
-  QVERIFY2(hbar->maximum() > 0,
-           qPrintable(QStringLiteral("the sheet does not scroll: maximum %1").arg(hbar->maximum())));
-
-  // The band reserves the bar's height, so it covers no row. How much the bar
-  // costs is style dependent; that it costs *something* is what
-  // testSheetReservesTheScrollBarAcrossAResize() pins down, by comparing the
-  // band with and without it.
-  const int rows = totalRowHeight(view);
-  QCOMPARE(view->viewport()->height(), rows);
-  QCOMPARE(widget->height(), view->height());
-
-  // Scrolling to the end brings the last column fully into view.
-  const int last = view->model()->columnCount() - 1;
-  hbar->setValue(hbar->maximum());
-  QCoreApplication::processEvents();
-  QVERIFY2(view->columnViewportPosition(last) >= 0 &&
-               view->columnViewportPosition(last) + view->columnWidth(last) <=
-                   view->viewport()->width(),
-           qPrintable(QStringLiteral("the last column is not reachable: x %1, width %2, "
-                                     "viewport %3")
-                          .arg(view->columnViewportPosition(last))
-                          .arg(view->columnWidth(last))
-                          .arg(view->viewport()->width())));
-}
-
-void TestInteractivePreview::testASingleOverflowingColumnScrollsToItsEnd() {
-  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
-  editor.resize(420, 400);
-  editor.show();
-  QVERIFY(QTest::qWaitForWindowExposed(&editor));
-
-  // One cell far wider than the whole sheet, and with no word boundary to
-  // break on. Qt's own item delegates wrap on word boundaries only, so this is
-  // exactly the cell which would otherwise be elided and unreachable.
-  setTextAndSettle(editor, QStringLiteral("| h |\n| --- |\n| ") +
-                               QString(300, QLatin1Char('x')) + QStringLiteral(" |\n"));
-  QTest::qWait(50);
-  QCoreApplication::processEvents();
-
-  auto widget = singlePreviewWidget(editor);
-  QVERIFY(widget);
-  auto view = sheetView(widget);
-  QVERIFY(view);
-  QCOMPARE(view->model()->columnCount(), 1);
-
-  // A single column always fits, so nothing scrolls sideways any more.
-  QVERIFY(!view->horizontalScrollBar()->isVisible());
-  QCOMPARE(view->columnWidth(0), view->viewport()->width());
-
-  // The whole token is shown, on as many lines as it takes.
-  QVERIFY2(view->rowHeight(1) >= 3 * view->rowHeight(0),
-           qPrintable(QStringLiteral("the unbreakable cell was not wrapped: %1 vs header %2")
-                          .arg(view->rowHeight(1))
-                          .arg(view->rowHeight(0))));
-
-  // And the band is exactly those rows, with nothing scrolled out of view.
-  QCOMPARE(view->viewport()->height(), totalRowHeight(view));
-  QVERIFY(!view->verticalScrollBar()->isVisible());
-}
-
-namespace {
-// Deliver a wheel movement the way the platform would, and report whether it
-// was consumed. An unconsumed event is what Qt then propagates to the editor.
-bool sendWheel(QWidget *p_target, const QPoint &p_angleDelta, Qt::KeyboardModifiers p_modifiers) {
-  const QPointF pos(p_target->width() / 2.0, p_target->height() / 2.0);
-  QWheelEvent event(pos, p_target->mapToGlobal(pos.toPoint()), QPoint(), p_angleDelta,
-                    Qt::NoButton, p_modifiers, Qt::NoScrollPhase, false);
-  event.setAccepted(false);
-  QCoreApplication::sendEvent(p_target, &event);
-  return event.isAccepted();
-}
-} // namespace
-
-void TestInteractivePreview::testWideSheetConsumesHorizontalWheel() {
-  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
-  editor.resize(420, 400);
-  editor.show();
-  QVERIFY(QTest::qWaitForWindowExposed(&editor));
-  // The columns only overflow once their readable floors no longer fit, so the
-  // scenario is built from column count rather than from cell length.
-  setTextAndSettle(editor, makeColumnTable(c_overflowColumns));
-  QTest::qWait(50);
-  QCoreApplication::processEvents();
-
-  auto widget = singlePreviewWidget(editor);
-  QVERIFY(widget);
-  auto view = sheetView(widget);
-  QVERIFY(view);
-
-  auto hbar = view->horizontalScrollBar();
-  QVERIFY(hbar->isVisible());
-  QVERIFY(hbar->maximum() > 0);
-  QCOMPARE(hbar->value(), 0);
-
-  // A horizontal movement belongs to the sheet while it still has room.
-  QVERIFY(sendWheel(view->viewport(), QPoint(-120, 0), Qt::NoModifier));
-  QVERIFY2(hbar->value() > 0,
-           qPrintable(QStringLiteral("a horizontal wheel did not scroll the sheet: %1")
-                          .arg(hbar->value())));
-
-  // Shift is how a plain wheel asks for horizontal movement. Qt routes an
-  // event by its dominant axis, so this would otherwise scroll vertically. A
-  // small stray horizontal component must not defeat the recognition either.
-  hbar->setValue(0);
-  QVERIFY(sendWheel(view->viewport(), QPoint(-8, -120), Qt::ShiftModifier));
-  QVERIFY2(hbar->value() > 0,
-           qPrintable(QStringLiteral("shift+wheel did not scroll the sheet: %1").arg(hbar->value())));
-
-  // Control is the editor's zoom gesture and is never consumed here, however
-  // much room the sheet has.
-  hbar->setValue(0);
-  QVERIFY2(!sendWheel(view->viewport(), QPoint(0, -120), Qt::ControlModifier | Qt::ShiftModifier),
-           "ctrl+shift+wheel was swallowed instead of reaching the editor");
-  QCOMPARE(hbar->value(), 0);
-  QVERIFY2(!sendWheel(view->viewport(), QPoint(-120, 0), Qt::ControlModifier),
-           "ctrl+horizontal wheel was swallowed instead of reaching the editor");
-  QCOMPARE(hbar->value(), 0);
-
-  // At the end of the range the movement is handed back rather than swallowed.
-  hbar->setValue(hbar->maximum());
-  QVERIFY2(!sendWheel(view->viewport(), QPoint(-120, 0), Qt::NoModifier),
-           "the exhausted sheet swallowed the movement");
-  QCOMPARE(hbar->value(), hbar->maximum());
-}
-
-void TestInteractivePreview::testSheetReservesTheScrollBarAcrossAResize() {
-  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
-  editor.resize(420, 400);
-  editor.show();
-  QVERIFY(QTest::qWaitForWindowExposed(&editor));
-  setTextAndSettle(editor, makeColumnTable(c_overflowColumns));
-  QTest::qWait(50);
-  QCoreApplication::processEvents();
-
-  auto widget = singlePreviewWidget(editor);
-  QVERIFY(widget);
-  auto view = sheetView(widget);
-  QVERIFY(view);
-
-  // The reserve is decided against the width the band ends up with. That width
-  // is only published into the widget's geometry context after the host has
-  // already measured, so a measurement which read it from there would answer
-  // for the previous editor size and stay cached under the new one.
-  QVERIFY2(view->horizontalScrollBar()->isVisible(),
-           "the summed column floors were expected to overflow a 420 pixel editor");
-  QCOMPARE(view->viewport()->height(), totalRowHeight(view));
-
-  const int overflowingHeight = widget->height();
-  // Every column sits at its floor here, so the width the sheet needs to stop
-  // overflowing follows from the runtime floor rather than from a guess.
-  const int floor = view->columnWidth(0);
-  const qreal available = widget->previewContext()->availableContentRect().width();
-  const int missing = qRound(c_overflowColumns * floor + 40 - available);
-  QVERIFY(missing > 0);
-
-  editor.resize(editor.width() + missing, 400);
-  settle(editor);
-  QTest::qWait(50);
-  QCoreApplication::processEvents();
-
-  QVERIFY2(!view->horizontalScrollBar()->isVisible(), "widening did not drop the scroll bar");
-  QCOMPARE(view->viewport()->height(), totalRowHeight(view));
-  QVERIFY2(widget->height() < overflowingHeight,
-           qPrintable(QStringLiteral("the band kept the reserve it no longer needs: %1 vs %2")
-                          .arg(widget->height())
-                          .arg(overflowingHeight)));
-  QCOMPARE(widget->height(), 2 * view->frameWidth() + totalRowHeight(view));
-
-  // And narrowing it back: the reserve has to be taken again.
-  editor.resize(420, 400);
-  settle(editor);
-  QTest::qWait(50);
-  QCoreApplication::processEvents();
-
-  QVERIFY2(view->horizontalScrollBar()->isVisible(), "narrowing did not bring up the scroll bar");
-  QVERIFY2(view->viewport()->height() >= totalRowHeight(view),
-           qPrintable(QStringLiteral("the scroll bar covers a row after narrowing: viewport %1, "
-                                     "rows %2")
-                          .arg(view->viewport()->height())
-                          .arg(totalRowHeight(view))));
-  QCOMPARE(widget->height(), overflowingHeight);
+  QCOMPARE(sheet->verticalScrollBar()->maximum(), 0);
 }
 
 void TestInteractivePreview::testTableSheetKeepsANaturalWidthInsideTheBand() {
@@ -2132,34 +1940,34 @@ void TestInteractivePreview::testTableSheetKeepsANaturalWidthInsideTheBand() {
 
   auto widget = singlePreviewWidget(editor);
   QVERIFY(widget);
-  const int natural = widget->sizeHint().width();
-  QVERIFY(natural > 0);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
 
-  // A table whose natural width already sits between the fill and the full
-  // text column keeps that width. Which editor size that is depends on the
-  // font, so calibrate the editor to the table: aim for the middle of the
-  // band, leaving 5% of slack on either side.
-  const qreal before = widget->previewContext()->availableContentRect().width();
-  const qreal target = natural / 0.95;
-  editor.resize(qRound(editor.width() + target - before), 400);
-  settle(editor);
-  QTest::qWait(50);
-  QCoreApplication::processEvents();
+  // The band is the width, and the contents follow it: the sheet reports no
+  // natural width of its own, so a table whose contents happen to be narrower
+  // or wider than the band gets exactly the same treatment.
+  for (int width : {600, 900}) {
+    editor.resize(width, 400);
+    settle(editor);
+    QTest::qWait(50);
+    QCoreApplication::processEvents();
 
-  const qreal available = widget->previewContext()->availableContentRect().width();
-  QCOMPARE(widget->sizeHint().width(), natural);
-  QVERIFY2(natural >= available * c_expectedWidthFraction && natural <= available,
-           qPrintable(QStringLiteral("the calibration missed the band: natural %1, available %2")
-                          .arg(natural)
-                          .arg(available)));
+    const qreal available = widget->previewContext()->availableContentRect().width();
+    QVERIFY(available > 0);
+    QCOMPARE(widget->sizeHint().width(), 0);
+    QVERIFY2(qAbs(widget->width() - qRound(available)) <= c_widthTolerance,
+             qPrintable(QStringLiteral("sheet width %1 is not the band %2 at editor width %3")
+                            .arg(widget->width())
+                            .arg(available)
+                            .arg(width)));
 
-  // Neither shrunk to the natural width of a narrower sheet nor forced to the
-  // fill: a "every fitting table is exactly 90%" implementation fails here.
-  QVERIFY2(qAbs(widget->width() - natural) <= c_widthTolerance,
-           qPrintable(QStringLiteral("sheet width %1 is not the natural %2 (available %3)")
-                          .arg(widget->width())
-                          .arg(natural)
-                          .arg(available)));
+    // And the table was laid out for that band rather than clipped inside it.
+    QVERIFY2(tableWidth(sheet) <= sheet->viewport()->width() + c_widthTolerance,
+             qPrintable(QStringLiteral("the table is %1 wide inside a %2 viewport")
+                            .arg(tableWidth(sheet))
+                            .arg(sheet->viewport()->width())));
+    QCOMPARE(sheet->horizontalScrollBar()->maximum(), 0);
+  }
 }
 
 void TestInteractivePreview::testInlinePreviewIgnoresTheWidthFraction() {
@@ -2195,8 +2003,7 @@ void TestInteractivePreview::testInlinePreviewIgnoresTheWidthFraction() {
 
 void TestInteractivePreview::testTableColumnsShareTheExtraWidth() {
   // Equal contents must stay equal, and unequal contents must keep their
-  // order: handing the whole surplus to the stretched last section breaks
-  // both.
+  // order: a layout which hands the whole band to one column breaks both.
   const QVector<QString> tables{
       QStringLiteral("| aaaa | aaaa |\n| --- | --- |\n| bbbb | bbbb |\n"),
       QStringLiteral("| aaaaaaaaaaaaaaaa | b |\n| --- | --- |\n| cccccccccccccccc | d |\n")};
@@ -2210,32 +2017,32 @@ void TestInteractivePreview::testTableColumnsShareTheExtraWidth() {
 
     auto widget = singlePreviewWidget(editor);
     QVERIFY(widget);
-    auto view = sheetView(widget);
-    QVERIFY(view);
-    QCOMPARE(view->model()->columnCount(), 2);
+    auto sheet = sheetView(widget);
+    QVERIFY(sheet);
+    QVERIFY(sheetTable(sheet));
+    QCOMPARE(sheetTable(sheet)->columns(), 2);
 
     QTest::qWait(50);
     QCoreApplication::processEvents();
 
-    const int viewportWidth = view->viewport()->width();
-    QVERIFY2(qAbs(totalColumnWidth(view) - viewportWidth) <= c_widthTolerance,
-             qPrintable(QStringLiteral("table %1: columns total %2 do not cover the viewport %3")
+    QVERIFY2(tableWidth(sheet) > 0.9 * sheet->viewport()->width(),
+             qPrintable(QStringLiteral("table %1: the table is %2 wide inside a %3 viewport")
                             .arg(i)
-                            .arg(totalColumnWidth(view))
-                            .arg(viewportWidth)));
+                            .arg(tableWidth(sheet))
+                            .arg(sheet->viewport()->width())));
 
-    const int first = view->columnWidth(0);
-    const int second = view->columnWidth(1);
+    const QVector<qreal> widths = columnWidths(sheet);
+    QCOMPARE(widths.size(), 2);
     if (i == 0) {
-      QVERIFY2(qAbs(first - second) <= c_widthTolerance,
+      QVERIFY2(qAbs(widths.at(0) - widths.at(1)) <= c_widthTolerance,
                qPrintable(QStringLiteral("equal columns were distributed unequally: %1 vs %2")
-                              .arg(first)
-                              .arg(second)));
+                              .arg(widths.at(0))
+                              .arg(widths.at(1))));
     } else {
-      QVERIFY2(first > second,
+      QVERIFY2(widths.at(0) > widths.at(1),
                qPrintable(QStringLiteral("the wide column %1 did not stay wider than %2")
-                              .arg(first)
-                              .arg(second)));
+                              .arg(widths.at(0))
+                              .arg(widths.at(1))));
     }
   }
 }
@@ -2249,28 +2056,25 @@ void TestInteractivePreview::testSingleColumnTableFillsTheSheet() {
 
   auto widget = singlePreviewWidget(editor);
   QVERIFY(widget);
-  auto view = sheetView(widget);
-  QVERIFY(view);
-  QCOMPARE(view->model()->columnCount(), 1);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+  QVERIFY(sheetTable(sheet));
+  QCOMPARE(sheetTable(sheet)->columns(), 1);
 
   QTest::qWait(50);
   QCoreApplication::processEvents();
 
-  // The sheet has to have been widened at all: a single column already filled
-  // the viewport of its natural-width sheet through the stretched last
-  // section, so the column assertion below cannot detect the fill on its own.
-  const int natural = widget->sizeHint().width();
-  QVERIFY2(widget->width() > natural,
-           qPrintable(QStringLiteral("the sheet was not widened: %1 <= %2")
+  // The degenerate case: the band is still the whole text column, and the one
+  // column still covers it.
+  const qreal available = widget->previewContext()->availableContentRect().width();
+  QVERIFY2(qAbs(widget->width() - qRound(available)) <= c_widthTolerance,
+           qPrintable(QStringLiteral("the sheet is %1 wide inside a band of %2")
                           .arg(widget->width())
-                          .arg(natural)));
-
-  // The case a "distribute over the first count - 1 columns" loop never
-  // touches at all.
-  QVERIFY2(qAbs(view->columnWidth(0) - view->viewport()->width()) <= c_widthTolerance,
+                          .arg(available)));
+  QVERIFY2(tableWidth(sheet) > 0.9 * sheet->viewport()->width(),
            qPrintable(QStringLiteral("the only column %1 does not cover the viewport %2")
-                          .arg(view->columnWidth(0))
-                          .arg(view->viewport()->width())));
+                          .arg(tableWidth(sheet))
+                          .arg(sheet->viewport()->width())));
 }
 
 void TestInteractivePreview::testTableWidthFollowsEditorResize() {
@@ -2282,8 +2086,8 @@ void TestInteractivePreview::testTableWidthFollowsEditorResize() {
 
   auto widget = singlePreviewWidget(editor);
   QVERIFY(widget);
-  auto view = sheetView(widget);
-  QVERIFY(view);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
 
   const qreal availableBefore = widget->previewContext()->availableContentRect().width();
   const int widthBefore = widget->width();
@@ -2300,8 +2104,8 @@ void TestInteractivePreview::testTableWidthFollowsEditorResize() {
                           .arg(availableBefore)
                           .arg(available)));
 
-  // Both the re-measurement against the new width basis and the redistribution
-  // have to re-run.
+  // Both the re-measurement against the new width basis and the relayout of
+  // the table inside it have to re-run.
   const int expected = expectedSheetWidth(available, widget->sizeHint().width());
   QVERIFY2(qAbs(widget->width() - expected) <= c_widthTolerance,
            qPrintable(QStringLiteral("sheet width %1 is not the expected %2 after the resize "
@@ -2309,11 +2113,253 @@ void TestInteractivePreview::testTableWidthFollowsEditorResize() {
                           .arg(widget->width())
                           .arg(expected)
                           .arg(widthBefore)));
-  QVERIFY2(qAbs(totalColumnWidth(view) - view->viewport()->width()) <= c_widthTolerance,
-           qPrintable(QStringLiteral("columns total %1 do not cover the viewport %2 after the "
-                                     "resize")
-                          .arg(totalColumnWidth(view))
-                          .arg(view->viewport()->width())));
+  QVERIFY2(tableWidth(sheet) > 0.9 * sheet->viewport()->width(),
+           qPrintable(QStringLiteral("the table is %1 wide inside a %2 viewport after the resize")
+                          .arg(tableWidth(sheet))
+                          .arg(sheet->viewport()->width())));
+}
+
+// ---------------------------------------------------------------------------
+// Debounced write-back against the host's item lifecycle
+// ---------------------------------------------------------------------------
+
+void TestInteractivePreview::testRemovalDuringTheDebounceKeepsTheEdit() {
+  // The sheet holds an edit for 400 ms before writing it back. If the host
+  // drops the identity in that window, the flush the removal triggers arrives
+  // after the identity is gone and is rejected as an UnknownIdentity, silently
+  // losing the edit - unless the host flushes first, while the context and the
+  // anchor are still authoritative.
+  for (bool focused : {false, true}) {
+    VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+    editor.resize(600, 400);
+    editor.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&editor));
+    setTextAndSettle(editor, QLatin1String(c_table));
+
+    auto widget = singlePreviewWidget(editor);
+    QVERIFY(widget);
+    auto sheet = sheetView(widget);
+    QVERIFY(sheet);
+
+    if (focused) {
+      sheet->setFocus();
+      QCoreApplication::processEvents();
+    }
+
+    WarningRecorder recorder;
+
+    editCell(sheet, 1, 0, QStringLiteral("kept"));
+    // Still inside the idle window: nothing has been written back yet.
+    QVERIFY2(!editor.document()->toPlainText().contains(QStringLiteral("kept")),
+             "the edit was written back before the debounce elapsed");
+
+    // Deleting the table's source removes the item.
+    QTextCursor cursor(editor.document());
+    cursor.movePosition(QTextCursor::Start);
+    cursor.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+    cursor.insertText(QStringLiteral("plain paragraph\n"));
+    settle(editor);
+    QTest::qWait(c_commitDebounceMs + 200);
+    QCoreApplication::processEvents();
+
+    QVERIFY(previewWidgets(editor).isEmpty());
+    // The edit was flushed before the identity was dropped, so the removal is
+    // the only thing which reached the document afterwards - and no late
+    // request was rejected.
+    QVERIFY2(!recorder.contains(QStringLiteral("UnknownIdentity")),
+             qPrintable(recorder.m_messages.join(QLatin1Char('\n'))));
+    QCOMPARE(editor.document()->toPlainText(), QStringLiteral("plain paragraph\n"));
+  }
+}
+
+void TestInteractivePreview::testRebuildDuringTheDebounceKeepsTheEdit() {
+  // Same window, but the item is rebuilt rather than removed: registering a
+  // factory replays the whole generation through removeItem()/createItem().
+  for (bool focused : {false, true}) {
+    VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+    editor.resize(600, 400);
+    editor.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&editor));
+    setTextAndSettle(editor, QLatin1String(c_table));
+
+    auto widget = singlePreviewWidget(editor);
+    QVERIFY(widget);
+    auto sheet = sheetView(widget);
+    QVERIFY(sheet);
+
+    if (focused) {
+      sheet->setFocus();
+      QCoreApplication::processEvents();
+    }
+
+    // The rebuild's own trace is the only place the carry is observable: the
+    // end states converge, because the flush edits the document and the parse
+    // generation that follows recreates whatever the replay dropped.
+    QLoggingCategory::setFilterRules(QStringLiteral("vte.preview.host=true"));
+    WarningRecorder recorder;
+
+    editCell(sheet, 1, 0, QStringLiteral("kept"));
+    QVERIFY(!editor.document()->toPlainText().contains(QStringLiteral("kept")));
+
+    auto other = new RecordingPreviewFactory({PreviewElementType::Image});
+    QVERIFY(editor.registerPreviewWidgetFactory(other, 1));
+    QCoreApplication::processEvents();
+    QCoreApplication::processEvents();
+    QTest::qWait(c_commitDebounceMs + 200);
+    QCoreApplication::processEvents();
+
+    const bool droppedToThePaintedPath =
+        recorder.contains(QStringLiteral("carried across the rebuild is gone"));
+    const bool lateRejection = recorder.contains(QStringLiteral("UnknownIdentity"));
+    QLoggingCategory::setFilterRules(QString());
+
+    // Neither data loss nor a late rejected request.
+    QVERIFY2(editor.document()->toPlainText().contains(QStringLiteral("kept")),
+             qPrintable(editor.document()->toPlainText()));
+    QVERIFY2(!lateRejection, qPrintable(recorder.m_messages.join(QLatin1Char('\n'))));
+
+    // And the replayed generation carried the item rather than dropping it. A
+    // rebuild snapshots the live anchors before replaying, and an accepted
+    // flush collapses the anchor it applies over - so a snapshot taken before
+    // that flush leaves the element on the painted path until the next parse
+    // generation resurrects it.
+    QVERIFY2(!droppedToThePaintedPath,
+             "the rebuild dropped the sheet and relied on the next parse to bring it back");
+
+    // The rebuilt sheet shows the committed value.
+    settle(editor);
+    auto rebuilt = singlePreviewWidget(editor);
+    QVERIFY(rebuilt);
+    QCOMPARE(sheetCell(sheetView(rebuilt), 1, 0), QStringLiteral("kept"));
+  }
+}
+
+void TestInteractivePreview::testEditorDestructionFlushesADirtySheet() {
+  // The host is an ordinary QObject child, and QObject destroys its children
+  // in creation order - which puts the text edit, its viewport and every
+  // preview widget *before* the host. Unless the editor destroys the host
+  // itself, its pre-removal flush runs after everything it needs is gone and
+  // an edit still inside the debounce window is silently dropped.
+  for (bool focused : {false, true}) {
+    auto editor = new VMarkdownEditor(makeConfig(),
+                                      QSharedPointer<TextEditorParameters>::create());
+    editor->resize(600, 400);
+    editor->show();
+    QVERIFY(QTest::qWaitForWindowExposed(editor));
+    setTextAndSettle(*editor, QLatin1String(c_table));
+
+    auto widget = singlePreviewWidget(*editor);
+    QVERIFY(widget);
+    auto sheet = sheetView(widget);
+    QVERIFY(sheet);
+
+    if (focused) {
+      sheet->setFocus();
+      QCoreApplication::processEvents();
+    }
+
+    // The document dies with the editor, so what it held has to be sampled
+    // while it is still alive.
+    QString lastText;
+    QObject sink;
+    auto doc = editor->document();
+    QObject::connect(doc, &QTextDocument::contentsChanged, &sink,
+                     [doc, &lastText]() { lastText = doc->toPlainText(); });
+
+    editCell(sheet, 1, 0, QStringLiteral("kept"));
+    QVERIFY(!editor->document()->toPlainText().contains(QStringLiteral("kept")));
+
+    delete editor;
+    QCoreApplication::processEvents();
+
+    QVERIFY2(lastText.contains(QStringLiteral("kept")), qPrintable(lastText));
+  }
+}
+
+void TestInteractivePreview::testUndoReachesTheEditorAfterTheFlush() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 400);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor, QLatin1String(c_table) + QStringLiteral("\ntrailing\n"));
+
+  // An unrelated earlier operation on the editor's own undo stack. Forwarding
+  // Ctrl+Z straight through while a table edit is still inside the debounce
+  // window would undo *this*, and the pending edit would then be committed on
+  // top of whatever the undo restored.
+  QTextCursor cursor(editor.document());
+  cursor.movePosition(QTextCursor::End);
+  cursor.insertText(QStringLiteral("unrelated\n"));
+  settle(editor);
+  QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("unrelated")));
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+
+  editCell(sheet, 1, 0, QStringLiteral("typed"));
+  QVERIFY(!editor.document()->toPlainText().contains(QStringLiteral("typed")));
+
+  // Pressed inside the idle window: the flush goes first, so the undo the
+  // editor performs is the table commit, not the unrelated insertion.
+  QTest::keyClick(sheet, Qt::Key_Z, Qt::ControlModifier);
+  QCoreApplication::processEvents();
+
+  const QString after = editor.document()->toPlainText();
+  QVERIFY2(after.contains(QStringLiteral("unrelated")), qPrintable(after));
+  QVERIFY2(!after.contains(QStringLiteral("typed")), qPrintable(after));
+  QVERIFY2(after.contains(QStringLiteral("| a | b |")) ||
+               after.contains(QStringLiteral("| a   | b   |")),
+           qPrintable(after));
+}
+
+void TestInteractivePreview::testArrowOutMovesTheEditorCaretToTheLiveAnchor() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 400);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor, QStringLiteral("head\n\n") + QLatin1String(c_table) +
+                               QStringLiteral("\ntail\n"));
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+
+  // An unrelated edit before the table moves the source. The sheet only knows
+  // its snapshot coordinates, which are stale by now, so the destination has
+  // to be resolved from the host's live anchor at delivery time.
+  QTextCursor cursor(editor.document());
+  cursor.setPosition(0);
+  cursor.insertText(QStringLiteral("prefix "));
+  QCoreApplication::processEvents();
+
+  const QString text = editor.document()->toPlainText();
+  const int sourceStart = text.indexOf(QStringLiteral("| h1"));
+  QVERIFY(sourceStart > 0);
+  const int sourceEnd = text.indexOf(QStringLiteral("| a | b |")) +
+                        QStringLiteral("| a | b |").size();
+  QVERIFY(sourceEnd > sourceStart);
+
+  // Up out of the first row. The source is rendered above the sheet, so "up"
+  // is the end of the source.
+  putCaretIn(sheet, 0, 1);
+  sheet->setFocus();
+  QTest::keyClick(sheet, Qt::Key_Up);
+  QCoreApplication::processEvents();
+
+  QVERIFY2(editor.getTextEdit()->hasFocus(), "the editor did not take the focus back");
+  QCOMPARE(editor.getTextEdit()->textCursor().position(), sourceEnd);
+
+  // Down out of the last row lands just past the source's own line.
+  sheet->setFocus();
+  putCaretIn(sheet, 1, 1);
+  QTest::keyClick(sheet, Qt::Key_Down);
+  QCoreApplication::processEvents();
+
+  QVERIFY(editor.getTextEdit()->hasFocus());
+  QCOMPARE(editor.getTextEdit()->textCursor().position(), sourceEnd + 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -2328,11 +2374,12 @@ void TestInteractivePreview::testRejectionAfterAcceptKeepsCommittedValues() {
   QVERIFY(widget);
   auto context = widget->previewContext();
   QVERIFY(context);
-  auto model = widget->findChild<QAbstractItemModel *>();
-  QVERIFY(model);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
 
   // An accepted commit rebases the binding onto the text now in the document.
-  QVERIFY(model->setData(model->index(1, 1), QStringLiteral("committed"), Qt::EditRole));
+  editCell(sheet, 1, 1, QStringLiteral("committed"));
+  flushSheet(sheet);
   QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("committed")));
   const QString afterCommit = editor.document()->toPlainText();
 
@@ -2340,13 +2387,13 @@ void TestInteractivePreview::testRejectionAfterAcceptKeepsCommittedValues() {
   // binding. The widget's own cached snapshot still describes the pre-commit
   // source, so restoring from it would revert the accepted commit.
   context->requestSourceReplacement(QStringLiteral("   "));
-  QCOMPARE(model->data(model->index(1, 1), Qt::DisplayRole).toString(),
-           QStringLiteral("committed"));
+  QCOMPARE(sheetCell(sheet, 1, 1), QStringLiteral("committed"));
   QCOMPARE(editor.document()->toPlainText(), afterCommit);
 
   // And the next commit must not write the reverted matrix back: it would pass
   // the source check (both texts equal the rebased source) and be accepted.
-  QVERIFY(model->setData(model->index(1, 0), QStringLiteral("second"), Qt::EditRole));
+  editCell(sheet, 1, 0, QStringLiteral("second"));
+  flushSheet(sheet);
   const QString after = editor.document()->toPlainText();
   QVERIFY2(after.contains(QStringLiteral("committed")), qPrintable(after));
   QVERIFY2(after.contains(QStringLiteral("second")), qPrintable(after));
@@ -2486,13 +2533,14 @@ void TestInteractivePreview::testWideCellSurvivesRoundTrip() {
 
   auto widget = singlePreviewWidget(editor);
   QVERIFY(widget);
-  auto model = widget->findChild<QAbstractItemModel *>();
-  QVERIFY(model);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
 
   // Longer than the padding cap, so the serializer stops widening every other
   // row at it. The cell text itself must still survive verbatim.
   const QString wide = QString(200, QLatin1Char('w'));
-  QVERIFY(model->setData(model->index(1, 0), wide, Qt::EditRole));
+  editCell(sheet, 1, 0, wide);
+  flushSheet(sheet);
   QVERIFY(editor.document()->toPlainText().contains(wide));
 
   const auto before = widget->previewContext()->preview().staticCast<const TablePreview>();
@@ -2647,8 +2695,6 @@ void TestInteractivePreview::testUnregisteringTheBuiltinFactoryIsSafe() {
   QVERIFY(previewWidgets(editor).isEmpty());
 
   // Every path which used to touch the built-in factory directly.
-  editor.setTablePreviewVisibleRows(4);
-  QCOMPARE(editor.tablePreviewVisibleRows(), 4);
   editor.getTextEdit()->setReadOnly(true);
   editor.getTextEdit()->setReadOnly(false);
   QVERIFY(QMetaObject::invokeMethod(host, "schedulePublish", Qt::DirectConnection));

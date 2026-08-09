@@ -69,7 +69,15 @@ VMarkdownEditor::VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_c
   m_textEdit->setText("");
 }
 
-VMarkdownEditor::~VMarkdownEditor() {}
+VMarkdownEditor::~VMarkdownEditor() {
+  // The host is an ordinary QObject child, and QObject destroys its children
+  // in creation order - which puts m_textEdit, its viewport and every preview
+  // widget parented to it *before* the host. Its destructor asks a dirty sheet
+  // to write itself back before the identity is dropped, and that needs the
+  // document, the anchors and the widgets to still exist. So destroy it here,
+  // while they do.
+  delete interactivePreviewHost();
+}
 
 void VMarkdownEditor::setSyntax(const QString &p_syntax) {
   // Just ignore it.
@@ -156,17 +164,6 @@ bool VMarkdownEditor::registerPreviewWidgetFactory(PreviewWidgetFactory *p_facto
 bool VMarkdownEditor::unregisterPreviewWidgetFactory(PreviewWidgetFactory *p_factory) {
   auto host = interactivePreviewHost();
   return host ? host->unregisterFactory(p_factory) : false;
-}
-
-int VMarkdownEditor::tablePreviewVisibleRows() const {
-  auto host = interactivePreviewHost();
-  return host ? host->tablePreviewVisibleRows() : 10;
-}
-
-void VMarkdownEditor::setTablePreviewVisibleRows(int p_rows) {
-  if (auto host = interactivePreviewHost()) {
-    host->setTablePreviewVisibleRows(p_rows);
-  }
 }
 
 DocumentResourceMgr *VMarkdownEditor::getDocumentResourceMgr() const {

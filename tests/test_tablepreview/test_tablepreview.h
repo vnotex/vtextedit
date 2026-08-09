@@ -20,57 +20,71 @@ private slots:
   void testEscapedPipeDoesNotWidenColumn();
   void testSerializeCapsPadding();
 
-  // Model.
-  void testModelNormalization();
-  void testModelNoOpCommit();
-  void testModelCommitEmitsOnRealChange();
-  void testModelAlignmentRole();
-  void testModelRoundTrip();
+  // Document.
+  void testDocumentBuildsTheTable();
+  void testDocumentNormalization();
+  void testHeaderRowIsBold();
+  void testColumnAlignmentIsABlockFormat();
+  void testCellsHoldRawMarkdown();
+  void testCellWalkReturnsTheEditedText();
+  void testDocumentRoundTrip();
+  void testRaggedTableIsNotRoundTrippable();
+  void testFormatRefreshKeepsTheCaret();
 
-  // Widget.
+  // Limits.
   void testWidgetRejectsNonTable();
-  void testWidgetVisibleRows();
-  void testLargeTableFitsVisibleRows();
   void testWidgetRejectsOversizedTable();
   void testWidgetRejectsTooManyRowsOrColumns();
-  void testRaggedTableIsNotRoundTrippable();
-  void testCellEditorHoldsRawMarkdown();
-  void testOneClickStartsEditing();
+
+  // Sheet geometry.
+  void testHeightForWidthComesFromTheDocumentLayout();
+  void testHeightForWidthConvertsTheOuterWidth();
+  void testColumnsFillTheAssignedWidth();
+  void testSettledGeometryNotifiesTheHost();
+
+  // Caret and navigation.
   void testClickPutsTheCaretUnderThePointer();
   void testClickAtTheEndPutsTheCaretAtTheEnd();
-  void testReadOnlySheetIgnoresTheClick();
-  void testPreferredSizeCacheTracksContents();
-  void testColumnsFillTheAssignedWidth();
-  void testColumnLayoutFollowsACellEdit();
+  void testTypingNeedsNoEditMode();
+  void testTheCaretNeverLeavesTheTable();
+  void testReadOnlySheetKeepsTheCaretButSwallowsTyping();
+  void testTabWrapsBetweenCells();
+  void testArrowOutAtTheEdgesRequestsAFocusEscape();
+  void testEscapeRequestsAFocusEscape();
 
-  // Delegate.
-  void testDelegateWrapsOrdinaryText();
-  void testDelegateWrapsAnUnbreakableToken();
-  void testDelegateAccumulatesLineHeightsOnly();
-  void testDelegateHonorsRolesAndDirection();
-  void testDelegateHonorsPaletteState();
-  void testDelegatePaintsPanelTextAndFocusInOrder();
-  void testDelegatePreservesPainterState();
+  // Content invariants.
+  void testEnterIsSwallowed();
+  void testSelectAllCannotTakeTheTableApart();
+  void testCutAndDeleteStayInsideOneCell();
+  void testWordDeleteShortcutsStayInsideOneCell();
+  void testPastedTextIsSanitized();
+  void testPastedRichTextIsFlattened();
+  void testAPurelySeparatorPayloadIsRefused();
+  void testDroppedTextGoesThroughTheSameValidator();
+  void testCommittedImeSeparatorsAreSanitized();
+  void testImeReplacementRangesStayInsideOneCell();
+  void testAReadOnlySheetRefusesImeMutations();
+  void testBecomingAViewerCancelsTheComposition();
+  void testABackgroundSheetLeavesTheFocusedCompositionAlone();
+  void testASeparatorOnlyImeCommitKeepsTheSelection();
 
-  // Column planning.
-  void testColumnFloorIsTwelveCharacters();
-  void testColumnsCompressProportionally();
-  void testColumnsStopAtTheFloorAndScroll();
-  void testVerticalScrollBarChromeIsReserved();
+  // Commit machine.
+  void testDebouncedCommit();
+  void testCellLeaveFlushesImmediately();
+  void testFocusOutFlushesImmediately();
+  void testEscapeFlushesImmediately();
+  void testEchoOfACommitKeepsANewerEdit();
+  void testARevertToThePreCommitSourceIsHonoured();
+  void testRejectionMakesTheSheetReadOnly();
+  void testAnUntouchedDocumentDiscardsTheEdit();
+  void testUndoFlushesBeforeItReachesTheEditor();
+  void testRedoIsDroppedWhileDirty();
+  void testCommittedImeInputReachesTheFlush();
+  void testAnActiveCompositionSurvivesTheRemovalFlush();
+  void testRevokedAuthoritySilencesEveryCommit();
 
-  // Band geometry.
-  void testPureHeightMatchesTheLiveRows();
-  void testInheritedMutationDropsTheMemo();
-  void testConstrainedHeightTracksTheWidth();
-  void testRowsGrowAndShrinkWithTheWidth();
-
-  // Lazy row fitting.
-  void testDistantRowsAreFittedLazily();
-  void testRowFittingKeepsTheAnchorNearTheEnd();
-  void testRowFittingIsBounded();
-
-  // Host notification.
-  void testSettledGeometryNotifiesTheHost();
+  // Palette.
+  void testDarkPaletteReachesTheSheet();
 };
 } // namespace tests
 
