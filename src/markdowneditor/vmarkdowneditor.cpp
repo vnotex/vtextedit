@@ -126,6 +126,14 @@ void VMarkdownEditor::setupSyntaxHighlighter() {
   updateSpellCheck();
   connect(getHighlighter(), &MarkdownHighlighter::highlightCompleted, this, [this]() {
     m_textEdit->updateCursorWidth();
+    if (m_textEdit->isViewportWidgetFocused()) {
+      // An in-place preview widget holds the focus. This re-parse is most
+      // likely the one its own write-back caused, and the editor's caret is
+      // elsewhere - scrolling to it would yank the viewport away from the
+      // widget the user is typing in.
+      return;
+    }
+
     m_textEdit->ensureCursorVisible();
     m_textEdit->checkCenterCursor();
   });

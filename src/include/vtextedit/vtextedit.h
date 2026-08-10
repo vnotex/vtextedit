@@ -125,6 +125,14 @@ public:
 
   void checkCenterCursor();
 
+  // Whether the application focus is inside a widget embedded into the
+  // viewport (an in-place preview widget is the only such child). When it is,
+  // the editor's own caret is not what the user is working on, so automatic
+  // scroll-to-caret has to be skipped: an in-place edit rewrites the document
+  // and would otherwise drag the viewport to the editor's caret, away from the
+  // widget being typed in.
+  bool isViewportWidgetFocused() const;
+
   void setCenterCursor(CenterCursor p_centerCursor);
 
   void setMaxContentWidth(int p_width);

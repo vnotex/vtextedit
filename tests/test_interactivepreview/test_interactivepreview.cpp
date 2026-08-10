@@ -3450,4 +3450,182 @@ void TestInteractivePreview::testFoldRefreshIsDeferredDuringWidgetCallback() {
   QVERIFY(!blockVisible(editor, 1));
 }
 
+// ---------------------------------------------------------------------------
+// Scrolling while a preview widget has the focus
+// ---------------------------------------------------------------------------
+
+namespace {
+// A table at the top, then enough filler that a caret parked at the end of the
+// document is far off-screen while the sheet stays visible at the top.
+QString tableAboveFiller() {
+  QString text = QLatin1String(c_table);
+  for (int i = 0; i < 200; ++i) {
+    text += QStringLiteral("filler line %1\n").arg(i);
+  }
+
+  return text;
+}
+
+// Caret at the end of the document, viewport parked at the top. The minimum is
+// a stable parking spot: an auto-folded source changes the scrollbar *range*,
+// which would move any other value on its own.
+void parkCaretOffScreenAtTop(VMarkdownEditor &p_editor) {
+  auto textEdit = p_editor.getTextEdit();
+  QTextCursor cursor(p_editor.document());
+  cursor.movePosition(QTextCursor::End);
+  textEdit->setTextCursor(cursor);
+
+  auto vbar = textEdit->verticalScrollBar();
+  vbar->setValue(vbar->minimum());
+  QCoreApplication::processEvents();
+}
+} // namespace
+
+// The reported bug: an in-place edit rewrites the source, the highlighter
+// completes, and the editor scrolls to its own caret - which is nowhere near
+// the sheet the user is typing in.
+void TestInteractivePreview::testSheetEditDoesNotScrollToTheEditorCaret() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 300);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor, tableAboveFiller());
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  QPointer<QTextEdit> sheet = sheetView(widget);
+  QVERIFY(sheet);
+
+  auto vbar = editor.getTextEdit()->verticalScrollBar();
+  QVERIFY(vbar->maximum() > vbar->minimum());
+  parkCaretOffScreenAtTop(editor);
+  QCOMPARE(vbar->value(), vbar->minimum());
+
+  sheet->setFocus();
+  QVERIFY2(sheet->hasFocus(), "the sheet did not take the focus");
+
+  editCell(sheet, 1, 1, QStringLiteral("changed"));
+
+  // Let the sheet's own 400 ms debounce fire. flushSheet() would fake a
+  // FocusOut without moving the real focus, and the real focus is the very
+  // thing under test here.
+  QTRY_VERIFY_WITH_TIMEOUT(
+      editor.document()->toPlainText().contains(QStringLiteral("| a   | changed |")), 3000);
+  QVERIFY(sheet);
+  QVERIFY2(sheet->hasFocus(), "the commit moved the focus out of the sheet");
+
+  // Drive the parse generation the rewrite owes. Before the fix this is where
+  // the viewport jumped to the editor's caret at the end of the document.
+  settle(editor);
+
+  QVERIFY(sheet);
+  QVERIFY2(sheet->hasFocus(), "the parse moved the focus out of the sheet");
+  QCOMPARE(vbar->value(), vbar->minimum());
+}
+
+// The centering path is reached from cursorPositionChanged, so it is exercised
+// directly: whether an edit which merely displaces the caret re-emits that
+// signal is a Qt detail this guard must not rest on.
+void TestInteractivePreview::testCenterCursorIsSkippedWhileASheetHasTheFocus() {
+  auto config = makeConfig();
+  config->m_textEditorConfig->m_centerCursor = CenterCursor::AlwaysCenter;
+
+  VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 300);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor, tableAboveFiller());
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+
+  auto textEdit = editor.getTextEdit();
+  auto vbar = textEdit->verticalScrollBar();
+  QVERIFY(vbar->maximum() > vbar->minimum());
+  parkCaretOffScreenAtTop(editor);
+  QCOMPARE(vbar->value(), vbar->minimum());
+
+  sheet->setFocus();
+  QVERIFY2(sheet->hasFocus(), "the sheet did not take the focus");
+  textEdit->checkCenterCursor();
+  QCOMPARE(vbar->value(), vbar->minimum());
+
+  // And it centers again as soon as the editor owns the focus.
+  textEdit->setFocus();
+  QVERIFY2(textEdit->hasFocus(), "the editor did not take the focus back");
+  vbar->setValue(vbar->minimum());
+  textEdit->checkCenterCursor();
+  QVERIFY2(vbar->value() > vbar->minimum(),
+           "the editor did not center on its own caret once it had the focus");
+}
+
+// The guard must not suppress the ordinary case: with the focus in the editor,
+// a completed parse still scrolls to the editor's caret.
+void TestInteractivePreview::testDocumentEditStillScrollsWhenTheEditorHasFocus() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 300);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor, tableAboveFiller());
+  QVERIFY(singlePreviewWidget(editor));
+
+  auto textEdit = editor.getTextEdit();
+  textEdit->setFocus();
+  QVERIFY2(textEdit->hasFocus(), "the editor did not take the focus");
+
+  auto vbar = textEdit->verticalScrollBar();
+  QVERIFY(vbar->maximum() > vbar->minimum());
+  parkCaretOffScreenAtTop(editor);
+  QCOMPARE(vbar->value(), vbar->minimum());
+
+  // A detached cursor, not a synthetic key press: QTextEdit makes the caret
+  // visible itself while handling a key, so a key press would pass even if the
+  // guard suppressed every case.
+  QTextCursor cursor(editor.document());
+  cursor.setPosition(editor.document()->findBlockByNumber(5).position());
+  cursor.insertText(QStringLiteral("prefix "));
+  QCoreApplication::processEvents();
+
+  settle(editor);
+
+  QVERIFY2(vbar->value() > vbar->minimum(),
+           "the editor no longer scrolls to its caret when it has the focus");
+}
+
+// Escape hands the focus back without moving the caret, so it must not scroll
+// the viewport either - not even where centering is configured.
+void TestInteractivePreview::testEscapeFromASheetDoesNotScrollTheEditor() {
+  auto config = makeConfig();
+  config->m_textEditorConfig->m_centerCursor = CenterCursor::AlwaysCenter;
+
+  VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 300);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor, tableAboveFiller());
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+
+  auto textEdit = editor.getTextEdit();
+  auto vbar = textEdit->verticalScrollBar();
+  QVERIFY(vbar->maximum() > vbar->minimum());
+  parkCaretOffScreenAtTop(editor);
+  QCOMPARE(vbar->value(), vbar->minimum());
+
+  putCaretIn(sheet, 0, 1);
+  sheet->setFocus();
+  QVERIFY2(sheet->hasFocus(), "the sheet did not take the focus");
+
+  QTest::keyClick(sheet, Qt::Key_Escape);
+  QCoreApplication::processEvents();
+
+  QVERIFY2(textEdit->hasFocus(), "the editor did not take the focus back");
+  QCOMPARE(vbar->value(), vbar->minimum());
+}
+
 QTEST_MAIN(tests::TestInteractivePreview)

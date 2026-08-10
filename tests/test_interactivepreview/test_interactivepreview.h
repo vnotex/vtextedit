@@ -256,6 +256,12 @@ private slots:
   void testFullReplacementReDecides();
   void testDeletedSourceFoldsNothing();
   void testFoldRefreshIsDeferredDuringWidgetCallback();
+
+  // Scrolling while a preview widget has the focus.
+  void testSheetEditDoesNotScrollToTheEditorCaret();
+  void testCenterCursorIsSkippedWhileASheetHasTheFocus();
+  void testDocumentEditStillScrollsWhenTheEditorHasFocus();
+  void testEscapeFromASheetDoesNotScrollTheEditor();
 };
 } // namespace tests
 

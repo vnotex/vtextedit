@@ -51,4 +51,13 @@ void EditorPreviewMgr::relayout(const OrderedIntSet &p_blocks) {
   }
 }
 
-void EditorPreviewMgr::ensureCursorVisible() { m_editor->getTextEdit()->ensureCursorVisible(); }
+void EditorPreviewMgr::ensureCursorVisible() {
+  auto textEdit = m_editor->getTextEdit();
+  // See VTextEdit::isViewportWidgetFocused(): never scroll to the editor's
+  // caret while an in-place preview widget owns the focus.
+  if (textEdit->isViewportWidgetFocused()) {
+    return;
+  }
+
+  textEdit->ensureCursorVisible();
+}

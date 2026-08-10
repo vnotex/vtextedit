@@ -1156,6 +1156,7 @@ void InteractivePreviewHost::handleFocusEscape(TablePreviewWidget *p_widget,
 
   const quint64 id = identityOf(p_widget);
   const auto it = id ? m_items.constFind(id) : m_items.constEnd();
+  bool movedCaret = false;
   if (it != m_items.constEnd() && p_direction != FocusEscapeDirection::Keep) {
     // Resolved from the live anchor, never from the snapshot's own start/end:
     // those describe the parse generation the sheet was bound in, which any
@@ -1173,6 +1174,7 @@ void InteractivePreviewHost::handleFocusEscape(TablePreviewWidget *p_widget,
       QTextCursor cursor = m_textEdit->textCursor();
       cursor.setPosition(qBound(0, target, qMax(0, limit)));
       m_textEdit->setTextCursor(cursor);
+      movedCaret = true;
 
       qCDebug(previewHostLog) << "item" << id << "handed the caret back to the editor at"
                               << cursor.position();
@@ -1180,6 +1182,14 @@ void InteractivePreviewHost::handleFocusEscape(TablePreviewWidget *p_widget,
   }
 
   m_textEdit->setFocus();
+
+  if (movedCaret) {
+    // The caret was moved above while the sheet still owned the focus, so
+    // checkCenterCursor() declined then. Now that the editor has it back,
+    // honour the configured centering. Escape (FocusEscapeDirection::Keep)
+    // moves no caret, so it must not scroll anything either.
+    m_textEdit->checkCenterCursor();
+  }
 }
 
 void InteractivePreviewHost::handleSheetUndo(TablePreviewWidget *p_widget) {

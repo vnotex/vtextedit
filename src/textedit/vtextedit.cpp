@@ -1,6 +1,7 @@
 #include <vtextedit/vtextedit.h>
 
 #include <QAbstractTextDocumentLayout>
+#include <QApplication>
 #include <QDebug>
 #include <QGuiApplication>
 #include <QInputMethod>
@@ -526,7 +527,8 @@ void VTextEdit::setCursorWidth(int p_width) {
 
 void VTextEdit::checkCenterCursor() {
   const bool mouseButtonDown = QGuiApplication::mouseButtons() != Qt::NoButton;
-  if (mouseButtonDown || m_centerCursor == CenterCursor::NeverCenter) {
+  if (mouseButtonDown || m_centerCursor == CenterCursor::NeverCenter ||
+      isViewportWidgetFocused()) {
     return;
   }
 
@@ -548,6 +550,16 @@ void VTextEdit::checkCenterCursor() {
 
   int offset = targetCenter - cRect.center().y();
   vbar->setValue(vbar->value() - offset);
+}
+
+bool VTextEdit::isViewportWidgetFocused() const {
+  // A widget embedded into the viewport is an in-place preview widget: it is
+  // the only kind of focusable child the viewport ever gets. isAncestorOf()
+  // walks upwards from its argument, so this editor itself (the viewport's
+  // parent) is correctly excluded, while any descendant of a preview widget
+  // matches.
+  auto focus = QApplication::focusWidget();
+  return focus && viewport()->isAncestorOf(focus);
 }
 
 void VTextEdit::setCenterCursor(CenterCursor p_centerCursor) {

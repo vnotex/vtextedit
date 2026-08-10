@@ -18,7 +18,14 @@ QPair<int, int> EditorMarkdownHighlighter::visibleBlockRange() const {
 }
 
 void EditorMarkdownHighlighter::ensureCursorVisible() {
-  m_editor->getTextEdit()->ensureCursorVisible();
+  auto textEdit = m_editor->getTextEdit();
+  // See VTextEdit::isViewportWidgetFocused(): never scroll to the editor's
+  // caret while an in-place preview widget owns the focus.
+  if (textEdit->isViewportWidgetFocused()) {
+    return;
+  }
+
+  textEdit->ensureCursorVisible();
 }
 
 QScrollBar *EditorMarkdownHighlighter::verticalScrollBar() const {
