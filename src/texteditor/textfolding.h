@@ -46,11 +46,21 @@ public:
 
   bool isEmpty() const;
 
-  // Whether @p_id still refers to a live folding range.
+  // Current block extent of a live range. False when @p_id is unknown or the
+  // range no longer maps onto the document.
+  //
   // A range may be dropped without notice by checkAndUpdateFoldings() once the
   // blocks it spans have been replaced, so an owner which caches range ids has
-  // to be able to tell a live id from a stale one.
-  bool hasRange(qint64 p_id) const;
+  // to be able to tell a live id from a stale one; both output pointers may be
+  // null when only that question matters.
+  bool foldingRangeBlocks(qint64 p_id, int *p_firstBlock, int *p_lastBlock) const;
+
+  bool isRangeFolded(qint64 p_id) const;
+
+  // Fold a live range. No-op when already folded. False when @p_id is unknown.
+  bool foldRange(qint64 p_id);
+
+  bool isEnabled() const;
 
   qint64 newFoldingRange(const TextBlockRange &p_range, FoldingRangeFlags p_flags);
 

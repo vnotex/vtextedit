@@ -46,6 +46,11 @@ RecordingPreviewWidget::RecordingPreviewWidget(PreviewWidgetContext *p_context, 
 QVector<PreviewElementType> RecordingPreviewWidget::supportedTypes() const { return m_types; }
 
 bool RecordingPreviewWidget::setPreview(const QSharedPointer<const vte::Preview> &p_preview) {
+  if (m_refuseNextSetPreview) {
+    m_refuseNextSetPreview = false;
+    return false;
+  }
+
   if (!p_preview || !m_types.contains(p_preview->type())) {
     return false;
   }
@@ -69,6 +74,11 @@ bool RecordingPreviewWidget::setPreview(const QSharedPointer<const vte::Preview>
     if (m_deliveryCounterSource) {
       m_deliveriesBeforeSpin =
           m_deliveryCounterSource->property("vte_preview_reconcile_deliveries").toInt();
+    }
+
+    if (m_foldCounterSource) {
+      m_foldRefreshesBeforeSpin =
+          m_foldCounterSource->property("vte_preview_fold_refreshes").toInt();
     }
 
     QEventLoop loop;
@@ -2841,6 +2851,603 @@ void TestInteractivePreview::testSourceTextRectFollowsTheSource() {
                                      "(was %2)")
                           .arg(after.top())
                           .arg(before.top())));
+}
+
+// ---------------------------------------------------------------------------
+// Preview driven folding
+// ---------------------------------------------------------------------------
+
+namespace {
+bool blockVisible(VMarkdownEditor &p_editor, int p_blockNumber) {
+  const QTextBlock block = p_editor.document()->findBlockByNumber(p_blockNumber);
+  return block.isValid() && block.isVisible();
+}
+
+// The fold evaluation is coalesced through a zero timer, and folding a range
+// schedules another pass, so give the chain a few turns to come to rest.
+void settleFolding() {
+  QTest::qWait(30);
+  QCoreApplication::processEvents();
+  QCoreApplication::processEvents();
+}
+
+QSharedPointer<MarkdownEditorConfig> makeAutoFoldConfig(bool p_enabled) {
+  auto config = makeConfig();
+  config->m_autoFoldPreviewedBlocksEnabled = p_enabled;
+  return config;
+}
+
+void putEditorCaretInBlock(VMarkdownEditor &p_editor, int p_blockNumber) {
+  QTextCursor cursor = p_editor.getTextEdit()->textCursor();
+  cursor.setPosition(p_editor.document()->findBlockByNumber(p_blockNumber).position());
+  p_editor.getTextEdit()->setTextCursor(cursor);
+}
+
+// The widget whose source starts earliest, i.e. the first table in the
+// document. The host hands them out in hash order.
+RecordingPreviewWidget *firstWidgetBySource(RecordingPreviewFactory *p_factory) {
+  RecordingPreviewWidget *first = nullptr;
+  for (auto widget : p_factory->m_widgets) {
+    auto context = widget ? widget->previewContext() : nullptr;
+    if (!context || !context->preview()) {
+      continue;
+    }
+
+    if (!first || context->preview()->startPos() < first->previewContext()->preview()->startPos()) {
+      first = widget;
+    }
+  }
+
+  return first;
+}
+
+int foldRefreshes(VMarkdownEditor &p_editor) {
+  auto host = previewHost(p_editor);
+  return host ? host->property("vte_preview_fold_refreshes").toInt() : -1;
+}
+
+// The gutter. It is an internal widget, so it is located by its class name and
+// driven with plain Qt mouse events.
+QWidget *indicatorsBorder(VMarkdownEditor &p_editor) {
+  const auto children = p_editor.findChildren<QWidget *>();
+  for (auto child : children) {
+    if (QLatin1String(child->metaObject()->className()) ==
+        QLatin1String("vte::IndicatorsBorder")) {
+      return child;
+    }
+  }
+
+  return nullptr;
+}
+
+// Fold or unfold the range starting on @p_blockNumber the way a user does: by
+// clicking the folding marker in the gutter. This is the only way a test can
+// change the live fold state without the queued refresh having written it onto
+// the preview item first, which is exactly the race the rewrite path guards
+// against.
+//
+// The marker column sits at the right edge of the border, before a two pixel
+// separator; a few offsets are tried so the exact metrics do not have to be
+// reproduced here. @p_probeBlock is a block the toggle changes the visibility
+// of. No event is processed after the click, so the caller still sees the item
+// state the last delivered refresh left behind.
+bool toggleFoldFromGutter(VMarkdownEditor &p_editor, int p_blockNumber, int p_probeBlock) {
+  QWidget *border = indicatorsBorder(p_editor);
+  if (!border || border->width() <= 0) {
+    return false;
+  }
+
+  QTextCursor cursor(p_editor.document());
+  cursor.setPosition(p_editor.document()->findBlockByNumber(p_blockNumber).position());
+  const int y = p_editor.getTextEdit()->cursorRect(cursor).center().y();
+  const bool before = blockVisible(p_editor, p_probeBlock);
+
+  const QVector<int> offsets{3, 2, 5, 8, 11};
+  for (int offset : offsets) {
+    const int x = border->width() - offset;
+    if (x < 0) {
+      continue;
+    }
+
+    const QPointF pos(x, y);
+    const QPointF global = border->mapToGlobal(pos.toPoint());
+
+    QMouseEvent move(QEvent::MouseMove, pos, global, Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(border, &move);
+    // The gutter resolves the range under the pointer on a 300 ms timer.
+    QTest::qWait(350);
+
+    QMouseEvent press(QEvent::MouseButtonPress, pos, global, Qt::LeftButton, Qt::LeftButton,
+                      Qt::NoModifier);
+    QCoreApplication::sendEvent(border, &press);
+    QMouseEvent release(QEvent::MouseButtonRelease, pos, global, Qt::LeftButton, Qt::NoButton,
+                        Qt::NoModifier);
+    QCoreApplication::sendEvent(border, &release);
+
+    if (blockVisible(p_editor, p_probeBlock) != before) {
+      return true;
+    }
+  }
+
+  return false;
+}
+} // namespace
+
+// A previewed table comes up folded: the header row and the last row stay
+// visible, and only the interior is hidden.
+void TestInteractivePreview::testPreviewedTableIsFoldedOnce() {
+  VMarkdownEditor editor(makeAutoFoldConfig(true),
+                         QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QLatin1String(c_table) + QStringLiteral("\ntail\n"));
+  QVERIFY(singlePreviewWidget(editor));
+
+  settleFolding();
+  QVERIFY(blockVisible(editor, 0));
+  QVERIFY2(!blockVisible(editor, 1), "the previewed table did not fold");
+  QVERIFY(blockVisible(editor, 2));
+
+  // The decision is taken once: a later parse must not re-run it, and the
+  // widget is still there to render what the fold hides.
+  settle(editor);
+  settleFolding();
+  QVERIFY(!blockVisible(editor, 1));
+  QVERIFY(singlePreviewWidget(editor));
+}
+
+void TestInteractivePreview::testAutoFoldIsOptional() {
+  VMarkdownEditor editor(makeAutoFoldConfig(false),
+                         QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QLatin1String(c_table) + QStringLiteral("\ntail\n"));
+  QVERIFY(singlePreviewWidget(editor));
+
+  settleFolding();
+  QVERIFY(blockVisible(editor, 1));
+
+  settle(editor);
+  settleFolding();
+  QVERIFY(blockVisible(editor, 1));
+}
+
+// Folding keeps the first and last block visible, so only a caret in the
+// interior would be hidden - and such a region is left open for good.
+void TestInteractivePreview::testCaretInsideKeepsTheSourceOpen() {
+  VMarkdownEditor editor(makeAutoFoldConfig(true),
+                         QSharedPointer<TextEditorParameters>::create());
+
+  // The caret is placed before the parse generation lands, so the very first
+  // decision sees it inside the table.
+  editor.setText(QLatin1String(c_table) + QStringLiteral("\ntail\n"));
+  putEditorCaretInBlock(editor, 1);
+  settle(editor);
+  settleFolding();
+
+  QVERIFY(singlePreviewWidget(editor));
+  QVERIFY2(blockVisible(editor, 1), "the caret's own line was folded away");
+
+  // Moving the caret away does not re-decide it.
+  putEditorCaretInBlock(editor, editor.document()->blockCount() - 1);
+  settle(editor);
+  settleFolding();
+  QVERIFY(blockVisible(editor, 1));
+}
+
+// Editing a cell through the sheet rewrites the whole table source, which
+// destroys its folding range. The source must not expand, not even for one
+// event-loop turn.
+void TestInteractivePreview::testFoldSurvivesASheetCellEdit() {
+  VMarkdownEditor editor(makeAutoFoldConfig(true),
+                         QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QLatin1String(c_table) + QStringLiteral("\ntail\n"));
+
+  settleFolding();
+  QVERIFY(!blockVisible(editor, 1));
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+
+  editCell(sheet, 1, 0, QStringLiteral("zz"));
+  flushSheet(sheet);
+  QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("zz")));
+
+  // Immediately after the write-back, before any parse could have run.
+  QVERIFY2(!blockVisible(editor, 1), "the rewritten table expanded");
+
+  settle(editor);
+  settleFolding();
+  QVERIFY(!blockVisible(editor, 1));
+  QVERIFY(singlePreviewWidget(editor));
+}
+
+// A replacement may carry trailing whitespace, which the anchor spans but the
+// parsed element does not. Both the query and the restore have to describe the
+// element, otherwise a second rewrite issued before the next parse misses the
+// live range.
+void TestInteractivePreview::testFoldSurvivesARewriteWithTrailingBlankLines() {
+  VMarkdownEditor editor(makeAutoFoldConfig(true),
+                         QSharedPointer<TextEditorParameters>::create());
+
+  auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
+  QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
+  setTextAndSettle(editor, QLatin1String(c_table) + QStringLiteral("\ntail\n"));
+
+  settleFolding();
+  QVERIFY(!blockVisible(editor, 1));
+  QCOMPARE(factory->m_widgets.size(), 1);
+
+  auto widget = factory->m_widgets.first();
+  widget->previewContext()->requestSourceReplacement(
+      QStringLiteral("| h1 | h2 |\n| --- | --- |\n| z | b |\n\n"));
+  QVERIFY2(widget->m_lastResult.isAccepted(),
+           qPrintable(widget->m_lastResult.diagnostic()));
+  QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("| z | b |")));
+  QVERIFY2(!blockVisible(editor, 1), "the restored range missed the trimmed extent");
+  // Block 2 is the discriminator: the trimmed element ends there, the anchor
+  // spans the two trailing blank lines as well. An untrimmed restore would fold
+  // [0, 3] and hide the table's last row.
+  QVERIFY2(blockVisible(editor, 2), "the restore used the anchor's untrimmed extent");
+
+  // A second rewrite before the next parse still finds the restored range.
+  widget->previewContext()->requestSourceReplacement(
+      QStringLiteral("| h1 | h2 |\n| --- | --- |\n| y | b |\n\n"));
+  QVERIFY2(widget->m_lastResult.isAccepted(),
+           qPrintable(widget->m_lastResult.diagnostic()));
+  QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("| y | b |")));
+  QVERIFY(!blockVisible(editor, 1));
+  QVERIFY(blockVisible(editor, 2));
+
+  // And the next parse agrees with the extent the restore used.
+  settle(editor);
+  settleFolding();
+  QVERIFY(!blockVisible(editor, 1));
+  QVERIFY(blockVisible(editor, 2));
+}
+
+// A rewrite which changes the row count shifts every range below it. Those
+// ranges must keep their fold state, which is what the live-position
+// reconciliation buys.
+void TestInteractivePreview::testRewriteKeepsAFoldedTableBelowFolded() {
+  VMarkdownEditor editor(makeAutoFoldConfig(true),
+                         QSharedPointer<TextEditorParameters>::create());
+
+  auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
+  QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
+  setTextAndSettle(editor, QLatin1String(c_table) + QStringLiteral("\ntail\n\n") +
+                               QLatin1String(c_table));
+
+  settleFolding();
+  QCOMPARE(factory->m_widgets.size(), 2);
+  // The second table starts at block 5: 0..2 table, 3 blank, 4 tail, 5..7.
+  QVERIFY2(!blockVisible(editor, 1), "the first table did not fold");
+  QVERIFY2(!blockVisible(editor, 7), "the second table did not fold");
+
+  auto first = firstWidgetBySource(factory);
+  QVERIFY(first);
+  first->previewContext()->requestSourceReplacement(
+      QStringLiteral("| h1 | h2 |\n| --- | --- |\n| a | b |\n| c | d |"));
+  QVERIFY2(first->m_lastResult.isAccepted(), qPrintable(first->m_lastResult.diagnostic()));
+
+  // Everything below moved down by one block.
+  QVERIFY(!blockVisible(editor, 1));
+  QVERIFY2(!blockVisible(editor, 8), "the table below the rewrite lost its fold");
+
+  settle(editor);
+  settleFolding();
+  QVERIFY(!blockVisible(editor, 1));
+  QVERIFY(!blockVisible(editor, 8));
+}
+
+// A region left open for the caret stays open across its own rewrite: the
+// rewrite restores what was there, not what the option would have chosen.
+void TestInteractivePreview::testCaretSkippedTableStaysOpenAcrossARewrite() {
+  VMarkdownEditor editor(makeAutoFoldConfig(true),
+                         QSharedPointer<TextEditorParameters>::create());
+
+  auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
+  QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
+
+  editor.setText(QLatin1String(c_table) + QStringLiteral("\ntail\n"));
+  putEditorCaretInBlock(editor, 1);
+  settle(editor);
+  settleFolding();
+
+  QCOMPARE(factory->m_widgets.size(), 1);
+  QVERIFY(blockVisible(editor, 1));
+
+  auto widget = factory->m_widgets.first();
+  widget->previewContext()->requestSourceReplacement(
+      QStringLiteral("| h1 | h2 |\n| --- | --- |\n| z | b |"));
+  QVERIFY2(widget->m_lastResult.isAccepted(), qPrintable(widget->m_lastResult.diagnostic()));
+  QVERIFY(blockVisible(editor, 1));
+
+  putEditorCaretInBlock(editor, editor.document()->blockCount() - 1);
+  settle(editor);
+  settleFolding();
+  QVERIFY2(blockVisible(editor, 1), "the rewrite folded a region which was open");
+}
+
+// With text folding switched off there is no gutter to unfold with, so nothing
+// may hide source - and what the preview remembers has to survive untouched.
+void TestInteractivePreview::testRewriteWhileFoldingIsDisabledKeepsTheState() {
+  auto config = makeAutoFoldConfig(true);
+  VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+
+  auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
+  QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
+  setTextAndSettle(editor, QLatin1String(c_table) + QStringLiteral("\ntail\n"));
+
+  settleFolding();
+  QVERIFY(!blockVisible(editor, 1));
+
+  config->m_textEditorConfig->m_textFoldingEnabled = false;
+  editor.setConfig(config);
+  settle(editor);
+  settleFolding();
+  QVERIFY2(blockVisible(editor, 1), "disabling text folding left source hidden");
+
+  auto widget = factory->m_widgets.last();
+  QVERIFY(widget);
+  widget->previewContext()->requestSourceReplacement(
+      QStringLiteral("| h1 | h2 |\n| --- | --- |\n| z | b |"));
+  QVERIFY2(widget->m_lastResult.isAccepted(), qPrintable(widget->m_lastResult.diagnostic()));
+  QVERIFY(blockVisible(editor, 1));
+
+  // Re-enabling brings back what the preview remembered.
+  config->m_textEditorConfig->m_textFoldingEnabled = true;
+  editor.setConfig(config);
+  settle(editor);
+  settleFolding();
+  QVERIFY2(!blockVisible(editor, 1), "the remembered fold state was lost");
+}
+
+// Rebuilding the *renderer* of an existing element - here a widget which
+// refuses the next snapshot - is not a new initial decision. The option is off
+// by then, so only the state carried across the rebuild can fold it again.
+void TestInteractivePreview::testFoldStateSurvivesAWidgetRebuild() {
+  auto config = makeAutoFoldConfig(true);
+  VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+
+  auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
+  QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
+  setTextAndSettle(editor, QLatin1String(c_table) + QStringLiteral("\ntail\n"));
+
+  settleFolding();
+  QVERIFY(!blockVisible(editor, 1));
+  QCOMPARE(factory->m_widgets.size(), 1);
+
+  // From now on a fresh decision would leave it open.
+  config->m_autoFoldPreviewedBlocksEnabled = false;
+  editor.setConfig(config);
+
+  // Destroy every range and every entry *before* forcing the rebuild. With
+  // text folding off the fold pass early-returns, so it can neither fold
+  // anything nor write a state back onto the new item: the only way the
+  // remembered Folded can reach the rebuilt item is createItem()'s carry.
+  config->m_textEditorConfig->m_textFoldingEnabled = false;
+  editor.setConfig(config);
+  settle(editor);
+  settleFolding();
+  QVERIFY(blockVisible(editor, 1));
+
+  // Force the remove + create rebuild: the live widget refuses the snapshot.
+  factory->m_widgets.first()->m_refuseNextSetPreview = true;
+  settle(editor);
+  settleFolding();
+  QVERIFY(factory->m_widgets.size() > 1);
+  QVERIFY(blockVisible(editor, 1));
+
+  // With the option off, only the state the rebuilt item carries can fold the
+  // table when the ranges come back.
+  config->m_textEditorConfig->m_textFoldingEnabled = true;
+  editor.setConfig(config);
+  settle(editor);
+  settleFolding();
+  QVERIFY2(!blockVisible(editor, 1), "the rebuilt widget lost its fold state");
+}
+
+// The fold evaluation is queued, so a fold or an unfold made from the gutter is
+// not on the item yet when a rewrite arrives. The rewrite samples the live
+// state instead of trusting the item, in both directions.
+void TestInteractivePreview::testGutterUnfoldBeforeARewriteIsHonoured() {
+  VMarkdownEditor editor(makeAutoFoldConfig(true),
+                         QSharedPointer<TextEditorParameters>::create());
+
+  auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
+  QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
+
+  editor.resize(700, 500);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor, QLatin1String(c_table) + QStringLiteral("\ntail\n"));
+
+  settleFolding();
+  QVERIFY(!blockVisible(editor, 1));
+
+  // The item still remembers Folded from here on: nothing is processed between
+  // the click and the rewrite.
+  QVERIFY2(toggleFoldFromGutter(editor, 0, 1), "could not reach the gutter's folding marker");
+  QVERIFY(blockVisible(editor, 1));
+
+  auto widget = factory->m_widgets.last();
+  QVERIFY(widget);
+  widget->previewContext()->requestSourceReplacement(
+      QStringLiteral("| h1 | h2 |\n| --- | --- |\n| z | b |"));
+  QVERIFY2(widget->m_lastResult.isAccepted(), qPrintable(widget->m_lastResult.diagnostic()));
+
+  QVERIFY2(blockVisible(editor, 1), "the rewrite re-folded a table the user had just opened");
+
+  settle(editor);
+  settleFolding();
+  QVERIFY(blockVisible(editor, 1));
+}
+
+void TestInteractivePreview::testGutterFoldBeforeARewriteIsHonoured() {
+  VMarkdownEditor editor(makeAutoFoldConfig(true),
+                         QSharedPointer<TextEditorParameters>::create());
+
+  auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
+  QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
+
+  editor.resize(700, 500);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+
+  // Settled unfolded by the caret rule, so the item remembers Unfolded.
+  editor.setText(QLatin1String(c_table) + QStringLiteral("\ntail\n"));
+  putEditorCaretInBlock(editor, 1);
+  settle(editor);
+  settleFolding();
+  QVERIFY(blockVisible(editor, 1));
+
+  QVERIFY2(toggleFoldFromGutter(editor, 0, 1), "could not reach the gutter's folding marker");
+  QVERIFY(!blockVisible(editor, 1));
+
+  auto widget = factory->m_widgets.last();
+  QVERIFY(widget);
+  widget->previewContext()->requestSourceReplacement(
+      QStringLiteral("| h1 | h2 |\n| --- | --- |\n| z | b |"));
+  QVERIFY2(widget->m_lastResult.isAccepted(), qPrintable(widget->m_lastResult.diagnostic()));
+
+  QVERIFY2(!blockVisible(editor, 1), "the rewrite lost a fold the user had just made");
+
+  settle(editor);
+  settleFolding();
+  QVERIFY(!blockVisible(editor, 1));
+}
+
+// Undo of a rewrite performs the inverse destructive replacement, which
+// collapses the item's anchor. There is no post-edit retarget hook for it, so
+// the next generation is a fresh element and the option decides again. This is
+// documented behaviour, and the assertion is here to pin it down.
+void TestInteractivePreview::testUndoOfARewriteReDecides() {
+  VMarkdownEditor editor(makeAutoFoldConfig(true),
+                         QSharedPointer<TextEditorParameters>::create());
+
+  auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
+  QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
+
+  // Deliberately left open by the caret rule.
+  editor.setText(QLatin1String(c_table) + QStringLiteral("\ntail\n"));
+  putEditorCaretInBlock(editor, 1);
+  settle(editor);
+  settleFolding();
+  QVERIFY(blockVisible(editor, 1));
+
+  auto widget = factory->m_widgets.first();
+  widget->previewContext()->requestSourceReplacement(
+      QStringLiteral("| h1 | h2 |\n| --- | --- |\n| z | b |"));
+  QVERIFY(widget->m_lastResult.isAccepted());
+  QVERIFY(blockVisible(editor, 1));
+
+  editor.document()->undo();
+  putEditorCaretInBlock(editor, editor.document()->blockCount() - 1);
+  settle(editor);
+  settleFolding();
+
+  QVERIFY2(!blockVisible(editor, 1),
+           "the documented re-decide after an undo no longer happens");
+
+  // A redo is the same kind of destructive replacement, and re-decides the
+  // same way. With the caret away from the interior, the option folds the
+  // fresh element again.
+  editor.document()->redo();
+  putEditorCaretInBlock(editor, editor.document()->blockCount() - 1);
+  settle(editor);
+  settleFolding();
+
+  QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("| z | b |")));
+  QVERIFY2(!blockVisible(editor, 1),
+           "the documented re-decide after a redo no longer happens");
+}
+
+// A full replacement is a new document: every identity and every range is gone,
+// so the option decides from scratch.
+void TestInteractivePreview::testFullReplacementReDecides() {
+  VMarkdownEditor editor(makeAutoFoldConfig(true),
+                         QSharedPointer<TextEditorParameters>::create());
+
+  editor.setText(QLatin1String(c_table) + QStringLiteral("\ntail\n"));
+  putEditorCaretInBlock(editor, 1);
+  settle(editor);
+  settleFolding();
+  QVERIFY(blockVisible(editor, 1));
+
+  setTextAndSettle(editor, QLatin1String(c_table) + QStringLiteral("\ntail\n"));
+  settleFolding();
+  QVERIFY2(!blockVisible(editor, 1), "a fresh document did not re-decide");
+}
+
+// A deleted source leaves the item alive until the next parse removes it. Its
+// anchor has collapsed, so it describes no range and nothing may be folded for
+// it.
+void TestInteractivePreview::testDeletedSourceFoldsNothing() {
+  VMarkdownEditor editor(makeAutoFoldConfig(true),
+                         QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QLatin1String(c_table) + QStringLiteral("\ntail\n"));
+
+  settleFolding();
+  QVERIFY(!blockVisible(editor, 1));
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  const int start = widget->previewContext()->preview()->startPos();
+  const int end = widget->previewContext()->preview()->endPos();
+
+  QTextCursor cursor(editor.document());
+  cursor.setPosition(start);
+  cursor.setPosition(end, QTextCursor::KeepAnchor);
+  cursor.removeSelectedText();
+
+  settleFolding();
+  settle(editor);
+  settleFolding();
+
+  QVERIFY(previewWidgets(editor).isEmpty());
+  for (int i = 0; i < editor.document()->blockCount(); ++i) {
+    QVERIFY2(blockVisible(editor, i),
+             qPrintable(QStringLiteral("block %1 stayed hidden after its source was deleted")
+                            .arg(i)));
+  }
+}
+
+// A widget callback may spin a real nested event loop, which delivers the
+// host's own queued timers. The fold evaluation must not run against a
+// half-reconciled item set.
+void TestInteractivePreview::testFoldRefreshIsDeferredDuringWidgetCallback() {
+  VMarkdownEditor editor(makeAutoFoldConfig(true),
+                         QSharedPointer<TextEditorParameters>::create());
+
+  auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
+  QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
+  setTextAndSettle(editor, QLatin1String(c_table) + QStringLiteral("\ntail\n"));
+
+  settleFolding();
+  QCOMPARE(factory->m_widgets.size(), 1);
+  QVERIFY(!blockVisible(editor, 1));
+
+  auto widget = factory->m_widgets.first();
+  int duringSpin = -1;
+  widget->m_foldCounterSource = previewHost(editor);
+  widget->m_duringSpin = [&]() { duringSpin = foldRefreshes(editor); };
+  widget->m_spinOnNextSetPreview = true;
+
+  settle(editor);
+  QCOMPARE(widget->m_spinCount, 1);
+
+  // The nested loop delivers the host's own queued timers, and the fold pass
+  // owed by this very parse generation lands right in the middle of it. It must
+  // decline while the item set is half reconciled.
+  QVERIFY(widget->m_foldRefreshesBeforeSpin >= 0);
+  QVERIFY(duringSpin >= 0);
+  QCOMPARE(duringSpin, widget->m_foldRefreshesBeforeSpin);
+
+  settleFolding();
+
+  // And it must run afterwards, on the settled item set.
+  QVERIFY2(foldRefreshes(editor) > duringSpin, "the deferred fold pass never ran");
+  QCOMPARE(previewWidgets(editor).size(), 1);
+  QVERIFY(!blockVisible(editor, 1));
 }
 
 QTEST_MAIN(tests::TestInteractivePreview)

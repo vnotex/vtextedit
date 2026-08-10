@@ -14,6 +14,7 @@
 #include <vtextedit/preview.h>
 #include <vtextedit/previewwidget.h>
 
+#include "markdownfoldingprovider.h"
 #include "textdocumentlayout.h"
 
 class QTimer;
@@ -66,6 +67,24 @@ public:
   // re-armed spin. A blocked delivery calls into no factory and no widget, so
   // it is otherwise invisible from outside.
   static const char *c_reconcileDeliveryCountProperty;
+
+  // Number of preview driven fold evaluations that have actually run. Same
+  // mechanism as the reconcile counter above, but deliberately not the same
+  // convention: that one counts every queued delivery, including the blocked
+  // ones it declines, while this one is incremented past the guard and
+  // therefore counts only the passes which ran. The two deferral tests rely on
+  // that difference.
+  static const char *c_foldRefreshCountProperty;
+
+  // Block extent, type and fold state of every element which has a widget.
+  QVector<PreviewedRange> previewedRanges() const;
+
+  // Write back what the folding provider decided for each identity. Identities
+  // which are gone are ignored.
+  void setPreviewFoldStates(const QVector<QPair<quint64, PreviewFoldState>> &p_states);
+
+  // Coalesced, blocked-aware re-evaluation of the preview driven fold state.
+  void scheduleFoldRefresh();
 
 public slots:
   void updatePreviews(quint64 p_revision,
@@ -171,6 +190,13 @@ private:
     int m_sourceRectStart = -1;
 
     int m_sourceRectEnd = -1;
+
+    // The initial fold state this element has been settled into, or Undecided
+    // while no pass has seen it together with a live folding range. It lives on
+    // the item and not on the folding range because a range is destroyed by the
+    // very edit an in-place rewrite performs, while the item and its anchor
+    // survive it.
+    PreviewFoldState m_foldState = PreviewFoldState::Undecided;
   };
 
   // State of a live item carried across a rebuild. The anchor has been
@@ -181,6 +207,8 @@ private:
     QTextCursor m_anchor;
 
     QSharedPointer<const Preview> m_bound;
+
+    PreviewFoldState m_foldState = PreviewFoldState::Undecided;
   };
 
   // A removed pair whose deferred deletion has not been delivered yet.
@@ -257,7 +285,8 @@ private:
   // item is created or removed.
   void rebuildAnchorIndex();
 
-  void createItem(const QSharedPointer<const Preview> &p_preview);
+  void createItem(const QSharedPointer<const Preview> &p_preview,
+                  PreviewFoldState p_carried = PreviewFoldState::Undecided);
 
   void updateItem(quint64 p_id, const QSharedPointer<const Preview> &p_preview);
 
@@ -352,6 +381,16 @@ private:
   bool m_reconcilePending = false;
 
   bool m_reconcileScheduled = false;
+
+  // Whether a preview driven fold re-evaluation is owed, and whether one is
+  // already queued. Kept apart for the same reason as the reconcile pair: an
+  // unblock hook has to be able to re-arm exactly one delivery.
+  bool m_foldRefreshPending = false;
+
+  bool m_foldRefreshScheduled = false;
+
+  // Published through c_foldRefreshCountProperty.
+  int m_foldRefreshCount = 0;
 
   // A parse generation delivered while a pass was already running. A widget
   // callback may spin a nested event loop, which delivers the highlighter's

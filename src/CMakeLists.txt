@@ -175,6 +175,11 @@ endif()
 # were removed, so an already-linked consumer must not resolve against this
 # build. Without a SOVERSION that failure would surface as a missing symbol at
 # load time instead of at link time.
+#
+# 3.0: MarkdownEditorConfig gained m_autoFoldPreviewedBlocksEnabled. Applications
+# allocate that struct themselves, so its layout is part of the ABI; and the new
+# member defaults to true, which changes what an unmodified application does.
+# Both failures are silent without a SOVERSION bump.
 set_target_properties(VTextEdit PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION ${PROJECT_VERSION_MAJOR}

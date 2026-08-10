@@ -40,6 +40,7 @@ The Markdown-specific configuration is in `MarkdownEditorConfig`:
 | `m_inplacePreviewSources` | Enables the `ImageLink`, `CodeBlock`, `Math` and/or `Table` preview sources. The first three are enabled by default; `Table` is opt-in, because its sheet writes back to the document. |
 | `m_constrainInplacePreviewWidthEnabled` | Allows block preview images to shrink to the text layout width. |
 | `m_webCodeBlockHighlighterEnabled` | Selects the web or KSyntax fenced-code source highlighter during construction. |
+| `m_autoFoldPreviewedBlocksEnabled` | Folds a foldable region as soon as it first gets a valid in-place preview. Default on. See [Preview driven folding](#preview-driven-folding). |
 | `VMarkdownEditor::setInplacePreviewEnabled()` | Temporarily enables or disables configured preview sources. |
 
 `VMarkdownEditor::setConfig()` reapplies the base editor configuration, Markdown theme,
@@ -394,6 +395,72 @@ signals, and the `PreviewMgr::updateCodeBlocks()` / `updateMathBlocks()` pixmap 
 external consumers should normally use `findImageFromDocumentResourceMgr()` or `PreviewMgr`
 instead of depending on that private type.
 
+## Preview driven folding
+
+`MarkdownFoldingProvider` owns both halves of this: it turns the parser's folding regions
+into `TextFolding` ranges, and it decides the initial fold state of every region which has
+a valid preview.
+
+### Reconciliation
+
+`updateFoldingRegions()` matches each parsed region against the *live* extent of the ranges
+it already owns, asked from `TextFolding::foldingRangeBlocks()`, not against the block
+numbers of the previous parse. An edit which only shifts block numbers therefore keeps
+every range, its id and its fold state. Matching compares the region type as well, so a
+fenced code block edited into a table at the same extent is treated as the new element it
+is. Removal of unmatched ranges precedes creation of missing ones, because `TextFolding`
+refuses a new range starting on the same block as an existing one.
+
+Two regions covering exactly the same blocks - a blockquote wrapping nothing but a table,
+for instance - are de-duplicated before matching, in favour of the preview-bearing type
+(`FencedCode`, `Math`, `Table`) over the wrapper types (`Heading`, `Blockquote`,
+`FrontMatter`). Only one of them can become a range, and which one owns it decides which
+element owns the fold state.
+
+### The initial fold state
+
+`applyPreviewAutoFold()` is the pass which takes and enforces that decision - the only one
+which ever folds a range that already exists. It is always reached through
+`InteractivePreviewHost::scheduleFoldRefresh()`, never synchronously: `completeHighlight()`
+emits `foldingRegionsUpdated` *before* `previewElementsUpdated`, so at the moment the
+regions land the host still describes the previous generation. The refresh is re-armed
+from the host's existing unblock points, so it can never run against a half-reconciled item
+set.
+
+A region is settled the first time a pass sees it together with a valid preview - a widget
+whose block extent and type match the region exactly, or a painted, non-inline `PreviewData`
+of the mapped source on the region's first or last block, which are the two blocks folding
+keeps visible. Once settled, the option is never re-read for that range: unfolding by hand
+is never undone, and a region whose interior holds the caret when the preview appears is
+left open for good. Changing the option at runtime therefore only affects regions which
+have not been settled yet.
+
+### Keeping the state across a rewrite
+
+`TextFolding` destroys a range the moment the blocks it spans are replaced, which is exactly
+what an accepted in-place rewrite does. The fold state therefore lives on the
+`InteractivePreviewHost` item, whose identity and anchor survive that edit, and is carried
+across every rebuild of the same logical element. `handleSourceReplacementRequested()`
+samples the *live* state before the edit - a manual fold made since the last queued refresh
+is not on the item yet - and re-creates the range already folded straight after it, in the
+same event-loop turn, so the source never visibly expands. Both the query and the restore
+use the element's extent, trimmed of the trailing whitespace a replacement may carry but
+the parsed element does not.
+
+Nothing folds while text folding itself is off: `applyPreviewAutoFold()`,
+`restoreFoldedRange()` and `tryRegionFolded()` all return early, so what a preview
+remembers survives a disable/enable cycle and is restored on the next parse.
+
+Deciding and enforcing are two separate phases inside the pass, because `foldRange()`
+emits `foldingRangesChanged()` synchronously and that reaches application code (the
+layout's `widgetPreviewGeometryChanged` is delivered straight to the preview host, which
+hands a geometry context to every widget). Nothing may therefore hold an iterator into the
+entry table across a fold; every settled decision is re-resolved by id afterwards.
+
+Undo and redo are the documented exception. An undo of a rewrite performs the inverse
+destructive replacement with no post-edit retarget hook, so the next generation is a fresh
+element and the option decides again.
+
 ## Current limitations
 
 - Preview image extraction supports one direct `![alt](url)` match, not every image region that
@@ -409,6 +476,10 @@ instead of depending on that private type.
 - Mixed inline/blockwise previews and multiple blockwise previews do not satisfy current layout
   assumptions.
 - Hit testing and selection are text-oriented rather than preview-aware.
+- A region `TextFolding` refuses - one sharing its start block with a strictly larger
+  wrapper region - never gets a range, and therefore never auto-folds.
+- An element rendered only by a painted preview has no durable identity, so a destructive
+  edit over it, or a text-folding disable/enable cycle, re-decides its initial fold state.
 
 ## Test coverage
 
@@ -417,7 +488,10 @@ Current parser coverage is substantial: `test_markdownparser` exercises direct
 case; `test_astwalker` verifies golden highlight output, regions, folding extraction, and UTF-16
 position handling; `test_cmark_probe` and `test_goldenmaster` cover parser behavior and migration
 fixtures. `test_markdownfolding` covers folding-provider behavior and one custom-layout geometry
-case confirming zero-height folded blocks and restoration after unfolding.
+case confirming zero-height folded blocks and restoration after unfolding. Preview driven
+folding is covered at three levels: `test_textfolding` for the range accessors,
+`test_markdownfolding` for reconciliation, the auto-fold decision and the restore, and
+`test_interactivepreview` end to end on a real `VMarkdownEditor`.
 
 There are no dedicated tests for `PreviewMgr`, `BlockPreviewData`, `DocumentResourceMgr`, or
 `EditorPreviewMgr`. Image extraction/loading and network races, resource cleanup, code/math preview

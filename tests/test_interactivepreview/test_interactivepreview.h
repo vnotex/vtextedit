@@ -29,6 +29,10 @@ public:
   // Destroy this instance from inside the second setPreview() call.
   bool m_selfDestructOnUpdate = false;
 
+  // Refuse exactly one snapshot, the way a renderer which cannot bind the new
+  // source does. The host rebuilds the item through the factory chain.
+  bool m_refuseNextSetPreview = false;
+
   // Run one bounded nested event loop from inside the next setPreview() call,
   // the way a real renderer opening a modal dialog would.
   bool m_spinOnNextSetPreview = false;
@@ -47,6 +51,13 @@ public:
   int m_deliveriesBeforeSpin = -1;
 
   int m_deliveriesAfterSpin = -1;
+
+  // Host object carrying the fold refresh counter, sampled when the nested
+  // loop is entered. A fold pass which ran before the callback is not evidence
+  // of anything; one which runs inside it is.
+  QObject *m_foldCounterSource = nullptr;
+
+  int m_foldRefreshesBeforeSpin = -1;
 
   QSize sizeHint() const Q_DECL_OVERRIDE;
 
@@ -227,6 +238,24 @@ private slots:
   void testGenerationDeliveredDuringCallbackIsNotLost();
   void testReplacementCannotSplitATableCell();
   void testSourceTextRectFollowsTheSource();
+
+  // Auto-folding a previewed element, and keeping its fold state across a
+  // preview driven rewrite.
+  void testPreviewedTableIsFoldedOnce();
+  void testAutoFoldIsOptional();
+  void testCaretInsideKeepsTheSourceOpen();
+  void testFoldSurvivesASheetCellEdit();
+  void testFoldSurvivesARewriteWithTrailingBlankLines();
+  void testRewriteKeepsAFoldedTableBelowFolded();
+  void testCaretSkippedTableStaysOpenAcrossARewrite();
+  void testRewriteWhileFoldingIsDisabledKeepsTheState();
+  void testFoldStateSurvivesAWidgetRebuild();
+  void testGutterUnfoldBeforeARewriteIsHonoured();
+  void testGutterFoldBeforeARewriteIsHonoured();
+  void testUndoOfARewriteReDecides();
+  void testFullReplacementReDecides();
+  void testDeletedSourceFoldsNothing();
+  void testFoldRefreshIsDeferredDuringWidgetCallback();
 };
 } // namespace tests
 

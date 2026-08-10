@@ -485,4 +485,105 @@ void TestTextFolding::testDocumentClear()
     QVERIFY(m_textFolding->m_idToFoldingRange.isEmpty());
 }
 
+void TestTextFolding::testRangeAccessors()
+{
+    // testDocumentClear() leaves the document empty, and slots run in
+    // declaration order, so refill it before asking for any range.
+    m_doc->setPlainText(utils::getCppText());
+
+    // 1. foldingRangeBlocks() reports the live extent of a live range.
+    {
+        auto id = insertNewFoldingRange(10, 20, TextFolding::Persistent);
+        QVERIFY(id != TextFolding::InvalidRangeId);
+
+        int first = -1;
+        int last = -1;
+        QVERIFY(m_textFolding->foldingRangeBlocks(id, &first, &last));
+        QCOMPARE(first, 10);
+        QCOMPARE(last, 20);
+
+        // An unknown id answers false and leaves the outputs alone.
+        int untouched = -7;
+        QVERIFY(!m_textFolding->foldingRangeBlocks(9999, &untouched, &untouched));
+        QCOMPARE(untouched, -7);
+
+        // Null outputs are accepted: the answer alone is often enough.
+        QVERIFY(m_textFolding->foldingRangeBlocks(id, nullptr, nullptr));
+
+        // 2. isRangeFolded() before and after folding.
+        QVERIFY(!m_textFolding->isRangeFolded(id));
+        QVERIFY(!m_textFolding->isRangeFolded(9999));
+
+        // 3. foldRange() folds once and is a no-op the second time. Unlike
+        // toggleRange(), a second call must not unfold it.
+        QVERIFY(m_textFolding->foldRange(id));
+        QVERIFY(m_textFolding->isRangeFolded(id));
+        QVERIFY(checkTextBlocksInvisible(m_doc, 11, 19));
+        QVERIFY(checkTextBlocksVisible(m_doc, 10, 10));
+        QVERIFY(checkTextBlocksVisible(m_doc, 20, 20));
+
+        QVERIFY(m_textFolding->foldRange(id));
+        QVERIFY(m_textFolding->isRangeFolded(id));
+        QVERIFY(checkTextBlocksInvisible(m_doc, 11, 19));
+
+        QVERIFY(!m_textFolding->foldRange(9999));
+
+        // 4. The extent still resolves while folded.
+        QVERIFY(m_textFolding->foldingRangeBlocks(id, &first, &last));
+        QCOMPARE(first, 10);
+        QCOMPARE(last, 20);
+
+        // 5. A stale id: the range is gone once it is removed.
+        QVERIFY(m_textFolding->removeFoldingRange(id));
+        QVERIFY(!m_textFolding->foldingRangeBlocks(id, &first, &last));
+        QVERIFY(!m_textFolding->isRangeFolded(id));
+        QVERIFY(!m_textFolding->foldRange(id));
+    }
+
+    // 6. isEnabled() mirrors setEnabled(), which clears every range.
+    {
+        QVERIFY(m_textFolding->isEnabled());
+
+        auto id = insertNewFoldingRange(10, 20, TextFolding::Persistent);
+        QVERIFY(id != TextFolding::InvalidRangeId);
+
+        m_textFolding->setEnabled(false);
+        QVERIFY(!m_textFolding->isEnabled());
+        QVERIFY(!m_textFolding->foldingRangeBlocks(id, nullptr, nullptr));
+
+        m_textFolding->setEnabled(true);
+        QVERIFY(m_textFolding->isEnabled());
+    }
+}
+
+// hardClear() drops every range without unfolding it, because after a real
+// document replacement the blocks a range spanned are gone and must not be
+// touched. The replacement heuristic in the contentsChange handler also fires
+// on a full-document *format* change, though - the editor produces one from
+// QSyntaxHighlighter::rehighlight(), which VTextEditor::setConfig() runs on
+// every configuration or theme change - and there the blocks are the very same
+// objects. Leaving them hidden would hide the folded source for good, with no
+// range left for the gutter to unfold it. The end-to-end case is covered by
+// test_interactivepreview's testFoldStateSurvivesAWidgetRebuild.
+void TestTextFolding::testHardClearRestoresVisibility()
+{
+    m_doc->setPlainText(utils::getCppText());
+
+    auto id = insertNewFoldingRange(10, 20, TextFolding::Persistent | TextFolding::Folded);
+    QVERIFY(id != TextFolding::InvalidRangeId);
+    QVERIFY(checkTextBlocksInvisible(m_doc, 11, 19));
+
+    const QString before = m_doc->toPlainText();
+
+    m_textFolding->hardClear();
+
+    // No text changed, and every range is gone.
+    QCOMPARE(m_doc->toPlainText(), before);
+    QVERIFY(m_textFolding->isEmpty());
+    QVERIFY(m_textFolding->m_idToFoldingRange.isEmpty());
+    QVERIFY(m_textFolding->m_foldedFoldingRanges.isEmpty());
+    QVERIFY2(checkTextBlocksVisible(m_doc, 0, m_doc->blockCount() - 1),
+             "the hard clear left folded blocks hidden with no range to unfold them");
+}
+
 QTEST_MAIN(tests::TestTextFolding)

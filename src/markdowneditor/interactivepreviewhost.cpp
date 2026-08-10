@@ -58,13 +58,35 @@ const char *InteractivePreviewHost::c_enabledTypeMaskProperty = "vte_preview_ena
 const char *InteractivePreviewHost::c_reconcileDeliveryCountProperty =
     "vte_preview_reconcile_deliveries";
 
+const char *InteractivePreviewHost::c_foldRefreshCountProperty = "vte_preview_fold_refreshes";
+
 InteractivePreviewHost::CallbackGuard::~CallbackGuard() {
   m_host->m_inFactoryCallback = m_previous;
   if (!m_previous) {
     // Outermost guard: whatever was owed while the callback ran can be
     // delivered now. This only arms a timer, so it is safe during unwinding.
     m_host->scheduleReconcileDelivery();
+    // Only re-arm what was already owed: arming here unconditionally would
+    // queue a fold pass after every single widget callback.
+    if (m_host->m_foldRefreshPending) {
+      m_host->scheduleFoldRefresh();
+    }
   }
+}
+
+// Exclusive offset after the last non-whitespace character.
+//
+// findSoleMatchingElement() accepts trailing whitespace after the matched
+// element, so an accepted replacement's span and the parsed element's span can
+// differ: the anchor keeps spanning the whole replacement while the folding
+// region ends at the last non-blank line. Both the query and the restore have
+// to describe the element, not the anchor.
+static int trimmedEndOffset(const QString &p_text) {
+  int end = p_text.size();
+  while (end > 0 && p_text.at(end - 1).isSpace()) {
+    --end;
+  }
+  return end;
 }
 
 
@@ -387,6 +409,7 @@ void InteractivePreviewHost::rebuildAll() {
 
     CarriedItem carried;
     carried.m_anchor = item.m_anchor;
+    carried.m_foldState = item.m_foldState;
     // Only a rebased snapshot is worth carrying; otherwise the replay already
     // hands back the very same object.
     if (item.m_preview && item.m_preview != key) {
@@ -437,6 +460,93 @@ void InteractivePreviewHost::scheduleReconcileDelivery() {
     // A factory set change may make a different factory win, so rebuild.
     rebuildAll();
   });
+}
+
+void InteractivePreviewHost::scheduleFoldRefresh() {
+  m_foldRefreshPending = true;
+
+  // Never arm while blocked, for the same reason scheduleReconcileDelivery()
+  // does not: a widget callback may spin a real nested event loop, and the
+  // refresh would then run against a half-reconciled m_items.
+  if (m_foldRefreshScheduled || m_reconciling || m_inFactoryCallback) {
+    return;
+  }
+
+  m_foldRefreshScheduled = true;
+  QTimer::singleShot(0, this, [this]() {
+    m_foldRefreshScheduled = false;
+
+    if (!m_foldRefreshPending || m_reconciling || m_inFactoryCallback) {
+      // An unblock hook re-arms it; re-arming here would spin.
+      return;
+    }
+
+    m_foldRefreshPending = false;
+    setProperty(c_foldRefreshCountProperty, ++m_foldRefreshCount);
+    if (m_editor) {
+      m_editor->applyPreviewFolding();
+    }
+  });
+}
+
+QVector<PreviewedRange> InteractivePreviewHost::previewedRanges() const {
+  QVector<PreviewedRange> ranges;
+  if (!m_doc) {
+    return ranges;
+  }
+
+  const int limit = m_doc->characterCount() - 1;
+  ranges.reserve(m_items.size());
+  for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it) {
+    const auto &item = it.value();
+    if (!item.m_widget || !item.m_preview) {
+      continue;
+    }
+
+    // A destructive edit over the source collapses the anchor, and the stale
+    // item survives until the next parse removes it. Reporting an unvalidated
+    // conversion of that would describe a range which is not there.
+    if (item.m_anchor.isNull()) {
+      continue;
+    }
+
+    const int start = item.m_anchor.selectionStart();
+    const int end = item.m_anchor.selectionEnd();
+    if (start < 0 || end <= start || end > limit) {
+      continue;
+    }
+
+    const QTextBlock firstBlock = m_doc->findBlock(start);
+    // The anchor spans [start, end), so the last character of the source is at
+    // end - 1.
+    const QTextBlock lastBlock = m_doc->findBlock(end - 1);
+    if (!firstBlock.isValid() || !lastBlock.isValid() ||
+        lastBlock.blockNumber() < firstBlock.blockNumber()) {
+      continue;
+    }
+
+    PreviewedRange range;
+    range.m_identity = item.m_id;
+    range.m_startBlock = firstBlock.blockNumber();
+    range.m_endBlock = lastBlock.blockNumber();
+    range.m_type = item.m_preview->type();
+    range.m_foldState = item.m_foldState;
+    ranges.append(range);
+  }
+
+  return ranges;
+}
+
+void InteractivePreviewHost::setPreviewFoldStates(
+    const QVector<QPair<quint64, PreviewFoldState>> &p_states) {
+  for (const auto &state : p_states) {
+    auto it = m_items.find(state.first);
+    if (it == m_items.end()) {
+      continue;
+    }
+
+    it.value().m_foldState = state.second;
+  }
 }
 
 
@@ -525,8 +635,11 @@ void InteractivePreviewHost::updatePreviews(
 
   // A registration or enablement change made during the pass is owed a
   // rebuild, and scheduleReconcileDelivery() declined to arm while
-  // m_reconciling was true.
+  // m_reconciling was true. The same holds for a fold refresh.
   scheduleReconcileDelivery();
+  if (m_foldRefreshPending) {
+    scheduleFoldRefresh();
+  }
 
   qCDebug(previewHostLog) << "reconcile done -" << m_items.size() << "live item(s)";
 
@@ -711,7 +824,8 @@ InteractivePreviewHost::createWidgetFor(const QSharedPointer<const Preview> &p_p
   return nullptr;
 }
 
-void InteractivePreviewHost::createItem(const QSharedPointer<const Preview> &p_preview) {
+void InteractivePreviewHost::createItem(const QSharedPointer<const Preview> &p_preview,
+                                        PreviewFoldState p_carried) {
   auto *vp = viewport();
   if (!vp) {
     return;
@@ -742,6 +856,11 @@ void InteractivePreviewHost::createItem(const QSharedPointer<const Preview> &p_p
   QTextCursor anchor;
   bool carriedAnchor = false;
   bool carriedBinding = false;
+  // A rebuild of the same logical element must not re-decide its initial fold
+  // state. A carried map entry wins over the parameter; the two are
+  // operationally disjoint, because m_carriedItems is only populated by
+  // rebuildAll(), which removes every item before replaying.
+  PreviewFoldState foldState = p_carried;
 
   const auto carried = m_carriedItems.constFind(p_preview.data());
   if (carried != m_carriedItems.constEnd()) {
@@ -749,6 +868,8 @@ void InteractivePreviewHost::createItem(const QSharedPointer<const Preview> &p_p
       bound = carried.value().m_bound;
       carriedBinding = true;
     }
+
+    foldState = carried.value().m_foldState;
 
     anchor = carried.value().m_anchor;
     if (anchor.isNull() || anchor.selectionEnd() <= anchor.selectionStart()) {
@@ -799,6 +920,7 @@ void InteractivePreviewHost::createItem(const QSharedPointer<const Preview> &p_p
   item.m_widget = widget;
   item.m_factory = usedFactory;
   item.m_anchor = anchor;
+  item.m_foldState = foldState;
   m_items.insert(id, item);
 
   qCDebug(previewHostLog) << "created item" << id << previewTypeName(bound->type()) << "at ["
@@ -840,8 +962,11 @@ void InteractivePreviewHost::updateItem(quint64 p_id,
       qCDebug(previewHostLog) << "item" << p_id << previewTypeName(p_preview->type())
                               << "has no resolvable range at [" << p_preview->startPos() << ","
                               << p_preview->endPos() << ") - rebuilding it";
+      // The rebuild is of the *same* logical element, so its settled fold
+      // state is carried across it.
+      const PreviewFoldState foldState = item.m_foldState;
       removeItem(p_id);
-      createItem(p_preview);
+      createItem(p_preview, foldState);
       return;
     }
   }
@@ -887,8 +1012,19 @@ void InteractivePreviewHost::updateItem(quint64 p_id,
   // remaining factory chain, falling back to static rendering if none claims.
   qCDebug(previewHostLog) << "item" << p_id << previewTypeName(p_preview->type())
                           << "refused the snapshot or vanished - rebuilding it";
+  // Rebuilding the renderer of an existing element is not a new initial
+  // decision, so its settled fold state is carried across. Re-resolved by id
+  // because the callback above may have torn the item down and a nested
+  // refresh may have written a newer state onto it.
+  PreviewFoldState foldState = PreviewFoldState::Undecided;
+  {
+    const auto live = m_items.constFind(p_id);
+    if (live != m_items.constEnd()) {
+      foldState = live.value().m_foldState;
+    }
+  }
   removeItem(p_id);
-  createItem(p_preview);
+  createItem(p_preview, foldState);
 }
 
 void InteractivePreviewHost::removeItem(quint64 p_id) { removeItem(p_id, false); }
@@ -1277,6 +1413,10 @@ void InteractivePreviewHost::publish() {
   if (!m_geometrySynced) {
     syncWidgetGeometry();
   }
+
+  // The previews the layout now holds are the ones the fold decision is made
+  // from, so this is the point where a re-evaluation is owed.
+  scheduleFoldRefresh();
 }
 
 void InteractivePreviewHost::syncWidgetGeometry() {
@@ -1813,6 +1953,33 @@ void InteractivePreviewHost::handleSourceReplacementRequested(
     return;
   }
 
+  // Sample the live fold state of the element about to be destroyed.
+  //
+  // item.m_foldState must not be trusted here: only the queued refresh writes
+  // it, so a manual fold or unfold made since the last delivery is not in it
+  // yet. The live state is written back onto the item so the restore branch of
+  // the auto-fold pass agrees with it afterwards.
+  //
+  // The *element's* extent is what both sides need, not the anchor's: trailing
+  // whitespace inside a replacement is accepted but is not part of the parsed
+  // element, so the folding region ends at the last non-blank line.
+  const int firstBlock = m_doc->findBlock(start).blockNumber();
+  const int liveSpan = trimmedEndOffset(live);
+  bool folded = false;
+  bool known = false;
+  if (liveSpan > 0) {
+    const int lastBlock = m_doc->findBlock(start + liveSpan - 1).blockNumber();
+    known = m_editor->tryPreviewSourceFolded(item.m_preview->type(), firstBlock, lastBlock,
+                                             &folded);
+  }
+
+  if (known) {
+    item.m_foldState = folded ? PreviewFoldState::Folded : PreviewFoldState::Unfolded;
+  }
+  // known == false means there is no live range for this source at all - most
+  // importantly while text folding is disabled, where every range was cleared.
+  // The item's remembered state has to survive that untouched.
+
   QTextCursor cursor(m_doc);
   cursor.beginEditBlock();
   cursor.setPosition(start);
@@ -1841,6 +2008,17 @@ void InteractivePreviewHost::handleSourceReplacementRequested(
                              << (start + p_replacementMarkdown.size()) << ")"
                              << (rebased ? "and rebased the bound snapshot"
                                          : "WITHOUT a rebased snapshot");
+
+  // Restore the fold in this very event-loop turn. Waiting for the next parse
+  // would let the source visibly expand and collapse again. The edit is
+  // complete - endEditBlock() has returned - and no repaint can happen before
+  // this returns, so folding here is safe; it dirties the layout, and the
+  // schedulePublish() below resettles the widget geometry.
+  const int span = trimmedEndOffset(p_replacementMarkdown);
+  if (known && folded && span > 0) {
+    m_editor->restoreFoldAfterPreviewRewrite(
+        item.m_preview->type(), firstBlock, m_doc->findBlock(start + span - 1).blockNumber());
+  }
 
   // The anchors moved: resubmit the reservations without waiting for the next
   // parse generation.

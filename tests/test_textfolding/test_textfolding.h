@@ -26,6 +26,10 @@ namespace tests
 
         void testDocumentClear();
 
+        void testRangeAccessors();
+
+        void testHardClearRestoresVisibility();
+
         void cleanupTestCase();
 
         // Will be executed before any test function.

@@ -96,6 +96,36 @@ private slots:
 
   void testLiveRangeIsNotRecreated();
 
+  // Reconciliation from the ranges' live positions.
+  void testReconcileSurvivesBlockShift();
+
+  void testReconcileEndBlockChange();
+
+  void testReconcileTypeChange();
+
+  void testExactExtentDeduplication();
+
+  void testTryRegionFolded();
+
+  void testRestoreFoldedRange();
+
+  // Preview driven auto-folding.
+  void testAutoFoldWidgetPreview();
+
+  void testAutoFoldCaretRule();
+
+  void testAutoFoldPaintedPreview();
+
+  void testAutoFoldSkipsWrapperRegion();
+
+  void testAutoFoldOptionOff();
+
+  void testAutoFoldRestoresReportedState();
+
+  void testAutoFoldWithTextFoldingDisabled();
+
+  void testRestoreFoldAfterInPlaceRewrite();
+
   void cleanupTestCase();
 
   void cleanup();

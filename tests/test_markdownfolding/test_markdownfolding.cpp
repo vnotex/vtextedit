@@ -1262,4 +1262,550 @@ void TestMarkdownFolding::testLiveRangeIsNotRecreated() {
   QCOMPARE(remaining.first().first, headingId);
 }
 
+// ---------------------------------------------------------------------------
+// Reconciliation from the ranges' live positions
+// ---------------------------------------------------------------------------
+
+static PreviewedRange makeWidgetRange(quint64 p_identity, int p_startBlock, int p_endBlock,
+                                      PreviewElementType p_type,
+                                      PreviewFoldState p_state = PreviewFoldState::Undecided) {
+  PreviewedRange range;
+  range.m_identity = p_identity;
+  range.m_startBlock = p_startBlock;
+  range.m_endBlock = p_endBlock;
+  range.m_type = p_type;
+  range.m_foldState = p_state;
+  return range;
+}
+
+// The fold state of a range must survive an edit which only shifts the blocks
+// below it. Matching the parsed regions against the *keys* of the last
+// reconciliation drops and recreates every range under the edit, and loses its
+// fold state with it.
+void TestMarkdownFolding::testReconcileSurvivesBlockShift() {
+  QTextDocument doc(generateLines(40));
+  TextFolding folding(&doc);
+  MarkdownFoldingProvider provider(&folding, &doc);
+
+  QVector<md::FoldingRegion> regions;
+  regions.append({0, 9, md::Heading, 1});
+  regions.append({12, 19, md::FencedCode, 0});
+  provider.updateFoldingRegions(regions);
+
+  const qint64 headingId = folding.foldingRangesStartingOnBlock(0).first().first;
+  const qint64 codeId = folding.foldingRangesStartingOnBlock(12).first().first;
+  QVERIFY(folding.foldRange(codeId));
+  QVERIFY(!doc.findBlockByNumber(13).isVisible());
+
+  // Insert a line between the two regions: the code range moves down by one,
+  // the heading range does not move at all.
+  QTextCursor cursor(&doc);
+  cursor.setPosition(doc.findBlockByNumber(10).position());
+  cursor.insertText(QStringLiteral("inserted\n"));
+
+  int first = -1;
+  int last = -1;
+  QVERIFY(folding.foldingRangeBlocks(codeId, &first, &last));
+  QCOMPARE(first, 13);
+  QCOMPARE(last, 20);
+
+  // The re-parse reports the shifted extents.
+  QVector<md::FoldingRegion> shifted;
+  shifted.append({0, 9, md::Heading, 1});
+  shifted.append({13, 20, md::FencedCode, 0});
+  provider.updateFoldingRegions(shifted);
+
+  QCOMPARE(folding.foldingRangesStartingOnBlock(13).size(), 1);
+  QCOMPARE(folding.foldingRangesStartingOnBlock(13).first().first, codeId);
+  QCOMPARE(folding.foldingRangesStartingOnBlock(0).first().first, headingId);
+  QVERIFY(folding.isRangeFolded(codeId));
+  QVERIFY(!doc.findBlockByNumber(14).isVisible());
+}
+
+// A region which keeps its start block and changes its end block gets a live
+// range back within the same single pass: the removal has to precede the
+// creation, otherwise TextFolding refuses the new range for sharing a start
+// block with the old one.
+void TestMarkdownFolding::testReconcileEndBlockChange() {
+  QTextDocument doc(generateLines(30));
+  TextFolding folding(&doc);
+  MarkdownFoldingProvider provider(&folding, &doc);
+
+  QVector<md::FoldingRegion> regions;
+  regions.append({5, 10, md::FencedCode, 0});
+  provider.updateFoldingRegions(regions);
+  QCOMPARE(folding.foldingRangesStartingOnBlock(5).size(), 1);
+
+  QVector<md::FoldingRegion> grown;
+  grown.append({5, 14, md::FencedCode, 0});
+  provider.updateFoldingRegions(grown);
+
+  auto ranges = folding.foldingRangesStartingOnBlock(5);
+  QCOMPARE(ranges.size(), 1);
+  int first = -1;
+  int last = -1;
+  QVERIFY(folding.foldingRangeBlocks(ranges.first().first, &first, &last));
+  QCOMPARE(first, 5);
+  QCOMPARE(last, 14);
+}
+
+// A region whose type changes at the same extent is a different element, so it
+// must not inherit the old range or its settled decision.
+void TestMarkdownFolding::testReconcileTypeChange() {
+  QTextDocument doc(generateLines(30));
+  TextFolding folding(&doc);
+  MarkdownFoldingProvider provider(&folding, &doc);
+
+  QVector<md::FoldingRegion> code;
+  code.append({5, 10, md::FencedCode, 0});
+  provider.updateFoldingRegions(code);
+
+  const qint64 codeId = folding.foldingRangesStartingOnBlock(5).first().first;
+  QVERIFY(folding.foldRange(codeId));
+
+  QVector<md::FoldingRegion> table;
+  table.append({5, 10, md::Table, 0});
+  provider.updateFoldingRegions(table);
+
+  auto ranges = folding.foldingRangesStartingOnBlock(5);
+  QCOMPARE(ranges.size(), 1);
+  QVERIFY(ranges.first().first != codeId);
+  QVERIFY(!folding.isRangeFolded(ranges.first().first));
+  QVERIFY(!folding.foldingRangeBlocks(codeId, nullptr, nullptr));
+
+  // The type is what the query keys on, too.
+  bool folded = true;
+  QVERIFY(!provider.tryRegionFolded(PreviewElementType::Code, 5, 10, &folded));
+  QVERIFY(provider.tryRegionFolded(PreviewElementType::Table, 5, 10, &folded));
+  QVERIFY(!folded);
+}
+
+// A blockquote wrapping nothing but a table emits two regions covering exactly
+// the same blocks, and TextFolding can only hold one. The preview-bearing one
+// has to win, deterministically and over repeated passes.
+void TestMarkdownFolding::testExactExtentDeduplication() {
+  QTextDocument doc(generateLines(30));
+  TextFolding folding(&doc);
+  MarkdownFoldingProvider provider(&folding, &doc);
+
+  QVector<md::FoldingRegion> wrapperFirst;
+  wrapperFirst.append({5, 10, md::Blockquote, 0});
+  wrapperFirst.append({5, 10, md::Table, 0});
+
+  QVector<md::FoldingRegion> tableFirst;
+  tableFirst.append({5, 10, md::Table, 0});
+  tableFirst.append({5, 10, md::Blockquote, 0});
+
+  bool folded = true;
+  for (int i = 0; i < 3; ++i) {
+    provider.updateFoldingRegions(i % 2 == 0 ? wrapperFirst : tableFirst);
+    QCOMPARE(folding.foldingRangesStartingOnBlock(5).size(), 1);
+    QVERIFY(provider.tryRegionFolded(PreviewElementType::Table, 5, 10, &folded));
+    QVERIFY(!folded);
+  }
+
+  // A live wrapper entry at that extent is replaced once the preview-bearing
+  // region appears there: nothing matches the wrapper, so it is removed and
+  // the table is created in its place.
+  MarkdownFoldingProvider second(&folding, &doc);
+  provider.clear();
+
+  QVector<md::FoldingRegion> wrapperOnly;
+  wrapperOnly.append({5, 10, md::Blockquote, 0});
+  second.updateFoldingRegions(wrapperOnly);
+  QCOMPARE(folding.foldingRangesStartingOnBlock(5).size(), 1);
+  QVERIFY(!second.tryRegionFolded(PreviewElementType::Table, 5, 10, &folded));
+
+  second.updateFoldingRegions(wrapperFirst);
+  QCOMPARE(folding.foldingRangesStartingOnBlock(5).size(), 1);
+  QVERIFY(second.tryRegionFolded(PreviewElementType::Table, 5, 10, &folded));
+}
+
+// Live/folded, live/unfolded and "no live range" are three distinct outcomes.
+void TestMarkdownFolding::testTryRegionFolded() {
+  QTextDocument doc(generateLines(30));
+  TextFolding folding(&doc);
+  MarkdownFoldingProvider provider(&folding, &doc);
+
+  QVector<md::FoldingRegion> regions;
+  regions.append({5, 10, md::FencedCode, 0});
+  provider.updateFoldingRegions(regions);
+
+  bool folded = true;
+  QVERIFY(provider.tryRegionFolded(PreviewElementType::Code, 5, 10, &folded));
+  QVERIFY(!folded);
+
+  const qint64 id = folding.foldingRangesStartingOnBlock(5).first().first;
+  QVERIFY(folding.foldRange(id));
+  QVERIFY(provider.tryRegionFolded(PreviewElementType::Code, 5, 10, &folded));
+  QVERIFY(folded);
+
+  // A different extent, a different type and a type which never produces a
+  // folding region are all "no live range".
+  QVERIFY(!provider.tryRegionFolded(PreviewElementType::Code, 5, 11, &folded));
+  QVERIFY(!provider.tryRegionFolded(PreviewElementType::Table, 5, 10, &folded));
+  QVERIFY(!provider.tryRegionFolded(PreviewElementType::Image, 5, 10, &folded));
+
+  provider.clear();
+  QVERIFY(!provider.tryRegionFolded(PreviewElementType::Code, 5, 10, &folded));
+}
+
+// The restored range is created folded and already settled, and it carries the
+// type the parser is going to report, so the next reconciliation keeps it
+// instead of dropping and recreating it.
+void TestMarkdownFolding::testRestoreFoldedRange() {
+  QTextDocument doc(generateLines(30));
+  TextFolding folding(&doc);
+  MarkdownFoldingProvider provider(&folding, &doc);
+
+  provider.restoreFoldedRange(PreviewElementType::Table, 5, 10);
+
+  auto ranges = folding.foldingRangesStartingOnBlock(5);
+  QCOMPARE(ranges.size(), 1);
+  const qint64 id = ranges.first().first;
+  QVERIFY(folding.isRangeFolded(id));
+  QVERIFY(!doc.findBlockByNumber(6).isVisible());
+
+  QVector<md::FoldingRegion> regions;
+  regions.append({5, 10, md::Table, 0});
+  provider.updateFoldingRegions(regions);
+
+  ranges = folding.foldingRangesStartingOnBlock(5);
+  QCOMPARE(ranges.size(), 1);
+  QCOMPARE(ranges.first().first, id);
+  QVERIFY(folding.isRangeFolded(id));
+
+  // A region type which never carries a preview is refused.
+  provider.restoreFoldedRange(PreviewElementType::Image, 15, 20);
+  QCOMPARE(folding.foldingRangesStartingOnBlock(15).size(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Preview driven auto-folding
+// ---------------------------------------------------------------------------
+
+void TestMarkdownFolding::testAutoFoldWidgetPreview() {
+  QTextDocument doc(generateLines(30));
+  TextFolding folding(&doc);
+  MarkdownFoldingProvider provider(&folding, &doc);
+  provider.setAutoFoldPreviewsEnabled(true);
+
+  QVector<md::FoldingRegion> regions;
+  regions.append({5, 10, md::Table, 0});
+  provider.updateFoldingRegions(regions);
+  const qint64 id = folding.foldingRangesStartingOnBlock(5).first().first;
+
+  QVector<PreviewedRange> ranges;
+  ranges.append(makeWidgetRange(1, 5, 10, PreviewElementType::Table));
+
+  auto states = provider.applyPreviewAutoFold(ranges, -1);
+  QVERIFY(folding.isRangeFolded(id));
+  QVERIFY(!doc.findBlockByNumber(6).isVisible());
+  QCOMPARE(states.size(), 1);
+  QCOMPARE(states.first().first, quint64(1));
+  QVERIFY(states.first().second == PreviewFoldState::Folded);
+
+  // The user unfolds it by hand: the region is settled, so no later pass may
+  // fold it again, and the new state is reported back.
+  QVERIFY(folding.toggleRange(id));
+  QVERIFY(doc.findBlockByNumber(6).isVisible());
+
+  ranges[0].m_foldState = PreviewFoldState::Folded;
+  states = provider.applyPreviewAutoFold(ranges, -1);
+  QVERIFY(!folding.isRangeFolded(id));
+  QCOMPARE(states.size(), 1);
+  QVERIFY(states.first().second == PreviewFoldState::Unfolded);
+
+  // Nothing changed, so nothing is reported.
+  ranges[0].m_foldState = PreviewFoldState::Unfolded;
+  states = provider.applyPreviewAutoFold(ranges, -1);
+  QVERIFY(states.isEmpty());
+  QVERIFY(!folding.isRangeFolded(id));
+
+  // A widget range which does not describe the region exactly is not its
+  // preview.
+  MarkdownFoldingProvider other(&folding, &doc);
+  provider.clear();
+  other.updateFoldingRegions(regions);
+  const qint64 otherId = folding.foldingRangesStartingOnBlock(5).first().first;
+  QVector<PreviewedRange> mismatched;
+  mismatched.append(makeWidgetRange(2, 5, 11, PreviewElementType::Table));
+  mismatched.append(makeWidgetRange(3, 5, 10, PreviewElementType::Code));
+  QVERIFY(other.applyPreviewAutoFold(mismatched, -1).isEmpty());
+  QVERIFY(!folding.isRangeFolded(otherId));
+}
+
+// Folding keeps the first and last block visible, so only a caret in the
+// interior would be hidden by the fold - and a region which was left open for
+// the caret is left open for good.
+void TestMarkdownFolding::testAutoFoldCaretRule() {
+  QTextDocument doc(generateLines(30));
+  TextFolding folding(&doc);
+  MarkdownFoldingProvider provider(&folding, &doc);
+  provider.setAutoFoldPreviewsEnabled(true);
+
+  QVector<md::FoldingRegion> regions;
+  regions.append({5, 10, md::FencedCode, 0});
+  regions.append({15, 20, md::FencedCode, 0});
+  provider.updateFoldingRegions(regions);
+  const qint64 caretId = folding.foldingRangesStartingOnBlock(5).first().first;
+  const qint64 boundaryId = folding.foldingRangesStartingOnBlock(15).first().first;
+
+  QVector<PreviewedRange> ranges;
+  ranges.append(makeWidgetRange(1, 5, 10, PreviewElementType::Code));
+  ranges.append(makeWidgetRange(2, 15, 20, PreviewElementType::Code));
+
+  // The caret sits inside the first region, and on the first block of the
+  // second one - which stays visible when it folds.
+  auto states = provider.applyPreviewAutoFold(ranges, 7);
+  QVERIFY(!folding.isRangeFolded(caretId));
+  QVERIFY(folding.isRangeFolded(boundaryId));
+
+  QHash<quint64, PreviewFoldState> reported;
+  for (const auto &state : states) {
+    reported.insert(state.first, state.second);
+  }
+  QVERIFY(reported.value(1) == PreviewFoldState::Unfolded);
+  QVERIFY(reported.value(2) == PreviewFoldState::Folded);
+
+  // Moving the caret away does not re-decide the region it kept open.
+  ranges[0].m_foldState = PreviewFoldState::Unfolded;
+  ranges[1].m_foldState = PreviewFoldState::Folded;
+  QVERIFY(provider.applyPreviewAutoFold(ranges, 0).isEmpty());
+  QVERIFY(!folding.isRangeFolded(caretId));
+}
+
+void TestMarkdownFolding::testAutoFoldPaintedPreview() {
+  QTextDocument doc(generateLines(40));
+  TextFolding folding(&doc);
+  MarkdownFoldingProvider provider(&folding, &doc);
+  provider.setAutoFoldPreviewsEnabled(true);
+
+  // A painted code preview drawn on the region's last block, which folding
+  // keeps visible.
+  auto lastBlock = doc.findBlockByNumber(10);
+  BlockPreviewData::get(lastBlock)
+      ->insert(new PreviewData(PreviewData::CodeBlock, 1, 0, lastBlock.length() - 1, 0, false,
+                               QStringLiteral("code-preview"), QSize(80, 40), 0));
+
+  // One drawn on an interior block only, which folding hides.
+  auto interiorBlock = doc.findBlockByNumber(23);
+  BlockPreviewData::get(interiorBlock)
+      ->insert(new PreviewData(PreviewData::CodeBlock, 1, 0, interiorBlock.length() - 1, 0, false,
+                               QStringLiteral("interior-preview"), QSize(80, 40), 0));
+
+  QVector<md::FoldingRegion> regions;
+  regions.append({5, 10, md::FencedCode, 0});
+  regions.append({20, 26, md::FencedCode, 0});
+  // No preview at all.
+  regions.append({30, 36, md::FencedCode, 0});
+  provider.updateFoldingRegions(regions);
+
+  const qint64 previewedId = folding.foldingRangesStartingOnBlock(5).first().first;
+  const qint64 interiorId = folding.foldingRangesStartingOnBlock(20).first().first;
+  const qint64 bareId = folding.foldingRangesStartingOnBlock(30).first().first;
+
+  // A painted preview has no identity, so nothing is ever reported for it.
+  QVERIFY(provider.applyPreviewAutoFold(QVector<PreviewedRange>(), -1).isEmpty());
+  QVERIFY(folding.isRangeFolded(previewedId));
+  QVERIFY(!folding.isRangeFolded(interiorId));
+  QVERIFY(!folding.isRangeFolded(bareId));
+
+  // Probing must not install block user data on a block which had none.
+  QVERIFY(doc.findBlockByNumber(30).userData() == nullptr);
+  QVERIFY(doc.findBlockByNumber(36).userData() == nullptr);
+  QVERIFY(doc.findBlockByNumber(20).userData() == nullptr);
+}
+
+// A wrapper region which merely *contains* a previewed element never folds:
+// the region type is what decides which previews count.
+void TestMarkdownFolding::testAutoFoldSkipsWrapperRegion() {
+  QTextDocument doc(generateLines(30));
+  TextFolding folding(&doc);
+  MarkdownFoldingProvider provider(&folding, &doc);
+  provider.setAutoFoldPreviewsEnabled(true);
+
+  QVector<md::FoldingRegion> regions;
+  regions.append({5, 20, md::Heading, 1});
+  regions.append({8, 12, md::FencedCode, 0});
+  provider.updateFoldingRegions(regions);
+
+  const qint64 headingId = folding.foldingRangesStartingOnBlock(5).first().first;
+  const qint64 codeId = folding.foldingRangesStartingOnBlock(8).first().first;
+
+  QVector<PreviewedRange> ranges;
+  ranges.append(makeWidgetRange(1, 8, 12, PreviewElementType::Code));
+  provider.applyPreviewAutoFold(ranges, -1);
+
+  QVERIFY(folding.isRangeFolded(codeId));
+  QVERIFY(!folding.isRangeFolded(headingId));
+  QVERIFY(doc.findBlockByNumber(6).isVisible());
+  QVERIFY(!doc.findBlockByNumber(9).isVisible());
+}
+
+// The option is read exactly once per region: a region settled unfolded while
+// it was off stays unfolded when it is turned on afterwards.
+void TestMarkdownFolding::testAutoFoldOptionOff() {
+  QTextDocument doc(generateLines(30));
+  TextFolding folding(&doc);
+  MarkdownFoldingProvider provider(&folding, &doc);
+  provider.setAutoFoldPreviewsEnabled(false);
+
+  QVector<md::FoldingRegion> regions;
+  regions.append({5, 10, md::Table, 0});
+  provider.updateFoldingRegions(regions);
+  const qint64 id = folding.foldingRangesStartingOnBlock(5).first().first;
+
+  QVector<PreviewedRange> ranges;
+  ranges.append(makeWidgetRange(1, 5, 10, PreviewElementType::Table));
+  auto states = provider.applyPreviewAutoFold(ranges, -1);
+  QVERIFY(!folding.isRangeFolded(id));
+  QCOMPARE(states.size(), 1);
+  QVERIFY(states.first().second == PreviewFoldState::Unfolded);
+
+  provider.setAutoFoldPreviewsEnabled(true);
+  ranges[0].m_foldState = PreviewFoldState::Unfolded;
+  QVERIFY(provider.applyPreviewAutoFold(ranges, -1).isEmpty());
+  QVERIFY(!folding.isRangeFolded(id));
+
+  // A fold and an unfold between two passes cancel out, and the pass only ever
+  // samples the current state, so nothing is lost by the coalescing.
+  QVERIFY(folding.foldRange(id));
+  QVERIFY(folding.toggleRange(id));
+  QVERIFY(provider.applyPreviewAutoFold(ranges, -1).isEmpty());
+  QVERIFY(!folding.isRangeFolded(id));
+}
+
+// A preview which already knows its state has its fold restored, even with the
+// option off: requirement 2 does not depend on requirement 1.
+void TestMarkdownFolding::testAutoFoldRestoresReportedState() {
+  QTextDocument doc(generateLines(30));
+  TextFolding folding(&doc);
+  MarkdownFoldingProvider provider(&folding, &doc);
+  provider.setAutoFoldPreviewsEnabled(false);
+
+  QVector<md::FoldingRegion> regions;
+  regions.append({5, 10, md::Table, 0});
+  provider.updateFoldingRegions(regions);
+  const qint64 id = folding.foldingRangesStartingOnBlock(5).first().first;
+
+  QVector<PreviewedRange> ranges;
+  ranges.append(makeWidgetRange(1, 5, 10, PreviewElementType::Table, PreviewFoldState::Folded));
+  auto states = provider.applyPreviewAutoFold(ranges, -1);
+  QVERIFY(folding.isRangeFolded(id));
+  // The live state now agrees with what the preview remembered.
+  QVERIFY(states.isEmpty());
+}
+
+// Text folding being switched off must never hide source, and must not destroy
+// what a widget preview remembers.
+void TestMarkdownFolding::testAutoFoldWithTextFoldingDisabled() {
+  QTextDocument doc(generateLines(30));
+  TextFolding folding(&doc);
+  MarkdownFoldingProvider provider(&folding, &doc);
+  provider.setAutoFoldPreviewsEnabled(true);
+  folding.setEnabled(false);
+
+  QVector<md::FoldingRegion> regions;
+  regions.append({5, 10, md::Table, 0});
+  provider.updateFoldingRegions(regions);
+  const qint64 id = folding.foldingRangesStartingOnBlock(5).first().first;
+
+  QVector<PreviewedRange> ranges;
+  ranges.append(makeWidgetRange(1, 5, 10, PreviewElementType::Table, PreviewFoldState::Folded));
+
+  // Switching folding off clears every range, which is what makes the editor
+  // reset the provider's table.
+  folding.setEnabled(false);
+  provider.resetState();
+  QVERIFY(!folding.foldingRangeBlocks(id, nullptr, nullptr));
+
+  // A parse while folding is off still creates ranges - TextFolding only gates
+  // its own maintenance - so the pass has an entry to work with and the gate is
+  // what has to decline.
+  provider.updateFoldingRegions(regions);
+  QCOMPARE(folding.foldingRangesStartingOnBlock(5).size(), 1);
+  QVERIFY(provider.applyPreviewAutoFold(ranges, -1).isEmpty());
+  QVERIFY(doc.findBlockByNumber(6).isVisible());
+
+  // Nor may the query report a state: the range exists but is not something
+  // the user can act on, and answering "unfolded" would let the rewrite path
+  // overwrite what the preview remembers.
+  bool folded = true;
+  QVERIFY(!provider.tryRegionFolded(PreviewElementType::Table, 5, 10, &folded));
+
+  provider.restoreFoldedRange(PreviewElementType::Table, 15, 20);
+  QCOMPARE(folding.foldingRangesStartingOnBlock(15).size(), 0);
+  QVERIFY(doc.findBlockByNumber(16).isVisible());
+
+  // Re-enabling restores the state the widget preview remembered, on the next
+  // pass, without the option having to be involved.
+  folding.setEnabled(true);
+  provider.updateFoldingRegions(regions);
+  provider.applyPreviewAutoFold(ranges, -1);
+  QVERIFY(!doc.findBlockByNumber(6).isVisible());
+}
+
+// The rewrite path folds the recreated range in the same event-loop turn, so
+// the source never visibly expands, and the next parse keeps it.
+void TestMarkdownFolding::testRestoreFoldAfterInPlaceRewrite() {
+  const QString table = QStringLiteral("| Left | Center | Right |\n"
+                                       "| :--- | :----: | ----: |\n"
+                                       "| a    | b      | c     |\n"
+                                       "| d    | e      | f     |");
+  QTextDocument doc(QStringLiteral("# Title\n\nintro\n") + table +
+                    QStringLiteral("\n\ntail 1\ntail 2"));
+
+  TextFolding folding(&doc);
+  MarkdownFoldingProvider provider(&folding, &doc);
+
+  QVector<md::FoldingRegion> regions;
+  regions.append({0, doc.blockCount() - 1, md::Heading, 1});
+  regions.append({3, 6, md::Table, 0});
+  provider.updateFoldingRegions(regions);
+
+  const qint64 tableId = folding.foldingRangesStartingOnBlock(3).first().first;
+  QVERIFY(folding.foldRange(tableId));
+
+  bool folded = false;
+  QVERIFY(provider.tryRegionFolded(PreviewElementType::Table, 3, 6, &folded));
+  QVERIFY(folded);
+
+  // The rewrite adds a row, so everything below it shifts too.
+  const QString rewritten = table + QStringLiteral("\n| g    | h      | i     |");
+  const QTextBlock firstRow = doc.findBlockByNumber(3);
+  const QTextBlock lastRow = doc.findBlockByNumber(6);
+  QTextCursor cursor(&doc);
+  cursor.beginEditBlock();
+  cursor.setPosition(firstRow.position());
+  cursor.setPosition(lastRow.position() + lastRow.length() - 1, QTextCursor::KeepAnchor);
+  cursor.insertText(rewritten);
+  cursor.endEditBlock();
+
+  // The blocks the range spanned were replaced, so it no longer starts where
+  // the parser says it does: the fold marker is gone and the range is only
+  // waiting to be removed by the next reconciliation.
+  QCOMPARE(folding.foldingRangesStartingOnBlock(3).size(), 0);
+
+  provider.restoreFoldedRange(PreviewElementType::Table, 3, 7);
+  auto ranges = folding.foldingRangesStartingOnBlock(3);
+  QCOMPARE(ranges.size(), 1);
+  const qint64 restoredId = ranges.first().first;
+  QVERIFY(folding.isRangeFolded(restoredId));
+  QVERIFY(!doc.findBlockByNumber(4).isVisible());
+
+  // The next parse describes the rewritten document and must keep the very
+  // same range, still folded.
+  QVector<md::FoldingRegion> reparsed;
+  reparsed.append({0, doc.blockCount() - 1, md::Heading, 1});
+  reparsed.append({3, 7, md::Table, 0});
+  provider.updateFoldingRegions(reparsed);
+
+  ranges = folding.foldingRangesStartingOnBlock(3);
+  QCOMPARE(ranges.size(), 1);
+  QCOMPARE(ranges.first().first, restoredId);
+  QVERIFY(folding.isRangeFolded(restoredId));
+  QVERIFY(!doc.findBlockByNumber(4).isVisible());
+}
+
 QTEST_MAIN(tests::TestMarkdownFolding)

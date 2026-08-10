@@ -1,6 +1,7 @@
 #ifndef VTEXTEDIT_VMARKDOWNEDITOR_H
 #define VTEXTEDIT_VMARKDOWNEDITOR_H
 
+#include <vtextedit/preview.h>
 #include <vtextedit/vtexteditor.h>
 
 #include <QHash>
@@ -23,6 +24,7 @@ class VTEXTEDIT_EXPORT VMarkdownEditor : public VTextEditor {
   Q_OBJECT
 
   friend class EditorPreviewMgr;
+  friend class InteractivePreviewHost;
 
 public:
   typedef QHash<QString, QTextCharFormat> ExternalCodeBlockHighlightStyles;
@@ -100,6 +102,24 @@ private:
   InteractivePreviewHost *interactivePreviewHost() const;
 
   void updateFromConfig();
+
+  // Re-evaluate the preview driven fold state of every foldable region and
+  // write the outcome back onto the interactive preview items. Always called
+  // through InteractivePreviewHost::scheduleFoldRefresh(): the highlighter
+  // emits foldingRegionsUpdated *before* previewElementsUpdated, so a
+  // synchronous evaluation would read the previous generation's previews.
+  void applyPreviewFolding();
+
+  // Re-create, already folded, the range an accepted in-place rewrite just
+  // destroyed. Called by the host from inside the rewrite, so the source never
+  // visibly expands.
+  void restoreFoldAfterPreviewRewrite(PreviewElementType p_type, int p_startBlock, int p_endBlock);
+
+  // Whether the region [p_startBlock, p_endBlock] of type @p_type has a live
+  // folding range, and if so whether it is folded right now. False means there
+  // is no such range, which is not the same as unfolded.
+  bool tryPreviewSourceFolded(PreviewElementType p_type, int p_startBlock, int p_endBlock,
+                              bool *p_folded) const;
 
   // Return true if @p_event is handled.
   bool handleKeyPressEvent(QKeyEvent *p_event);

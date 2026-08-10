@@ -1325,22 +1325,8 @@ bool TextDocumentLayout::isPreviewClaimed(int p_start, int p_end,
 
 // The painted preview sources map one to one onto the interactive element
 // types; a Table claim has no painted counterpart and therefore suppresses
-// nothing.
-static bool previewSourceToElementType(PreviewData::Source p_source, PreviewElementType *p_type) {
-  switch (p_source) {
-  case PreviewData::ImageLink:
-    *p_type = PreviewElementType::Image;
-    return true;
-  case PreviewData::CodeBlock:
-    *p_type = PreviewElementType::Code;
-    return true;
-  case PreviewData::MathBlock:
-    *p_type = PreviewElementType::Math;
-    return true;
-  default:
-    return false;
-  }
-}
+// nothing. The table itself lives in the header, so the folding provider's
+// reverse lookup cannot drift away from this one.
 
 QVector<PreviewData *> TextDocumentLayout::unclaimedPreviewData(const QTextBlock &p_block) const {
   const auto &data = BlockPreviewData::get(p_block)->getPreviewData();

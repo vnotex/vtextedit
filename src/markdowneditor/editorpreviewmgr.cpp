@@ -6,6 +6,7 @@
 #include <vtextedit/vmarkdowneditor.h>
 #include <vtextedit/vtextedit.h>
 
+#include "interactivepreviewhost.h"
 #include "textdocumentlayout.h"
 #include <vtextedit/markdownhighlighter.h>
 
@@ -40,6 +41,14 @@ void EditorPreviewMgr::clearPossiblePreviewBlocks(const QVector<int> &p_blocksTo
 void EditorPreviewMgr::relayout(const OrderedIntSet &p_blocks) {
   m_editor->documentLayout()->relayout(p_blocks);
   m_editor->updateIndicatorsBorder();
+
+  // The painted previews just changed, and they are one of the two things the
+  // preview driven fold decision is made from. PreviewMgr clears the obsolete
+  // entries and only then relayouts, so this is the first moment the block data
+  // describes the new generation.
+  if (auto host = m_editor->interactivePreviewHost()) {
+    host->scheduleFoldRefresh();
+  }
 }
 
 void EditorPreviewMgr::ensureCursorVisible() { m_editor->getTextEdit()->ensureCursorVisible(); }

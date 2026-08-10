@@ -87,18 +87,74 @@ bool TextFolding::hasFoldedFolding() const { return !m_foldedFoldingRanges.isEmp
 
 bool TextFolding::isEmpty() const { return m_foldingRanges.isEmpty(); }
 
-bool TextFolding::hasRange(qint64 p_id) const { return m_idToFoldingRange.contains(p_id); }
+bool TextFolding::foldingRangeBlocks(qint64 p_id, int *p_firstBlock, int *p_lastBlock) const {
+  auto range = m_idToFoldingRange.value(p_id, nullptr);
+  if (!range || !range->isValid()) {
+    return false;
+  }
+
+  if (p_firstBlock) {
+    *p_firstBlock = range->first();
+  }
+  if (p_lastBlock) {
+    *p_lastBlock = range->last();
+  }
+  return true;
+}
+
+bool TextFolding::isRangeFolded(qint64 p_id) const {
+  auto range = m_idToFoldingRange.value(p_id, nullptr);
+  return range && range->isFolded();
+}
+
+bool TextFolding::foldRange(qint64 p_id) {
+  auto range = m_idToFoldingRange.value(p_id, nullptr);
+  if (!range) {
+    return false;
+  }
+
+  // foldRange(FoldingRange *) already returns early when it is folded and
+  // already emits foldingRangesChanged(). toggleRange() must not be used here:
+  // it would unfold a folded range.
+  foldRange(range);
+  return true;
+}
+
+bool TextFolding::isEnabled() const { return m_enabled; }
 
 void TextFolding::hardClear() {
   if (m_foldingRanges.isEmpty()) {
     return;
   }
 
+  const bool hadFolded = !m_foldedFoldingRanges.isEmpty();
+
   m_nextId = 0;
   m_idToFoldingRange.clear();
   m_foldedFoldingRanges.clear();
   qDeleteAll(m_foldingRanges);
   m_foldingRanges.clear();
+
+  // Restore the visibility of every block, without going through the ranges.
+  //
+  // The ranges are dropped rather than unfolded because after a real document
+  // replacement the blocks they spanned are gone and must not be touched. But
+  // the replacement heuristic in the contentsChange handler also fires on a
+  // full-document *format* change - QSyntaxHighlighter::rehighlight() reports
+  // one, and VTextEditor::setConfig() calls it - where the blocks are the very
+  // same objects. A folded range would then leave its interior hidden for
+  // good, with no range left for the gutter to unfold. Walking the live
+  // document is correct in both cases: after a real replacement every block is
+  // new and already visible.
+  if (hadFolded) {
+    for (auto block = m_document->firstBlock(); block.isValid(); block = block.next()) {
+      if (!block.isVisible()) {
+        block.setVisible(true);
+      }
+    }
+
+    markDocumentContentsDirty();
+  }
 
   emit foldingRangesChanged();
 }

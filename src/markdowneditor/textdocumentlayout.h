@@ -10,6 +10,7 @@
 
 #include <vtextedit/orderedintset.h>
 #include <vtextedit/preview.h>
+#include <vtextedit/previewdata.h>
 
 #include "textdocumentlayoutdata.h"
 
@@ -17,6 +18,57 @@ namespace vte {
 class DocumentResourceMgr;
 struct PreviewImageData;
 class PreviewData;
+
+// The painted preview sources map one to one onto the interactive element
+// types; PreviewElementType::Table has no painted counterpart, and therefore
+// neither claims nor suppresses one.
+//
+// One table, looked up in both directions, so the two consumers - the layout's
+// claim filter and the folding provider's painted-preview probe - cannot drift
+// apart. The static assertions below break the build when either enum grows,
+// which is the point at which this table has to be revisited.
+struct PreviewSourceMapping {
+  PreviewData::Source m_source;
+
+  PreviewElementType m_type;
+};
+
+inline const QVector<PreviewSourceMapping> &previewSourceMappings() {
+  static_assert(PreviewData::MaxSource == 3,
+                "a painted preview source was added - extend previewSourceMappings()");
+  static_assert(c_previewElementTypeCount == 4,
+                "a preview element type was added - extend previewSourceMappings()");
+
+  static const QVector<PreviewSourceMapping> mappings{
+      {PreviewData::ImageLink, PreviewElementType::Image},
+      {PreviewData::CodeBlock, PreviewElementType::Code},
+      {PreviewData::MathBlock, PreviewElementType::Math}};
+  return mappings;
+}
+
+// The element type @p_source is painted for, if any.
+inline bool previewSourceToElementType(PreviewData::Source p_source, PreviewElementType *p_type) {
+  for (const auto &mapping : previewSourceMappings()) {
+    if (mapping.m_source == p_source) {
+      *p_type = mapping.m_type;
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// The painted source which stands in for @p_type, if any.
+inline bool previewElementTypeToSource(PreviewElementType p_type, PreviewData::Source *p_source) {
+  for (const auto &mapping : previewSourceMappings()) {
+    if (mapping.m_type == p_type) {
+      *p_source = mapping.m_source;
+      return true;
+    }
+  }
+
+  return false;
+}
 
 class TextDocumentLayout : public QAbstractTextDocumentLayout {
   Q_OBJECT

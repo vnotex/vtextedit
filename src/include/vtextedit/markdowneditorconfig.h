@@ -38,6 +38,14 @@ public:
   // block syntax highlight.
   bool m_webCodeBlockHighlighterEnabled = true;
 
+  // Fold a foldable region as soon as it first gets a valid in-place preview,
+  // painted or interactive. Only the initial state is decided, once per
+  // preview-bearing region for as long as its folding range lives: unfolding it
+  // by hand is never undone, a region whose interior holds the caret when the
+  // preview appears is left open for good, and changing this at runtime only
+  // affects regions which have not been settled yet.
+  bool m_autoFoldPreviewedBlocksEnabled = true;
+
 private:
   void overrideTextStyle();
 };

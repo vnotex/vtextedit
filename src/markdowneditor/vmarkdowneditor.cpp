@@ -43,6 +43,13 @@ VMarkdownEditor::VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_c
   connect(getHighlighter(), &MarkdownHighlighter::foldingRegionsUpdated,
           this, [this](const QVector<md::FoldingRegion> &p_regions) {
             m_foldingProvider->updateFoldingRegions(p_regions);
+            // Never evaluate the fold state synchronously here:
+            // MarkdownHighlighter::completeHighlight() emits
+            // foldingRegionsUpdated *before* previewElementsUpdated, so at this
+            // instant the host still describes the previous generation.
+            if (auto host = interactivePreviewHost()) {
+              host->scheduleFoldRefresh();
+            }
           });
 
   // Reset provider state when TextFolding is externally cleared
@@ -51,6 +58,12 @@ VMarkdownEditor::VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_c
           this, [this]() {
             if (getTextFolding()->isEmpty()) {
               m_foldingProvider->resetState();
+            }
+
+            // A manual fold or unfold from the gutter has to be written back
+            // onto the preview item which owns that region.
+            if (auto host = interactivePreviewHost()) {
+              host->scheduleFoldRefresh();
             }
           });
 
@@ -206,9 +219,43 @@ void VMarkdownEditor::updateFromConfig() {
 
   updateInplacePreviewSources();
 
+  // Not ANDed with the text folding switch: the provider gates on
+  // TextFolding::isEnabled() itself, which also covers the restore path. And
+  // deliberately not retroactive - a region which has already been settled
+  // keeps the state it was settled into.
+  m_foldingProvider->setAutoFoldPreviewsEnabled(m_config->m_autoFoldPreviewedBlocksEnabled);
+
   applyLineSpacing();
 
   updateSpaceWidth();
+}
+
+void VMarkdownEditor::applyPreviewFolding() {
+  if (!m_foldingProvider) {
+    return;
+  }
+
+  auto host = interactivePreviewHost();
+  const auto ranges = host ? host->previewedRanges() : QVector<PreviewedRange>();
+  const auto states =
+      m_foldingProvider->applyPreviewAutoFold(ranges, m_textEdit->textCursor().blockNumber());
+  if (host) {
+    host->setPreviewFoldStates(states);
+  }
+}
+
+void VMarkdownEditor::restoreFoldAfterPreviewRewrite(PreviewElementType p_type, int p_startBlock,
+                                                     int p_endBlock) {
+  if (m_foldingProvider) {
+    m_foldingProvider->restoreFoldedRange(p_type, p_startBlock, p_endBlock);
+  }
+}
+
+bool VMarkdownEditor::tryPreviewSourceFolded(PreviewElementType p_type, int p_startBlock,
+                                             int p_endBlock, bool *p_folded) const {
+  return m_foldingProvider
+             ? m_foldingProvider->tryRegionFolded(p_type, p_startBlock, p_endBlock, p_folded)
+             : false;
 }
 
 void VMarkdownEditor::setInplacePreviewEnabled(bool p_enabled) {
