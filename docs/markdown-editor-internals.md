@@ -104,7 +104,7 @@ downstream math processing and signals.
 
 `MarkdownHighlighter::handleParseResult()` rejects a result whose timestamp no longer matches
 the document. A current result updates `TextBlockData`-backed highlight state, code-block user
-states, table wrapping behavior, source highlighting, and semantic signals. In particular:
+states, source highlighting, and semantic signals. In particular:
 
 - `imageLinksUpdated` carries image regions to the internally connected `PreviewMgr`.
 - `codeBlocksUpdated`, `mathBlocksUpdated`, `headersUpdated`, and `tableBlocksUpdated` expose
@@ -226,8 +226,8 @@ rectangles rather than embedding preview objects in the document.
 
 Each visible block gets a `QTextLayout`. The available line width starts from
 `QTextDocument::pageSize().width()` minus margins and cursor allowance. If page width is not
-positive, or `MarkdownHighlightBlockData::m_wrapLineEnabled` is false, the effective width is
-unbounded. Full parse results disable wrapping for blocks in parsed tables.
+positive, the effective width is unbounded. Every block wraps, including the blocks of a parsed
+table: suppressing wrapping there glitched while the table preview widget was being edited.
 
 Layout is lazy when a caller asks for an uncached `blockBoundingRect()`: the block is laid out
 and preceding offsets are established as needed. `BlockLayoutData::m_rect` is block-local;

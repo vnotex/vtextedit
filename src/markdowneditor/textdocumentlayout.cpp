@@ -571,7 +571,7 @@ void TextDocumentLayout::layoutBlock(const QTextBlock &p_block) {
   }
 
   qreal availableWidth = doc->pageSize().width();
-  if (availableWidth <= 0 || !shouldBlockWrapLine(p_block)) {
+  if (availableWidth <= 0) {
     availableWidth = qreal(INT_MAX);
   }
 
@@ -1323,10 +1323,6 @@ void TextDocumentLayout::setLeadingSpaceOfLine(qreal p_leading) {
   if (p_leading >= 0) {
     m_leadingSpaceOfLine = p_leading;
   }
-}
-
-bool TextDocumentLayout::shouldBlockWrapLine(const QTextBlock &p_block) const {
-  return MarkdownHighlightBlockData::get(p_block)->getWrapLineEnabled();
 }
 
 void TextDocumentLayout::ensureWidgetPreviewMap() {

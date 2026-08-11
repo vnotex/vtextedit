@@ -510,19 +510,6 @@ void MarkdownHighlighter::updateAllBlocksUserDataAndState(
     }
     block.setUserState(it.value());
   }
-
-  // Table blocks.
-  for (const auto &tbb : p_result->m_tableBlocks) {
-    auto block = doc->findBlock(tbb.m_startPos);
-    if (!block.isValid()) {
-      continue;
-    }
-
-    while (block.isValid() && block.position() < tbb.m_endPos) {
-      MarkdownHighlightBlockData::get(block)->setWrapLineEnabled(false);
-      block = block.next();
-    }
-  }
 }
 
 void MarkdownHighlighter::updateCodeBlocks(

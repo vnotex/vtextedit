@@ -330,8 +330,6 @@ private:
   // @p_pos: position within the layout.
   int getTextWidthWithinTextLine(const QTextLayout *p_layout, int p_pos, int p_length);
 
-  bool shouldBlockWrapLine(const QTextBlock &p_block) const;
-
   // Whether @p_line owns the block-local range [p_start, p_end) under the
   // inline placement rule, and if so its x span. A range crossing the line
   // boundary stays on the side owning at least half of it.
