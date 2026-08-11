@@ -406,6 +406,21 @@ private:
 class TablePreviewWidget : public PreviewWidget {
   Q_OBJECT
 public:
+  // Outcome of a write-back attempt.
+  enum class FlushOutcome {
+    // Nothing is owed anymore: the commit was accepted, there was nothing to
+    // commit, or the sheet is not in a state where it may commit at all.
+    Settled,
+
+    // The host could not apply the request right now and nothing was touched.
+    // The sheet keeps its authority, its edit and its debounce, and the write
+    // back is retried later.
+    Deferred,
+
+    // The request was answered with a rejection.
+    Rejected
+  };
+
   // Share of the available content width a sheet spans. The whole band: the
   // column widths are owned by Qt's table layout now, which distributes
   // whatever width it is given, so there is no natural width to fall back to.
@@ -433,7 +448,7 @@ public:
   // it drops the identity, and again before it snapshots the live anchors for
   // a rebuild - an accepted flush retargets the anchor, and a copy taken
   // beforehand would have been collapsed by the very edit it applies.
-  void flushNow();
+  FlushOutcome flushNow();
 
   // The host has revoked this sheet's authority: the identity is about to be
   // erased, so every remaining commit path has to become a no-op. A late
@@ -492,9 +507,9 @@ private:
   // Restart the idle debounce.
   void armCommit();
 
-  // Write the sheet back now. Returns false only when a commit was owed and
-  // was rejected; "nothing to commit" is a success.
-  bool flushPendingCommit();
+  // Write the sheet back now. "Nothing to commit" is Settled; a request the
+  // host postponed is Deferred, which the caller must not treat as a loss.
+  FlushOutcome flushPendingCommit();
 
   // A sheet only offers editing when the host would accept the commit.
   void applyEditability();
@@ -538,6 +553,12 @@ private:
   quint64 m_inFlightGeneration = 0;
 
   bool m_commitInFlight = false;
+
+  // The outcome the last completion recorded, written synchronously by
+  // handleReplacementFinished() so flushPendingCommit() can tell a postponed
+  // request from a rejected one - the committed generation alone collapses
+  // both into "not settled".
+  FlushOutcome m_lastFlushOutcome = FlushOutcome::Settled;
 
   QString m_inFlightMarkdown;
 

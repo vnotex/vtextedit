@@ -85,8 +85,27 @@ public:
 
   int m_resultCount = 0;
 
+  // Every outcome this instance was handed, in order.
+  QVector<vte::PreviewReplacementResult::Status> m_results;
+
+  // Requested once from inside the next geometryContextChanged, which the host
+  // emits synchronously while it is applying geometry.
+  QString m_requestOnGeometryContext;
+
+  int m_geometryContextCount = 0;
+
+  // Run one bounded nested event loop from inside the next replacement
+  // completion, the way a renderer reporting the outcome in a modal dialog
+  // would. The completion runs while the replacement transaction is still on
+  // the stack.
+  bool m_spinOnNextReplacementFinished = false;
+
+  std::function<void()> m_duringReplacementSpin;
+
 private slots:
   void handleReplacementFinished(const vte::PreviewReplacementResult &p_result);
+
+  void handleGeometryContextChanged();
 
 private:
   QVector<vte::PreviewElementType> m_types;
@@ -262,6 +281,15 @@ private slots:
   void testCenterCursorIsSkippedWhileASheetHasTheFocus();
   void testDocumentEditStillScrollsWhenTheEditorHasFocus();
   void testEscapeFromASheetDoesNotScrollTheEditor();
+
+  // A document mutation requested from inside a layout pass or a geometry
+  // application.
+  void testDeferredCommitDuringLayoutDrivenHide();
+  void testCustomWidgetReplacementDuringGeometryContextIsDeferred();
+  void testRemovalAndRebuildDuringADeferredFlushKeepTheEdit();
+  void testConcurrentFlushTriggersSendOneRequest();
+  void testReconcileDuringAReplacementCompletionIsPostponed();
+  void testOwedWorkDrainsOnceUnderANestedEventLoop();
 };
 } // namespace tests
 

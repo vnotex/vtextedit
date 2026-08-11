@@ -1647,13 +1647,23 @@ void TablePreviewWidget::handleFocusLost() { flushPendingCommit(); }
 
 void TablePreviewWidget::handleCommitTimeout() { flushPendingCommit(); }
 
-bool TablePreviewWidget::flushPendingCommit() {
+TablePreviewWidget::FlushOutcome TablePreviewWidget::flushPendingCommit() {
   if (m_suppressed || m_applyingSource || !m_table) {
     if (m_commitTimer) {
       m_commitTimer->stop();
     }
 
-    return true;
+    return FlushOutcome::Settled;
+  }
+
+  if (m_commitInFlight) {
+    // Re-entered while a request is on the wire. Issuing a second one would
+    // target an anchor the outer edit has already collapsed, and would deliver
+    // two completions for one logical commit. The timer is deliberately left
+    // alone: the in-flight completion re-arms it when a newer generation is
+    // still owed.
+    qCDebug(previewTableLog) << "a commit is already in flight - not issuing a second one";
+    return FlushOutcome::Deferred;
   }
 
   if (m_sheet) {
@@ -1673,7 +1683,7 @@ bool TablePreviewWidget::flushPendingCommit() {
 
   if (m_editGeneration == m_committedGeneration) {
     // Nothing new since the last accepted commit.
-    return true;
+    return FlushOutcome::Settled;
   }
 
   const QString markdown = m_document->toMarkdown();
@@ -1682,13 +1692,13 @@ bool TablePreviewWidget::flushPendingCommit() {
     qCWarning(previewTableLog) << "the sheet was edited but cannot be serialized safely -"
                                << "restoring the source";
     resetFromSource();
-    return false;
+    return FlushOutcome::Rejected;
   }
 
   auto context = previewContext();
   if (!context) {
     qCDebug(previewTableLog) << "the sheet was edited but has no context to write through";
-    return true;
+    return FlushOutcome::Settled;
   }
 
   const quint64 generation = m_editGeneration;
@@ -1697,19 +1707,27 @@ bool TablePreviewWidget::flushPendingCommit() {
     // out, or a cell was re-typed with the value it had. Nothing to send, and
     // the generation is settled.
     m_committedGeneration = generation;
-    return true;
+    return FlushOutcome::Settled;
   }
 
   m_inFlightMarkdown = markdown;
   m_inFlightGeneration = generation;
   m_commitInFlight = true;
+  // Overwritten synchronously by the completion below. Only a request which
+  // never reaches one - the host has no live identity for this sheet at all -
+  // leaves this value standing, and that is a rejection.
+  m_lastFlushOutcome = FlushOutcome::Rejected;
 
   qCDebug(previewTableLog) << "committing generation" << generation << "->" << markdown.left(80);
   context->requestSourceReplacement(markdown);
 
   // The host answers synchronously, so by now handleReplacementFinished() has
   // already run and recorded the outcome.
-  return m_committedGeneration >= generation;
+  if (m_committedGeneration >= generation) {
+    return FlushOutcome::Settled;
+  }
+
+  return m_lastFlushOutcome;
 }
 
 void TablePreviewWidget::handleReplacementFinished(const vte::PreviewReplacementResult &p_result) {
@@ -1717,6 +1735,7 @@ void TablePreviewWidget::handleReplacementFinished(const vte::PreviewReplacement
   m_commitInFlight = false;
 
   if (p_result.isAccepted()) {
+    m_lastFlushOutcome = FlushOutcome::Settled;
     qCDebug(previewTableLog) << "the commit was accepted";
     m_authoritative = true;
 
@@ -1746,6 +1765,15 @@ void TablePreviewWidget::handleReplacementFinished(const vte::PreviewReplacement
   }
 
   switch (p_result.status()) {
+  case PreviewReplacementResult::Deferred:
+    // Nothing was touched, so nothing may be given up: this sheet is still
+    // authoritative, still holds the edit and still owes the write-back. Only
+    // the debounce is re-armed, which is what retries it.
+    m_lastFlushOutcome = FlushOutcome::Deferred;
+    qCDebug(previewTableLog) << "the commit was postponed - retrying after the debounce";
+    armCommit();
+    return;
+
   case PreviewReplacementResult::StaleSnapshot:
   case PreviewReplacementResult::SourceMismatch:
   case PreviewReplacementResult::InvalidRange:
@@ -1754,6 +1782,7 @@ void TablePreviewWidget::handleReplacementFinished(const vte::PreviewReplacement
     // document. Stop presenting it as the truth and wait for the authoritative
     // snapshot instead of restoring stale values.
     // The host already warned about the rejection itself.
+    m_lastFlushOutcome = FlushOutcome::Rejected;
     qCDebug(previewTableLog) << "this sheet is no longer authoritative - read-only until the"
                              << "next snapshot";
     m_authoritative = false;
@@ -1763,6 +1792,7 @@ void TablePreviewWidget::handleReplacementFinished(const vte::PreviewReplacement
   default:
     // The document was not touched, so the bound snapshot is still the source
     // of truth: discard the edit.
+    m_lastFlushOutcome = FlushOutcome::Rejected;
     qCDebug(previewTableLog) << "the document was not touched - discarding the edit";
     resetFromSource();
     break;
@@ -1779,7 +1809,7 @@ void TablePreviewWidget::handleUndoRequested() {
   // whenever the debounce has not fired yet, and the pending table edit would
   // then still be committed on top of whatever the undo restored.
   if (m_editGeneration != m_committedGeneration) {
-    if (!flushPendingCommit()) {
+    if (flushPendingCommit() != FlushOutcome::Settled) {
       qCDebug(previewTableLog) << "the pending edit could not be committed - not undoing";
       return;
     }
@@ -1801,13 +1831,13 @@ void TablePreviewWidget::handleRedoRequested() {
   emit redoRequested();
 }
 
-void TablePreviewWidget::flushNow() {
+TablePreviewWidget::FlushOutcome TablePreviewWidget::flushNow() {
   if (m_suppressed) {
-    return;
+    return FlushOutcome::Settled;
   }
 
   qCDebug(previewTableLog) << "flushing while this sheet is still authoritative";
-  flushPendingCommit();
+  return flushPendingCommit();
 }
 
 void TablePreviewWidget::revokeAuthority() {

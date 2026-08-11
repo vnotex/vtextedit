@@ -5,6 +5,7 @@
 
 #include <QApplication>
 #include <QEvent>
+#include <QScopedValueRollback>
 #include <QScrollBar>
 #include <QTextBlock>
 #include <QTextDocument>
@@ -45,6 +46,8 @@ const char *statusName(PreviewReplacementResult::Status p_status) {
     return "ElementCountMismatch";
   case PreviewReplacementResult::TypeMismatch:
     return "TypeMismatch";
+  case PreviewReplacementResult::Deferred:
+    return "Deferred";
   default:
     return "?";
   }
@@ -60,18 +63,32 @@ const char *InteractivePreviewHost::c_reconcileDeliveryCountProperty =
 
 const char *InteractivePreviewHost::c_foldRefreshCountProperty = "vte_preview_fold_refreshes";
 
-InteractivePreviewHost::CallbackGuard::~CallbackGuard() {
-  m_host->m_inFactoryCallback = m_previous;
-  if (!m_previous) {
-    // Outermost guard: whatever was owed while the callback ran can be
-    // delivered now. This only arms a timer, so it is safe during unwinding.
-    m_host->scheduleReconcileDelivery();
-    // Only re-arm what was already owed: arming here unconditionally would
-    // queue a fold pass after every single widget callback.
-    if (m_host->m_foldRefreshPending) {
-      m_host->scheduleFoldRefresh();
-    }
+const char *InteractivePreviewHost::c_owedWorkDrainCountProperty = "vte_preview_owed_work_drains";
+
+const int InteractivePreviewHost::c_replacementRetryBudget = 8;
+
+InteractivePreviewHost::BlockGuard::BlockGuard(InteractivePreviewHost *p_host, Reason p_reason)
+    : m_host(p_host), m_reason(p_reason) {
+  ++m_host->m_blockDepth;
+  if (m_reason == Reason::FactoryCallback) {
+    ++m_host->m_factoryCallbackDepth;
   }
+}
+
+InteractivePreviewHost::BlockGuard::~BlockGuard() {
+  Q_ASSERT(m_host->m_blockDepth > 0);
+  if (m_reason == Reason::FactoryCallback) {
+    Q_ASSERT(m_host->m_factoryCallbackDepth > 0);
+    --m_host->m_factoryCallbackDepth;
+  }
+
+  if (--m_host->m_blockDepth > 0) {
+    return;
+  }
+
+  // Outermost guard: whatever was owed while the block was held can be
+  // delivered now. This only arms a timer, so it is safe during unwinding.
+  m_host->scheduleOwedWork();
 }
 
 // Exclusive offset after the last non-whitespace character.
@@ -108,13 +125,12 @@ InteractivePreviewHost::InteractivePreviewHost(VMarkdownEditor *p_editor)
   m_doc = m_editor->document();
   m_layout = m_editor->documentLayout();
 
-  m_publishTimer = new QTimer(this);
-  m_publishTimer->setSingleShot(true);
-  m_publishTimer->setInterval(0);
-  connect(m_publishTimer, &QTimer::timeout, this, &InteractivePreviewHost::publish);
-
   connect(m_layout, &TextDocumentLayout::widgetPreviewGeometryChanged, this,
           &InteractivePreviewHost::syncWidgetGeometry);
+
+  // The second of the two unblock edges. The first is the outermost BlockGuard.
+  connect(m_layout, &TextDocumentLayout::becameIdle, this,
+          &InteractivePreviewHost::scheduleOwedWork);
 
   if (m_textEdit) {
     connect(m_textEdit, &VTextEdit::resized, this, &InteractivePreviewHost::schedulePublish);
@@ -172,7 +188,7 @@ QWidget *InteractivePreviewHost::viewport() const {
 bool InteractivePreviewHost::registerFactory(PreviewWidgetFactory *p_factory, int p_priority) {
   // Reject reentrant registration: a factory must not mutate the registry from
   // inside its own callback, and reparenting itself must not recurse either.
-  if (!p_factory || m_reconciling || m_inFactoryCallback || m_mutatingFactories) {
+  if (!p_factory || m_reconciling || inFactoryCallback() || m_mutatingFactories) {
     return false;
   }
 
@@ -276,7 +292,7 @@ bool InteractivePreviewHost::isTypeClaimable(PreviewElementType p_type) {
 
     QVector<PreviewElementType> supported;
     {
-      CallbackGuard guard(this);
+      BlockGuard guard(this, BlockGuard::Reason::FactoryCallback);
       supported = factory->supportedTypes();
     }
 
@@ -377,12 +393,28 @@ void InteractivePreviewHost::flushDirtySheets() {
     QPointer<TablePreviewWidget> sheet =
         qobject_cast<TablePreviewWidget *>(it.value().m_widget.data());
     if (sheet) {
-      sheet->flushNow();
+      const auto outcome = sheet->flushNow();
+      // A rebuild does not start while blocked, so this flush always runs on a
+      // clean stack and can never be postponed. See removeItem().
+      Q_ASSERT(outcome != TablePreviewWidget::FlushOutcome::Deferred);
+      Q_UNUSED(outcome);
     }
   }
 }
 
 void InteractivePreviewHost::rebuildAll() {
+  if (isBlocked()) {
+    // Before flushDirtySheets() and before m_carriedItems is populated: a
+    // flush which is postponed leaves the anchors describing pre-flush source,
+    // and snapshotting those is exactly what the comment below warns against.
+    // This is also what makes removeItem()'s mandatory flush structurally
+    // unable to be answered with Deferred - a rebuild never starts blocked.
+    m_reconcilePending = true;
+    scheduleOwedWork();
+    qCDebug(previewHostLog) << "postponed the rebuild - the host is blocked";
+    return;
+  }
+
   // A sheet with a pending write-back applies a document edit when it is
   // flushed, and insertText() over the anchored range collapses that anchor -
   // including the copy carried below, because a QTextCursor copy shares one
@@ -434,59 +466,257 @@ void InteractivePreviewHost::rebuildAll() {
 
 void InteractivePreviewHost::reconcileLater() {
   m_reconcilePending = true;
-  scheduleReconcileDelivery();
-}
-
-void InteractivePreviewHost::scheduleReconcileDelivery() {
-  // Never arm while blocked: a widget callback may run a real nested event
-  // loop, which would keep delivering each newly armed zero timer while the
-  // blocking flag is held true by a stack frame that loop is holding open.
-  if (!m_reconcilePending || m_reconcileScheduled || m_reconciling || m_inFactoryCallback) {
-    return;
-  }
-
-  m_reconcileScheduled = true;
-  // One queued pass, so callback-time mutation cannot recurse.
-  QTimer::singleShot(0, this, [this]() {
-    m_reconcileScheduled = false;
-    setProperty(c_reconcileDeliveryCountProperty, ++m_reconcileDeliveryCount);
-
-    if (!m_reconcilePending || m_reconciling || m_inFactoryCallback) {
-      // An unblock hook re-arms it; re-arming here would spin.
-      return;
-    }
-
-    m_reconcilePending = false;
-    // A factory set change may make a different factory win, so rebuild.
-    rebuildAll();
-  });
+  scheduleOwedWork();
 }
 
 void InteractivePreviewHost::scheduleFoldRefresh() {
   m_foldRefreshPending = true;
+  scheduleOwedWork();
+}
 
-  // Never arm while blocked, for the same reason scheduleReconcileDelivery()
-  // does not: a widget callback may spin a real nested event loop, and the
-  // refresh would then run against a half-reconciled m_items.
-  if (m_foldRefreshScheduled || m_reconciling || m_inFactoryCallback) {
+void InteractivePreviewHost::scheduleOwedWork() {
+  if (m_owedWorkScheduled || m_drainingOwedWork) {
+    // Exactly one delivery is armed at a time, and a running drain arms its
+    // own follow-up once it has finished its ordered pass.
     return;
   }
 
-  m_foldRefreshScheduled = true;
-  QTimer::singleShot(0, this, [this]() {
-    m_foldRefreshScheduled = false;
+  if (!m_replacementRetryPending && !m_hasDeferredGeneration && !m_reconcilePending &&
+      !m_publishPending && !m_geometrySyncPending && !m_scrollApplyPending &&
+      !m_foldRefreshPending) {
+    return;
+  }
 
-    if (!m_foldRefreshPending || m_reconciling || m_inFactoryCallback) {
-      // An unblock hook re-arms it; re-arming here would spin.
-      return;
+  // Never arm a bare zero timer while blocked: a widget callback may run a
+  // real nested event loop, which would keep delivering each newly armed timer
+  // while the block is held by a stack frame that loop is holding open. There
+  // are exactly two unblock edges - the outermost BlockGuard and the layout's
+  // becameIdle() - and both come back here.
+  if (isBlocked()) {
+    if (m_layout && m_layout->isBusy()) {
+      m_layout->requestIdleNotification();
     }
 
+    return;
+  }
+
+  m_owedWorkScheduled = true;
+  QTimer::singleShot(0, this, [this]() {
+    m_owedWorkScheduled = false;
+    drainOwedWork();
+  });
+}
+
+void InteractivePreviewHost::drainOwedWork() {
+  if (isBlocked()) {
+    // Delivered from inside a nested event loop a callback opened. An unblock
+    // hook re-arms it; running here would mutate the document mid-pass.
+    scheduleOwedWork();
+    return;
+  }
+
+  setProperty(c_owedWorkDrainCountProperty, ++m_owedWorkDrainCount);
+
+  {
+    QScopedValueRollback<bool> guard(m_drainingOwedWork, true);
+    runOwedWorkSteps();
+  }
+
+  // Whatever a step re-owed, or declined because a pass was running, gets its
+  // own delivery - one, not one per owed item.
+  scheduleOwedWork();
+}
+
+// The highest ranking category which is currently owed *and* runnable, or
+// OwedWork::None. A category gated on m_reconciling does not count while a
+// reconciliation pass is running: it cannot be run, so it must not hold the
+// steps below it back either.
+InteractivePreviewHost::OwedWork InteractivePreviewHost::highestOwedWork() const {
+  if (m_replacementRetryPending) {
+    return OwedWork::ReplacementRetry;
+  }
+
+  if (m_hasDeferredGeneration && !m_reconciling) {
+    return OwedWork::DeferredGeneration;
+  }
+
+  if (m_reconcilePending && !m_reconciling) {
+    return OwedWork::Reconcile;
+  }
+
+  if (m_publishPending) {
+    return OwedWork::Publish;
+  }
+
+  if (m_geometrySyncPending) {
+    return OwedWork::GeometrySync;
+  }
+
+  if (m_scrollApplyPending) {
+    return OwedWork::ScrollApply;
+  }
+
+  if (m_foldRefreshPending && !m_reconciling) {
+    return OwedWork::FoldRefresh;
+  }
+
+  return OwedWork::None;
+}
+
+// Whether the drain must stop before the step ranking at @p_step.
+//
+// Every step calls into code which can owe new work, and a step which raised
+// something ranking above what is about to run has invalidated the rest of
+// this scan: the ordering below is load-bearing, so the drain stops and the
+// single follow-up delivery restarts it at the new highest debt. Stopping
+// rather than looping in place is deliberate - a step which merely re-owes
+// itself would otherwise spin synchronously.
+bool InteractivePreviewHost::stopOwedWorkBefore(OwedWork p_step) const {
+  if (isBlocked()) {
+    return true;
+  }
+
+  return highestOwedWork() < p_step;
+}
+
+// The order is load-bearing: a replacement must settle before the reconcile
+// which would remove its item, and the item set must settle before geometry
+// and folding observe it.
+void InteractivePreviewHost::runOwedWorkSteps() {
+  if (m_replacementRetryPending) {
+    m_replacementRetryPending = false;
+    retryDeferredReplacements();
+  }
+
+  if (stopOwedWorkBefore(OwedWork::DeferredGeneration)) {
+    return;
+  }
+
+  if (m_hasDeferredGeneration && !m_reconciling) {
+    replayDeferredGeneration();
+  }
+
+  if (stopOwedWorkBefore(OwedWork::Reconcile)) {
+    return;
+  }
+
+  if (m_reconcilePending && !m_reconciling) {
+    m_reconcilePending = false;
+    setProperty(c_reconcileDeliveryCountProperty, ++m_reconcileDeliveryCount);
+    // A factory set change may make a different factory win, so rebuild.
+    rebuildAll();
+  }
+
+  if (stopOwedWorkBefore(OwedWork::Publish)) {
+    return;
+  }
+
+  if (m_publishPending) {
+    publish();
+  }
+
+  if (stopOwedWorkBefore(OwedWork::GeometrySync)) {
+    return;
+  }
+
+  if (m_geometrySyncPending) {
+    // The wrappers own the flag bookkeeping - a full sync subsuming a pending
+    // scroll apply, in particular. Their blocked check is a no-op here.
+    syncWidgetGeometry();
+  }
+
+  if (stopOwedWorkBefore(OwedWork::ScrollApply)) {
+    return;
+  }
+
+  if (m_scrollApplyPending) {
+    applyScrollOffset();
+  }
+
+  if (stopOwedWorkBefore(OwedWork::FoldRefresh)) {
+    return;
+  }
+
+  if (m_foldRefreshPending && !m_reconciling) {
     m_foldRefreshPending = false;
     setProperty(c_foldRefreshCountProperty, ++m_foldRefreshCount);
     if (m_editor) {
       m_editor->applyPreviewFolding();
     }
-  });
+  }
+}
+
+void InteractivePreviewHost::replayDeferredGeneration() {
+  Q_ASSERT(m_hasDeferredGeneration);
+
+  // Newer than what the items hold, so it wins. The replay does its own
+  // publish.
+  m_hasDeferredGeneration = false;
+  const quint64 revision = m_deferredRevision;
+  const auto previews = m_deferredPreviews;
+  m_deferredPreviews.clear();
+  updatePreviews(revision, previews);
+}
+
+void InteractivePreviewHost::dropDeferredGeneration() {
+  if (!m_hasDeferredGeneration) {
+    return;
+  }
+
+  qCDebug(previewHostLog) << "dropped the stashed revision" << m_deferredRevision
+                          << "- it describes source the document no longer holds";
+  m_hasDeferredGeneration = false;
+  m_deferredPreviews.clear();
+}
+
+void InteractivePreviewHost::retryDeferredReplacements() {
+  const auto identities = m_deferredReplacements.keys();
+  for (quint64 id : identities) {
+    // Re-resolved on every iteration: a flush is reentrant and can tear items
+    // down, and it can add entries here again.
+    const auto attempt = m_deferredReplacements.constFind(id);
+    if (attempt == m_deferredReplacements.constEnd()) {
+      continue;
+    }
+
+    const auto it = m_items.constFind(id);
+    QPointer<TablePreviewWidget> sheet =
+        it == m_items.constEnd() ? nullptr
+                                 : qobject_cast<TablePreviewWidget *>(it.value().m_widget.data());
+    if (!sheet) {
+      // Gone, or owned by an application-defined widget. A third-party
+      // request is deliberately not replayed here: that would deliver two
+      // completions for one logical request. The widget owns its own retry.
+      m_deferredReplacements.remove(id);
+      continue;
+    }
+
+    if (attempt.value() >= c_replacementRetryBudget) {
+      qCWarning(previewReplaceLog)
+          << "gave up retrying the postponed replacement of identity" << id << "after"
+          << c_replacementRetryBudget << "attempts - the sheet keeps its edit and its debounce";
+      // Only the host's retry bookkeeping is dropped: never the item, never
+      // its authority, never its debounce.
+      m_deferredReplacements.remove(id);
+      continue;
+    }
+
+    m_deferredReplacements.insert(id, attempt.value() + 1);
+
+    const auto outcome = sheet->flushNow();
+    if (outcome == TablePreviewWidget::FlushOutcome::Deferred) {
+      // Still not applicable. The entry stays, with the attempt spent.
+      m_replacementRetryPending = true;
+    } else {
+      m_deferredReplacements.remove(id);
+    }
+
+    // Every block is stack-scoped RAII and this runs at depth 0, so a block
+    // entered by the flush is unwound before it returns. Asserting it rather
+    // than branching on it keeps a future non-RAII block from silently taking
+    // an untested path.
+    Q_ASSERT(!isBlocked());
+  }
 }
 
 QVector<PreviewedRange> InteractivePreviewHost::previewedRanges() const {
@@ -552,14 +782,25 @@ void InteractivePreviewHost::setPreviewFoldStates(
 
 void InteractivePreviewHost::updatePreviews(
     quint64 p_revision, const QVector<QSharedPointer<const Preview>> &p_previews) {
-  if (m_reconciling) {
-    // Re-entered from a nested event loop a widget callback opened. Stash the
-    // newest generation instead of discarding it: nothing else would ever
-    // replay it, and every bound snapshot would keep describing superseded
-    // source until the next document edit produced another parse.
+  if (m_reconciling || isBlocked()) {
+    // Re-entered from a nested event loop a widget callback opened, or
+    // delivered from inside a layout pass. Stash the newest generation instead
+    // of discarding it: nothing else would ever replay it, and every bound
+    // snapshot would keep describing superseded source until the next document
+    // edit produced another parse.
+    //
+    // The whole generation is deferred rather than the individual items it
+    // would remove: a pass which cannot start is the structural reason
+    // removeItem()'s mandatory flush is never answered with Deferred, and no
+    // item is ever left in m_items in a "queued for removal" state.
     m_deferredRevision = p_revision;
     m_deferredPreviews = p_previews;
     m_hasDeferredGeneration = true;
+    // m_hasDeferredGeneration is itself an owed-work item: the drain replays
+    // it. Deliberately not m_reconcilePending, which means "a rebuild is
+    // owed" - a deferred parse generation does not need every widget torn
+    // down and recreated.
+    scheduleOwedWork();
     qCDebug(previewHostLog) << "deferred revision" << p_revision << "-" << p_previews.size()
                             << "snapshot(s) delivered during a running pass";
     return;
@@ -621,25 +862,19 @@ void InteractivePreviewHost::updatePreviews(
 
   m_reconciling = false;
 
-  // Replay a generation which arrived while this pass was running. It is
-  // newer than what the items now hold, so it must win; the replay does its
-  // own publish.
-  if (m_hasDeferredGeneration) {
-    m_hasDeferredGeneration = false;
-    const quint64 revision = m_deferredRevision;
-    const auto previews = m_deferredPreviews;
-    m_deferredPreviews.clear();
-    updatePreviews(revision, previews);
+  // Replay a generation which arrived while this pass was running, unless a
+  // postponed replacement outranks it: that replacement mutates the document,
+  // which would make the stashed positions stale, and the reconcile the replay
+  // performs would reach the flush that replacement still owes.
+  if (m_hasDeferredGeneration && !m_replacementRetryPending) {
+    replayDeferredGeneration();
     return;
   }
 
   // A registration or enablement change made during the pass is owed a
-  // rebuild, and scheduleReconcileDelivery() declined to arm while
-  // m_reconciling was true. The same holds for a fold refresh.
-  scheduleReconcileDelivery();
-  if (m_foldRefreshPending) {
-    scheduleFoldRefresh();
-  }
+  // rebuild, and the owed-work machine declined to arm while m_reconciling was
+  // true. The same holds for a fold refresh and for a replay left to the drain.
+  scheduleOwedWork();
 
   qCDebug(previewHostLog) << "reconcile done -" << m_items.size() << "live item(s)";
 
@@ -762,7 +997,7 @@ InteractivePreviewHost::createWidgetFor(const QSharedPointer<const Preview> &p_p
 
     QVector<PreviewElementType> supported;
     {
-      CallbackGuard guard(this);
+      BlockGuard guard(this, BlockGuard::Reason::FactoryCallback);
       supported = factory->supportedTypes();
     }
 
@@ -774,7 +1009,7 @@ InteractivePreviewHost::createWidgetFor(const QSharedPointer<const Preview> &p_p
 
     QPointer<PreviewWidget> widget;
     {
-      CallbackGuard guard(this);
+      BlockGuard guard(this, BlockGuard::Reason::FactoryCallback);
       widget = factory->createWidget(p_context, p_preview, viewport());
     }
 
@@ -789,7 +1024,7 @@ InteractivePreviewHost::createWidgetFor(const QSharedPointer<const Preview> &p_p
 
     bool widgetSupports = false;
     {
-      CallbackGuard guard(this);
+      BlockGuard guard(this, BlockGuard::Reason::FactoryCallback);
       widgetSupports = widget->supportedTypes().contains(p_preview->type());
     }
 
@@ -804,7 +1039,7 @@ InteractivePreviewHost::createWidgetFor(const QSharedPointer<const Preview> &p_p
 
     bool accepted = false;
     {
-      CallbackGuard guard(this);
+      BlockGuard guard(this, BlockGuard::Reason::FactoryCallback);
       accepted = widget->setPreview(p_preview);
     }
 
@@ -986,7 +1221,7 @@ void InteractivePreviewHost::updateItem(quint64 p_id,
   QPointer<PreviewWidgetFactory> factory = item.m_factory;
   bool accepted = false;
   if (!widget.isNull()) {
-    CallbackGuard guard(this);
+    BlockGuard guard(this, BlockGuard::Reason::FactoryCallback);
     accepted = widget->setPreview(bound);
   }
 
@@ -1030,6 +1265,15 @@ void InteractivePreviewHost::updateItem(quint64 p_id,
 void InteractivePreviewHost::removeItem(quint64 p_id) { removeItem(p_id, false); }
 
 void InteractivePreviewHost::removeItem(quint64 p_id, bool p_synchronous) {
+  // A removal flushes the sheet's owed write-back, and that flush is
+  // mandatory: it is the last point at which the identity is still
+  // authoritative. It may therefore never be answered with Deferred, which is
+  // guaranteed structurally - updatePreviews() and rebuildAll() both decline
+  // to start a pass while blocked, so every caller reaches here on a clean
+  // stack. Destroying the host from inside a layout pass or a widget callback
+  // is a programming error, and this is where it is caught.
+  Q_ASSERT(!isBlocked());
+
   auto it = m_items.find(p_id);
   if (it == m_items.end()) {
     return;
@@ -1045,7 +1289,10 @@ void InteractivePreviewHost::removeItem(quint64 p_id, bool p_synchronous) {
   QPointer<TablePreviewWidget> sheet =
       qobject_cast<TablePreviewWidget *>(it.value().m_widget.data());
   if (sheet) {
-    sheet->flushNow();
+    const auto outcome = sheet->flushNow();
+    // Mandatory: see the assertion at the top of this function.
+    Q_ASSERT(outcome != TablePreviewWidget::FlushOutcome::Deferred);
+    Q_UNUSED(outcome);
     if (sheet) {
       sheet->revokeAuthority();
     }
@@ -1211,9 +1458,11 @@ void InteractivePreviewHost::handleSheetRedo(TablePreviewWidget *p_widget) {
 // ---------------------------------------------------------------------------
 
 void InteractivePreviewHost::schedulePublish() {
-  if (m_publishTimer && !m_publishTimer->isActive()) {
-    m_publishTimer->start();
-  }
+  // QTextDocument::contentsChanged reaches this synchronously from inside a
+  // document edit, i.e. from inside the layout pass that edit drives, so it
+  // goes through the owed-work machine like everything else.
+  m_publishPending = true;
+  scheduleOwedWork();
 }
 
 QSizeF InteractivePreviewHost::preferredSize(PreviewWidget *p_widget, PreviewPlacement p_placement,
@@ -1329,9 +1578,8 @@ void InteractivePreviewHost::applyEditorFont() {
 }
 
 void InteractivePreviewHost::publish() {
-  if (m_publishTimer) {
-    m_publishTimer->stop();
-  }
+  // Whatever asked for a publication has been served by this run.
+  m_publishPending = false;
 
   applyReadOnly();
 
@@ -1430,10 +1678,32 @@ void InteractivePreviewHost::publish() {
 }
 
 void InteractivePreviewHost::syncWidgetGeometry() {
+  if (isBlocked()) {
+    // Deliberately without setting m_geometrySynced: publish()'s synchronous
+    // fallback has to still run once the pass it is nested in has unwound,
+    // otherwise no geometry would be applied for this publication at all.
+    m_geometrySyncPending = true;
+    scheduleOwedWork();
+    return;
+  }
+
+  m_geometrySyncPending = false;
+  // A full sync ends in a scroll apply of its own.
+  m_scrollApplyPending = false;
+  syncWidgetGeometryImpl();
+}
+
+void InteractivePreviewHost::syncWidgetGeometryImpl() {
   auto *vp = viewport();
   if (!vp) {
     return;
   }
+
+  // setGeometryContext() below is delivered synchronously to application code,
+  // which may request a source replacement from it while no layout pass is
+  // running. That request has to be postponed too, and this is the only edge
+  // which marks it.
+  BlockGuard guard(this, BlockGuard::Reason::GeometryApply);
 
   m_geometrySynced = true;
 
@@ -1475,14 +1745,30 @@ void InteractivePreviewHost::syncWidgetGeometry() {
     }
   }
 
-  applyScrollOffset();
+  applyScrollOffsetImpl();
 }
 
 void InteractivePreviewHost::applyScrollOffset() {
+  if (isBlocked()) {
+    m_scrollApplyPending = true;
+    scheduleOwedWork();
+    return;
+  }
+
+  m_scrollApplyPending = false;
+  applyScrollOffsetImpl();
+}
+
+void InteractivePreviewHost::applyScrollOffsetImpl() {
   auto *vp = viewport();
   if (!vp) {
     return;
   }
+
+  // hide(), show() and setGeometry() are delivered synchronously to the
+  // widgets, and hiding a focused sheet makes it write its pending edit back
+  // from inside this call.
+  BlockGuard guard(this, BlockGuard::Reason::GeometryApply);
 
   // Everything below is scroll dependent only; the document rectangles were
   // computed by the last syncWidgetGeometry().
@@ -1573,6 +1859,10 @@ void InteractivePreviewHost::finishReplacement(PreviewWidgetContext *p_context,
   // One line per request outcome, so a rejected rewrite is never silent.
   if (p_status == PreviewReplacementResult::Accepted) {
     qCDebug(previewReplaceLog) << "  ->" << statusName(p_status);
+  } else if (p_status == PreviewReplacementResult::Deferred) {
+    // An expected outcome, not a rejection: nothing was touched and the
+    // request is retried.
+    qCDebug(previewReplaceLog) << "  ->" << statusName(p_status) << ":" << p_diagnostic;
   } else {
     qCWarning(previewReplaceLog)
         << "replacement rejected for identity" << p_result.identity() << "-"
@@ -1908,6 +2198,35 @@ void InteractivePreviewHost::handleSourceReplacementRequested(
                              << p_expectedSource.left(60) << "-> replacement"
                              << p_replacementMarkdown.left(60);
 
+  // Before m_items.find() and before every validation gate below, so a
+  // postponed request touches no host state at all. Qt does not support
+  // mutating a QTextDocument from inside a layout pass, and the geometry a
+  // widget callback is being handed is computed by one.
+  if (isBlocked()) {
+    if (!m_deferredReplacements.contains(p_identity)) {
+      // Never clobber an attempt count which is already being spent.
+      m_deferredReplacements.insert(p_identity, 0);
+    }
+
+    m_replacementRetryPending = true;
+    scheduleOwedWork();
+    finishReplacement(context, result, PreviewReplacementResult::Deferred,
+                      QStringLiteral("the layout is mid-pass - the request was not applied"));
+    return;
+  }
+
+  // The request is being answered now, so the host owes it no retry anymore,
+  // whatever the outcome below turns out to be.
+  m_deferredReplacements.remove(p_identity);
+
+  // Everything from here to the completion is one transaction: the document
+  // edit itself, and the completion which is what clears the requesting
+  // sheet's "in flight" flag. A reconcile or a removal delivered inside it -
+  // through a nested event loop a document callback opened, say - would reach
+  // a mandatory flush which can only decline while that flag is set, so it is
+  // postponed instead.
+  BlockGuard transaction(this, BlockGuard::Reason::SourceReplacement);
+
   auto it = m_items.find(p_identity);
   if (it == m_items.end()) {
     finishReplacement(context, result, PreviewReplacementResult::UnknownIdentity,
@@ -2033,6 +2352,13 @@ void InteractivePreviewHost::handleSourceReplacementRequested(
   // The anchors moved: resubmit the reservations without waiting for the next
   // parse generation.
   schedulePublish();
+
+  // A generation stashed before this edit describes the source the edit has
+  // just replaced, and replaying it would re-anchor every element from here on
+  // at pre-edit positions - the very hazard rebuildAll() carries m_carriedItems
+  // to avoid. Dropping it is safe: the edit itself owes a parse, and until that
+  // lands the items keep their live anchors and their bound snapshots.
+  dropDeferredGeneration();
 
   finishReplacement(context, result, PreviewReplacementResult::Accepted, QString());
 }

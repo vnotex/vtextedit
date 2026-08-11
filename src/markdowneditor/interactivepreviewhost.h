@@ -17,7 +17,6 @@
 #include "markdownfoldingprovider.h"
 #include "textdocumentlayout.h"
 
-class QTimer;
 class QTextDocument;
 
 namespace vte {
@@ -63,18 +62,27 @@ public:
   static const char *c_enabledTypeMaskProperty;
 
   // Number of reconcile deliveries that have run, published as a dynamic
-  // property on the host so a test can tell a consumed blocked delivery from a
-  // re-armed spin. A blocked delivery calls into no factory and no widget, so
-  // it is otherwise invisible from outside.
+  // property on the host so a test can tell a delivered rebuild from a
+  // delivery which never happened because the host was blocked. A blocked
+  // delivery calls into no factory and no widget, so it is otherwise invisible
+  // from outside.
   static const char *c_reconcileDeliveryCountProperty;
 
   // Number of preview driven fold evaluations that have actually run. Same
-  // mechanism as the reconcile counter above, but deliberately not the same
-  // convention: that one counts every queued delivery, including the blocked
-  // ones it declines, while this one is incremented past the guard and
-  // therefore counts only the passes which ran. The two deferral tests rely on
-  // that difference.
+  // mechanism as the reconcile counter above: both are incremented past the
+  // blocked check, so neither moves while the host is blocked.
   static const char *c_foldRefreshCountProperty;
+
+  // Number of owed-work drains that have actually run, i.e. that were not
+  // declined by the blocked check. A test uses it to tell one settled drain
+  // from a zero timer spinning against a held block.
+  static const char *c_owedWorkDrainCountProperty;
+
+  // Whether the host may not touch the editor's document right now: either a
+  // layout pass is running, or an application-defined callback or a geometry
+  // application is on the stack. Every mutating entry point tests this, and
+  // whatever it declines is owed through scheduleOwedWork().
+  bool isBlocked() const { return m_blockDepth > 0 || (m_layout && m_layout->isBusy()); }
 
   // Block extent, type and fold state of every element which has a widget.
   QVector<PreviewedRange> previewedRanges() const;
@@ -114,21 +122,45 @@ private slots:
   void reconcileLater();
 
 private:
-  // Marks the span of an application-defined virtual callback, during which
-  // the factory registry must not be mutated by reentrant registration.
-  class CallbackGuard {
+  // Marks a span during which the host must not mutate the editor's document
+  // and must not start a reconcile or a rebuild.
+  //
+  // Depth counted, so only the outermost destructor hands control back, and it
+  // does so through the single scheduleOwedWork() routine rather than by hand
+  // picking what to re-arm.
+  class BlockGuard {
   public:
-    explicit CallbackGuard(InteractivePreviewHost *p_host) : m_host(p_host) {
-      m_previous = m_host->m_inFactoryCallback;
-      m_host->m_inFactoryCallback = true;
-    }
+    enum class Reason {
+      // An application-defined factory or widget callback is running, during
+      // which the factory registry must not be mutated by reentrant
+      // registration either.
+      FactoryCallback,
 
-    ~CallbackGuard();
+      // Widget geometry is being applied. A custom widget can request a
+      // replacement from geometryContextChanged, which is emitted
+      // synchronously from here while the layout's own depth is already 0.
+      GeometryApply,
+
+      // A source replacement is being validated, applied and completed.
+      //
+      // A widget's commit is "in flight" from the moment it issues the
+      // request until its completion returns, and a flush re-entered in that
+      // window declines rather than issuing a second request against an
+      // anchor the outer edit has collapsed. Marking the transaction is what
+      // makes that window part of the blocked predicate, so a reconcile or a
+      // removal delivered from a nested event loop inside it is postponed
+      // instead of hitting a mandatory flush which can only decline.
+      SourceReplacement
+    };
+
+    BlockGuard(InteractivePreviewHost *p_host, Reason p_reason);
+
+    ~BlockGuard();
 
   private:
     InteractivePreviewHost *m_host = nullptr;
 
-    bool m_previous = false;
+    Reason m_reason;
   };
 
   // A registered factory. Removal erases the entry, so presence in
@@ -321,11 +353,69 @@ private:
   // enablement change never re-anchors at superseded parse positions.
   void rebuildAll();
 
-  // Queue one delivery of the owed rebuild, unless one is already queued or a
-  // callback is holding the host blocked. Arming while blocked would busy-spin
-  // inside a nested event loop, because the blocking flag can only be cleared
-  // by a stack frame that loop is holding open.
-  void scheduleReconcileDelivery();
+  // The owed-work categories, in the one order a drain runs them. The order
+  // is load-bearing: a replacement must settle before the reconcile which
+  // would remove its item, and the item set must settle before geometry and
+  // folding observe it.
+  enum class OwedWork {
+    ReplacementRetry,
+    DeferredGeneration,
+    Reconcile,
+    Publish,
+    GeometrySync,
+    ScrollApply,
+    FoldRefresh,
+
+    // Ranks below every real category, so "nothing is owed" never stops a
+    // drain.
+    None
+  };
+
+  // Arm exactly one delivery of everything currently owed.
+  //
+  // Nothing may arm a bare zero timer while the host is blocked: a widget
+  // callback may run a real nested event loop, which would keep delivering
+  // each newly armed timer while the block is held by a stack frame that loop
+  // is holding open. So while blocked this only records the debt and, when the
+  // layout is the blocker, asks it for the becameIdle() edge. The two unblock
+  // edges - the outermost BlockGuard and becameIdle() - both come back here.
+  void scheduleOwedWork();
+
+  // Run everything owed, in the one fixed order which keeps the passes
+  // consistent with each other. Re-owes itself the moment it is blocked again.
+  void drainOwedWork();
+
+  // The ordered body of one drain. Split out so the "a drain is running" flag
+  // is cleared before the follow-up delivery is armed.
+  void runOwedWorkSteps();
+
+  // The highest ranking category which is currently owed and runnable.
+  OwedWork highestOwedWork() const;
+
+  // Whether the drain must stop before the step ranking at @p_step, because it
+  // is blocked again or because a step just raised work ranking above it.
+  bool stopOwedWorkBefore(OwedWork p_step) const;
+
+  // Ask each sheet whose replacement was postponed to write itself back again.
+  // Only the built-in table sheets: replaying a third-party widget's request
+  // verbatim would deliver two completions for one logical request.
+  void retryDeferredReplacements();
+
+  // Hand the stashed parse generation back to updatePreviews(). One routine,
+  // so the drain step and the tail of a finished pass cannot drift apart.
+  void replayDeferredGeneration();
+
+  // Discard the stashed parse generation, because it describes source the
+  // document no longer holds. Only an applied document edit may do this: the
+  // edit owes a parse of its own, which is what replaces the dropped one.
+  void dropDeferredGeneration();
+
+  // The bodies of a full geometry sync and of the scroll-only remap. Called
+  // directly by the wrappers and by drainOwedWork(), never deferred, so
+  // syncWidgetGeometry()'s intentional inner scroll apply is not self-deferred.
+  void syncWidgetGeometryImpl();
+
+  void applyScrollOffsetImpl();
 
   bool validateReplacement(const QSharedPointer<const Preview> &p_preview, int p_startPos,
                            int p_endPos, const QString &p_text,
@@ -380,14 +470,8 @@ private:
   // already queued, so an unblock hook can re-arm exactly one delivery.
   bool m_reconcilePending = false;
 
-  bool m_reconcileScheduled = false;
-
-  // Whether a preview driven fold re-evaluation is owed, and whether one is
-  // already queued. Kept apart for the same reason as the reconcile pair: an
-  // unblock hook has to be able to re-arm exactly one delivery.
+  // Whether a preview driven fold re-evaluation is owed.
   bool m_foldRefreshPending = false;
-
-  bool m_foldRefreshScheduled = false;
 
   // Published through c_foldRefreshCountProperty.
   int m_foldRefreshCount = 0;
@@ -405,8 +489,47 @@ private:
   // Published through c_reconcileDeliveryCountProperty.
   int m_reconcileDeliveryCount = 0;
 
-  // Set while an application-defined factory or widget callback is running.
-  bool m_inFactoryCallback = false;
+  // Nesting depth of the host-side blocks. See isBlocked().
+  int m_blockDepth = 0;
+
+  // Nesting depth of the application-defined factory and widget callbacks
+  // only. Kept apart from m_blockDepth so the reentrant-registration rejection
+  // keeps meaning exactly "from inside a factory callback".
+  int m_factoryCallbackDepth = 0;
+
+  // Owed work, all coalescing. Each is set by an entry point which declined to
+  // run while blocked and cleared by drainOwedWork().
+  bool m_publishPending = false;
+
+  bool m_geometrySyncPending = false;
+
+  bool m_scrollApplyPending = false;
+
+  bool m_replacementRetryPending = false;
+
+  // Whether one drain is already armed, so an unblock edge arms exactly one.
+  bool m_owedWorkScheduled = false;
+
+  // Set while a drain is running its ordered steps, so the work those steps
+  // owe is picked up by the drain itself or by its single follow-up delivery,
+  // never by one timer per owed item.
+  bool m_drainingOwedWork = false;
+
+  // Identities whose replacement request was postponed, with the number of
+  // retries already spent on each. Only host bookkeeping: exhausting the
+  // budget drops the entry and nothing else.
+  QHash<quint64, int> m_deferredReplacements;
+
+  // Published through c_owedWorkDrainCountProperty.
+  int m_owedWorkDrainCount = 0;
+
+  // Maximum number of times the host retries one postponed replacement on a
+  // built-in sheet's behalf. The sheet's own debounce is the backstop after
+  // that.
+  static const int c_replacementRetryBudget;
+
+  // Whether an application-defined factory or widget callback is running.
+  bool inFactoryCallback() const { return m_factoryCallbackDepth > 0; }
 
   // Set while the factory registry itself is being mutated.
   bool m_mutatingFactories = false;
@@ -414,9 +537,6 @@ private:
   // Set by syncWidgetGeometry() so publish() can tell whether the layout
   // already drove a sync through widgetPreviewGeometryChanged.
   bool m_geometrySynced = false;
-
-  // Managed by QObject.
-  QTimer *m_publishTimer = nullptr;
 
   // Managed by QObject. Owned by this host like any other factory, and an
   // application may unregister it, which destroys it. A QPointer so the

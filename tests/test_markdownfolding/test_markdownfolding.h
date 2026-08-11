@@ -80,6 +80,10 @@ private slots:
 
   void testWidgetPreviewGeometryWithEqualDocumentSize();
 
+  void testDocumentSizeRepairsAMissingBlockOffset();
+
+  void testLayoutIsBusyDuringWidgetGeometryEmission();
+
   void testWidgetPreviewFolding();
 
   void testWidgetPreviewWidthClamped();

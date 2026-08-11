@@ -192,7 +192,19 @@ public:
     ElementCountMismatch,
 
     // The proposed Markdown resolved to an element of a different type.
-    TypeMismatch
+    TypeMismatch,
+
+    // The host could not apply the request right now, because it arrived from
+    // inside a layout pass or another callback during which mutating the
+    // editor's document is not supported.
+    //
+    // Nothing was touched: no host state, no document state and no snapshot.
+    // The request simply did not happen, and the *requester* owns the retry -
+    // typically by asking again once its own debounce fires. The host retries
+    // its own built-in table sheets on its behalf, but it deliberately does
+    // not replay a third-party widget's request verbatim, which would deliver
+    // two completions for one logical request.
+    Deferred
   };
 
   PreviewReplacementResult();

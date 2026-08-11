@@ -3,6 +3,7 @@
 #include <QDebug>
 #include <QFont>
 #include <QFontMetrics>
+#include <QLoggingCategory>
 #include <QPainter>
 #include <QPointF>
 #include <QTextBlock>
@@ -18,6 +19,16 @@
 
 using namespace vte;
 
+namespace {
+// Layout self-healing, reported once per pass. Declared here rather than in
+// previewlogging.h because this translation unit is compiled on its own by
+// tests/test_markdownfolding, which does not build the preview logging unit.
+//
+// QtWarningMsg for the same reason the preview categories use it: an embedding
+// application must not get a trace it never asked for.
+Q_LOGGING_CATEGORY(layoutRepairLog, "vte.layout.repair", QtWarningMsg)
+} // namespace
+
 const int TextDocumentLayout::c_markerThickness = 2;
 
 const int TextDocumentLayout::c_maxInlineImageHeight = 400;
@@ -29,6 +40,22 @@ const int TextDocumentLayout::c_cursorGeometryWidth = 4;
 const int TextDocumentLayout::c_widgetPreviewPadding = 2;
 
 static bool realEqual(qreal p_a, qreal p_b) { return qAbs(p_a - p_b) < 1e-8; }
+
+TextDocumentLayout::PassGuard::~PassGuard() {
+  Q_ASSERT(m_layout->m_passDepth > 0);
+  if (--m_layout->m_passDepth > 0) {
+    // An outer pass is still running, so the document is still off limits.
+    return;
+  }
+
+  if (!m_layout->m_idleNotificationOwed) {
+    return;
+  }
+
+  m_layout->m_idleNotificationOwed = false;
+  // Only arms timers on the other side; see becameIdle()'s contract.
+  emit m_layout->becameIdle();
+}
 
 TextDocumentLayout::TextDocumentLayout(QTextDocument *p_doc, DocumentResourceMgr *p_resourceMgr)
     : QAbstractTextDocumentLayout(p_doc), m_margin(p_doc->documentMargin()),
@@ -168,6 +195,10 @@ int TextDocumentLayout::findBlockByPosition(const QPointF &p_point) const {
 }
 
 void TextDocumentLayout::draw(QPainter *p_painter, const PaintContext &p_context) {
+  // Conservative: draw() emits nothing today, but it must never become a
+  // window in which a widget can mutate the document.
+  PassGuard pass(this);
+
   // Find out the blocks.
   int first, last;
   blockRangeFromRectBS(p_context.clip, first, last);
@@ -392,6 +423,8 @@ QRectF TextDocumentLayout::blockBoundingRect(const QTextBlock &p_block) const {
 }
 
 void TextDocumentLayout::documentChanged(int p_from, int p_charsRemoved, int p_charsAdded) {
+  PassGuard pass(this);
+
   QTextDocument *doc = document();
   int newBlockCount = doc->blockCount();
 
@@ -799,25 +832,51 @@ void TextDocumentLayout::finishBlockLayout(const QTextBlock &p_block,
 }
 
 void TextDocumentLayout::updateDocumentSize() {
-  QTextBlock block = document()->lastBlock();
-  auto info = BlockLayoutData::get(block);
-  if (!info->hasOffset()) {
-    if (info->isNull()) {
-      layoutBlock(block);
-    }
+  PassGuard pass(this);
 
-    updateOffsetBefore(block);
-  }
+  QTextDocument *doc = document();
 
   qreal oldHeight = m_height;
   qreal oldWidth = m_width;
 
-  m_height = info->bottom();
+  // One forward walk which repairs and measures at the same time.
+  //
+  // A block can lose its offset when a relayout walk missed it - most visibly
+  // when a nested document edit merged into the pending change triple, so
+  // documentChanged() was handed a range which no longer described the edit.
+  // Repairing in the same forward order the widths are sampled in is safe:
+  // every predecessor already has an offset by the time a block is reached, so
+  // updateOffsetBefore() never lays an earlier block out again and no width
+  // sampled before it can go stale.
+  //
+  // The repair short-circuits on hasOffset(), so the normal case does no
+  // layout work at all. It also converges in one pass: updateOffsetBefore()
+  // lays out every null predecessor and leaves the block with an offset, and
+  // where updateOffsetAfter() stops early at another null block, this same walk
+  // reaches and repairs that block itself.
+  int repaired = 0;
+  int firstRepaired = -1;
 
   m_width = 0;
-  QTextBlock blk = document()->firstBlock();
+  QTextBlock blk = doc->firstBlock();
   while (blk.isValid()) {
     auto ninfo = BlockLayoutData::get(blk);
+    if (!ninfo->hasOffset()) {
+      if (firstRepaired < 0) {
+        firstRepaired = blk.blockNumber();
+      }
+      ++repaired;
+
+      if (ninfo->isNull()) {
+        // Guarded by isNull(), so finishBlockLayout()'s own assertion holds.
+        layoutBlock(blk);
+      }
+
+      // Both directions: updateOffsetBefore() alone would leave every later
+      // block describing the pre-repair geometry.
+      updateOffset(blk);
+    }
+
     Q_ASSERT(ninfo->hasOffset());
     if (m_width < ninfo->m_rect.width()) {
       m_width = ninfo->m_rect.width();
@@ -826,6 +885,17 @@ void TextDocumentLayout::updateDocumentSize() {
 
     blk = blk.next();
   }
+
+  if (repaired > 0) {
+    // One line per pass, not one per block: the degraded case is exactly the
+    // one where many blocks are broken at once.
+    qCWarning(layoutRepairLog) << "repaired" << repaired
+                               << "block(s) which lost their layout offset, from block"
+                               << firstRepaired;
+  }
+
+  // Sampled after the repair, from the block the walk left with a valid offset.
+  m_height = BlockLayoutData::get(doc->lastBlock())->bottom();
 
   if (!realEqual(oldHeight, m_height) || !realEqual(oldWidth, m_width)) {
     emit documentSizeChanged(documentSize());
@@ -928,6 +998,8 @@ QRectF TextDocumentLayout::blockRectFromTextLayout(const QTextBlock &p_block,
 }
 
 void TextDocumentLayout::updateDocumentSizeWithOneBlockChanged(const QTextBlock &p_block) {
+  PassGuard pass(this);
+
   auto info = BlockLayoutData::get(p_block);
   qreal width = info->m_rect.width();
   if (width > m_width) {
@@ -1013,6 +1085,8 @@ void TextDocumentLayout::drawPreviewMarker(QPainter *p_painter, const QTextBlock
 }
 
 void TextDocumentLayout::relayout() {
+  PassGuard pass(this);
+
   QTextDocument *doc = document();
 
   // Update the margin.
@@ -1034,6 +1108,8 @@ void TextDocumentLayout::relayout() {
 }
 
 void TextDocumentLayout::relayout(const OrderedIntSet &p_blocks) {
+  PassGuard pass(this);
+
   if (p_blocks.isEmpty()) {
     return;
   }
@@ -1352,6 +1428,8 @@ QVector<PreviewData *> TextDocumentLayout::unclaimedPreviewData(const QTextBlock
 }
 
 void TextDocumentLayout::setWidgetPreviews(const QVector<WidgetPreviewSpec> &p_specs) {
+  PassGuard pass(this);
+
   if (m_widgetPreviews == p_specs) {
     return;
   }
@@ -1430,6 +1508,8 @@ const QVector<TextDocumentLayout::WidgetPreviewSpec> &TextDocumentLayout::widget
 }
 
 void TextDocumentLayout::setPreviewClaims(const QVector<PreviewClaim> &p_claims) {
+  PassGuard pass(this);
+
   if (m_claimedPreviews == p_claims) {
     return;
   }
@@ -1611,6 +1691,12 @@ qreal TextDocumentLayout::inlinePlacementWidth(int p_startPos, int p_endPos) con
 }
 
 void TextDocumentLayout::updateWidgetPreviewGeometry() {
+  // The emitter itself is guarded, not just its callers: setWidgetPreviews()'s
+  // empty-delta path calls it directly, outside every other pass scope. This
+  // is what makes "every widgetPreviewGeometryChanged() observes isBusy()"
+  // true regardless of who called.
+  PassGuard pass(this);
+
   QHash<quint64, QRectF> geometry;
   if (!m_widgetPreviews.isEmpty()) {
     ensureWidgetPreviewMap();

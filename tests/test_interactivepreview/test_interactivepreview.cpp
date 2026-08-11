@@ -40,6 +40,8 @@ RecordingPreviewWidget::RecordingPreviewWidget(PreviewWidgetContext *p_context, 
   if (p_context) {
     connect(p_context, &PreviewWidgetContext::replacementFinished, this,
             &RecordingPreviewWidget::handleReplacementFinished);
+    connect(p_context, &PreviewWidgetContext::geometryContextChanged, this,
+            &RecordingPreviewWidget::handleGeometryContextChanged);
   }
 }
 
@@ -121,7 +123,31 @@ int RecordingPreviewWidget::heightForWidth(int p_width) const {
 
 void RecordingPreviewWidget::handleReplacementFinished(const PreviewReplacementResult &p_result) {
   m_lastResult = p_result;
+  m_results.append(p_result.status());
   ++m_resultCount;
+
+  if (m_spinOnNextReplacementFinished) {
+    m_spinOnNextReplacementFinished = false;
+    if (m_duringReplacementSpin) {
+      m_duringReplacementSpin();
+    }
+  }
+}
+
+void RecordingPreviewWidget::handleGeometryContextChanged() {
+  ++m_geometryContextCount;
+
+  if (m_requestOnGeometryContext.isEmpty()) {
+    return;
+  }
+
+  // Application code reached from inside the host's geometry application. The
+  // request must not touch the document from here.
+  const QString markdown = m_requestOnGeometryContext;
+  m_requestOnGeometryContext.clear();
+  if (auto context = previewContext()) {
+    context->requestSourceReplacement(markdown);
+  }
 }
 
 RecordingPreviewFactory::RecordingPreviewFactory(const QVector<PreviewElementType> &p_types,
@@ -3626,6 +3652,423 @@ void TestInteractivePreview::testEscapeFromASheetDoesNotScrollTheEditor() {
 
   QVERIFY2(textEdit->hasFocus(), "the editor did not take the focus back");
   QCOMPARE(vbar->value(), vbar->minimum());
+}
+
+// ---------------------------------------------------------------------------
+// A document mutation requested from inside a layout pass or a geometry
+// application
+// ---------------------------------------------------------------------------
+
+namespace {
+// Every outcome one context reported, together with the document as it stood
+// at that very moment. A postponed request must leave the document untouched,
+// which is only observable from inside the completion.
+class ReplacementRecorder : public QObject {
+public:
+  ReplacementRecorder(PreviewWidgetContext *p_context, VMarkdownEditor &p_editor,
+                      QObject *p_parent = nullptr)
+      : QObject(p_parent), m_editor(&p_editor) {
+    connect(p_context, &PreviewWidgetContext::replacementFinished, this,
+            [this](const PreviewReplacementResult &p_result) {
+              m_statuses.append(p_result.status());
+              m_documents.append(m_editor->document()->toPlainText());
+              m_foldRefreshes.append(foldRefreshes(*m_editor));
+            });
+  }
+
+  int count(PreviewReplacementResult::Status p_status) const {
+    int n = 0;
+    for (auto status : m_statuses) {
+      if (status == p_status) {
+        ++n;
+      }
+    }
+
+    return n;
+  }
+
+  int indexOf(PreviewReplacementResult::Status p_status) const {
+    return static_cast<int>(m_statuses.indexOf(p_status));
+  }
+
+  QVector<PreviewReplacementResult::Status> m_statuses;
+
+  QStringList m_documents;
+
+  // The fold refresh counter as it stood when each outcome was delivered, so a
+  // test can assert that no lower-priority owed work ran in between.
+  QVector<int> m_foldRefreshes;
+
+private:
+  VMarkdownEditor *m_editor = nullptr;
+};
+} // namespace
+
+// The reported crash: the host reaches widget code from inside its own
+// geometry application, that widget writes its pending edit back, and the
+// editor's document is mutated from a stack Qt does not support mutating it
+// from. The request must be answered Deferred, leave everything untouched, and
+// land exactly once afterwards.
+void TestInteractivePreview::testDeferredCommitDuringLayoutDrivenHide() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 300);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor, tableAboveFiller());
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  QVERIFY(widget->previewContext());
+  QPointer<QTextEdit> sheet = sheetView(widget);
+  QVERIFY(sheet);
+
+  ReplacementRecorder recorder(widget->previewContext(), editor);
+
+  parkCaretOffScreenAtTop(editor);
+  sheet->setFocus();
+  QVERIFY2(sheet->hasFocus(), "the sheet did not take the focus");
+
+  const QString before = editor.document()->toPlainText();
+  editCell(sheet, 1, 1, QStringLiteral("changed"));
+  QVERIFY2(!editor.document()->toPlainText().contains(QStringLiteral("changed")),
+           "the edit was written back before the debounce elapsed");
+
+  WarningRecorder warnings;
+
+  // geometryContextChanged is emitted synchronously from inside the host's
+  // geometry application, which is the very stack the hide of a focused sheet
+  // runs on. Losing the focus there is what made the sheet write back mid-pass
+  // in the crash trace.
+  bool flushed = false;
+  QObject sink;
+  QObject::connect(widget->previewContext(), &PreviewWidgetContext::geometryContextChanged, &sink,
+                   [&]() {
+                     if (flushed || !sheet) {
+                       return;
+                     }
+
+                     flushed = true;
+                     QFocusEvent out(QEvent::FocusOut);
+                     QCoreApplication::sendEvent(sheet, &out);
+                   });
+
+  // Any resize republishes and therefore hands every widget a new geometry
+  // context.
+  editor.resize(520, 300);
+  QTRY_VERIFY2(flushed, "the geometry application never reached the widget");
+
+  QVERIFY2(!recorder.m_statuses.isEmpty(), "the focus loss did not make the sheet write back");
+  QCOMPARE(recorder.m_statuses.first(), PreviewReplacementResult::Deferred);
+  // Nothing was applied: the document is byte-identical to what it was.
+  QCOMPARE(recorder.m_documents.first(), before);
+  QCOMPARE(editor.document()->toPlainText(), before);
+
+  // And the write-back lands once the geometry application has unwound.
+  QTRY_VERIFY_WITH_TIMEOUT(editor.document()->toPlainText().contains(QStringLiteral("changed")),
+                           3000);
+  QCOMPARE(recorder.count(PreviewReplacementResult::Accepted), 1);
+
+  // The retry ranks above every other owed item, so nothing lower-priority ran
+  // between the two outcomes. The fold refresh is the last step of a drain and
+  // therefore the cheapest observable one.
+  const int deferredAt = recorder.indexOf(PreviewReplacementResult::Deferred);
+  const int acceptedAt = recorder.indexOf(PreviewReplacementResult::Accepted);
+  QVERIFY(deferredAt >= 0 && acceptedAt > deferredAt);
+  QCOMPARE(recorder.m_foldRefreshes.at(acceptedAt), recorder.m_foldRefreshes.at(deferredAt));
+
+  // The sheet kept its authority: a rejected commit would have made it
+  // read-only until the next snapshot, and would have restored the old value.
+  QCOMPARE(recorder.count(PreviewReplacementResult::UnknownIdentity), 0);
+  QCOMPARE(recorder.count(PreviewReplacementResult::InvalidRange), 0);
+  QVERIFY2(!warnings.contains(QStringLiteral("reFormatBlock")),
+           qPrintable(warnings.m_messages.join(QLatin1Char('\n'))));
+  QVERIFY2(!warnings.contains(QStringLiteral("hasOffset")),
+           qPrintable(warnings.m_messages.join(QLatin1Char('\n'))));
+}
+
+// The same rule for application code: a custom widget asking for a replacement
+// from geometryContextChanged is inside the host's geometry application, so it
+// is postponed - and the widget owns the retry.
+void TestInteractivePreview::testCustomWidgetReplacementDuringGeometryContextIsDeferred() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 300);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+
+  auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
+  QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
+  setTextAndSettle(editor, QLatin1String(c_table));
+
+  QCOMPARE(factory->m_widgets.size(), 1);
+  auto widget = factory->m_widgets.first();
+  QVERIFY(widget->previewContext());
+  QVERIFY(widget->m_geometryContextCount > 0);
+
+  const QString replacement = QStringLiteral("| h1 | h2 |\n| --- | --- |\n| z | b |");
+  const QString before = editor.document()->toPlainText();
+  const int resultsBefore = widget->m_resultCount;
+
+  // Force a fresh geometry context and request the rewrite from inside it.
+  widget->m_requestOnGeometryContext = replacement;
+  editor.resize(500, 300);
+  QTRY_VERIFY(widget->m_resultCount > resultsBefore);
+
+  QCOMPARE(widget->m_results.last(), PreviewReplacementResult::Deferred);
+  QVERIFY(!widget->m_lastResult.isAccepted());
+  // Nothing moved: not the document, and not the host's binding.
+  QCOMPARE(editor.document()->toPlainText(), before);
+  QCOMPARE(widget->previewContext()->preview()->sourceMarkdown(),
+           widget->m_preview->sourceMarkdown());
+
+  // The host does not replay a third-party request; the widget's own retry
+  // does, and it is accepted.
+  QCoreApplication::processEvents();
+  widget->previewContext()->requestSourceReplacement(replacement);
+  QCOMPARE(widget->m_results.last(), PreviewReplacementResult::Accepted);
+  QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("| z | b |")));
+}
+
+// A reconcile and a rebuild requested while the host is blocked must be
+// postponed rather than executed, and the edit which is still owed must
+// survive both.
+void TestInteractivePreview::testRemovalAndRebuildDuringADeferredFlushKeepTheEdit() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 300);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor, tableAboveFiller());
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  QVERIFY(widget->previewContext());
+  QPointer<QTextEdit> sheet = sheetView(widget);
+  QVERIFY(sheet);
+
+  parkCaretOffScreenAtTop(editor);
+  sheet->setFocus();
+  QVERIFY(sheet->hasFocus());
+  editCell(sheet, 1, 1, QStringLiteral("changed"));
+
+  int widgetsDuringBlock = -1;
+  int widgetsAfterGeneration = -1;
+  PreviewWidget *sameWidget = nullptr;
+  bool droveThePasses = false;
+
+  QObject sink;
+  // Make the sheet write back from inside the host's geometry application, the
+  // same stack the hide of a focused sheet runs on.
+  bool flushed = false;
+  QObject::connect(widget->previewContext(), &PreviewWidgetContext::geometryContextChanged, &sink,
+                   [&]() {
+                     if (flushed || !sheet) {
+                       return;
+                     }
+
+                     flushed = true;
+                     QFocusEvent out(QEvent::FocusOut);
+                     QCoreApplication::sendEvent(sheet, &out);
+                   });
+
+  QObject::connect(widget->previewContext(), &PreviewWidgetContext::replacementFinished, &sink,
+                   [&](const PreviewReplacementResult &p_result) {
+                     if (droveThePasses ||
+                         p_result.status() != PreviewReplacementResult::Deferred) {
+                       return;
+                     }
+
+                     droveThePasses = true;
+                     // The host is blocked right here. A rebuild requested now
+                     // must not start: it would flush this very sheet from a
+                     // stack which cannot apply the edit.
+                     auto other = new RecordingPreviewFactory({PreviewElementType::Image});
+                     QVERIFY(editor.registerPreviewWidgetFactory(other, 1));
+                     widgetsDuringBlock = previewWidgets(editor).size();
+                     sameWidget = singlePreviewWidget(editor);
+
+                     // And a parse generation delivered here must be stashed,
+                     // not applied.
+                     editor.getHighlighter()->updateHighlight();
+                     widgetsAfterGeneration = previewWidgets(editor).size();
+                   });
+
+  editor.resize(520, 300);
+  QTRY_VERIFY2(droveThePasses, "the geometry application never produced a postponed write-back");
+  // Neither pass ran while blocked, and no duplicate widget was created for
+  // the same source.
+  QCOMPARE(widgetsDuringBlock, 1);
+  QCOMPARE(widgetsAfterGeneration, 1);
+  QCOMPARE(sameWidget, widget);
+
+  // The edit survives both passes.
+  QTRY_VERIFY_WITH_TIMEOUT(editor.document()->toPlainText().contains(QStringLiteral("changed")),
+                           3000);
+  settle(editor);
+  QCOMPARE(previewWidgets(editor).size(), 1);
+}
+
+// The sheet's other commit triggers must not issue a second request while one
+// is on the wire: it would target an anchor the outer edit has collapsed. And
+// a reconcile delivered from a nested event loop opened in that window must be
+// postponed, not run against a sheet whose commit is still in flight.
+void TestInteractivePreview::testConcurrentFlushTriggersSendOneRequest() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 400);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor, QLatin1String(c_table));
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  QVERIFY(widget->previewContext());
+  QPointer<QTextEdit> sheet = sheetView(widget);
+  QVERIFY(sheet);
+
+  sheet->setFocus();
+  QVERIFY(sheet->hasFocus());
+
+  ReplacementRecorder recorder(widget->previewContext(), editor);
+  WarningRecorder warnings;
+
+  editCell(sheet, 1, 1, QStringLiteral("changed"));
+
+  bool reentered = false;
+  QObject sink;
+  QObject::connect(editor.document(), &QTextDocument::contentsChange, &sink, [&](int, int, int) {
+    if (reentered || !sheet) {
+      return;
+    }
+
+    reentered = true;
+
+    // A commit is on the wire right now. Both a focus-out and a cell-left
+    // land here in the real crash trace, and neither may issue a second
+    // request against an anchor this very edit has collapsed.
+    QFocusEvent out(QEvent::FocusOut);
+    QCoreApplication::sendEvent(sheet, &out);
+    QCoreApplication::sendEvent(sheet, &out);
+
+    // A newer edit made in the same window is owed a write-back of its own.
+    editCell(sheet, 1, 0, QStringLiteral("later"));
+  });
+
+  // Let the debounce fire.
+  QTRY_VERIFY_WITH_TIMEOUT(editor.document()->toPlainText().contains(QStringLiteral("changed")),
+                           3000);
+  QVERIFY2(reentered, "the commit never reached the document");
+
+  // Exactly one request was issued for the in-flight generation, and it was
+  // accepted.
+  QCOMPARE(recorder.m_statuses.size(), 1);
+  QCOMPARE(recorder.m_statuses.first(), PreviewReplacementResult::Accepted);
+
+  // The newer generation was re-armed and lands too, without ever being
+  // rejected as a stale or unknown request.
+  QTRY_VERIFY_WITH_TIMEOUT(editor.document()->toPlainText().contains(QStringLiteral("later")),
+                           3000);
+  QCOMPARE(recorder.count(PreviewReplacementResult::UnknownIdentity), 0);
+  QCOMPARE(recorder.count(PreviewReplacementResult::StaleSnapshot), 0);
+  QVERIFY2(!warnings.contains(QStringLiteral("UnknownIdentity")),
+           qPrintable(warnings.m_messages.join(QLatin1Char('\n'))));
+}
+
+// A widget which opens a modal dialog from its own completion runs a nested
+// event loop while the replacement transaction is still on the stack - and
+// while the built-in sheet's commit would still be "in flight". A rebuild
+// delivered there would reach a mandatory flush which can only decline, so it
+// has to be postponed.
+void TestInteractivePreview::testReconcileDuringAReplacementCompletionIsPostponed() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+
+  auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
+  QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
+  setTextAndSettle(editor, QLatin1String(c_table));
+
+  QCOMPARE(factory->m_widgets.size(), 1);
+  auto widget = factory->m_widgets.first();
+  QVERIFY(widget->previewContext());
+
+  const int createdBefore = factory->m_createCount;
+  int createsDuringSpin = -1;
+  PreviewWidget *widgetDuringSpin = nullptr;
+
+  widget->m_spinOnNextReplacementFinished = true;
+  widget->m_duringReplacementSpin = [&]() {
+    // The transaction is still on the stack here.
+    auto other = new RecordingPreviewFactory({PreviewElementType::Image});
+    QVERIFY(editor.registerPreviewWidgetFactory(other, 1));
+
+    QEventLoop loop;
+    QTimer::singleShot(30, &loop, [&loop]() { loop.quit(); });
+    loop.exec();
+
+    createsDuringSpin = factory->m_createCount;
+    widgetDuringSpin = singlePreviewWidget(editor);
+  };
+
+  WarningRecorder warnings;
+  widget->previewContext()->requestSourceReplacement(
+      QStringLiteral("| h1 | h2 |\n| --- | --- |\n| z | b |"));
+
+  QCOMPARE(widget->m_results.last(), PreviewReplacementResult::Accepted);
+  QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("| z | b |")));
+
+  // The rebuild did not run inside the transaction.
+  QCOMPARE(createsDuringSpin, createdBefore);
+  QCOMPARE(widgetDuringSpin, static_cast<PreviewWidget *>(widget));
+
+  // And it is not lost either.
+  QTest::qWait(50);
+  QCoreApplication::processEvents();
+  QCOMPARE(factory->m_createCount, createdBefore + 1);
+  QCOMPARE(previewWidgets(editor).size(), 1);
+  QVERIFY2(!warnings.contains(QStringLiteral("UnknownIdentity")),
+           qPrintable(warnings.m_messages.join(QLatin1Char('\n'))));
+  QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("| z | b |")));
+}
+
+// The owed work is delivered by one drain, after the outermost block exits -
+// not by one zero timer per owed item, and never while the block is held.
+void TestInteractivePreview::testOwedWorkDrainsOnceUnderANestedEventLoop() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+
+  auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
+  QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
+  setTextAndSettle(editor, QLatin1String(c_table));
+  QCOMPARE(factory->m_widgets.size(), 1);
+
+  auto host = previewHost(editor);
+  QVERIFY(host);
+  auto drains = [host]() { return host->property("vte_preview_owed_work_drains").toInt(); };
+
+  auto widget = factory->m_widgets.first();
+  const int createdBefore = factory->m_createCount;
+  int drainsBeforeSpin = -1;
+  int drainsDuringSpin = -1;
+  widget->m_spinOnNextSetPreview = true;
+  widget->m_duringSpin = [&]() { drainsDuringSpin = drains(); };
+
+  // Owed while the callback holds the host blocked: a rebuild, plus whatever
+  // the nested loop's own timers ask for.
+  auto second = new RecordingPreviewFactory({PreviewElementType::Table});
+  QVERIFY(editor.registerPreviewWidgetFactory(second, 1));
+
+  drainsBeforeSpin = drains();
+  editor.getHighlighter()->updateHighlight();
+  QCOMPARE(widget->m_spinCount, 1);
+
+  // The nested loop ran for tens of milliseconds. A bare zero timer would have
+  // been delivered - and re-armed - dozens of times in it.
+  QVERIFY(drainsDuringSpin >= 0);
+  QCOMPARE(drainsDuringSpin, drainsBeforeSpin);
+
+  // Once the callback returns, everything owed is delivered by a bounded
+  // number of drains, and the rebuild runs exactly once.
+  QTest::qWait(50);
+  QCoreApplication::processEvents();
+  QCOMPARE(factory->m_createCount, createdBefore + 1);
+  const int delta = drains() - drainsBeforeSpin;
+  QVERIFY2(delta >= 1, "the owed work was never delivered");
+  QVERIFY2(delta <= 4, qPrintable(QStringLiteral("%1 drains ran for one unblock").arg(delta)));
 }
 
 QTEST_MAIN(tests::TestInteractivePreview)

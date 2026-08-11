@@ -987,6 +987,102 @@ void TestMarkdownFolding::testWidgetPreviewGeometryWithEqualDocumentSize() {
   QVERIFY(layout->widgetPreviewRect(1) != firstBefore);
 }
 
+// A block can lose its layout offset when a relayout walk missed it - which is
+// what a document mutation performed from inside a layout pass produces. The
+// document size pass must repair the whole offset chain instead of aborting on
+// it.
+void TestMarkdownFolding::testDocumentSizeRepairsAMissingBlockOffset() {
+  QTextDocument doc(generateLines(8));
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  layout->setPreviewEnabled(true);
+
+  const QTextBlock anchorBlock = doc.findBlockByNumber(5);
+  QVector<TextDocumentLayout::WidgetPreviewSpec> specs;
+  specs.append(makeSpec(1, anchorBlock.position(),
+                        anchorBlock.position() + anchorBlock.length() - 1, 50, 30,
+                        PreviewPlacement::BlockAfterSource));
+  layout->setWidgetPreviews(specs);
+  layout->relayout();
+
+  const qreal heightBefore = layout->documentSize().height();
+  QVERIFY(!layout->widgetPreviewRect(1).isNull());
+
+  // Knock a middle block off the offset chain, exactly as a merged nested edit
+  // does, and force a document size recomputation through a discontinuous
+  // relayout of an unrelated block.
+  QTextBlock damaged = doc.findBlockByNumber(3);
+  BlockLayoutData::get(damaged)->reset();
+
+  OrderedIntSet blocks;
+  blocks.insert(1, QMapDummyValue());
+  layout->relayout(blocks);
+
+  // Every block has an offset again, and the offsets are monotonic.
+  qreal previousBottom = -1;
+  for (QTextBlock blk = doc.firstBlock(); blk.isValid(); blk = blk.next()) {
+    const auto info = BlockLayoutData::get(blk);
+    QVERIFY2(
+        info->hasOffset(),
+        qPrintable(QStringLiteral("block %1 was left without an offset").arg(blk.blockNumber())));
+    QVERIFY(info->m_offset >= previousBottom - 1e-6);
+    previousBottom = info->bottom();
+  }
+
+  // The height was sampled from the repaired last block, not from the stale
+  // one the pass started with.
+  QCOMPARE(layout->documentSize().height(), BlockLayoutData::get(doc.lastBlock())->bottom());
+  QCOMPARE(layout->documentSize().height(), heightBefore);
+
+  // And the widget geometry map is complete again.
+  QVERIFY(!layout->widgetPreviewRect(1).isNull());
+}
+
+// Every widgetPreviewGeometryChanged emission has to be observable as "the
+// layout is mid-pass", including the setWidgetPreviews() path whose spec delta
+// is empty and which therefore calls the emitter directly.
+void TestMarkdownFolding::testLayoutIsBusyDuringWidgetGeometryEmission() {
+  QTextDocument doc(generateLines(6));
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  layout->setPreviewEnabled(true);
+
+  int emissions = 0;
+  int busyEmissions = 0;
+  QObject::connect(layout, &TextDocumentLayout::widgetPreviewGeometryChanged, layout, [&]() {
+    ++emissions;
+    if (layout->isBusy()) {
+      ++busyEmissions;
+    }
+  });
+
+  QVERIFY(!layout->isBusy());
+
+  const QTextBlock block = doc.findBlockByNumber(2);
+  QVector<TextDocumentLayout::WidgetPreviewSpec> specs;
+  specs.append(makeSpec(1, block.position(), block.position() + block.length() - 1, 50, 20,
+                        PreviewPlacement::BlockAfterSource));
+  layout->setWidgetPreviews(specs);
+  QVERIFY(emissions > 0);
+
+  // The empty-delta path: the added spec resolves to no block at all, so
+  // setWidgetPreviews() never relayouts anything and calls the emitter
+  // directly, outside every other pass scope. Guarding the emitter itself is
+  // what keeps the invariant below true regardless of the caller.
+  specs.append(makeSpec(2, doc.characterCount() + 100, doc.characterCount() + 140, 50, 20,
+                        PreviewPlacement::BlockAfterSource));
+  layout->setWidgetPreviews(specs);
+
+  // A relayout emits from a third scope again.
+  layout->relayout();
+
+  QVERIFY(emissions > 0);
+  QCOMPARE(busyEmissions, emissions);
+  QVERIFY(!layout->isBusy());
+}
+
 void TestMarkdownFolding::testWidgetPreviewFolding() {
   QTextDocument doc(generateLines(10));
   DocumentResourceMgr resourceMgr;

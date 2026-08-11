@@ -196,15 +196,50 @@ public:
   // when no line claims the range.
   qreal inlinePlacementWidth(int p_startPos, int p_endPos) const;
 
+  // Whether a layout pass is currently running.
+  //
+  // Qt does not support mutating a QTextDocument from inside
+  // QAbstractTextDocumentLayout::documentChanged() or from anything reached
+  // through it: QTextDocumentPrivate merges the nested edit into the still
+  // pending change triple, so the nested documentChanged() receives a range
+  // which no longer describes the edit, blocks fall off the offset chain and
+  // updateDocumentSize() aborts. Every function which can reach widget visible
+  // code holds a PassGuard, so a widget can ask this before applying an edit.
+  bool isBusy() const { return m_passDepth > 0; }
+
+  // Ask for one becameIdle() the next time the outermost pass unwinds. Off by
+  // default so the signal stays away from the per-paint hot path: it only
+  // fires when something was actually deferred during the pass.
+  void requestIdleNotification() { m_idleNotificationOwed = true; }
+
 signals:
   // Emitted whenever the geometry assigned to any interactive preview widget
   // changed, even when the overall document size did not.
   void widgetPreviewGeometryChanged();
 
+  // The outermost layout pass has finished and a notification was owed. The
+  // handler must only set flags and arm timers: it runs during unwinding.
+  void becameIdle();
+
 protected:
   void documentChanged(int p_from, int p_charsRemoved, int p_charsAdded) Q_DECL_OVERRIDE;
 
 private:
+  // Marks the span of one layout pass. Only the outermost destructor takes
+  // the depth back to 0, so a nested guard can never report idle while an
+  // outer pass is still running.
+  class PassGuard {
+  public:
+    explicit PassGuard(TextDocumentLayout *p_layout) : m_layout(p_layout) {
+      ++m_layout->m_passDepth;
+    }
+
+    ~PassGuard();
+
+  private:
+    TextDocumentLayout *m_layout = nullptr;
+  };
+
   // Layout one block.
   // Only update the rect of the block. Offset is not updated yet.
   void layoutBlock(const QTextBlock &p_block);
@@ -246,7 +281,9 @@ private:
                                     QVector<QPair<qreal, qreal>> &p_imageRange);
 
   // Clear the layout of @p_block.
-  // Also clear all the offset behind this block.
+  // NOTICE: the offsets of the blocks behind @p_block are NOT cleared, so they
+  // keep describing the pre-clear geometry until an updateOffset() walk
+  // reaches them. The caller must layout @p_block and update the offsets.
   void clearBlockLayout(QTextBlock &p_block);
 
   // Update rect of a block.
@@ -395,6 +432,12 @@ private:
 
   // Half-open document ranges whose static preview is suppressed.
   QVector<PreviewClaim> m_claimedPreviews;
+
+  // Nesting depth of the running layout passes. See isBusy().
+  int m_passDepth = 0;
+
+  // Whether becameIdle() is owed when the outermost pass unwinds.
+  bool m_idleNotificationOwed = false;
 
   static const int c_markerThickness;
 
