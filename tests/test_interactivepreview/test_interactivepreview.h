@@ -190,6 +190,8 @@ private slots:
   void testReplacementAcceptedAfterUnrelatedEdit();
   void testReplacementPreservesBlockquotePrefix();
   void testTableEditCommitsCanonicalMarkdown();
+
+  void testPaddedSourceIsOnlyRewrittenOnARealEdit();
   void testSourceBitDisablesTablePreview();
   void testGlobalDisableRemovesWidgets();
   void testDuplicateTablesGetDistinctIdentities();

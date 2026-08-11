@@ -89,28 +89,19 @@ bool TablePreviewSerializer::arePrefixesSafe(const QVector<QString> &p_rowPrefix
   return true;
 }
 
-static int alignmentMinimumWidth(PreviewTableAlignment p_alignment) {
+// The delimiter markers are emitted at their minimum readable length: the
+// serializer writes a compact table, so nothing is padded out to a column
+// width.
+static QString alignmentMarker(PreviewTableAlignment p_alignment) {
   switch (p_alignment) {
   case PreviewTableAlignment::Left:
+    return QStringLiteral(":---");
   case PreviewTableAlignment::Right:
-    return 4;
+    return QStringLiteral("---:");
   case PreviewTableAlignment::Center:
-    return 5;
+    return QStringLiteral(":---:");
   default:
-    return 3;
-  }
-}
-
-static QString alignmentMarker(PreviewTableAlignment p_alignment, int p_width) {
-  switch (p_alignment) {
-  case PreviewTableAlignment::Left:
-    return QLatin1Char(':') + QString(p_width - 1, QLatin1Char('-'));
-  case PreviewTableAlignment::Right:
-    return QString(p_width - 1, QLatin1Char('-')) + QLatin1Char(':');
-  case PreviewTableAlignment::Center:
-    return QLatin1Char(':') + QString(p_width - 2, QLatin1Char('-')) + QLatin1Char(':');
-  default:
-    return QString(p_width, QLatin1Char('-'));
+    return QStringLiteral("---");
   }
 }
 
@@ -156,7 +147,6 @@ QString TablePreviewSerializer::serialize(const QVector<QVector<QString>> &p_cel
 
   QVector<QString> escaped;
   escaped.reserve(p_cells.size() * columns);
-  QVector<int> widths(columns, 0);
   for (const auto &row : p_cells) {
     for (int c = 0; c < columns; ++c) {
       const QString raw = c < row.size() ? row[c] : QString();
@@ -165,19 +155,7 @@ QString TablePreviewSerializer::serialize(const QVector<QVector<QString>> &p_cel
       }
 
       escaped.append(escapeCell(raw));
-      // Column widths come from the raw cell text, so the readable padding
-      // does not depend on how many pipes had to be escaped.
-      widths[c] = qMax(widths[c], raw.size());
     }
-  }
-
-  for (int c = 0; c < columns; ++c) {
-    const auto alignment =
-        c < p_alignments.size() ? p_alignments[c] : PreviewTableAlignment::None;
-    widths[c] = qMax(widths[c], alignmentMinimumWidth(alignment));
-    // The alignment minimums are far below the cap, so the delimiter markers
-    // are unaffected by the clamp.
-    widths[c] = qMin(widths[c], TablePreviewDocument::c_maxPaddedWidth);
   }
 
   auto emitRow = [&](const QString &p_prefix, int p_rowIdx) {
@@ -185,7 +163,7 @@ QString TablePreviewSerializer::serialize(const QVector<QVector<QString>> &p_cel
     line.append(QLatin1Char('|'));
     for (int c = 0; c < columns; ++c) {
       line.append(QLatin1Char(' '));
-      line.append(escaped[p_rowIdx * columns + c].leftJustified(widths[c], QLatin1Char(' ')));
+      line.append(escaped[p_rowIdx * columns + c]);
       line.append(QLatin1String(" |"));
     }
     return line;
@@ -201,7 +179,7 @@ QString TablePreviewSerializer::serialize(const QVector<QVector<QString>> &p_cel
       const auto alignment =
           c < p_alignments.size() ? p_alignments[c] : PreviewTableAlignment::None;
       line.append(QLatin1Char(' '));
-      line.append(alignmentMarker(alignment, widths[c]));
+      line.append(alignmentMarker(alignment));
       line.append(QLatin1String(" |"));
     }
     lines.append(line);
@@ -222,8 +200,6 @@ QString TablePreviewSerializer::serialize(const QVector<QVector<QString>> &p_cel
 const int TablePreviewDocument::c_maxCells = 300;
 
 const int TablePreviewDocument::c_maxColumns = 200;
-
-const int TablePreviewDocument::c_maxPaddedWidth = 80;
 
 namespace {
 // Padding inside one cell, in pixels. Small enough that a compact table does

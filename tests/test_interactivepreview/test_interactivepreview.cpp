@@ -868,9 +868,47 @@ void TestInteractivePreview::testTableEditCommitsCanonicalMarkdown() {
   editCell(sheet, 1, 1, QStringLiteral("changed"));
   flushSheet(sheet);
   const QString after = editor.document()->toPlainText();
-  QVERIFY2(after.contains(QStringLiteral("| a   | changed |")), qPrintable(after));
-  QVERIFY2(after.contains(QStringLiteral("| --- | ------- |")), qPrintable(after));
-  QVERIFY2(after.contains(QStringLiteral("| h1  | h2      |")), qPrintable(after));
+  QVERIFY2(after.contains(QStringLiteral("| a | changed |")), qPrintable(after));
+  QVERIFY2(after.contains(QStringLiteral("| --- | --- |")), qPrintable(after));
+  QVERIFY2(after.contains(QStringLiteral("| h1 | h2 |")), qPrintable(after));
+}
+
+void TestInteractivePreview::testPaddedSourceIsOnlyRewrittenOnARealEdit() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  // A padded source is not the canonical form any more, so it is the case
+  // where a no-op flush could most easily rewrite the document for nothing.
+  setTextAndSettle(editor, QStringLiteral("| h1  | h2      |\n"
+                                          "| --- | ------- |\n"
+                                          "| a   | b       |\n"));
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+  QVERIFY(sheetTable(sheet));
+
+  // Retyping the same value leaves the padded source exactly as it was: the
+  // baseline is the source's own canonical form, not its literal text.
+  const QString before = editor.document()->toPlainText();
+  editCell(sheet, 1, 1, QStringLiteral("b"));
+  flushSheet(sheet);
+  QCOMPARE(editor.document()->toPlainText(), before);
+
+  // A real edit rewrites the whole table compactly, padding and all.
+  editCell(sheet, 1, 1, QStringLiteral("changed"));
+  flushSheet(sheet);
+  const QString after = editor.document()->toPlainText();
+  QVERIFY2(after.contains(QStringLiteral("| h1 | h2 |\n"
+                                         "| --- | --- |\n"
+                                         "| a | changed |")),
+           qPrintable(after));
+
+  // And the parse echo of that rewrite is itself a no-op: the sheet does not
+  // rewrite the document a second time.
+  settle(editor);
+  const QString settled = editor.document()->toPlainText();
+  flushSheet(sheet);
+  QCOMPARE(editor.document()->toPlainText(), settled);
 }
 
 // ---------------------------------------------------------------------------
@@ -2572,8 +2610,8 @@ void TestInteractivePreview::testWideCellSurvivesRoundTrip() {
   auto sheet = sheetView(widget);
   QVERIFY(sheet);
 
-  // Longer than the padding cap, so the serializer stops widening every other
-  // row at it. The cell text itself must still survive verbatim.
+  // A very long cell is emitted verbatim and never widens any other row: the
+  // canonical form is compact.
   const QString wide = QString(200, QLatin1Char('w'));
   editCell(sheet, 1, 0, wide);
   flushSheet(sheet);
@@ -3582,7 +3620,7 @@ void TestInteractivePreview::testSheetEditDoesNotScrollToTheEditorCaret() {
   // FocusOut without moving the real focus, and the real focus is the very
   // thing under test here.
   QTRY_VERIFY_WITH_TIMEOUT(
-      editor.document()->toPlainText().contains(QStringLiteral("| a   | changed |")), 3000);
+      editor.document()->toPlainText().contains(QStringLiteral("| a | changed |")), 3000);
   QVERIFY(sheet);
   QVERIFY2(sheet->hasFocus(), "the commit moved the focus out of the sheet");
 

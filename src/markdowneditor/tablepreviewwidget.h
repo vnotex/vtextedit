@@ -39,6 +39,10 @@ enum class FocusEscapeDirection {
 //
 // The dialect targeted here is the one this cmark fork accepts: both the
 // leading and the trailing pipe are mandatory.
+//
+// The canonical form is compact: every cell is emitted with exactly one space
+// inside each border and columns are never padded to a common width, so a
+// single long cell cannot amplify the source by the row count.
 class TablePreviewSerializer {
 public:
   // Escape a '|' only when it is preceded by an even number of backslashes.
@@ -102,12 +106,6 @@ public:
   // than 300 rows already means more than 300 cells for any table with at
   // least one column, so a row bound could never decide anything.
   static const int c_maxColumns;
-
-  // Upper bound on the readable padding of one column. Longer cells are still
-  // emitted in full - leftJustified() only pads - but they stop widening every
-  // other row, which is what turns one very wide cell into a rows x width
-  // blow-up the cell count limit above does not bound.
-  static const int c_maxPaddedWidth;
 
   // Whether the normalized sheet of @p_table stays inside every bound above.
   static bool isWithinLimits(const TablePreview &p_table);

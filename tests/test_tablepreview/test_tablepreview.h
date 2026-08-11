@@ -18,7 +18,7 @@ private slots:
   void testSerializeRejectsLineSeparators();
   void testSerializePreservesInlineMarkdown();
   void testEscapedPipeDoesNotWidenColumn();
-  void testSerializeCapsPadding();
+  void testSerializeDoesNotPadOtherRows();
 
   // Document.
   void testDocumentBuildsTheTable();

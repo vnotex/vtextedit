@@ -403,7 +403,7 @@ void TestTablePreview::testSerializeCanonical() {
 
   const QString markdown =
       TablePreviewSerializer::serialize(cells, alignments, prefixes, QString());
-  QCOMPARE(markdown, QStringLiteral("| h1  | h2  |\n| --- | --- |\n| a   | b   |"));
+  QCOMPARE(markdown, QStringLiteral("| h1 | h2 |\n| --- | --- |\n| a | b |"));
 }
 
 void TestTablePreview::testSerializeAlignments() {
@@ -423,8 +423,8 @@ void TestTablePreview::testSerializeAlignments() {
   const QStringList lines = markdown.split(QLatin1Char('\n'));
   QCOMPARE(lines.size(), 3);
   QCOMPARE(lines[1], QStringLiteral("| --- | :--- | :---: | ---: |"));
-  // Every column keeps at least three dashes.
-  QCOMPARE(lines[0], QStringLiteral("| a   | b    | c     | d    |"));
+  // Cells are emitted compactly, with a single space inside each border.
+  QCOMPARE(lines[0], QStringLiteral("| a | b | c | d |"));
 }
 
 void TestTablePreview::testSerializeRaggedRows() {
@@ -441,10 +441,10 @@ void TestTablePreview::testSerializeRaggedRows() {
       TablePreviewSerializer::serialize(cells, alignments, prefixes, QString());
   const QStringList lines = markdown.split(QLatin1Char('\n'));
   QCOMPARE(lines.size(), 4);
-  QCOMPARE(lines[0], QStringLiteral("| a    |     |     |"));
-  QCOMPARE(lines[1], QStringLiteral("| ---- | --- | --- |"));
-  QCOMPARE(lines[2], QStringLiteral("| x    | y   | z   |"));
-  QCOMPARE(lines[3], QStringLiteral("| only |     |     |"));
+  QCOMPARE(lines[0], QStringLiteral("| a |  |  |"));
+  QCOMPARE(lines[1], QStringLiteral("| --- | --- | --- |"));
+  QCOMPARE(lines[2], QStringLiteral("| x | y | z |"));
+  QCOMPARE(lines[3], QStringLiteral("| only |  |  |"));
 }
 
 void TestTablePreview::testSerializePreservesPrefixes() {
@@ -537,8 +537,8 @@ void TestTablePreview::testSerializePreservesInlineMarkdown() {
 void TestTablePreview::testEscapedPipeDoesNotWidenColumn() {
   QVector<QVector<QString>> cells;
   cells.append({QStringLiteral("ab")});
-  // Escaping adds a backslash to the emitted text, but the readable column
-  // width is derived from the raw cell so the padding stays predictable.
+  // Escaping adds a backslash to the emitted text; the compact format never
+  // pads, so no other row is affected either way.
   cells.append({QStringLiteral("a|b")});
 
   const QVector<PreviewTableAlignment> alignments{PreviewTableAlignment::None};
@@ -548,7 +548,7 @@ void TestTablePreview::testEscapedPipeDoesNotWidenColumn() {
       TablePreviewSerializer::serialize(cells, alignments, prefixes, QString());
   const QStringList lines = markdown.split(QLatin1Char('\n'));
   QCOMPARE(lines.size(), 3);
-  QCOMPARE(lines[0], QStringLiteral("| ab  |"));
+  QCOMPARE(lines[0], QStringLiteral("| ab |"));
   QCOMPARE(lines[1], QStringLiteral("| --- |"));
   QCOMPARE(lines[2], QStringLiteral("| a\\|b |"));
 
@@ -556,10 +556,9 @@ void TestTablePreview::testEscapedPipeDoesNotWidenColumn() {
   QCOMPARE(TablePreviewSerializer::escapeCell(QStringLiteral("a|b")), QStringLiteral("a\\|b"));
 }
 
-void TestTablePreview::testSerializeCapsPadding() {
+void TestTablePreview::testSerializeDoesNotPadOtherRows() {
   // The size limits bound the cell *count*, never the cell text length, so one
-  // very wide cell would otherwise pad every other row up to its width and
-  // amplify the output by the row count.
+  // very wide cell must not be allowed to widen any other row.
   const int rows = 50;
   const QString wide(500, QLatin1Char('w'));
 
@@ -581,10 +580,11 @@ void TestTablePreview::testSerializeCapsPadding() {
       TablePreviewSerializer::serialize(cells, alignments, prefixes, QString());
   QVERIFY(!markdown.isEmpty());
 
-  // leftJustified() only pads, so the wide cell is still emitted in full.
+  // The wide cell is emitted in full.
   QVERIFY(markdown.contains(wide));
 
-  // Every other row is padded to the cap, not to the wide cell's width.
+  // No other row is padded at all: the compact format sizes every row by its
+  // own content.
   const QStringList lines = markdown.split(QLatin1Char('\n'));
   QCOMPARE(lines.size(), rows + 1);
   for (int i = 0; i < lines.size(); ++i) {
@@ -592,14 +592,13 @@ void TestTablePreview::testSerializeCapsPadding() {
       continue;
     }
 
-    QVERIFY2(lines[i].size() < 2 * TablePreviewDocument::c_maxPaddedWidth,
-             qPrintable(QStringLiteral("line %1 is %2 characters wide")
-                            .arg(i)
-                            .arg(lines[i].size())));
+    QVERIFY2(lines[i].size() < 20, qPrintable(QStringLiteral("line %1 is %2 characters wide")
+                                                  .arg(i)
+                                                  .arg(lines[i].size())));
   }
 
-  // Which bounds the whole output: without the cap it would be rows x 500.
-  QVERIFY2(markdown.size() < wide.size() + rows * 3 * TablePreviewDocument::c_maxPaddedWidth,
+  // Which bounds the whole output: with padding it would be rows x 500.
+  QVERIFY2(markdown.size() < wide.size() + rows * 20,
            qPrintable(QStringLiteral("serialized %1 characters").arg(markdown.size())));
 }
 
@@ -730,9 +729,9 @@ void TestTablePreview::testCellWalkReturnsTheEditedText() {
   cursor.insertText(QStringLiteral("bcd"));
 
   QCOMPARE(document.cells().at(1).at(1), QStringLiteral("bbcd"));
-  QCOMPARE(document.toMarkdown(), QStringLiteral("| h1  | h2   |\n"
-                                                 "| --- | ---- |\n"
-                                                 "| a   | bbcd |"));
+  QCOMPARE(document.toMarkdown(), QStringLiteral("| h1 | h2 |\n"
+                                                 "| --- | --- |\n"
+                                                 "| a | bbcd |"));
 }
 
 void TestTablePreview::testDocumentRoundTrip() {
@@ -743,15 +742,15 @@ void TestTablePreview::testDocumentRoundTrip() {
   TablePreviewDocument document;
   document.setTable(makeTable(cells, {PreviewTableAlignment::None, PreviewTableAlignment::Right}));
 
-  // The right aligned column is at least four characters wide (":" + "---").
+  // The right aligned column keeps its ":" marker.
   QCOMPARE(document.toMarkdown(),
-           QStringLiteral("| h1  | h2   |\n| --- | ---: |\n| a   | b    |"));
+           QStringLiteral("| h1 | h2 |\n| --- | ---: |\n| a | b |"));
 
   QTextCursor cursor = document.table()->cellAt(1, 1).lastCursorPosition();
   cursor.insertText(QStringLiteral("etter value"));
-  QCOMPARE(document.toMarkdown(), QStringLiteral("| h1  | h2           |\n"
-                                                 "| --- | -----------: |\n"
-                                                 "| a   | better value |"));
+  QCOMPARE(document.toMarkdown(), QStringLiteral("| h1 | h2 |\n"
+                                                 "| --- | ---: |\n"
+                                                 "| a | better value |"));
 }
 
 void TestTablePreview::testRaggedTableIsNotRoundTrippable() {
