@@ -650,7 +650,7 @@ void TestMarkdownFolding::testExactHitTesting() {
 
   const QTextBlock block = doc.firstBlock();
   const QTextLine line = block.layout()->lineAt(0);
-  const QRectF textRect = line.naturalTextRect().translated(doc.documentMargin(), 0);
+  const QRectF textRect = line.naturalTextRect();
   const qreal blockTop = BlockLayoutData::get(block)->top();
   const QPointF interior(textRect.center().x(), blockTop + textRect.center().y());
   QVERIFY(layout->hitTest(interior, Qt::ExactHit) >= block.position());
@@ -684,9 +684,10 @@ void TestMarkdownFolding::testFuzzyHitInLeadingSpace() {
   const qreal blockTop = BlockLayoutData::get(block)->top();
   const qreal localX = lr.center().x();
   // Vertically inside the leading space, above the line's natural text rect.
-  const QPointF point(localX + doc.documentMargin(), blockTop + lr.top() / 2);
+  const QPointF point(localX, blockTop + lr.top() / 2);
 
-  const int expected = block.position() + line.xToCursor(localX, QTextLine::CursorBetweenCharacters);
+  const int expected =
+      block.position() + line.xToCursor(localX, QTextLine::CursorBetweenCharacters);
   QVERIFY(expected > block.position());
   QCOMPARE(layout->hitTest(point, Qt::FuzzyHit), expected);
 }
@@ -715,7 +716,7 @@ void TestMarkdownFolding::testFuzzyHitInWrappedLineGap() {
   const qreal blockTop = BlockLayoutData::get(block)->top();
   const qreal localX = secondRect.center().x();
   // Just above the second line, inside the inter-line gap.
-  const QPointF point(localX + doc.documentMargin(), blockTop + secondRect.top() - 0.25);
+  const QPointF point(localX, blockTop + secondRect.top() - 0.25);
 
   const int expected =
       block.position() + secondLine.xToCursor(localX, QTextLine::CursorBetweenCharacters);
@@ -740,7 +741,7 @@ void TestMarkdownFolding::testFuzzyHitBelowLastLine() {
   const QRectF lr = lastLine.naturalTextRect();
 
   const qreal blockTop = BlockLayoutData::get(block)->top();
-  const QPointF point(lr.center().x() + doc.documentMargin(), blockTop + lr.bottom() + 5);
+  const QPointF point(lr.center().x(), blockTop + lr.bottom() + 5);
 
   const int expected = block.position() + lastLine.textStart() + lastLine.textLength();
   QCOMPARE(layout->hitTest(point, Qt::FuzzyHit), expected);
@@ -768,7 +769,7 @@ void TestMarkdownFolding::testFuzzyHitAtLineBoundary() {
 
   const qreal blockTop = BlockLayoutData::get(block)->top();
   const qreal localX = secondRect.center().x();
-  const QPointF point(localX + doc.documentMargin(), blockTop + secondRect.top());
+  const QPointF point(localX, blockTop + secondRect.top());
 
   const int expected =
       block.position() + secondLine.xToCursor(localX, QTextLine::CursorBetweenCharacters);
@@ -798,7 +799,7 @@ void TestMarkdownFolding::testFuzzyHitNearerPreviousLine() {
   const qreal blockTop = BlockLayoutData::get(block)->top();
   const qreal localX = firstRect.center().x();
   // Just below the first line, i.e. nearer to it than to the second one.
-  const QPointF point(localX + doc.documentMargin(), blockTop + firstRect.bottom() + 0.25);
+  const QPointF point(localX, blockTop + firstRect.bottom() + 0.25);
 
   const int expected =
       block.position() + firstLine.xToCursor(localX, QTextLine::CursorBetweenCharacters);
@@ -819,7 +820,7 @@ void TestMarkdownFolding::testFuzzyHitAboveDocument() {
 
   const QTextBlock block = doc.firstBlock();
   const QRectF lr = block.layout()->lineAt(0).naturalTextRect();
-  const QPointF point(lr.center().x() + doc.documentMargin(), -20);
+  const QPointF point(lr.center().x(), -20);
 
   QCOMPARE(layout->hitTest(point, Qt::FuzzyHit), block.position());
 }
@@ -862,7 +863,7 @@ void TestMarkdownFolding::testFuzzyHitInInlinePreviewGap() {
   const qreal blockTop = BlockLayoutData::get(block)->top();
   const qreal localX = imageRect.center().x();
   // Deep inside the image area but much nearer to the preceding line.
-  const QPointF point(localX + doc.documentMargin(), blockTop + firstRect.bottom() + 1);
+  const QPointF point(localX, blockTop + firstRect.bottom() + 1);
 
   const int expected =
       block.position() + imageLine.xToCursor(localX, QTextLine::CursorBetweenCharacters);
@@ -1155,14 +1156,12 @@ void TestMarkdownFolding::testWidgetPreviewInlineBand() {
   QCOMPARE(info->m_widgets.size(), 1);
   QCOMPARE(info->m_widgets.first().m_rect.height(), 35.0);
   // The band sits above the visual line and matches the source span.
-  // Widget rects are stored relative to the content origin, so the document
-  // margin is added only when the geometry is published.
+  // Widget rects are stored in block coordinates, i.e. the document margin is
+  // already baked in, exactly like the line positions.
   const QTextLine line = block.layout()->lineAt(0);
-  const qreal margin = doc.documentMargin();
   QVERIFY(info->m_widgets.first().m_rect.bottom() <= line.y() + 1e-6);
-  QVERIFY(realNear(info->m_widgets.first().m_rect.left(), line.cursorToX(6) - margin));
-  QVERIFY(
-      realNear(info->m_widgets.first().m_rect.width(), line.cursorToX(10) - line.cursorToX(6)));
+  QVERIFY(realNear(info->m_widgets.first().m_rect.left(), line.cursorToX(6)));
+  QVERIFY(realNear(info->m_widgets.first().m_rect.width(), line.cursorToX(10) - line.cursorToX(6)));
   QVERIFY(info->m_rect.height() > plainHeight + 34);
   QCOMPARE(layout->widgetPreviewRect(4).left(), line.cursorToX(6));
 }
@@ -1680,9 +1679,9 @@ void TestMarkdownFolding::testAutoFoldPaintedPreview() {
   // A painted code preview drawn on the region's last block, which folding
   // keeps visible.
   auto lastBlock = doc.findBlockByNumber(10);
-  BlockPreviewData::get(lastBlock)
-      ->insert(new PreviewData(PreviewData::CodeBlock, 1, 0, lastBlock.length() - 1, 0, false,
-                               QStringLiteral("code-preview"), QSize(80, 40), 0));
+  BlockPreviewData::get(lastBlock)->insert(
+      new PreviewData(PreviewData::CodeBlock, 1, 0, lastBlock.length() - 1, 0, false,
+                      QStringLiteral("code-preview"), QSize(80, 40), 0));
 
   // One drawn on an interior block only, which folding hides.
   auto interiorBlock = doc.findBlockByNumber(23);

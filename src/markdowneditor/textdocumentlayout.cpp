@@ -210,7 +210,14 @@ void TextDocumentLayout::draw(QPainter *p_painter, const PaintContext &p_context
 
   QTextDocument *doc = document();
   QTextBlock block = doc->findBlockByNumber(first);
-  QPointF offset(m_margin, BlockLayoutData::get(block)->top());
+  // The left margin is already carried by the position of each QTextLine (see
+  // layoutLines()) and by the image/marker rects, so the drawing offset must NOT
+  // add it again. Adding it here would paint everything m_margin px to the right
+  // of where blockBoundingRect() reports it, which makes the cursor rects Qt
+  // computes (QWidgetTextControl::cursorRect()) miss the painted cursor column.
+  // The drag&drop feedback cursor repaints exactly that unexpanded rect, so the
+  // mismatch made the drop position cursor invisible (#2249).
+  QPointF offset(0, BlockLayoutData::get(block)->top());
   QTextBlock lastBlock = doc->findBlockByNumber(last);
 
   QPen oldPen = p_painter->pen();
@@ -330,7 +337,7 @@ int TextDocumentLayout::hitTest(const QPointF &p_point, Qt::HitTestAccuracy p_ac
   Q_ASSERT(block.isValid());
   QTextLayout *layout = block.layout();
   int off = 0;
-  QPointF pos = p_point - QPointF(m_margin, BlockLayoutData::get(block)->top());
+  QPointF pos = p_point - QPointF(0, BlockLayoutData::get(block)->top());
   if (p_accuracy == Qt::ExactHit) {
     for (int i = 0; i < layout->lineCount(); ++i) {
       QTextLine line = layout->lineAt(i);
@@ -744,8 +751,7 @@ qreal TextDocumentLayout::layoutLines(const QTextBlock &p_block, QTextLayout *p_
           WidgetPaintData wpd;
           wpd.m_id = spec->m_id;
           const qreal spanWidth = spans[i].second - spans[i].first;
-          wpd.m_rect = QRectF(spans[i].first - m_margin,
-                              p_height + bandHeight - spec->m_height,
+          wpd.m_rect = QRectF(spans[i].first, p_height + bandHeight - spec->m_height,
                               qMax<qreal>(0, spanWidth), spec->m_height);
           p_widgets.append(wpd);
         }
@@ -822,10 +828,12 @@ void TextDocumentLayout::finishBlockLayout(const QTextBlock &p_block,
   // Add vertical marker.
   if (hasImage) {
     // Fill the marker.
-    // Will be adjusted using offset.
+    // Stored in block coordinates, just like the line positions and the image
+    // rects, so that draw() needs no horizontal offset.
+    const qreal markerX = m_margin - 1;
     Marker mk;
-    mk.m_start = QPointF(-1, 0);
-    mk.m_end = QPointF(-1, info->m_rect.height());
+    mk.m_start = QPointF(markerX, 0);
+    mk.m_end = QPointF(markerX, info->m_rect.height());
 
     info->m_markers.append(mk);
   }
@@ -973,11 +981,11 @@ QRectF TextDocumentLayout::blockRectFromTextLayout(const QTextBlock &p_block,
 
         WidgetPaintData wpd;
         wpd.m_id = spec->m_id;
-        wpd.m_rect = QRectF(0, y, width, height);
+        wpd.m_rect = QRectF(m_margin, y, width, height);
         p_widgets->append(wpd);
 
         y += height;
-        maxRight = qMax(maxRight, width);
+        maxRight = qMax(maxRight, m_margin + width);
       }
 
       y += c_widgetPreviewPadding;
@@ -986,8 +994,9 @@ QRectF TextDocumentLayout::blockRectFromTextLayout(const QTextBlock &p_block,
     }
   }
 
-  // Add margins to both sides.
-  br.adjust(0, 0, m_margin * 2 + c_cursorGeometryWidth, 0);
+  // Add the right margin. The left margin is already included in the bounding
+  // rect, since every line is positioned at x == m_margin.
+  br.adjust(0, 0, m_margin + c_cursorGeometryWidth, 0);
 
   // Add bottom margin.
   if (!p_block.next().isValid()) {
@@ -1715,7 +1724,10 @@ void TextDocumentLayout::updateWidgetPreviewGeometry() {
       }
 
       for (const auto &widget : info->m_widgets) {
-        geometry.insert(widget.m_id, widget.m_rect.translated(m_margin, info->m_offset));
+        // The rects are already in block coordinates (the left margin is baked
+        // into them, like the line positions), so only the vertical block
+        // offset is applied here.
+        geometry.insert(widget.m_id, widget.m_rect.translated(0, info->m_offset));
       }
     }
   }
