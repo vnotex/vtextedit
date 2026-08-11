@@ -3061,8 +3061,8 @@ void TestInteractivePreview::testCaretInsideKeepsTheSourceOpen() {
 // destroys its folding range. The source must not expand, not even for one
 // event-loop turn.
 void TestInteractivePreview::testFoldSurvivesASheetCellEdit() {
-  VMarkdownEditor editor(makeAutoFoldConfig(true),
-                         QSharedPointer<TextEditorParameters>::create());
+  auto config = makeAutoFoldConfig(true);
+  VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
   setTextAndSettle(editor, QLatin1String(c_table) + QStringLiteral("\ntail\n"));
 
   settleFolding();
@@ -3073,12 +3073,58 @@ void TestInteractivePreview::testFoldSurvivesASheetCellEdit() {
   auto sheet = sheetView(widget);
   QVERIFY(sheet);
 
+  // The folded-line background band is an extra selection: a collapsed cursor
+  // on the folded range's first block. ExtraSelectionMgr coalesces through a
+  // 200ms timer, so let it land - that is the state a user typing into an
+  // already folded table starts from.
+  const auto &theme = config->m_textEditorConfig->m_theme;
+  QVERIFY(theme);
+  const QColor foldedBackground =
+      theme->editorStyle(Theme::FoldedFoldingRangeLine).backgroundColor();
+  QVERIFY(foldedBackground.isValid());
+
+  auto foldedBandBlocks = [&editor, &foldedBackground]() {
+    QVector<int> blocks;
+    const auto selections = editor.getTextEdit()->extraSelections();
+    for (const auto &selection : selections) {
+      // Discriminated by colour: the cursor line is a full-width band too.
+      if (selection.cursor.hasSelection() ||
+          !selection.format.hasProperty(QTextFormat::FullWidthSelection) ||
+          selection.format.background().color() != foldedBackground) {
+        continue;
+      }
+      blocks.append(selection.cursor.blockNumber());
+    }
+    return blocks;
+  };
+
+  QTRY_COMPARE(foldedBandBlocks(), QVector<int>() << 0);
+
   editCell(sheet, 1, 0, QStringLiteral("zz"));
-  flushSheet(sheet);
+  // Not flushSheet(): the write-back is synchronous inside the focus-out
+  // delivery, and no event loop may run before the assertions below, or the
+  // 200ms coalescing timer could repair the band on its own and hide a missing
+  // synchronous flush.
+  {
+    QFocusEvent out(QEvent::FocusOut);
+    QCoreApplication::sendEvent(sheet, &out);
+  }
   QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("zz")));
 
   // Immediately after the write-back, before any parse could have run.
   QVERIFY2(!blockVisible(editor, 1), "the rewritten table expanded");
+
+  // The rewrite replaces the table in place starting exactly at the band's
+  // position, so Qt drags the applied cursor past the inserted text, onto the
+  // table's last block. TextFolding does rebuild the list when the range is
+  // dropped and restored, but ExtraSelectionMgr would only apply it 200ms later
+  // - one visible blink per keystroke - unless restoreFoldAfterPreviewRewrite()
+  // flushes it synchronously. Without the flush this is empty: the caret which
+  // the rewrite moved forces an intermediate apply of a list whose folded entry
+  // had already been dropped.
+  QCOMPARE(foldedBandBlocks(), QVector<int>() << 0);
+
+  QCoreApplication::processEvents();
 
   settle(editor);
   settleFolding();

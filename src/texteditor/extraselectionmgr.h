@@ -55,7 +55,8 @@ public slots:
 
   void updateAllExtraSelections();
 
-private slots:
+  // Apply the already-built selections to the interface immediately, cancelling
+  // the pending coalescing timer.
   void applyExtraSelections();
 
 private:

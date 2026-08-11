@@ -254,8 +254,16 @@ void VMarkdownEditor::applyPreviewFolding() {
 
 void VMarkdownEditor::restoreFoldAfterPreviewRewrite(PreviewElementType p_type, int p_startBlock,
                                                      int p_endBlock) {
-  if (m_foldingProvider) {
-    m_foldingProvider->restoreFoldedRange(p_type, p_startBlock, p_endBlock);
+  if (m_foldingProvider &&
+      m_foldingProvider->restoreFoldedRange(p_type, p_startBlock, p_endBlock)) {
+    // The fold was destroyed and restored synchronously inside the rewrite's
+    // turn. The folded-line background is an extra selection whose cursor was
+    // dragged past the replacement by Qt, and the corrected list is only
+    // scheduled behind a 200ms coalescing timer. Push it now so the stale
+    // position never reaches the repaint which follows this call. Only owed
+    // when a range was really created: the restore is a no-op for a replacement
+    // which collapsed the element onto a single block, and then nothing changed.
+    applyPendingExtraSelections();
   }
 }
 

@@ -535,26 +535,26 @@ void MarkdownFoldingProvider::rekeyEntriesByLiveExtent()
   m_entries = rekeyed;
 }
 
-void MarkdownFoldingProvider::restoreFoldedRange(PreviewElementType p_type, int p_startBlock,
+bool MarkdownFoldingProvider::restoreFoldedRange(PreviewElementType p_type, int p_startBlock,
                                                  int p_endBlock)
 {
   if (!m_textFolding->isEnabled()) {
-    return;
+    return false;
   }
 
   md::FoldingRegionType regionType = md::Heading;
   if (!regionTypeForPreview(p_type, &regionType)) {
-    return;
+    return false;
   }
 
   if (p_endBlock - p_startBlock < 1) {
-    return;
+    return false;
   }
 
   TextBlockRange range(m_document->findBlockByNumber(p_startBlock),
                        m_document->findBlockByNumber(p_endBlock));
   if (!range.isValid()) {
-    return;
+    return false;
   }
 
   qint64 id = m_textFolding->newFoldingRange(range,
@@ -564,7 +564,7 @@ void MarkdownFoldingProvider::restoreFoldedRange(PreviewElementType p_type, int 
     // applyPreviewAutoFold() folds it, with a visible flash in between.
     qWarning() << "failed to restore the folded range of a rewritten preview at ["
                << p_startBlock << "," << p_endBlock << "]";
-    return;
+    return false;
   }
 
   Entry entry;
@@ -581,6 +581,7 @@ void MarkdownFoldingProvider::restoreFoldedRange(PreviewElementType p_type, int 
   // extent, which newFoldingRange() would have refused.
   rekeyEntriesByLiveExtent();
   m_entries.insert(qMakePair(p_startBlock, p_endBlock), entry);
+  return true;
 }
 
 } // namespace vte

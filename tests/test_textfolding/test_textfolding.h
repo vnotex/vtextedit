@@ -30,6 +30,8 @@ namespace tests
 
         void testHardClearRestoresVisibility();
 
+        void testFoldedLineSelectionSurvivesInPlaceReplacement();
+
         void cleanupTestCase();
 
         // Will be executed before any test function.

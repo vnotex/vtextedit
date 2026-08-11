@@ -1,14 +1,52 @@
 #include "test_textfolding.h"
 
 #include <QDebug>
+#include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
+#include <QTextEdit>
 
+#include <extraselectionmgr.h>
 #include <utils/utils.h>
 
 using namespace tests;
 
 using namespace vte;
+
+namespace {
+// Terminates ExtraSelectionMgr's delivery before EditorExtraSelection, so no
+// QTextEdit and no document layout are needed.
+class RecordingExtraSelectionInterface : public vte::ExtraSelectionInterface
+{
+public:
+    QTextCursor textCursor() const Q_DECL_OVERRIDE
+    {
+        return QTextCursor();
+    }
+
+    QString selectedText() const Q_DECL_OVERRIDE
+    {
+        return QString();
+    }
+
+    void setExtraSelections(const QList<QTextEdit::ExtraSelection> &p_selections) Q_DECL_OVERRIDE
+    {
+        m_selections = p_selections;
+    }
+
+    QList<QTextCursor> findAllText(const QString &p_text,
+                                   bool p_isRegularExpression,
+                                   bool p_caseSensitive) Q_DECL_OVERRIDE
+    {
+        Q_UNUSED(p_text);
+        Q_UNUSED(p_isRegularExpression);
+        Q_UNUSED(p_caseSensitive);
+        return QList<QTextCursor>();
+    }
+
+    QList<QTextEdit::ExtraSelection> m_selections;
+};
+} // ns anonymous
 
 void TestTextFolding::initTestCase()
 {
@@ -584,6 +622,79 @@ void TestTextFolding::testHardClearRestoresVisibility()
     QVERIFY(m_textFolding->m_foldedFoldingRanges.isEmpty());
     QVERIFY2(checkTextBlocksVisible(m_doc, 0, m_doc->blockCount() - 1),
              "the hard clear left folded blocks hidden with no range to unfold them");
+}
+
+// The folded-line background is an extra selection: a collapsed QTextCursor at
+// the folded range's first block. A destructive in-place replacement starting
+// exactly at that position drags the applied cursor past the inserted text
+// (QTextCursorPrivate::adjustPosition with MoveCursor), so what is on screen
+// points at the wrong block until something re-applies the list. TextFolding
+// does rebuild the list when the range is dropped and recreated, but only
+// behind ExtraSelectionMgr's 200ms coalescing timer. A caller which restores
+// the fold synchronously inside the edit's turn must therefore be able to flush
+// the manager without waiting - that is
+// ExtraSelectionMgr::applyExtraSelections(), reached in production through
+// VTextEditor::applyPendingExtraSelections(). This asserts the flushed list is
+// correct with no QTest::qWait().
+void TestTextFolding::testFoldedLineSelectionSurvivesInPlaceReplacement()
+{
+    QTextDocument doc(QStringLiteral("0\n1\n2\n3\n4\n5\n6"));
+    TextFolding folding(&doc);
+
+    RecordingExtraSelectionInterface interface;
+    ExtraSelectionMgr mgr(&interface);
+    // Registers the folded-line extra selection type and installs the rebuild
+    // lambda on foldingRangesChanged. One-shot per TextFolding instance.
+    folding.setExtraSelectionMgr(&mgr);
+
+    auto id = folding.newFoldingRange(TextBlockRange(doc.findBlockByNumber(0),
+                                                     doc.findBlockByNumber(4)),
+                                      TextFolding::Persistent | TextFolding::Folded);
+    QVERIFY(id != TextFolding::InvalidRangeId);
+
+    mgr.applyExtraSelections();
+    QCOMPARE(interface.m_selections.size(), 1);
+    QCOMPARE(interface.m_selections.first().cursor.blockNumber(), 0);
+    QVERIFY(!interface.m_selections.first().cursor.hasSelection());
+
+    // Keep the applied cursor alive to observe what Qt does to it.
+    QTextCursor appliedCursor = interface.m_selections.first().cursor;
+
+    // The in-place replacement performed by InteractivePreviewHost::applyReplacement().
+    {
+        const auto lastBlock = doc.findBlockByNumber(4);
+        QTextCursor cursor(&doc);
+        cursor.setPosition(doc.findBlockByNumber(0).position());
+        cursor.setPosition(lastBlock.position() + lastBlock.length() - 1, QTextCursor::KeepAnchor);
+        cursor.insertText(QStringLiteral("A\nB\nC"));
+    }
+
+    // The motivating Qt behaviour: the already-applied cursor no longer points
+    // at the folded range's first block.
+    QVERIFY2(appliedCursor.blockNumber() != 0,
+             "expected the applied folded-line cursor to be dragged past the replacement");
+
+    // The range spanned blocks which the replacement destroyed, so
+    // checkAndUpdateFoldings() dropped it. This is what restoreFoldedRange()
+    // does afterwards.
+    QVERIFY(!folding.foldingRangeBlocks(id, nullptr, nullptr));
+    auto restoredId = folding.newFoldingRange(TextBlockRange(doc.findBlockByNumber(0),
+                                                             doc.findBlockByNumber(2)),
+                                              TextFolding::Persistent | TextFolding::Folded);
+    QVERIFY(restoredId != TextFolding::InvalidRangeId);
+
+    // The flush, with no wait for the coalescing timer.
+    mgr.applyExtraSelections();
+
+    QCOMPARE(interface.m_selections.size(), 1);
+    const auto &selection = interface.m_selections.first();
+    QCOMPARE(selection.cursor.document(), &doc);
+    // Collapsed, not merely on the right block: the band in
+    // TextDocumentLayout::formatRangeFromSelection() is only resolved from
+    // cursor.position() when hasSelection() is false.
+    QVERIFY2(!selection.cursor.hasSelection(),
+             "the folded-line selection must stay collapsed to paint as a full-width band");
+    QCOMPARE(selection.cursor.blockNumber(), 0);
 }
 
 QTEST_MAIN(tests::TestTextFolding)

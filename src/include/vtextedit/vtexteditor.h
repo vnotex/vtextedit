@@ -206,6 +206,11 @@ protected:
 
   void updateSpellCheck();
 
+  // Apply the extra selections the manager has already built, without waiting for
+  // its coalescing timer. For derived editors which mutate folding synchronously
+  // inside an edit turn and must not let a stale applied selection reach a repaint.
+  void applyPendingExtraSelections();
+
 private slots:
   void updateCursorOfStatusWidget();
 

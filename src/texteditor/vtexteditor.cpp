@@ -251,6 +251,12 @@ void VTextEditor::setupExtraSelection() {
   m_extraSelectionMgr->setExtraSelectionEnabled(m_searchUnderCursorExtraSelection, true);
 }
 
+void VTextEditor::applyPendingExtraSelections() {
+  if (m_extraSelectionMgr) {
+    m_extraSelectionMgr->applyExtraSelections();
+  }
+}
+
 void VTextEditor::setupCompleter() { m_completerInterface.reset(new EditorCompleter(this)); }
 
 void VTextEditor::updateFromConfig() {

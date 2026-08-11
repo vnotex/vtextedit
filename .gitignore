@@ -5,4 +5,4 @@ build
 compile_flags.txt
 .sisyphus/
 .kilo/
-*.tmp0
+*.tmp[0-9]

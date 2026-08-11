@@ -71,7 +71,9 @@ public:
   // folding region type with the same table applyPreviewAutoFold() uses, so the
   // entry survives the next type-aware reconciliation instead of being dropped
   // and recreated.
-  void restoreFoldedRange(PreviewElementType p_type, int p_startBlock, int p_endBlock);
+  // Returns whether a range was actually created, so the caller can tell a real
+  // restore from a no-op and skip the work it would otherwise owe.
+  bool restoreFoldedRange(PreviewElementType p_type, int p_startBlock, int p_endBlock);
 
 private:
   struct Entry {
