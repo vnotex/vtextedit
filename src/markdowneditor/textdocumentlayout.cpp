@@ -224,7 +224,7 @@ void TextDocumentLayout::draw(QPainter *p_painter, const PaintContext &p_context
   // computes (QWidgetTextControl::cursorRect()) miss the painted cursor column.
   // The drag&drop feedback cursor repaints exactly that unexpanded rect, so the
   // mismatch made the drop position cursor invisible (#2249).
-  QPointF offset(0, BlockLayoutData::get(block)->top());
+  QPointF offset(0, 0);
   QTextBlock lastBlock = doc->findBlockByNumber(last);
 
   QPen oldPen = p_painter->pen();
@@ -233,6 +233,23 @@ void TextDocumentLayout::draw(QPainter *p_painter, const PaintContext &p_context
   while (block.isValid()) {
     auto info = BlockLayoutData::get(block);
     Q_ASSERT(info->hasOffset());
+
+    // Position each block at the offset the rest of the layout publishes for
+    // it - the same value blockBoundingRect() returns, and therefore the one
+    // the line number border, the hit testing and the preview widget bands are
+    // all placed from. Accumulating block heights here instead would make the
+    // painted text drift away from all of them as soon as a single height
+    // disagreed with the offset chain, drawing the source over the previews
+    // until a scroll re-anchored the walk on another block.
+    if (layoutGeometryLog().isDebugEnabled() && !realEqual(offset.y(), info->top()) &&
+        block.blockNumber() != first) {
+      qCDebug(layoutGeometryLog)
+          << "block" << block.blockNumber() << "offset" << info->top()
+          << "disagrees with the accumulated height chain" << offset.y() << "by"
+          << (info->top() - offset.y());
+    }
+
+    offset.setY(info->top());
 
     const QRectF &rect = info->m_rect;
     QTextLayout *layout = block.layout();

@@ -49,6 +49,8 @@ private slots:
 
   void testFractionalClipDraw();
 
+  void testDrawUsesStoredBlockOffsets();
+
   void testDocumentSizeSignals();
 
   void testWrappedInlinePreviewCoordinates();

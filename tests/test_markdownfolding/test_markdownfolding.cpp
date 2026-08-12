@@ -520,6 +520,54 @@ void TestMarkdownFolding::testFractionalClipDraw() {
   QCOMPARE(image.pixelColor(sampleX, sampleY), QColor(Qt::green));
 }
 
+// draw() must position every block at the offset the rest of the layout
+// publishes for it - the same value blockBoundingRect() returns and therefore
+// the one the line number gutter, the hit testing and the preview widget bands
+// all use. Reconstructing the position by summing block heights instead makes
+// the painted text drift away from all of them as soon as one height disagrees
+// with the offset chain, which is what draws the source on top of a preview.
+void TestMarkdownFolding::testDrawUsesStoredBlockOffsets() {
+  QTextDocument doc(QStringLiteral("First block\nSecond block\nThird block"));
+  doc.setTextWidth(200);
+
+  QTextCursor cursor(doc.findBlockByNumber(2));
+  QTextBlockFormat format;
+  format.setBackground(Qt::green);
+  cursor.setBlockFormat(format);
+
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  layout->relayout();
+
+  const QTextBlock third = doc.findBlockByNumber(2);
+  const qreal thirdTop = BlockLayoutData::get(third)->top();
+
+  // A block whose height no longer agrees with the offsets of the blocks after
+  // it. The state is constructed directly rather than driven through a public
+  // sequence: what is under test is which of the two the painting trusts, not
+  // how they came to disagree. The offsets stay authoritative, so
+  // blockBoundingRect() still reports the original position.
+  auto firstInfo = BlockLayoutData::get(doc.firstBlock());
+  firstInfo->m_rect.setHeight(firstInfo->m_rect.height() + 40);
+  QCOMPARE(BlockLayoutData::get(third)->top(), thirdTop);
+  QCOMPARE(layout->blockBoundingRect(third).top(), thirdTop);
+
+  QImage image(220, qCeil(thirdTop) + 120, QImage::Format_ARGB32);
+  image.fill(Qt::white);
+  QPainter painter(&image);
+
+  QAbstractTextDocumentLayout::PaintContext context;
+  context.clip = QRectF(0, 0, image.width(), image.height());
+  layout->draw(&painter, context);
+  painter.end();
+
+  // The third block is painted where the layout says it is, not 40px lower.
+  const int sampleX = qFloor(doc.documentMargin()) + 2;
+  QCOMPARE(image.pixelColor(sampleX, qCeil(thirdTop) + 2), QColor(Qt::green));
+  QCOMPARE(image.pixelColor(sampleX, qCeil(thirdTop) + 42), QColor(Qt::white));
+}
+
 void TestMarkdownFolding::testDocumentSizeSignals() {
   QTextDocument doc(generateLines(10));
   doc.setTextWidth(600);
