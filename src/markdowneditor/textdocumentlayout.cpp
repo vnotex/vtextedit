@@ -580,15 +580,16 @@ void TextDocumentLayout::layoutBlock(const QTextBlock &p_block) {
   QVector<Marker> markers;
   QVector<ImagePaintData> images;
   QVector<WidgetPaintData> widgets;
+  QVector<Marker> widgetMarkers;
 
-  layoutLines(p_block, tl, markers, images, widgets, availableWidth, 0);
+  layoutLines(p_block, tl, markers, images, widgets, widgetMarkers, availableWidth, 0);
 
   // Set this block's line count to its layout's line count.
   // That is one block may occupy multiple visual lines.
   const_cast<QTextBlock &>(p_block).setLineCount(p_block.isVisible() ? tl->lineCount() : 0);
 
   // Update the info about this block.
-  finishBlockLayout(p_block, markers, images, widgets);
+  finishBlockLayout(p_block, markers, images, widgets, widgetMarkers);
 }
 
 void TextDocumentLayout::updateOffsetBefore(const QTextBlock &p_block) {
@@ -660,7 +661,8 @@ void TextDocumentLayout::updateOffsetAfter(const QTextBlock &p_block) {
 
 qreal TextDocumentLayout::layoutLines(const QTextBlock &p_block, QTextLayout *p_tl,
                                       QVector<Marker> &p_markers, QVector<ImagePaintData> &p_images,
-                                      QVector<WidgetPaintData> &p_widgets, qreal p_availableWidth,
+                                      QVector<WidgetPaintData> &p_widgets,
+                                      QVector<Marker> &p_widgetMarkers, qreal p_availableWidth,
                                       qreal p_height) {
   Q_ASSERT(p_block.isValid());
 
@@ -756,6 +758,19 @@ qreal TextDocumentLayout::layoutLines(const QTextBlock &p_block, QTextLayout *p_
           p_widgets.append(wpd);
         }
         p_height += bandHeight + c_widgetPreviewPadding;
+
+        // Dashed marker right below the band, spanning the claimed text range,
+        // mirroring what layoutInlineImage() does for inline images. The rects
+        // above are already final, so the extra height must be added only now.
+        const qreal mky = p_height + c_markerThickness;
+        for (int i = 0; i < onThisLine.size(); ++i) {
+          Marker mk;
+          mk.m_start = QPointF(spans[i].first, mky);
+          mk.m_end = QPointF(spans[i].second, mky);
+          p_widgetMarkers.append(mk);
+        }
+
+        p_height += c_markerThickness * 2;
       }
     }
 
@@ -798,7 +813,8 @@ void TextDocumentLayout::layoutInlineImage(const PreviewImageData *p_data, qreal
 void TextDocumentLayout::finishBlockLayout(const QTextBlock &p_block,
                                            const QVector<Marker> &p_markers,
                                            const QVector<ImagePaintData> &p_images,
-                                           const QVector<WidgetPaintData> &p_widgets) {
+                                           const QVector<WidgetPaintData> &p_widgets,
+                                           const QVector<Marker> &p_widgetMarkers) {
   Q_ASSERT(p_block.isValid());
   ImagePaintData ipd;
   QVector<WidgetPaintData> blockWidgets;
@@ -808,25 +824,30 @@ void TextDocumentLayout::finishBlockLayout(const QTextBlock &p_block,
   info->m_rect = blockRectFromTextLayout(p_block, &ipd, &blockWidgets);
   Q_ASSERT(!info->m_rect.isNull());
 
-  bool hasImage = false;
+  bool hasPreview = false;
   if (ipd.isValid()) {
     Q_ASSERT(p_markers.isEmpty());
     Q_ASSERT(p_images.isEmpty());
     info->m_images.append(ipd);
-    hasImage = true;
+    hasPreview = true;
   } else if (!p_markers.isEmpty()) {
     info->m_markers = p_markers;
     info->m_images = p_images;
-    hasImage = true;
+    hasPreview = true;
   }
+
+  // Inline widget markers are independent of the painted image branches above,
+  // so they are merged after the assertions on p_markers have been evaluated.
+  info->m_markers += p_widgetMarkers;
 
   // Inline bands are reserved during line layout; block bands are appended
   // after the text.
   info->m_widgets = p_widgets;
   info->m_widgets += blockWidgets;
 
-  // Add vertical marker.
-  if (hasImage) {
+  // Add vertical marker for painted previews as well as interactive preview
+  // widgets. info->m_rect.height() already covers the reserved widget bands.
+  if (hasPreview || !info->m_widgets.isEmpty()) {
     // Fill the marker.
     // Stored in block coordinates, just like the line positions and the image
     // rects, so that draw() needs no horizontal offset.

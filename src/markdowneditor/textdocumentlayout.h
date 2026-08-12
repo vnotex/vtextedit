@@ -259,9 +259,13 @@ private:
 
   // Returns the total height of this block after layouting lines and inline
   // images.
+  // @p_widgetMarkers: markers of the inline widget preview bands. Kept apart
+  // from @p_markers because finishBlockLayout() asserts that @p_markers is
+  // empty when the block carries a block-level painted image, while a widget
+  // claim may coexist with such an image.
   qreal layoutLines(const QTextBlock &p_block, QTextLayout *p_tl, QVector<Marker> &p_markers,
                     QVector<ImagePaintData> &p_images, QVector<WidgetPaintData> &p_widgets,
-                    qreal p_availableWidth, qreal p_height);
+                    QVector<Marker> &p_widgetMarkers, qreal p_availableWidth, qreal p_height);
 
   // Layout inline image in a line.
   // @p_data: if NULL, means just layout a marker.
@@ -287,9 +291,12 @@ private:
   void clearBlockLayout(QTextBlock &p_block);
 
   // Update rect of a block.
+  // @p_widgetMarkers: markers of the inline widget preview bands, merged into
+  // the block markers unconditionally (see layoutLines()).
   void finishBlockLayout(const QTextBlock &p_block, const QVector<Marker> &p_markers,
                          const QVector<ImagePaintData> &p_images,
-                         const QVector<WidgetPaintData> &p_widgets);
+                         const QVector<WidgetPaintData> &p_widgets,
+                         const QVector<Marker> &p_widgetMarkers);
 
   void updateDocumentSize();
 

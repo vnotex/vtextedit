@@ -1166,6 +1166,160 @@ void TestMarkdownFolding::testWidgetPreviewInlineBand() {
   QCOMPARE(layout->widgetPreviewRect(4).left(), line.cursorToX(6));
 }
 
+void TestMarkdownFolding::testWidgetPreviewBlockMarker() {
+  QTextDocument doc(generateLines(4));
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  layout->setPreviewEnabled(true);
+
+  const QTextBlock block = doc.findBlockByNumber(1);
+  QVERIFY(BlockLayoutData::get(block)->m_markers.isEmpty());
+
+  QVector<TextDocumentLayout::WidgetPreviewSpec> specs;
+  specs.append(makeSpec(11, block.position(), block.position() + block.length() - 1, 120, 40,
+                        PreviewPlacement::BlockAfterSource));
+  layout->setWidgetPreviews(specs);
+
+  // A block-placed widget only gets the vertical left-edge marker, exactly like
+  // a block-placed painted image.
+  auto info = BlockLayoutData::get(block);
+  QCOMPARE(info->m_markers.size(), 1);
+  const auto &mk = info->m_markers.first();
+  QCOMPARE(mk.m_start.x(), doc.documentMargin() - 1);
+  QCOMPARE(mk.m_end.x(), doc.documentMargin() - 1);
+  QCOMPARE(mk.m_start.y(), 0.0);
+  QCOMPARE(mk.m_end.y(), info->m_rect.height());
+
+  layout->setWidgetPreviews(QVector<TextDocumentLayout::WidgetPreviewSpec>());
+  QVERIFY(BlockLayoutData::get(block)->m_markers.isEmpty());
+}
+
+void TestMarkdownFolding::testWidgetPreviewInlineMarker() {
+  QTextDocument doc(QStringLiteral("alpha beta gamma delta\ntail"));
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  layout->setPreviewEnabled(true);
+
+  const QTextBlock block = doc.firstBlock();
+  const QTextBlock nextBlock = doc.findBlockByNumber(1);
+
+  // Baseline: geometry of the block before any band is reserved.
+  const qreal plainHeight = BlockLayoutData::get(block)->m_rect.height();
+  const qreal plainLineY = block.layout()->lineAt(0).y();
+
+  // A widget in a later block gives the downstream document geometry a witness.
+  QVector<TextDocumentLayout::WidgetPreviewSpec> specs;
+  specs.append(makeSpec(6, nextBlock.position(), nextBlock.position() + nextBlock.length() - 1, 50,
+                        20, PreviewPlacement::BlockAfterSource));
+  layout->setWidgetPreviews(specs);
+  const qreal downstreamTopBefore = layout->widgetPreviewRect(6).top();
+
+  specs.append(makeSpec(4, block.position() + 6, block.position() + 10, 40, 35,
+                        PreviewPlacement::InlineAboveLine));
+  layout->setWidgetPreviews(specs);
+
+  auto info = BlockLayoutData::get(block);
+  QCOMPARE(info->m_widgets.size(), 1);
+  const QRectF widgetRect = info->m_widgets.first().m_rect;
+
+  // c_widgetPreviewPadding == 2, c_markerThickness == 2. The band itself and
+  // its two paddings are the pre-change reservation; the markers add exactly
+  // c_markerThickness * 2 on top of it.
+  const qreal padding = 2;
+  const qreal markerThickness = 2;
+  const qreal bandReservation = padding + 35 + padding;
+  const qreal markerReservation = markerThickness * 2;
+
+  // The widget rect itself is untouched by the marker: it still sits directly
+  // under the padding that opens the band.
+  QVERIFY(realNear(widgetRect.top(), plainLineY + padding));
+  QCOMPARE(widgetRect.height(), 35.0);
+  QCOMPARE(info->m_rect.height(), plainHeight + bandReservation + markerReservation);
+
+  // One horizontal marker under the band plus the vertical left-edge one.
+  QCOMPARE(info->m_markers.size(), 2);
+  const auto &horizontal = info->m_markers.at(0);
+  const auto &vertical = info->m_markers.at(1);
+
+  QVERIFY(realNear(horizontal.m_start.x(), widgetRect.left()));
+  QVERIFY(realNear(horizontal.m_end.x(), widgetRect.right()));
+  QVERIFY(realNear(horizontal.m_start.y(), horizontal.m_end.y()));
+  QVERIFY(realNear(horizontal.m_start.y(), widgetRect.bottom() + padding + markerThickness));
+
+  QCOMPARE(vertical.m_start.x(), doc.documentMargin() - 1);
+  QCOMPARE(vertical.m_end.y(), info->m_rect.height());
+
+  // The text line moved down by the whole reservation, so the dashes never
+  // overlap the text.
+  const QTextLine line = block.layout()->lineAt(0);
+  QVERIFY(realNear(line.y(), plainLineY + bandReservation + markerReservation));
+  QVERIFY(realNear(line.y(), horizontal.m_start.y() + markerThickness));
+
+  // The measured inline width still matches the reserved band.
+  QVERIFY(realNear(layout->inlinePlacementWidth(block.position() + 6, block.position() + 10),
+                   widgetRect.width()));
+  QVERIFY(realNear(layout->widgetPreviewRect(4).width(), widgetRect.width()));
+
+  // And everything below the block shifted by exactly the same amount.
+  QVERIFY(realNear(layout->widgetPreviewRect(6).top(),
+                   downstreamTopBefore + bandReservation + markerReservation));
+}
+
+// A block-level painted image and an inline widget band can coexist: the widget
+// markers must not travel through the p_markers vector, which
+// finishBlockLayout() asserts to be empty in that case.
+void TestMarkdownFolding::testWidgetMarkerCoexistsWithBlockImage() {
+  QTextDocument doc(QStringLiteral("![img](a.png)\ntail"));
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+
+  const QTextBlock block = doc.firstBlock();
+  auto previewData = BlockPreviewData::get(block);
+  previewData->insert(new PreviewData(PreviewData::ImageLink, 1, 0, block.length() - 1, 0, false,
+                                      QStringLiteral("coexist-image"), QSize(80, 60), 0));
+  layout->setPreviewEnabled(true);
+  QCOMPARE(BlockLayoutData::get(block)->m_images.size(), 1);
+
+  QVector<TextDocumentLayout::WidgetPreviewSpec> specs;
+  specs.append(makeSpec(21, block.position() + 2, block.position() + 5, 30, 20,
+                        PreviewPlacement::InlineAboveLine));
+  layout->setWidgetPreviews(specs);
+
+  auto info = BlockLayoutData::get(block);
+  QCOMPARE(info->m_images.size(), 1);
+  QCOMPARE(info->m_widgets.size(), 1);
+  // The inline widget marker plus the vertical one.
+  QCOMPARE(info->m_markers.size(), 2);
+  QVERIFY(realNear(info->m_markers.at(0).m_start.y(), info->m_markers.at(0).m_end.y()));
+  QCOMPARE(info->m_markers.at(1).m_start.x(), doc.documentMargin() - 1);
+}
+
+void TestMarkdownFolding::testWidgetMarkerRemovedWhenPreviewDisabled() {
+  QTextDocument doc(QStringLiteral("alpha beta gamma delta"));
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  layout->setPreviewEnabled(true);
+
+  const QTextBlock block = doc.firstBlock();
+  const qreal plainHeight = BlockLayoutData::get(block)->m_rect.height();
+
+  QVector<TextDocumentLayout::WidgetPreviewSpec> specs;
+  specs.append(makeSpec(5, block.position() + 6, block.position() + 10, 40, 35,
+                        PreviewPlacement::InlineAboveLine));
+  layout->setWidgetPreviews(specs);
+  QCOMPARE(BlockLayoutData::get(block)->m_markers.size(), 2);
+
+  layout->setPreviewEnabled(false);
+  auto info = BlockLayoutData::get(block);
+  QVERIFY(info->m_markers.isEmpty());
+  QVERIFY(info->m_widgets.isEmpty());
+  QCOMPARE(info->m_rect.height(), plainHeight);
+}
+
 void TestMarkdownFolding::testClaimSuppressesStaticPreview() {
   QTextDocument doc(QStringLiteral("![img](a.png)\ntail"));
   DocumentResourceMgr resourceMgr;

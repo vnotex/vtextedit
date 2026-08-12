@@ -90,6 +90,14 @@ private slots:
 
   void testWidgetPreviewInlineBand();
 
+  void testWidgetPreviewBlockMarker();
+
+  void testWidgetPreviewInlineMarker();
+
+  void testWidgetMarkerCoexistsWithBlockImage();
+
+  void testWidgetMarkerRemovedWhenPreviewDisabled();
+
   void testClaimSuppressesStaticPreview();
 
   void testClaimIsTypeScoped();
