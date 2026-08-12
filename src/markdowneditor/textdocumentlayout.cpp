@@ -418,11 +418,19 @@ QRectF TextDocumentLayout::blockBoundingRect(const QTextBlock &p_block) const {
 
   auto info = BlockLayoutData::get(p_block);
   if (!info->hasOffset()) {
+    auto self = const_cast<TextDocumentLayout *>(this);
     if (info->isNull()) {
-      const_cast<TextDocumentLayout *>(this)->layoutBlockAndUpdateOffset(p_block);
+      self->layoutBlockAndUpdateOffset(p_block);
     } else {
-      const_cast<TextDocumentLayout *>(this)->updateOffset(p_block);
+      self->updateOffset(p_block);
     }
+
+    // Both repairs move the offsets of the following blocks, and this entry
+    // point is reached from painting and hit testing, which run no document
+    // size pass afterwards. Without republishing here, the reserved bands move
+    // with the text while the widgets stay behind and end up drawn on top of
+    // the source. The emitter is a no-op when nothing actually moved.
+    self->updateWidgetPreviewGeometry();
   }
 
   QRectF geo = info->m_rect.adjusted(0, info->m_offset, 0, info->m_offset);

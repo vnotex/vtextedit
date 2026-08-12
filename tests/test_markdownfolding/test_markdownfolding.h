@@ -98,6 +98,8 @@ private slots:
 
   void testWidgetMarkerRemovedWhenPreviewDisabled();
 
+  void testWidgetGeometryFollowsOffsetRepairFromPainting();
+
   void testClaimSuppressesStaticPreview();
 
   void testClaimIsTypeScoped();

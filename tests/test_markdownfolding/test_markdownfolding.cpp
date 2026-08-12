@@ -1320,6 +1320,46 @@ void TestMarkdownFolding::testWidgetMarkerRemovedWhenPreviewDisabled() {
   QCOMPARE(info->m_rect.height(), plainHeight);
 }
 
+// Painting and hit testing reach the layout through blockBoundingRect(), which
+// repairs a block that lost its layout and shifts every following offset. The
+// widget geometry has to be republished from there too, otherwise the previews
+// keep being drawn at their pre-repair position, on top of the source text.
+void TestMarkdownFolding::testWidgetGeometryFollowsOffsetRepairFromPainting() {
+  QTextDocument doc(generateLines(8));
+  DocumentResourceMgr resourceMgr;
+  auto *layout = new TextDocumentLayout(&doc, &resourceMgr);
+  doc.setDocumentLayout(layout);
+  layout->setPreviewEnabled(true);
+
+  const QTextBlock anchor = doc.findBlockByNumber(6);
+  QVector<TextDocumentLayout::WidgetPreviewSpec> specs;
+  specs.append(makeSpec(1, anchor.position(), anchor.position() + anchor.length() - 1, 80, 30,
+                        PreviewPlacement::BlockAfterSource));
+  layout->setWidgetPreviews(specs);
+
+  const QRectF before = layout->widgetPreviewRect(1);
+  QVERIFY(!before.isNull());
+
+  // Fold an earlier block and drop its layout, which is the state a fold
+  // followed by a repaint leaves behind. Nothing here goes through
+  // documentChanged(), so no document size pass runs.
+  QTextBlock hidden = doc.findBlockByNumber(2);
+  hidden.setVisible(false);
+  BlockLayoutData::get(hidden)->reset();
+
+  // The repaint asks for the bounding rect of that very block.
+  layout->blockBoundingRect(hidden);
+
+  auto info = BlockLayoutData::get(anchor);
+  QVERIFY(info->hasOffset());
+  QCOMPARE(info->m_widgets.size(), 1);
+
+  // The anchor really moved up, so this is not a vacuous comparison.
+  const QRectF expected = info->m_widgets.first().m_rect.translated(0, info->m_offset);
+  QVERIFY(expected.top() < before.top());
+  QCOMPARE(layout->widgetPreviewRect(1), expected);
+}
+
 void TestMarkdownFolding::testClaimSuppressesStaticPreview() {
   QTextDocument doc(QStringLiteral("![img](a.png)\ntail"));
   DocumentResourceMgr resourceMgr;
