@@ -1,6 +1,7 @@
 #ifndef TABLEPREVIEWWIDGET_H
 #define TABLEPREVIEWWIDGET_H
 
+#include <QMetaType>
 #include <QPointer>
 #include <QScopedPointer>
 #include <QSize>
@@ -58,8 +59,7 @@ public:
   // Returns an empty string when the table cannot be serialized safely.
   static QString serialize(const QVector<QVector<QString>> &p_cells,
                            const QVector<PreviewTableAlignment> &p_alignments,
-                           const QVector<QString> &p_rowPrefixes,
-                           const QString &p_delimiterPrefix);
+                           const QVector<QString> &p_rowPrefixes, const QString &p_delimiterPrefix);
 };
 
 // The rich text document behind one editable sheet: a QTextDocument holding a
@@ -602,5 +602,11 @@ private:
   QVector<QPointer<TablePreviewWidget>> m_widgets;
 };
 } // namespace vte
+
+// The enum travels through signals, so Qt 5 needs it registered explicitly to
+// store it in a QVariant (queued connections, QSignalSpy). Qt 6 registers
+// enumerations automatically, which is why the omission only broke the Qt 5
+// build.
+Q_DECLARE_METATYPE(vte::FocusEscapeDirection)
 
 #endif // TABLEPREVIEWWIDGET_H
