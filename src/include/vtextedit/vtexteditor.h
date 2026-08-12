@@ -68,6 +68,15 @@ public:
 
   TextFolding *getTextFolding() const;
 
+  // Fold the innermost foldable region containing the cursor line.
+  // Return whether the request is handled: false only when text folding is
+  // disabled, in which case the caller should fall back to default handling.
+  bool foldAtCursor();
+
+  // Unfold the outermost folded region containing the cursor line (one level).
+  // Same return semantics as foldAtCursor().
+  bool unfoldAtCursor();
+
   void triggerCompletion(bool p_reversed);
 
   bool isCompletionActive() const;

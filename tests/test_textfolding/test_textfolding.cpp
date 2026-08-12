@@ -697,4 +697,89 @@ void TestTextFolding::testFoldedLineSelectionSurvivesInPlaceReplacement()
     QCOMPARE(selection.cursor.blockNumber(), 0);
 }
 
+// The two queries backing the fold/unfold-at-cursor commands.
+void TestTextFolding::testDeepestFoldableRangeOnBlock()
+{
+    m_doc->setPlainText(utils::getCppText());
+
+    // Nested: outer [10, 30] contains inner [15, 25].
+    auto outerId = insertNewFoldingRange(10, 30, TextFolding::Persistent);
+    QVERIFY(outerId != TextFolding::InvalidRangeId);
+    auto innerId = insertNewFoldingRange(15, 25, TextFolding::Persistent);
+    QVERIFY(innerId != TextFolding::InvalidRangeId);
+
+    // Nothing folded: the deepest containing range wins.
+    QCOMPARE(m_textFolding->deepestFoldableRangeOnBlock(20), innerId);
+    // A block only inside the outer range.
+    QCOMPARE(m_textFolding->deepestFoldableRangeOnBlock(12), outerId);
+    // Outside of every range.
+    QCOMPARE(m_textFolding->deepestFoldableRangeOnBlock(5), (qint64)TextFolding::InvalidRangeId);
+
+    // Inner folded, outer not: the cursor sits on the inner range's still
+    // visible first block, and the outer range is what can still be folded.
+    QVERIFY(m_textFolding->foldRange(innerId));
+    QCOMPARE(m_textFolding->deepestFoldableRangeOnBlock(15), outerId);
+
+    // Outer folded too: nothing left to fold on that block.
+    QVERIFY(m_textFolding->foldRange(outerId));
+    QCOMPARE(m_textFolding->deepestFoldableRangeOnBlock(15), (qint64)TextFolding::InvalidRangeId);
+}
+
+void TestTextFolding::testOutermostFoldedRangeOnBlock()
+{
+    m_doc->setPlainText(utils::getCppText());
+
+    auto outerId = insertNewFoldingRange(10, 30, TextFolding::Persistent);
+    QVERIFY(outerId != TextFolding::InvalidRangeId);
+    auto innerId = insertNewFoldingRange(15, 25, TextFolding::Persistent);
+    QVERIFY(innerId != TextFolding::InvalidRangeId);
+
+    // Nothing folded.
+    QCOMPARE(m_textFolding->outermostFoldedRangeOnBlock(20),
+             (qint64)TextFolding::InvalidRangeId);
+    QCOMPARE(m_textFolding->outermostFoldedRangeOnBlock(5),
+             (qint64)TextFolding::InvalidRangeId);
+
+    // Only the inner one is folded.
+    QVERIFY(m_textFolding->foldRange(innerId));
+    QCOMPARE(m_textFolding->outermostFoldedRangeOnBlock(15), innerId);
+    QCOMPARE(m_textFolding->outermostFoldedRangeOnBlock(12),
+             (qint64)TextFolding::InvalidRangeId);
+
+    // Both folded: the outermost one is reported, which is the one a single
+    // unfold command has to open.
+    QVERIFY(m_textFolding->foldRange(outerId));
+    QCOMPARE(m_textFolding->outermostFoldedRangeOnBlock(15), outerId);
+}
+
+// Disabling must be checked *before* creating the ranges: setEnabled(false)
+// calls clear(), so disabling afterwards would pass even without the m_enabled
+// guard. newFoldingRange() itself has no enabled guard.
+void TestTextFolding::testFoldQueriesWhenDisabled()
+{
+    m_doc->setPlainText(utils::getCppText());
+
+    m_textFolding->setEnabled(false);
+
+    // An unfolded range and a folded one, so that each query is answered by its
+    // m_enabled guard rather than by the ranges' state: without the guard the
+    // unfolded range would be reported by deepestFoldableRangeOnBlock() and the
+    // folded one by outermostFoldedRangeOnBlock().
+    auto unfoldedId = insertNewFoldingRange(10, 30, TextFolding::Persistent);
+    QVERIFY(unfoldedId != TextFolding::InvalidRangeId);
+    auto foldedId = insertNewFoldingRange(40, 60, TextFolding::Persistent | TextFolding::Folded);
+    QVERIFY(foldedId != TextFolding::InvalidRangeId);
+
+    QCOMPARE(m_textFolding->deepestFoldableRangeOnBlock(20),
+             (qint64)TextFolding::InvalidRangeId);
+    QCOMPARE(m_textFolding->outermostFoldedRangeOnBlock(20),
+             (qint64)TextFolding::InvalidRangeId);
+    QCOMPARE(m_textFolding->deepestFoldableRangeOnBlock(50),
+             (qint64)TextFolding::InvalidRangeId);
+    QCOMPARE(m_textFolding->outermostFoldedRangeOnBlock(50),
+             (qint64)TextFolding::InvalidRangeId);
+
+    m_textFolding->setEnabled(true);
+}
+
 QTEST_MAIN(tests::TestTextFolding)

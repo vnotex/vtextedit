@@ -467,6 +467,67 @@ TextFolding::leafFoldingRangeOnBlock(const TextFolding::FoldingRange::Vector &p_
   return nullptr;
 }
 
+void TextFolding::foldingRangeChainOnBlock(const TextFolding::FoldingRange::Vector &p_ranges,
+                                           int p_blockNumber, FoldingRange::Vector &p_chain) const {
+  if (p_ranges.isEmpty()) {
+    return;
+  }
+
+  auto lowerBound = std::lower_bound(p_ranges.begin(), p_ranges.end(), p_blockNumber,
+                                     compareRangeByStartBeforeBlock);
+
+  auto upperBound = std::upper_bound(p_ranges.begin(), p_ranges.end(), p_blockNumber,
+                                     compareRangeByStartAfterBlock);
+
+  if (lowerBound != p_ranges.begin() && (*(lowerBound - 1))->last() >= p_blockNumber) {
+    --lowerBound;
+  }
+
+  for (auto it = lowerBound; it != upperBound; ++it) {
+    if ((*it)->contains(p_blockNumber)) {
+      p_chain.push_back(*it);
+      foldingRangeChainOnBlock((*it)->m_nestedRanges, p_blockNumber, p_chain);
+      return;
+    }
+  }
+}
+
+qint64 TextFolding::deepestFoldableRangeOnBlock(int p_blockNumber) const {
+  if (!m_enabled) {
+    return InvalidRangeId;
+  }
+
+  FoldingRange::Vector chain;
+  foldingRangeChainOnBlock(m_foldingRanges, p_blockNumber, chain);
+
+  qint64 id = InvalidRangeId;
+  for (auto range : qAsConst(chain)) {
+    if (range->isFolded()) {
+      break;
+    }
+    id = range->m_id;
+  }
+
+  return id;
+}
+
+qint64 TextFolding::outermostFoldedRangeOnBlock(int p_blockNumber) const {
+  if (!m_enabled) {
+    return InvalidRangeId;
+  }
+
+  FoldingRange::Vector chain;
+  foldingRangeChainOnBlock(m_foldingRanges, p_blockNumber, chain);
+
+  for (auto range : qAsConst(chain)) {
+    if (range->isFolded()) {
+      return range->m_id;
+    }
+  }
+
+  return InvalidRangeId;
+}
+
 bool TextFolding::toggleRange(qint64 p_id) {
   auto range = m_idToFoldingRange.value(p_id);
   if (!range) {

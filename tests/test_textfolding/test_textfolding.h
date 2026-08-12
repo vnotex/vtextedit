@@ -32,6 +32,12 @@ namespace tests
 
         void testFoldedLineSelectionSurvivesInPlaceReplacement();
 
+        void testDeepestFoldableRangeOnBlock();
+
+        void testOutermostFoldedRangeOnBlock();
+
+        void testFoldQueriesWhenDisabled();
+
         void cleanupTestCase();
 
         // Will be executed before any test function.

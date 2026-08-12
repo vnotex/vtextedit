@@ -94,6 +94,16 @@ bool VscodeInputMode::handleKeyPress(QKeyEvent *p_event) {
       deleteCurrentLine();
       return true;
 
+    case Qt::Key_BraceLeft:
+      Q_FALLTHROUGH();
+    case Qt::Key_BracketLeft:
+      return m_interface->foldAtCursor();
+
+    case Qt::Key_BraceRight:
+      Q_FALLTHROUGH();
+    case Qt::Key_BracketRight:
+      return m_interface->unfoldAtCursor();
+
     default:
       break;
     }

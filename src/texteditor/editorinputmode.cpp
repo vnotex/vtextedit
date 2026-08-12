@@ -829,3 +829,7 @@ void EditorInputMode::scrollDown() {
     vbar->triggerAction(QAbstractSlider::SliderSingleStepSub);
   }
 }
+
+bool EditorInputMode::foldAtCursor() { return m_editor->foldAtCursor(); }
+
+bool EditorInputMode::unfoldAtCursor() { return m_editor->unfoldAtCursor(); }

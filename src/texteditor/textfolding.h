@@ -69,6 +69,15 @@ public:
 
   QSharedPointer<QPair<qint64, TextBlockRange>> leafFoldingRangeOnBlock(int p_blockNumber) const;
 
+  // Deepest unfolded range containing @p_blockNumber that has no folded
+  // ancestor. Walks the containing chain outermost-first and stops at the first
+  // folded range. InvalidRangeId when the chain is empty or its outermost range
+  // is already folded.
+  qint64 deepestFoldableRangeOnBlock(int p_blockNumber) const;
+
+  // Outermost folded range containing @p_blockNumber, or InvalidRangeId.
+  qint64 outermostFoldedRangeOnBlock(int p_blockNumber) const;
+
   bool toggleRange(qint64 p_id);
 
   bool removeFoldingRange(qint64 p_id);
@@ -157,6 +166,11 @@ private:
   QSharedPointer<QPair<qint64, TextBlockRange>>
   leafFoldingRangeOnBlock(const TextFolding::FoldingRange::Vector &p_ranges,
                           int p_blockNumber) const;
+
+  // Append every range in @p_ranges (recursively) containing @p_blockNumber to
+  // @p_chain, outermost first.
+  void foldingRangeChainOnBlock(const TextFolding::FoldingRange::Vector &p_ranges,
+                                int p_blockNumber, FoldingRange::Vector &p_chain) const;
 
   void markDocumentContentsDirty(int p_position = 0, int p_length = INT_MAX) const;
 

@@ -28,6 +28,13 @@ public:
   virtual void scrollUp() = 0;
 
   virtual void scrollDown() = 0;
+
+  // Fold/unfold at the cursor line.
+  // Return whether the request is handled: false only when text folding is
+  // disabled, in which case the key event should fall through.
+  virtual bool foldAtCursor() = 0;
+
+  virtual bool unfoldAtCursor() = 0;
 };
 } // namespace vte
 

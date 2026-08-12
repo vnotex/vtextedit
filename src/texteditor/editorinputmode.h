@@ -31,6 +31,10 @@ public:
 
   void scrollDown() Q_DECL_OVERRIDE;
 
+  bool foldAtCursor() Q_DECL_OVERRIDE;
+
+  bool unfoldAtCursor() Q_DECL_OVERRIDE;
+
   void setSelection(int p_startLine, int p_startColumn, int p_endLine,
                     int p_endColumn) Q_DECL_OVERRIDE;
 

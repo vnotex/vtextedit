@@ -42,6 +42,10 @@
 
 using namespace vte;
 
+// Maximum number of lines to search backwards for a syntax folding range
+// containing the cursor line. Mirrors the constant used by IndicatorsBorder.
+static const int c_maxNumberOfLinesToSearchBackwardsForSyntaxFolding = 1024;
+
 int VTextEditor::s_instanceCount = 0;
 
 Completer *VTextEditor::s_completer = nullptr;
@@ -656,6 +660,79 @@ VTextEditor::fetchSyntaxFoldingRangeStartingOnBlock(int p_blockNumber) {
 }
 
 TextFolding *VTextEditor::getTextFolding() const { return m_folding; }
+
+bool VTextEditor::foldAtCursor() {
+  if (!m_folding || !m_folding->isEnabled()) {
+    return false;
+  }
+
+  const int blockNum = m_textEdit->textCursor().block().blockNumber();
+
+  qint64 foldedId = m_folding->deepestFoldableRangeOnBlock(blockNum);
+  if (foldedId != TextFolding::InvalidRangeId) {
+    m_folding->foldRange(foldedId);
+  } else if (m_folding->outermostFoldedRangeOnBlock(blockNum) != TextFolding::InvalidRangeId) {
+    // The cursor line is already inside a fold.
+    return true;
+  } else {
+    // Fall back to syntax foldings: search backwards for the first folding
+    // range containing the cursor line.
+    const int searchEndBlockNum =
+        qMax(0, blockNum - c_maxNumberOfLinesToSearchBackwardsForSyntaxFolding);
+    QSharedPointer<TextBlockRange> syntaxRange;
+    for (int num = blockNum; num >= searchEndBlockNum; --num) {
+      auto range = fetchSyntaxFoldingRangeStartingOnBlock(num);
+      if (range && range->isValid() && range->contains(blockNum)) {
+        syntaxRange = range;
+        break;
+      }
+    }
+
+    if (!syntaxRange) {
+      return true;
+    }
+
+    foldedId = m_folding->newFoldingRange(*syntaxRange, TextFolding::Folded);
+    if (foldedId == TextFolding::InvalidRangeId) {
+      qWarning() << "failed to create a folding range based on syntax" << syntaxRange->toString();
+      return true;
+    }
+  }
+
+  // Relocate the cursor if its block became invisible. Folding hides only the
+  // strict interior, so the range's first block is still visible.
+  auto cursor = m_textEdit->textCursor();
+  if (!cursor.block().isVisible()) {
+    int firstBlockNum = -1;
+    if (m_folding->foldingRangeBlocks(foldedId, &firstBlockNum, nullptr)) {
+      auto firstBlock = document()->findBlockByNumber(firstBlockNum);
+      if (firstBlock.isValid()) {
+        const int column = qMin(cursor.positionInBlock(), firstBlock.length() - 1);
+        cursor.setPosition(firstBlock.position() + column);
+        m_textEdit->setTextCursor(cursor);
+      }
+    }
+  }
+
+  m_textEdit->ensureCursorVisible();
+  return true;
+}
+
+bool VTextEditor::unfoldAtCursor() {
+  if (!m_folding || !m_folding->isEnabled()) {
+    return false;
+  }
+
+  const int blockNum = m_textEdit->textCursor().block().blockNumber();
+  const qint64 id = m_folding->outermostFoldedRangeOnBlock(blockNum);
+  if (id == TextFolding::InvalidRangeId) {
+    return true;
+  }
+
+  m_folding->toggleRange(id);
+  m_textEdit->ensureCursorVisible();
+  return true;
+}
 
 bool VTextEditor::isReadOnly() const { return m_textEdit->isReadOnly(); }
 
