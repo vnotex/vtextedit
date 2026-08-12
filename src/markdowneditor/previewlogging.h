@@ -44,6 +44,17 @@ Q_DECLARE_LOGGING_CATEGORY(previewReplaceLog)
 // and measurement.
 Q_DECLARE_LOGGING_CATEGORY(previewTableLog)
 
+// Two more categories live in textdocumentlayout.cpp, which is compiled on its
+// own by the layout tests and so cannot link this unit:
+//
+//   vte.layout.repair     blocks which lost their layout offset
+//   vte.layout.geometry   reserved bands, block offsets and published rects
+//
+// A preview drawn on top of the markdown source is the two sides of
+// vte.preview.layout and vte.layout.geometry disagreeing, so enable both:
+//
+//   QT_LOGGING_RULES="vte.preview.layout=true;vte.layout.geometry=true"
+
 // Readable element type for the logs, so a trace never prints a bare enum
 // value the reader has to look up.
 inline const char *previewTypeName(PreviewElementType p_type) {

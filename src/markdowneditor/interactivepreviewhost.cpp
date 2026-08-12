@@ -1832,6 +1832,8 @@ void InteractivePreviewHost::syncWidgetGeometry() {
     // fallback has to still run once the pass it is nested in has unwound,
     // otherwise no geometry would be applied for this publication at all.
     m_geometrySyncPending = true;
+    qCDebug(previewLayoutLog) << "geometry sync deferred, layout busy" << m_layout->isBusy()
+                              << "block depth" << m_blockDepth;
     scheduleOwedWork();
     return;
   }
@@ -1858,6 +1860,9 @@ void InteractivePreviewHost::syncWidgetGeometryImpl() {
 
   const qreal availableWidth = m_layout->availableContentWidth();
   applyReadOnly();
+
+  qCDebug(previewLayoutLog) << "syncing" << m_items.size() << "item(s), available width"
+                            << availableWidth << "enabled" << m_enabled;
 
   for (auto it = m_items.begin(); it != m_items.end(); ++it) {
     auto &item = it.value();
@@ -1890,8 +1895,23 @@ void InteractivePreviewHost::syncWidgetGeometryImpl() {
         }
 
         item.m_context->setGeometryContext(item.m_sourceTextRect, available, vp->size(), docRect);
+
+        // The band is reserved outside the source text, so any real overlap
+        // means the published rect and the block offsets disagree - which is
+        // exactly what "the preview is painted on top of the markdown" looks
+        // like. Reported unconditionally because it is never expected.
+        const QRectF overlap = item.m_sourceTextRect.intersected(docRect);
+        if (overlap.width() > 1 && overlap.height() > 1) {
+          qCWarning(previewLayoutLog)
+              << "preview" << item.m_id << previewTypeName(item.m_preview->type())
+              << "overlaps its own source text by" << overlap << ": widget at" << docRect
+              << "source at" << item.m_sourceTextRect;
+        }
       }
     }
+
+    qCDebug(previewLayoutLog) << "  synced item" << item.m_id << "doc rect" << item.m_documentRect
+                              << "source rect" << item.m_sourceTextRect;
   }
 
   applyScrollOffsetImpl();
@@ -1900,6 +1920,8 @@ void InteractivePreviewHost::syncWidgetGeometryImpl() {
 void InteractivePreviewHost::applyScrollOffset() {
   if (isBlocked()) {
     m_scrollApplyPending = true;
+    qCDebug(previewLayoutLog) << "scroll apply deferred, layout busy" << m_layout->isBusy()
+                              << "block depth" << m_blockDepth;
     scheduleOwedWork();
     return;
   }
@@ -1944,6 +1966,10 @@ void InteractivePreviewHost::applyScrollOffsetImpl() {
 
     const QRect targetRect = item.m_documentRect.translated(-hScroll, -vScroll).toAlignedRect();
     item.m_widget->setGeometry(targetRect);
+
+    qCDebug(previewLayoutLog) << "  placed item" << item.m_id << "doc" << item.m_documentRect
+                              << "scroll" << hScroll << vScroll << "-> viewport" << targetRect
+                              << (targetRect.intersects(viewportRect) ? "visible" : "off-screen");
 
     if (targetRect.intersects(viewportRect)) {
       item.m_widget->show();

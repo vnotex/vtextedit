@@ -27,6 +27,13 @@ namespace {
 // QtWarningMsg for the same reason the preview categories use it: an embedding
 // application must not get a trace it never asked for.
 Q_LOGGING_CATEGORY(layoutRepairLog, "vte.layout.repair", QtWarningMsg)
+
+// Where the interactive preview bands end up: the reservation inside the block,
+// the block offset it is anchored to, and the document rects published from the
+// two together. Same translation-unit-local reasoning as above.
+//
+//   QT_LOGGING_RULES="vte.layout.geometry=true"
+Q_LOGGING_CATEGORY(layoutGeometryLog, "vte.layout.geometry", QtWarningMsg)
 } // namespace
 
 const int TextDocumentLayout::c_markerThickness = 2;
@@ -419,11 +426,16 @@ QRectF TextDocumentLayout::blockBoundingRect(const QTextBlock &p_block) const {
   auto info = BlockLayoutData::get(p_block);
   if (!info->hasOffset()) {
     auto self = const_cast<TextDocumentLayout *>(this);
-    if (info->isNull()) {
+    const bool wasNull = info->isNull();
+    if (wasNull) {
       self->layoutBlockAndUpdateOffset(p_block);
     } else {
       self->updateOffset(p_block);
     }
+
+    qCDebug(layoutGeometryLog) << "lazy repair of block" << p_block.blockNumber()
+                               << (wasNull ? "(relayout)" : "(offset only)") << "-> offset"
+                               << info->m_offset << "height" << info->m_rect.height();
 
     // Both repairs move the offsets of the following blocks, and this entry
     // point is reached from painting and hit testing, which run no document
@@ -1740,11 +1752,18 @@ void TextDocumentLayout::updateWidgetPreviewGeometry() {
          ++it) {
       QTextBlock block = doc->findBlockByNumber(it.key());
       if (!block.isValid() || !block.isVisible()) {
+        qCDebug(layoutGeometryLog)
+            << "  block" << it.key() << "holds a reservation but is"
+            << (block.isValid() ? "folded" : "gone") << "- its widgets are unpublished";
         continue;
       }
 
       auto info = BlockLayoutData::get(block);
       if (!info->hasOffset() || info->m_widgets.isEmpty()) {
+        qCDebug(layoutGeometryLog)
+            << "  block" << it.key() << "holds a reservation but has"
+            << (info->hasOffset() ? "no reserved band" : "no offset")
+            << "- its widgets are unpublished";
         continue;
       }
 
@@ -1752,13 +1771,38 @@ void TextDocumentLayout::updateWidgetPreviewGeometry() {
         // The rects are already in block coordinates (the left margin is baked
         // into them, like the line positions), so only the vertical block
         // offset is applied here.
-        geometry.insert(widget.m_id, widget.m_rect.translated(0, info->m_offset));
+        const QRectF docRect = widget.m_rect.translated(0, info->m_offset);
+        geometry.insert(widget.m_id, docRect);
+
+        qCDebug(layoutGeometryLog)
+            << "  widget" << widget.m_id << "block" << it.key() << "offset" << info->m_offset
+            << "blockHeight" << info->m_rect.height() << "band" << widget.m_rect << "->" << docRect;
       }
     }
   }
 
   if (geometry == m_widgetPreviewGeometry) {
+    qCDebug(layoutGeometryLog) << "widget geometry unchanged," << geometry.size() << "entry(ies)";
     return;
+  }
+
+  if (layoutGeometryLog().isDebugEnabled()) {
+    for (auto it = geometry.constBegin(); it != geometry.constEnd(); ++it) {
+      const auto oldIt = m_widgetPreviewGeometry.constFind(it.key());
+      if (oldIt == m_widgetPreviewGeometry.constEnd()) {
+        qCDebug(layoutGeometryLog) << "widget" << it.key() << "appeared at" << it.value();
+      } else if (oldIt.value() != it.value()) {
+        qCDebug(layoutGeometryLog)
+            << "widget" << it.key() << "moved" << oldIt.value() << "->" << it.value();
+      }
+    }
+
+    for (auto it = m_widgetPreviewGeometry.constBegin(); it != m_widgetPreviewGeometry.constEnd();
+         ++it) {
+      if (!geometry.contains(it.key())) {
+        qCDebug(layoutGeometryLog) << "widget" << it.key() << "disappeared from" << it.value();
+      }
+    }
   }
 
   m_widgetPreviewGeometry = geometry;
