@@ -10,10 +10,12 @@ set(SRC_FOLDER ../../src)
 
 add_executable(test_utils
     ${SRC_FOLDER}/include/vtextedit/lrucache.h
+    ${SRC_FOLDER}/textedit/scrollbar.cpp ${SRC_FOLDER}/textedit/scrollbar.h
     test_utils.cpp test_utils.h
 )
 target_include_directories(test_utils PRIVATE
     ${SRC_FOLDER}/include
+    ${SRC_FOLDER}/textedit
 )
 
 target_compile_definitions(test_utils PRIVATE

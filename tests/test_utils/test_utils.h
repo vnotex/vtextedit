@@ -12,6 +12,11 @@ namespace tests
         // LruCache Tests.
         void testLruCache();
 
+        // ScrollBar Tests.
+        void testScrollBarExtendsTheMaximum();
+
+        void testScrollBarKeepsExtendingAfterANoOpExtension();
+
     };
 } // ns tests
 

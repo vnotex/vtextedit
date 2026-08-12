@@ -15,7 +15,13 @@ public:
 private:
   void init();
 
-  bool m_skipNextRangeChange = false;
+  // Whether the extension below is the one currently changing the range, so
+  // the handler does not recurse into itself. Held for the duration of that
+  // call rather than armed for "the next" signal: the extension can work out
+  // to the maximum the bar already has, in which case setMaximum() emits
+  // nothing at all and an armed flag would go on to swallow the next genuine
+  // range change instead.
+  bool m_adjustingRange = false;
 };
 } // namespace vte
 

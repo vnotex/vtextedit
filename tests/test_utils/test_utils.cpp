@@ -2,6 +2,8 @@
 
 #include <vtextedit/lrucache.h>
 
+#include "scrollbar.h"
+
 using namespace tests;
 
 void TestUtils::testLruCache()
@@ -46,6 +48,42 @@ void TestUtils::testLruCache()
 
     cache.set(6, "h");
     QCOMPARE(cache.get(6), "h");
+}
+
+// The bar answers a range change by extending its maximum, so the bottom of
+// the content can still be scrolled up.
+void TestUtils::testScrollBarExtendsTheMaximum()
+{
+    vte::ScrollBar bar(Qt::Vertical, nullptr);
+    bar.setSingleStep(10);
+    bar.setPageStep(100);
+
+    bar.setRange(0, 500);
+    QCOMPARE(bar.maximum(), 500 + 100 - 10 * 3);
+
+    // A second range change is extended just the same, from the new raw range
+    // rather than on top of the previous extension.
+    bar.setRange(0, 300);
+    QCOMPARE(bar.maximum(), 300 + 100 - 10 * 3);
+}
+
+// The extension can work out to the maximum the bar already has, in which case
+// setMaximum() emits nothing. The recursion guard must not be left armed by
+// that, or it swallows the next genuine range change instead.
+void TestUtils::testScrollBarKeepsExtendingAfterANoOpExtension()
+{
+    vte::ScrollBar bar(Qt::Vertical, nullptr);
+    // pageStep == singleStep * 3, so the extension adds nothing at all.
+    bar.setSingleStep(10);
+    bar.setPageStep(30);
+
+    bar.setRange(0, 500);
+    QCOMPARE(bar.maximum(), 500);
+
+    // The next range change is a real one and must still be extended.
+    bar.setPageStep(100);
+    bar.setRange(0, 400);
+    QCOMPARE(bar.maximum(), 400 + 100 - 10 * 3);
 }
 
 QTEST_MAIN(tests::TestUtils)
