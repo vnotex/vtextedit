@@ -1,0 +1,94 @@
+name: CI-Windows
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        description: 'Run with tmate debugging enabled'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and test (Windows, Qt 6)
+    runs-on: windows-2022
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: recursive
+
+      # qt5compat is the only add-on module needed (Core5Compat is linked
+      # unconditionally for Qt > 5 in src/CMakeLists.txt). Do NOT add qtsvg or
+      # qtdeclarative here: they are part of the base desktop archive and aqt
+      # fails the whole install step when they are passed as `modules`.
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.10.3'
+          target: 'desktop'
+          arch: 'win64_msvc2022_64'
+          modules: 'qt5compat'
+          cache: 'true'
+
+      # vcvars64 does not persist across steps, so every cmd step that needs the
+      # MSVC toolchain must resolve and `call` it again. vswhere is used instead
+      # of a hard-coded path so the job is not tied to one VS edition or image.
+      - name: Configure and build
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat"
+          if not defined VSINSTALLDIR echo Failed to initialize the MSVC environment & exit /b 1
+          cmake -S "%GITHUB_WORKSPACE%" -B "%RUNNER_WORKSPACE%\build" -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
+          if errorlevel 1 exit /b 1
+          cmake --build "%RUNNER_WORKSPACE%\build"
+          if errorlevel 1 exit /b 1
+
+      # Guards against a silently-dropped add_subdirectory producing a vacuously
+      # green run. Keep this count in sync with tests/CMakeLists.txt.
+      # NOTE: this proves executable *registration* only; it cannot detect a
+      # QSKIP inside an otherwise passing test executable.
+      - name: Verify registered test count
+        shell: pwsh
+        run: |
+          $listing = & ctest --test-dir "$env:RUNNER_WORKSPACE\build" -N
+          if ($LASTEXITCODE -ne 0) { throw "ctest -N failed with exit code $LASTEXITCODE" }
+          $listing | ForEach-Object { Write-Host $_ }
+          $total = $listing | Select-String '^Total Tests: (\d+)$'
+          if (-not $total -or [int]$total.Matches[0].Groups[1].Value -ne 11) {
+            throw "Expected exactly 11 registered tests"
+          }
+
+      # Ninja is single-config, so no -C Release. Uses the default `windows` QPA
+      # platform: the runner has a desktop session, which is more faithful for
+      # the exposure/focus-sensitive tests.
+      - name: Run tests
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat"
+          if not defined VSINSTALLDIR echo Failed to initialize the MSVC environment & exit /b 1
+          ctest --test-dir "%RUNNER_WORKSPACE%\build" --output-on-failure --no-tests=error
+          if errorlevel 1 exit /b 1
+
+      - name: Re-run failed tests verbosely (diagnostics)
+        if: failure()
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat"
+          ctest --test-dir "%RUNNER_WORKSPACE%\build" --rerun-failed --extra-verbose
+          exit /b 0
+
+      - name: Setup tmate session
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+        uses: mxschmitt/action-tmate@v3

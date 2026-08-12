@@ -1,0 +1,82 @@
+name: CI-Linux
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        description: 'Run with tmate debugging enabled'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and test (Ubuntu, Qt 6)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: recursive
+
+      # qt5compat is the only add-on module needed (Core5Compat is linked
+      # unconditionally for Qt > 5 in src/CMakeLists.txt). Do NOT add qtsvg or
+      # qtdeclarative here: they are part of the base desktop archive and aqt
+      # fails the whole install step when they are passed as `modules`.
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.10.3'
+          target: 'desktop'
+          modules: 'qt5compat'
+          cache: 'true'
+
+      - name: Configure and build
+        run: |
+          cmake -S "$GITHUB_WORKSPACE" -B "${{runner.workspace}}/build" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "${{runner.workspace}}/build" --parallel
+
+      # Guards against a silently-dropped add_subdirectory producing a vacuously
+      # green run. Keep this count in sync with tests/CMakeLists.txt.
+      # NOTE: this proves executable *registration* only; it cannot detect a
+      # QSKIP inside an otherwise passing test executable.
+      - name: Verify registered test count
+        run: |
+          listing="$(ctest --test-dir "${{runner.workspace}}/build" -N)"
+          printf '%s\n' "$listing"
+          count="$(printf '%s\n' "$listing" | sed -n 's/^Total Tests: //p')"
+          if [ "$count" != "11" ]; then
+            echo "Expected 11 registered tests, found ${count:-unknown}" >&2
+            exit 1
+          fi
+
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+          LC_ALL: C.UTF-8
+          LANG: C.UTF-8
+        run: |
+          ctest --test-dir "${{runner.workspace}}/build" --output-on-failure --no-tests=error
+
+      - name: Re-run failed tests verbosely (diagnostics)
+        if: failure()
+        env:
+          QT_QPA_PLATFORM: offscreen
+          LC_ALL: C.UTF-8
+          LANG: C.UTF-8
+        run: |
+          ctest --test-dir "${{runner.workspace}}/build" --rerun-failed --extra-verbose || true
+
+      - name: Setup tmate session
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+        uses: mxschmitt/action-tmate@v3
