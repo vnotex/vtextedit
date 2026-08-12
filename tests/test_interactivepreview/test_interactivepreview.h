@@ -284,6 +284,14 @@ private slots:
   void testDocumentEditStillScrollsWhenTheEditorHasFocus();
   void testEscapeFromASheetDoesNotScrollTheEditor();
 
+  // The cursor line follows a preview widget which takes the focus.
+  void testFocusingASheetMovesTheCursorLine();
+  void testFocusingASheetDoesNotScrollTheViewport();
+  void testFocusingASheetKeepsACaretAlreadyInTheSource();
+  void testCursorLineSyncIsDeferredDuringWidgetCallback();
+  void testFocusingASheetWithAHiddenFirstBlockKeepsTheCaret();
+  void testFocusingASheetOnlyMovesItsOwnEditorsCursor();
+
   // A document mutation requested from inside a layout pass or a geometry
   // application.
   void testDeferredCommitDuringLayoutDrivenHide();

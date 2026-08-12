@@ -3739,6 +3739,228 @@ void TestInteractivePreview::testEscapeFromASheetDoesNotScrollTheEditor() {
 }
 
 // ---------------------------------------------------------------------------
+// The cursor line follows a preview widget which takes the focus
+// ---------------------------------------------------------------------------
+
+namespace {
+// Settle the host's owed-work drain, which is where the cursor move runs.
+void settleCursorLineSync() {
+  QTest::qWait(30);
+  QCoreApplication::processEvents();
+  QCoreApplication::processEvents();
+}
+} // namespace
+
+// The point of the feature: the caret, and with it the cursor-line highlight
+// and the gutter's current line, land on the first block of the focused
+// preview's source.
+void TestInteractivePreview::testFocusingASheetMovesTheCursorLine() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 300);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor, tableAboveFiller());
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+
+  auto textEdit = editor.getTextEdit();
+  putEditorCaretInBlock(editor, 20);
+  QCOMPARE(textEdit->textCursor().blockNumber(), 20);
+
+  sheet->setFocus();
+  QVERIFY2(sheet->hasFocus(), "the sheet did not take the focus");
+
+  QTRY_COMPARE(textEdit->textCursor().blockNumber(), 0);
+  QVERIFY2(!textEdit->textCursor().hasSelection(), "the sync selected text");
+  QVERIFY2(sheet->hasFocus(), "the cursor move stole the focus from the sheet");
+}
+
+// The caret move must not scroll: the viewport shifting would hide the sheet,
+// which drops its focus and triggers a write-back of whatever it holds.
+void TestInteractivePreview::testFocusingASheetDoesNotScrollTheViewport() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 300);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor, tableAboveFiller());
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+
+  auto textEdit = editor.getTextEdit();
+  auto vbar = textEdit->verticalScrollBar();
+  auto hbar = textEdit->horizontalScrollBar();
+  QVERIFY(vbar->maximum() > vbar->minimum());
+
+  // Scroll until the sheet sits at the top of the viewport, so the source
+  // rendered above it is off screen while the sheet itself is still there.
+  QVERIFY2(widget->y() > 0, "the sheet is already at the top of the viewport");
+  vbar->setValue(qMin(vbar->maximum(), vbar->value() + widget->y()));
+  QCoreApplication::processEvents();
+  QTRY_VERIFY2(sheet->isVisible(), "the sheet is not on screen at this scroll position");
+
+  putEditorCaretInBlock(editor, 20);
+  const int vvalue = vbar->value();
+  const int hvalue = hbar->value();
+  const QString before = editor.document()->toPlainText();
+
+  QSignalSpy vspy(vbar, &QScrollBar::valueChanged);
+  QSignalSpy hspy(hbar, &QScrollBar::valueChanged);
+
+  sheet->setFocus();
+  QVERIFY2(sheet->hasFocus(), "the sheet did not take the focus");
+
+  QTRY_COMPARE(textEdit->textCursor().blockNumber(), 0);
+  settleCursorLineSync();
+
+  QCOMPARE(vspy.count(), 0);
+  QCOMPARE(hspy.count(), 0);
+  QCOMPARE(vbar->value(), vvalue);
+  QCOMPARE(hbar->value(), hvalue);
+  QVERIFY2(sheet->hasFocus(), "the sync dropped the focus out of the sheet");
+  QCOMPARE(editor.document()->toPlainText(), before);
+}
+
+// A caret the user deliberately parked inside the source is left alone, which
+// is what keeps FocusEscapeDirection::Keep and a focus return stable.
+void TestInteractivePreview::testFocusingASheetKeepsACaretAlreadyInTheSource() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 300);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor, tableAboveFiller());
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+
+  auto textEdit = editor.getTextEdit();
+  // The last row of the table's source, i.e. inside the range but not its
+  // first block. An interior block may be folded away, and a folded block is
+  // not a place a caret can be parked.
+  putEditorCaretInBlock(editor, 2);
+  QCOMPARE(textEdit->textCursor().blockNumber(), 2);
+  const int position = textEdit->textCursor().position();
+
+  sheet->setFocus();
+  QVERIFY2(sheet->hasFocus(), "the sheet did not take the focus");
+  settleCursorLineSync();
+
+  QCOMPARE(textEdit->textCursor().blockNumber(), 2);
+  QCOMPARE(textEdit->textCursor().position(), position);
+}
+
+// The sync goes through the host's blocked-aware scheduler, so a widget which
+// grabs the focus from inside its own callback - while a nested event loop is
+// delivering the host's timers - is served only after the block unwinds.
+void TestInteractivePreview::testCursorLineSyncIsDeferredDuringWidgetCallback() {
+  VMarkdownEditor editor(makeAutoFoldConfig(false),
+                         QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 300);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+
+  auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
+  QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
+  setTextAndSettle(editor, tableAboveFiller());
+  QCOMPARE(factory->m_widgets.size(), 1);
+
+  auto widget = factory->m_widgets.first();
+  auto textEdit = editor.getTextEdit();
+  // The caret is outside the source, but the widget must stay on screen: a
+  // hidden widget cannot take the focus at all.
+  putEditorCaretInBlock(editor, 20);
+  textEdit->verticalScrollBar()->setValue(textEdit->verticalScrollBar()->minimum());
+  QCoreApplication::processEvents();
+  QTRY_VERIFY2(widget->isVisible(), "the preview widget is not on screen");
+
+  // The widget itself is the focusable thing here; a real renderer focuses a
+  // descendant, which the host resolves the same way.
+  widget->setFocusPolicy(Qt::StrongFocus);
+
+  int duringSpin = -1;
+  widget->m_duringSpin = [&]() {
+    widget->setFocus();
+    duringSpin = textEdit->textCursor().blockNumber();
+  };
+  widget->m_spinOnNextSetPreview = true;
+
+  settle(editor);
+  QCOMPARE(widget->m_spinCount, 1);
+  QVERIFY2(duringSpin == 20, "the cursor moved while a widget callback was on the stack");
+
+  settleCursorLineSync();
+  QVERIFY2(widget->hasFocus(), "the widget lost the focus before the deferred sync ran");
+  QCOMPARE(textEdit->textCursor().blockNumber(), 0);
+}
+
+// A caret moved into a hidden block is relocated by
+// VTextEdit::handleCursorPositionChange(), which would land it somewhere the
+// user never asked for. The sync declines instead.
+void TestInteractivePreview::testFocusingASheetWithAHiddenFirstBlockKeepsTheCaret() {
+  VMarkdownEditor editor(makeAutoFoldConfig(false),
+                         QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 300);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor, tableAboveFiller());
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+
+  auto textEdit = editor.getTextEdit();
+  putEditorCaretInBlock(editor, 20);
+  QCOMPARE(textEdit->textCursor().blockNumber(), 20);
+
+  QTextBlock firstSourceBlock = editor.document()->findBlockByNumber(0);
+  firstSourceBlock.setVisible(false);
+  QVERIFY(!blockVisible(editor, 0));
+
+  sheet->setFocus();
+  QVERIFY2(sheet->hasFocus(), "the sheet did not take the focus");
+  settleCursorLineSync();
+
+  QCOMPARE(textEdit->textCursor().blockNumber(), 20);
+}
+
+// The focus is watched application wide, so a host must serve only the widgets
+// it owns: identities are per host and collide across editors.
+void TestInteractivePreview::testFocusingASheetOnlyMovesItsOwnEditorsCursor() {
+  VMarkdownEditor first(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  first.resize(600, 300);
+  first.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&first));
+  setTextAndSettle(first, tableAboveFiller());
+
+  VMarkdownEditor second(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  second.resize(600, 300);
+  second.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&second));
+  setTextAndSettle(second, tableAboveFiller());
+
+  auto secondSheet = sheetView(singlePreviewWidget(second));
+  QVERIFY(secondSheet);
+
+  putEditorCaretInBlock(first, 20);
+  putEditorCaretInBlock(second, 20);
+
+  secondSheet->setFocus();
+  QVERIFY2(secondSheet->hasFocus(), "the sheet did not take the focus");
+
+  QTRY_COMPARE(second.getTextEdit()->textCursor().blockNumber(), 0);
+  settleCursorLineSync();
+  QCOMPARE(first.getTextEdit()->textCursor().blockNumber(), 20);
+}
+
+// ---------------------------------------------------------------------------
 // A document mutation requested from inside a layout pass or a geometry
 // application
 // ---------------------------------------------------------------------------

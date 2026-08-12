@@ -268,6 +268,22 @@ private:
   // The identity of the item @p_widget belongs to, or 0.
   quint64 identityOf(const PreviewWidget *p_widget) const;
 
+  // The identity of the item owning @p_focus, which is normally not the
+  // PreviewWidget itself but a focusable descendant of it (the table sheet, for
+  // one). Returns 0 when the widget belongs to no item of this host.
+  quint64 identityForFocusWidget(QWidget *p_focus) const;
+
+  // Focus moved somewhere in the application. Watched globally rather than
+  // through an event filter on the preview root, which never sees a
+  // descendant's FocusIn.
+  void handleApplicationFocusChanged(QWidget *p_old, QWidget *p_now);
+
+  // Move the editor's text cursor onto the first block of @p_id's live source
+  // range, so the cursor-line extra selection and the gutter's current line
+  // follow the focused preview. Runs from the owed-work drain, so everything is
+  // re-validated here.
+  void syncCursorLineToItem(quint64 p_id);
+
   // A snapshot of the active factories in resolution order. Returned by value
   // because a factory may mutate the registry from inside its own callback.
   QVector<FactoryEntry> orderedFactories() const;
@@ -366,6 +382,10 @@ private:
     ScrollApply,
     FoldRefresh,
 
+    // The cursor move must observe a settled item set and geometry, so it
+    // ranks below everything which can still move or destroy an item.
+    CursorLineSync,
+
     // Ranks below every real category, so "nothing is owed" never stops a
     // drain.
     None
@@ -439,6 +459,9 @@ private:
 
   QHash<quint64, ActiveItem> m_items;
 
+  // The item which currently owns the keyboard focus, or 0.
+  quint64 m_focusedItemId = 0;
+
   // Live anchor ranges to the identities holding them, so the overwhelmingly
   // common "the element did not move relative to its anchor" case does not
   // scan every item. Without it, matching a generation is quadratic in the
@@ -472,6 +495,12 @@ private:
 
   // Whether a preview driven fold re-evaluation is owed.
   bool m_foldRefreshPending = false;
+
+  // Whether a cursor-line sync is owed, and for which identity. A newer focus
+  // overwrites the identity, so at most one cursor move runs per drain.
+  bool m_cursorLineSyncPending = false;
+
+  quint64 m_cursorLineSyncId = 0;
 
   // Published through c_foldRefreshCountProperty.
   int m_foldRefreshCount = 0;

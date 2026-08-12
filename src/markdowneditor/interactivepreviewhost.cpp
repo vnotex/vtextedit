@@ -145,6 +145,11 @@ InteractivePreviewHost::InteractivePreviewHost(VMarkdownEditor *p_editor)
     }
   }
 
+  // A preview's focusable widget is a descendant of the preview root, whose
+  // FocusIn an event filter on the root never sees, hence the global watch.
+  connect(qApp, &QApplication::focusChanged, this,
+          &InteractivePreviewHost::handleApplicationFocusChanged);
+
   if (m_doc) {
     // The live anchors follow every edit, so resubmit the reservations as soon
     // as the event loop turns instead of waiting for the next parse.
@@ -483,7 +488,7 @@ void InteractivePreviewHost::scheduleOwedWork() {
 
   if (!m_replacementRetryPending && !m_hasDeferredGeneration && !m_reconcilePending &&
       !m_publishPending && !m_geometrySyncPending && !m_scrollApplyPending &&
-      !m_foldRefreshPending) {
+      !m_foldRefreshPending && !m_cursorLineSyncPending) {
     return;
   }
 
@@ -558,6 +563,10 @@ InteractivePreviewHost::OwedWork InteractivePreviewHost::highestOwedWork() const
 
   if (m_foldRefreshPending && !m_reconciling) {
     return OwedWork::FoldRefresh;
+  }
+
+  if (m_cursorLineSyncPending) {
+    return OwedWork::CursorLineSync;
   }
 
   return OwedWork::None;
@@ -643,6 +652,15 @@ void InteractivePreviewHost::runOwedWorkSteps() {
     if (m_editor) {
       m_editor->applyPreviewFolding();
     }
+  }
+
+  if (stopOwedWorkBefore(OwedWork::CursorLineSync)) {
+    return;
+  }
+
+  if (m_cursorLineSyncPending) {
+    m_cursorLineSyncPending = false;
+    syncCursorLineToItem(m_cursorLineSyncId);
   }
 }
 
@@ -1393,6 +1411,137 @@ quint64 InteractivePreviewHost::identityOf(const PreviewWidget *p_widget) const 
   }
 
   return 0;
+}
+
+quint64 InteractivePreviewHost::identityForFocusWidget(QWidget *p_focus) const {
+  if (!p_focus) {
+    return 0;
+  }
+
+  for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it) {
+    QWidget *widget = it.value().m_widget.data();
+    if (widget && (widget == p_focus || widget->isAncestorOf(p_focus))) {
+      return it.value().m_id;
+    }
+  }
+
+  return 0;
+}
+
+void InteractivePreviewHost::handleApplicationFocusChanged(QWidget *p_old, QWidget *p_now) {
+  Q_UNUSED(p_old);
+
+  const quint64 id = identityForFocusWidget(p_now);
+  if (id == 0) {
+    // The editor, another window, or nothing at all. handleFocusEscape() lands
+    // here too, and must not have its caret moved back afterwards.
+    m_focusedItemId = 0;
+    return;
+  }
+
+  if (id == m_focusedItemId) {
+    // Focus only moved inside the same preview widget.
+    return;
+  }
+
+  m_focusedItemId = id;
+
+  // Owed, never posted directly: a bare queued invocation would bypass the
+  // blocked-aware scheduler and could run inside a nested event loop a factory
+  // or geometry callback opened.
+  m_cursorLineSyncPending = true;
+  m_cursorLineSyncId = id;
+  scheduleOwedWork();
+}
+
+void InteractivePreviewHost::syncCursorLineToItem(quint64 p_id) {
+  if (!m_textEdit || !m_doc || p_id == 0) {
+    return;
+  }
+
+  // Identities are monotonic and never reused, so the lookup is exact even
+  // though the item set may have changed since the focus arrived.
+  if (p_id != m_focusedItemId) {
+    return;
+  }
+
+  const auto it = m_items.constFind(p_id);
+  if (it == m_items.constEnd()) {
+    return;
+  }
+
+  QWidget *widget = it.value().m_widget.data();
+  if (!widget) {
+    return;
+  }
+
+  QWidget *focus = QApplication::focusWidget();
+  if (!focus || (focus != widget && !widget->isAncestorOf(focus))) {
+    return;
+  }
+
+  // Resolved from the live anchor, and validated exactly like
+  // previewedRanges(): the deferral means the document may have changed
+  // between the focus and this drain.
+  const QTextCursor &anchor = it.value().m_anchor;
+  if (anchor.isNull()) {
+    return;
+  }
+
+  const int start = anchor.selectionStart();
+  const int end = anchor.selectionEnd();
+  const int limit = m_doc->characterCount() - 1;
+  if (start < 0 || end <= start || end > limit) {
+    return;
+  }
+
+  const QTextBlock firstBlock = m_doc->findBlock(start);
+  const QTextBlock lastBlock = m_doc->findBlock(end - 1);
+  if (!firstBlock.isValid() || !lastBlock.isValid() ||
+      lastBlock.blockNumber() < firstBlock.blockNumber()) {
+    return;
+  }
+
+  if (!firstBlock.isVisible()) {
+    // VTextEdit::handleCursorPositionChange() would relocate the caret out of a
+    // folded block, which is worse than leaving it alone.
+    return;
+  }
+
+  const int currentBlock = m_textEdit->textCursor().blockNumber();
+  if (currentBlock >= firstBlock.blockNumber() && currentBlock <= lastBlock.blockNumber()) {
+    // Already inside the source range - a deliberate caret must not be moved.
+    return;
+  }
+
+  {
+    // Both bars' valueChanged run applyScrollOffset(), which hides previews
+    // outside the transient viewport; hiding the focused sheet would drop its
+    // focus and trigger a write-back. QTextEdit::setTextCursor() ensures the
+    // cursor is visible, so the intermediate value is observable.
+    QScrollBar *vbar = m_textEdit->verticalScrollBar();
+    QScrollBar *hbar = m_textEdit->horizontalScrollBar();
+    QSignalBlocker vblocker(vbar);
+    QSignalBlocker hblocker(hbar);
+    const int vvalue = vbar ? vbar->value() : 0;
+    const int hvalue = hbar ? hbar->value() : 0;
+
+    QTextCursor cursor = m_textEdit->textCursor();
+    cursor.setPosition(firstBlock.position());
+    m_textEdit->setTextCursor(cursor);
+
+    // Restored before the blockers go out of scope, so the final values equal
+    // the saved ones and nothing is owed a remap.
+    if (vbar) {
+      vbar->setValue(vvalue);
+    }
+    if (hbar) {
+      hbar->setValue(hvalue);
+    }
+  }
+
+  qCDebug(previewHostLog) << "item" << p_id << "took the focus, moved the cursor line to block"
+                          << firstBlock.blockNumber();
 }
 
 void InteractivePreviewHost::handleFocusEscape(TablePreviewWidget *p_widget,
