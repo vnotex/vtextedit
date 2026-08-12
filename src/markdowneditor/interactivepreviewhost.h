@@ -18,6 +18,7 @@
 #include "textdocumentlayout.h"
 
 class QTextDocument;
+class QScrollBar;
 
 namespace vte {
 class TablePreviewWidget;
@@ -283,6 +284,14 @@ private:
   // follow the focused preview. Runs from the owed-work drain, so everything is
   // re-validated here.
   void syncCursorLineToItem(quint64 p_id);
+
+  // Deliver @p_bar's current value to the connections which missed it while
+  // the bar's signals were blocked. See the call site in
+  // syncCursorLineToItem().
+  static void resyncScrollBar(QScrollBar *p_bar);
+
+  // The same, for a range which changed while the bar's signals were blocked.
+  static void resyncScrollBarRange(QScrollBar *p_bar);
 
   // A snapshot of the active factories in resolution order. Returned by value
   // because a factory may mutate the registry from inside its own callback.

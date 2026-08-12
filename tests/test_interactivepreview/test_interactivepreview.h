@@ -287,6 +287,8 @@ private slots:
   // The cursor line follows a preview widget which takes the focus.
   void testFocusingASheetMovesTheCursorLine();
   void testFocusingASheetDoesNotScrollTheViewport();
+
+  void testFocusingASheetResyncsAClampedScrollRestore();
   void testFocusingASheetKeepsACaretAlreadyInTheSource();
   void testCursorLineSyncIsDeferredDuringWidgetCallback();
   void testFocusingASheetWithAHiddenFirstBlockKeepsTheCaret();

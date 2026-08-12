@@ -3576,6 +3576,25 @@ QString tableAboveFiller() {
   return text;
 }
 
+// Filler on both sides, so the sheet can be brought on screen at a scroll
+// position which is neither the minimum nor the maximum.
+QString tableBetweenFiller() {
+  QString text;
+  for (int i = 0; i < 100; ++i) {
+    text += QStringLiteral("leading line %1\n").arg(i);
+  }
+
+  text += QLatin1Char('\n');
+  text += QLatin1String(c_table);
+  text += QLatin1Char('\n');
+
+  for (int i = 0; i < 100; ++i) {
+    text += QStringLiteral("trailing line %1\n").arg(i);
+  }
+
+  return text;
+}
+
 // Caret at the end of the document, viewport parked at the top. The minimum is
 // a stable parking spot: an auto-folded source changes the scrollbar *range*,
 // which would move any other value on its own.
@@ -3776,6 +3795,79 @@ void TestInteractivePreview::testFocusingASheetMovesTheCursorLine() {
   QTRY_COMPARE(textEdit->textCursor().blockNumber(), 0);
   QVERIFY2(!textEdit->textCursor().hasSelection(), "the sync selected text");
   QVERIFY2(sheet->hasFocus(), "the cursor move stole the focus from the sheet");
+}
+
+// The caret move saves the scroll position and puts it back with both bars'
+// signals blocked. setTextCursor() relayouts on the way, so a viewport which
+// just grew shrinks the maximum and the restore clamps to a smaller value.
+// valueChanged is the only thing that tells QAbstractScrollArea its new offset
+// and re-places the preview widgets, so a clamped restore used to leave the
+// widgets mapped for the saved value while the text was painted at the settled
+// one - the previews ended up drawn over the source until an unrelated scroll.
+//
+// The range is shrunk from a cursorPositionChanged handler, which runs
+// synchronously inside setTextCursor() while the blockers are up. That is the
+// same seam a resize hits, without depending on when the layout settles.
+void TestInteractivePreview::testFocusingASheetResyncsAClampedScrollRestore() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 300);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor, tableBetweenFiller());
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+
+  auto textEdit = editor.getTextEdit();
+  auto vbar = textEdit->verticalScrollBar();
+  QVERIFY(vbar->maximum() > vbar->minimum());
+
+  // Bring the sheet on screen at a scroll position well above the minimum, so
+  // the maximum can be pulled below it later.
+  QTRY_VERIFY(widget->y() != 0);
+  vbar->setValue(vbar->value() + widget->y() - 40);
+  QCoreApplication::processEvents();
+  QTRY_VERIFY2(sheet->isVisible(), "the sheet is not on screen at this scroll position");
+
+  putEditorCaretInBlock(editor, editor.document()->blockCount() - 1);
+
+  const int saved = vbar->value();
+  QVERIFY(saved > vbar->minimum() + 10);
+  // Where the band sits in the document, which no scrolling may change.
+  const int documentTop = widget->y() + saved;
+  const QString before = editor.document()->toPlainText();
+
+  // Armed only for the sync's own caret move, and only once.
+  auto shrink = QSharedPointer<QMetaObject::Connection>::create();
+  *shrink = connect(textEdit, &QTextEdit::cursorPositionChanged, textEdit, [&, shrink]() {
+    disconnect(*shrink);
+    vbar->setMaximum(saved - 10);
+  });
+
+  sheet->setFocus();
+  QVERIFY2(sheet->hasFocus(), "the sheet did not take the focus");
+
+  QTRY_VERIFY2(textEdit->textCursor().block().text().startsWith(QStringLiteral("| h1")),
+               "the caret did not land on the first line of the table source");
+  settleCursorLineSync();
+
+  // The restore really did clamp, so the assertion below is not vacuous.
+  QVERIFY2(vbar->value() < saved, "the restore did not clamp, so this is not the case under test");
+
+  // VTextEdit's ScrollBar extends the maximum from rangeChanged so the bottom
+  // of the content can still be scrolled up. The range moved while the bar was
+  // blocked, so that extension is owed too - and nothing would revisit it
+  // until the range happened to change again.
+  QVERIFY2(vbar->maximum() > saved - 10,
+           "the blocked range change lost ScrollBar's maximum extension");
+
+  // Whatever the scroll settled on, the widget is placed for that same value.
+  QCOMPARE(widget->y() + vbar->value(), documentTop);
+
+  QVERIFY2(sheet->hasFocus(), "the sync dropped the focus out of the sheet");
+  QCOMPARE(editor.document()->toPlainText(), before);
 }
 
 // The caret move must not scroll: the viewport shifting would hide the sheet,

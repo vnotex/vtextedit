@@ -1514,24 +1514,30 @@ void InteractivePreviewHost::syncCursorLineToItem(quint64 p_id) {
     return;
   }
 
+  QScrollBar *vbar = m_textEdit->verticalScrollBar();
+  QScrollBar *hbar = m_textEdit->horizontalScrollBar();
+  const int vvalue = vbar ? vbar->value() : 0;
+  const int hvalue = hbar ? hbar->value() : 0;
+  const QPair<int, int> vrange =
+      vbar ? qMakePair(vbar->minimum(), vbar->maximum()) : qMakePair(0, 0);
+  const QPair<int, int> hrange =
+      hbar ? qMakePair(hbar->minimum(), hbar->maximum()) : qMakePair(0, 0);
+
   {
     // Both bars' valueChanged run applyScrollOffset(), which hides previews
     // outside the transient viewport; hiding the focused sheet would drop its
     // focus and trigger a write-back. QTextEdit::setTextCursor() ensures the
     // cursor is visible, so the intermediate value is observable.
-    QScrollBar *vbar = m_textEdit->verticalScrollBar();
-    QScrollBar *hbar = m_textEdit->horizontalScrollBar();
     QSignalBlocker vblocker(vbar);
     QSignalBlocker hblocker(hbar);
-    const int vvalue = vbar ? vbar->value() : 0;
-    const int hvalue = hbar ? hbar->value() : 0;
 
     QTextCursor cursor = m_textEdit->textCursor();
     cursor.setPosition(firstBlock.position());
     m_textEdit->setTextCursor(cursor);
 
-    // Restored before the blockers go out of scope, so the final values equal
-    // the saved ones and nothing is owed a remap.
+    // Restoration is only attempted here. A range which moved under the
+    // blockers can stop setValue() landing on the saved value at all, and
+    // everything the blockers swallowed is replayed once they are gone.
     if (vbar) {
       vbar->setValue(vvalue);
     }
@@ -1540,8 +1546,83 @@ void InteractivePreviewHost::syncCursorLineToItem(quint64 p_id) {
     }
   }
 
+  // Everything below is the repair for what the blockers swallowed.
+  //
+  // setTextCursor() reveals the caret, which relayouts, so a viewport which
+  // has just grown shrinks the maximum. That range change is suppressed here,
+  // and so is the clamping of the restore above it: setValue() cannot go back
+  // to a value the new range no longer holds. Nothing observed either, because
+  // a blocked bar emits neither rangeChanged nor valueChanged.
+  //
+  // The range goes first: ScrollBar answers rangeChanged by extending the
+  // maximum, and the settled value has to be reported against the range that
+  // extension leaves behind.
+  const int vsettled = vbar ? vbar->value() : 0;
+  const int hsettled = hbar ? hbar->value() : 0;
+
+  if (vbar && qMakePair(vbar->minimum(), vbar->maximum()) != vrange) {
+    resyncScrollBarRange(vbar);
+  }
+  if (hbar && qMakePair(hbar->minimum(), hbar->maximum()) != hrange) {
+    resyncScrollBarRange(hbar);
+  }
+
+  // QAbstractScrollArea learns a new offset only from valueChanged, and
+  // applyScrollOffset() - which places every preview widget - hangs off the
+  // same signal. Left unreported, the scroll area's cached offset, the widgets
+  // and the text QTextEdit paints translated by the bar's current value sit on
+  // different offsets, and the previews are drawn over the source until an
+  // unrelated scroll happens to resync them.
+  //
+  // Skipped when the range replay above moved the value itself: that change
+  // was not blocked, so it has already been reported.
+  if (vbar && vbar->value() == vsettled && vsettled != vvalue) {
+    qCDebug(previewHostLog) << "cursor line sync settled the vertical scroll at" << vsettled
+                            << "instead of" << vvalue << "- the range moved under the restore";
+    resyncScrollBar(vbar);
+  }
+  if (hbar && hbar->value() == hsettled && hsettled != hvalue) {
+    qCDebug(previewHostLog) << "cursor line sync settled the horizontal scroll at" << hsettled
+                            << "instead of" << hvalue << "- the range moved under the restore";
+    resyncScrollBar(hbar);
+  }
+
   qCDebug(previewHostLog) << "item" << p_id << "took the focus, moved the cursor line to block"
                           << firstBlock.blockNumber();
+}
+
+void InteractivePreviewHost::resyncScrollBar(QScrollBar *p_bar) {
+  if (!p_bar) {
+    return;
+  }
+
+  // Report the value the bar actually settled on to the connections which
+  // missed it while its signals were blocked: QAbstractScrollArea caches its
+  // own offset in that slot, and applyScrollOffset() places every preview
+  // widget from it.
+  //
+  // The signal is invoked rather than driven by stepping the value off and
+  // back on. Two real transitions would publish an intermediate position, and
+  // a preview sitting on the viewport edge can fall outside it there and be
+  // hidden - which drops the focus out of a sheet and makes it write its
+  // pending edit back, the very thing the blockers exist to prevent. It also
+  // reports the correct state when the range collapsed to a single value, in
+  // which case no transition is representable at all.
+  QMetaObject::invokeMethod(p_bar, "valueChanged", Qt::DirectConnection,
+                            Q_ARG(int, p_bar->value()));
+}
+
+void InteractivePreviewHost::resyncScrollBarRange(QScrollBar *p_bar) {
+  if (!p_bar) {
+    return;
+  }
+
+  // Same reasoning as resyncScrollBar(), for the range. VTextEdit's ScrollBar
+  // answers rangeChanged by extending the maximum so the bottom of the content
+  // can still be scrolled up; a range set while the bar was blocked never gets
+  // that extension, and nothing revisits it until the range changes again.
+  QMetaObject::invokeMethod(p_bar, "rangeChanged", Qt::DirectConnection,
+                            Q_ARG(int, p_bar->minimum()), Q_ARG(int, p_bar->maximum()));
 }
 
 void InteractivePreviewHost::handleFocusEscape(TablePreviewWidget *p_widget,
