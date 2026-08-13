@@ -1833,6 +1833,55 @@ void TestTablePreview::testASeparatorOnlyImeCommitKeepsTheSelection() {
   QCOMPARE(tableOf(sheet->document()), table);
 }
 
+// The host calls this when the focus goes back to the text editor: the
+// selection has to collapse onto the caret, without the caret moving and
+// without the document changing.
+void TestTablePreview::testClearSelectionCollapsesOntoTheCaret() {
+  QScopedPointer<TablePreviewWidget> holder;
+  auto widget = buildEditableSheet(holder);
+  QVERIFY(widget);
+  auto sheet = sheetOf(*widget);
+  QVERIFY(sheet);
+
+  QTextTable *table = tableOf(sheet->document());
+  QVERIFY(table);
+
+  const QTextTableCell cell = table->cellAt(1, 1);
+  QTextCursor selection = sheet->textCursor();
+  selection.setPosition(cell.firstPosition());
+  selection.setPosition(cell.lastPosition(), QTextCursor::KeepAnchor);
+  sheet->setTextCursor(selection);
+  QVERIFY(sheet->textCursor().hasSelection());
+
+  const int caret = sheet->textCursor().position();
+  const QString before = sheet->document()->toPlainText();
+
+  widget->clearSelection();
+
+  QVERIFY2(!sheet->textCursor().hasSelection(), "the selection survived");
+  QCOMPARE(sheet->textCursor().position(), caret);
+  QCOMPARE(sheet->document()->toPlainText(), before);
+  QCOMPARE(tableOf(sheet->document()), table);
+}
+
+void TestTablePreview::testClearSelectionIsANoOpWithoutASelection() {
+  QScopedPointer<TablePreviewWidget> holder;
+  auto widget = buildEditableSheet(holder);
+  QVERIFY(widget);
+  auto sheet = sheetOf(*widget);
+  QVERIFY(sheet);
+
+  putCaretIn(sheet, 1, 0);
+  const int caret = sheet->textCursor().position();
+  const QString before = sheet->document()->toPlainText();
+
+  widget->clearSelection();
+
+  QVERIFY(!sheet->textCursor().hasSelection());
+  QCOMPARE(sheet->textCursor().position(), caret);
+  QCOMPARE(sheet->document()->toPlainText(), before);
+}
+
 void TestTablePreview::testAPurelySeparatorPayloadIsRefused() {
   QScopedPointer<TablePreviewWidget> holder;
   auto widget = buildEditableSheet(holder);

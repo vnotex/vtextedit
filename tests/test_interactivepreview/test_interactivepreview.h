@@ -102,6 +102,22 @@ public:
 
   std::function<void()> m_duringReplacementSpin;
 
+  // The generic hook the host calls when the focus goes back to the editor.
+  void clearSelection() Q_DECL_OVERRIDE;
+
+  int m_clearSelectionCount = 0;
+
+  // Requested once from inside the next clearSelection(), which the host calls
+  // from inside a factory-callback block. The document must not change while
+  // that call is still on the stack.
+  QString m_requestOnClearSelection;
+
+  // The document as it stood right after that reentrant request was made.
+  QString m_documentDuringClearSelection;
+
+  // Sampled by the test to fill m_documentDuringClearSelection.
+  std::function<QString()> m_documentSource;
+
 private slots:
   void handleReplacementFinished(const vte::PreviewReplacementResult &p_result);
 
@@ -293,6 +309,14 @@ private slots:
   void testCursorLineSyncIsDeferredDuringWidgetCallback();
   void testFocusingASheetWithAHiddenFirstBlockKeepsTheCaret();
   void testFocusingASheetOnlyMovesItsOwnEditorsCursor();
+
+  // A preview selection is dropped when the focus goes back to the editor.
+  void testFocusReturningToTheEditorClearsTheSheetSelection();
+  void testFocusEscapeClearsTheSelectionAndKeepsTheCaret();
+  void testASecondPreviewKeepsTheSelectionUntilTheEditor();
+  void testFocusLeavingTheApplicationKeepsTheSelection();
+  void testAReadOnlyEditorClearsTheSelectionToo();
+  void testTheClearSelectionHookIsDispatchedGenerically();
 
   // A document mutation requested from inside a layout pass or a geometry
   // application.

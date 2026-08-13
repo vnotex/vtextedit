@@ -90,6 +90,8 @@ PreviewWidget::~PreviewWidget() {}
 
 qreal PreviewWidget::preferredWidthFraction() const { return 0; }
 
+void PreviewWidget::clearSelection() {}
+
 PreviewWidgetContext *PreviewWidget::previewContext() const { return m_d->m_context.data(); }
 
 PreviewWidgetFactory::PreviewWidgetFactory(QObject *p_parent) : QObject(p_parent) {}

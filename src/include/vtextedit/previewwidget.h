@@ -102,6 +102,10 @@ public:
   // an inline preview is always bound to the text span it replaces.
   virtual qreal preferredWidthFraction() const;
 
+  // Collapse any selection this renderer holds. Called by the host when focus
+  // returns to the text editor. Default implementation does nothing.
+  virtual void clearSelection();
+
   PreviewWidgetContext *previewContext() const;
 
 private:

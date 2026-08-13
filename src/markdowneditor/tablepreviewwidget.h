@@ -276,6 +276,9 @@ public:
   // affordance is lost.
   void clampSelectionIntoOneCell();
 
+  // Collapse any selection onto the caret, without moving the caret.
+  void clearSelection();
+
 signals:
   // The document's laid out size settled on something the host has not been
   // told about yet.
@@ -436,6 +439,8 @@ public:
   bool setPreview(const QSharedPointer<const Preview> &p_preview) Q_DECL_OVERRIDE;
 
   qreal preferredWidthFraction() const Q_DECL_OVERRIDE;
+
+  void clearSelection() Q_DECL_OVERRIDE;
 
   // Mirror the editor's read-only state so the sheet cannot swallow edits the
   // host is going to reject anyway.

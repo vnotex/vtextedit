@@ -1,5 +1,6 @@
 #include "test_interactivepreview.h"
 
+#include <algorithm>
 #include <limits>
 
 #include <QAbstractTextDocumentLayout>
@@ -18,6 +19,7 @@
 #include <QTextTable>
 #include <QTextTableCell>
 #include <QTimer>
+#include <QVBoxLayout>
 
 #include <vtextedit/markdowneditorconfig.h>
 #include <vtextedit/markdownhighlighter.h>
@@ -131,6 +133,26 @@ void RecordingPreviewWidget::handleReplacementFinished(const PreviewReplacementR
     if (m_duringReplacementSpin) {
       m_duringReplacementSpin();
     }
+  }
+}
+
+void RecordingPreviewWidget::clearSelection() {
+  ++m_clearSelectionCount;
+
+  if (m_requestOnClearSelection.isEmpty()) {
+    return;
+  }
+
+  // Application code reached from inside the host's focus handling. The
+  // request must not touch the document from here.
+  const QString markdown = m_requestOnClearSelection;
+  m_requestOnClearSelection.clear();
+  if (auto context = previewContext()) {
+    context->requestSourceReplacement(markdown);
+  }
+
+  if (m_documentSource) {
+    m_documentDuringClearSelection = m_documentSource();
   }
 }
 
@@ -4050,6 +4072,243 @@ void TestInteractivePreview::testFocusingASheetOnlyMovesItsOwnEditorsCursor() {
   QTRY_COMPARE(second.getTextEdit()->textCursor().blockNumber(), 0);
   settleCursorLineSync();
   QCOMPARE(first.getTextEdit()->textCursor().blockNumber(), 20);
+}
+
+// ---------------------------------------------------------------------------
+// A preview selection is dropped when the focus goes back to the text editor
+// ---------------------------------------------------------------------------
+
+namespace {
+// Select the whole content of one cell, which is what a drag or a Ctrl+A
+// inside a cell leaves behind.
+void selectCell(QTextEdit *p_sheet, int p_row, int p_column) {
+  QTextTable *table = sheetTable(p_sheet);
+  QVERIFY(table);
+  const QTextTableCell cell = table->cellAt(p_row, p_column);
+  QVERIFY(cell.isValid());
+
+  QTextCursor cursor = p_sheet->textCursor();
+  cursor.setPosition(cell.firstPosition());
+  cursor.setPosition(cell.lastPosition(), QTextCursor::KeepAnchor);
+  p_sheet->setTextCursor(cursor);
+  QVERIFY(p_sheet->textCursor().hasSelection());
+}
+
+QString twoTables() {
+  return QLatin1String(c_table) + QStringLiteral("\nmiddle\n\n") + QLatin1String(c_table);
+}
+
+// The widgets of a document holding two tables, ordered by their source
+// position. The host hands them out in hash order.
+QList<PreviewWidget *> widgetsBySourceStart(VMarkdownEditor &p_editor) {
+  QList<PreviewWidget *> widgets = previewWidgets(p_editor);
+  std::sort(widgets.begin(), widgets.end(), [](PreviewWidget *p_a, PreviewWidget *p_b) {
+    return p_a->previewContext()->preview()->startPos() <
+           p_b->previewContext()->preview()->startPos();
+  });
+  return widgets;
+}
+} // namespace
+
+// The point of the feature: two competing highlights are never shown at once.
+void TestInteractivePreview::testFocusReturningToTheEditorClearsTheSheetSelection() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 300);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor, QLatin1String(c_table));
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+
+  sheet->setFocus();
+  QVERIFY2(sheet->hasFocus(), "the sheet did not take the focus");
+  selectCell(sheet, 1, 1);
+  const int caret = sheet->textCursor().position();
+
+  editor.getTextEdit()->setFocus();
+  QVERIFY2(editor.getTextEdit()->hasFocus(), "the editor did not take the focus back");
+  QCoreApplication::processEvents();
+
+  QVERIFY2(!sheet->textCursor().hasSelection(), "the sheet kept its selection");
+  QCOMPARE(sheet->textCursor().position(), caret);
+}
+
+// handleFocusEscape() sets the editor caret and then takes the focus, so it
+// runs through the very same branch. The caret it placed must survive.
+void TestInteractivePreview::testFocusEscapeClearsTheSelectionAndKeepsTheCaret() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 400);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor, QStringLiteral("head\n\n") + QLatin1String(c_table) +
+                               QStringLiteral("\ntail\n"));
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+
+  const QString text = editor.document()->toPlainText();
+  const QString lastRow = QStringLiteral("| a | b |");
+  const int sourceEnd = text.indexOf(lastRow) + lastRow.size();
+  QVERIFY(sourceEnd > 0);
+
+  sheet->setFocus();
+  selectCell(sheet, 0, 1);
+  QTest::keyClick(sheet, Qt::Key_Up);
+  QCoreApplication::processEvents();
+
+  QVERIFY2(editor.getTextEdit()->hasFocus(), "the editor did not take the focus back");
+  QCOMPARE(editor.getTextEdit()->textCursor().position(), sourceEnd);
+  QVERIFY2(!sheet->textCursor().hasSelection(), "the sheet kept its selection");
+}
+
+// Preview A -> preview B resets the focused identity, so clearing only the
+// last focused one would let A's selection survive the return to the editor.
+void TestInteractivePreview::testASecondPreviewKeepsTheSelectionUntilTheEditor() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 400);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor, twoTables());
+
+  const auto widgets = widgetsBySourceStart(editor);
+  QCOMPARE(widgets.size(), 2);
+  auto firstSheet = sheetView(widgets.at(0));
+  auto secondSheet = sheetView(widgets.at(1));
+  QVERIFY(firstSheet);
+  QVERIFY(secondSheet);
+
+  firstSheet->setFocus();
+  QVERIFY(firstSheet->hasFocus());
+  selectCell(firstSheet, 1, 1);
+
+  secondSheet->setFocus();
+  QVERIFY2(secondSheet->hasFocus(), "the second sheet did not take the focus");
+  selectCell(secondSheet, 1, 0);
+  QCoreApplication::processEvents();
+
+  QVERIFY2(firstSheet->textCursor().hasSelection(),
+           "a preview to preview move dropped the first selection");
+
+  editor.getTextEdit()->setFocus();
+  QVERIFY(editor.getTextEdit()->hasFocus());
+  QCoreApplication::processEvents();
+
+  QVERIFY2(!firstSheet->textCursor().hasSelection(), "the first sheet kept its selection");
+  QVERIFY2(!secondSheet->textCursor().hasSelection(), "the second sheet kept its selection");
+}
+
+// Focus leaving the application entirely is not the editor taking it back, so
+// the selection stays where the user left it.
+void TestInteractivePreview::testFocusLeavingTheApplicationKeepsTheSelection() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 300);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor, QLatin1String(c_table));
+
+  auto sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+
+  sheet->setFocus();
+  QVERIFY(sheet->hasFocus());
+  selectCell(sheet, 1, 1);
+
+  // A separate top-level widget stands in for another window: the focus leaves
+  // this editor without reaching its text edit.
+  QWidget other;
+  auto elsewhere = new QTextEdit(&other);
+  auto layout = new QVBoxLayout(&other);
+  layout->addWidget(elsewhere);
+  other.resize(200, 100);
+  other.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&other));
+  elsewhere->setFocus();
+  QCoreApplication::processEvents();
+
+  QVERIFY2(!editor.getTextEdit()->hasFocus(), "the editor took the focus, which is a different case");
+  QVERIFY2(sheet->textCursor().hasSelection(), "an unrelated focus move dropped the selection");
+}
+
+// The sheet stays selectable in viewer mode, so the clear has to reach it
+// there too - and collapsing a selection never edits the document.
+void TestInteractivePreview::testAReadOnlyEditorClearsTheSelectionToo() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 300);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor, QLatin1String(c_table));
+  editor.setReadOnly(true);
+  QCoreApplication::processEvents();
+
+  auto sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+
+  sheet->setFocus();
+  QVERIFY(sheet->hasFocus());
+  selectCell(sheet, 1, 1);
+  const QString before = editor.document()->toPlainText();
+
+  editor.getTextEdit()->setFocus();
+  QVERIFY(editor.getTextEdit()->hasFocus());
+  QCoreApplication::processEvents();
+
+  QVERIFY2(!sheet->textCursor().hasSelection(), "the viewer sheet kept its selection");
+  QCOMPARE(editor.document()->toPlainText(), before);
+}
+
+// The hook is public, so a third-party renderer gets it too - and only on the
+// transition that means it. Whatever it does from there is application code
+// reached from inside the host, so a document mutation requested there has to
+// be postponed rather than applied inline.
+void TestInteractivePreview::testTheClearSelectionHookIsDispatchedGenerically() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 300);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+
+  auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
+  QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
+  setTextAndSettle(editor, QLatin1String(c_table));
+  QCOMPARE(factory->m_widgets.size(), 1);
+
+  auto widget = factory->m_widgets.first();
+  QVERIFY(widget);
+  widget->setFocusPolicy(Qt::StrongFocus);
+  widget->setFocus();
+  QVERIFY2(widget->hasFocus(), "the widget did not take the focus");
+  QCoreApplication::processEvents();
+  QCOMPARE(widget->m_clearSelectionCount, 0);
+
+  const QString before = editor.document()->toPlainText();
+  const QString replacement = QStringLiteral("| h1 | h2 |\n| --- | --- |\n| x | y |");
+  widget->m_documentSource = [&editor]() { return editor.document()->toPlainText(); };
+  widget->m_requestOnClearSelection = replacement;
+
+  editor.getTextEdit()->setFocus();
+  QVERIFY(editor.getTextEdit()->hasFocus());
+  QCoreApplication::processEvents();
+
+  QCOMPARE(widget->m_clearSelectionCount, 1);
+  QVERIFY2(widget->m_documentDuringClearSelection == before,
+           "the replacement was applied while the callback was still on the stack");
+
+  // The host does not replay a third-party request verbatim: it reports
+  // Deferred and leaves the retry to the requester.
+  QTRY_VERIFY(widget->m_resultCount > 0);
+  QCOMPARE(widget->m_lastResult.status(), PreviewReplacementResult::Deferred);
+  QCOMPARE(editor.document()->toPlainText(), before);
+
+  // A focus move which is not the editor taking it back dispatches nothing.
+  const int dispatched = widget->m_clearSelectionCount;
+  widget->setFocus();
+  QVERIFY(widget->hasFocus());
+  QCoreApplication::processEvents();
+  QCOMPARE(widget->m_clearSelectionCount, dispatched);
 }
 
 // ---------------------------------------------------------------------------

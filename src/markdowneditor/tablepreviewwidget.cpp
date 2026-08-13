@@ -887,6 +887,18 @@ void TablePreviewSheet::clampSelectionIntoOneCell() {
   setTextCursor(cursor);
 }
 
+void TablePreviewSheet::clearSelection() {
+  QTextCursor cursor = textCursor();
+  if (!cursor.hasSelection()) {
+    return;
+  }
+
+  // Collapse onto the caret. The caret position is already valid, so no
+  // clamping is needed - and must not happen, since it would move the caret.
+  cursor.setPosition(cursor.position());
+  setTextCursor(cursor);
+}
+
 void TablePreviewSheet::handleCursorPositionChanged() {
   if (!m_clampingCursor) {
     // Both clamps rewrite the cursor, which re-enters this slot.
@@ -1402,6 +1414,12 @@ QVector<PreviewElementType> TablePreviewWidget::supportedTypes() const {
 }
 
 qreal TablePreviewWidget::preferredWidthFraction() const { return c_widthFraction; }
+
+void TablePreviewWidget::clearSelection() {
+  if (m_sheet) {
+    m_sheet->clearSelection();
+  }
+}
 
 bool TablePreviewWidget::setPreview(const QSharedPointer<const Preview> &p_preview) {
   if (!p_preview || p_preview->type() != PreviewElementType::Table) {

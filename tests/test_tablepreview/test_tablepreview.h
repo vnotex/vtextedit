@@ -68,6 +68,10 @@ private slots:
   void testABackgroundSheetLeavesTheFocusedCompositionAlone();
   void testASeparatorOnlyImeCommitKeepsTheSelection();
 
+  // Selection clearing.
+  void testClearSelectionCollapsesOntoTheCaret();
+  void testClearSelectionIsANoOpWithoutASelection();
+
   // Commit machine.
   void testDebouncedCommit();
   void testCellLeaveFlushesImmediately();

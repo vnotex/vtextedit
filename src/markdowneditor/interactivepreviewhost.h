@@ -274,6 +274,11 @@ private:
   // one). Returns 0 when the widget belongs to no item of this host.
   quint64 identityForFocusWidget(QWidget *p_focus) const;
 
+  // Collapse the selection of every live preview widget. Called when focus
+  // returns to the text editor, so a leftover preview highlight does not
+  // compete with the editor's own selection.
+  void clearPreviewSelections();
+
   // Focus moved somewhere in the application. Watched globally rather than
   // through an event filter on the preview root, which never sees a
   // descendant's FocusIn.

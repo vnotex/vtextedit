@@ -1428,6 +1428,32 @@ quint64 InteractivePreviewHost::identityForFocusWidget(QWidget *p_focus) const {
   return 0;
 }
 
+void InteractivePreviewHost::clearPreviewSelections() {
+  // Snapshot first: clearSelection() is application-defined and may destroy
+  // widgets or mutate m_items, so no iterator may outlive the callback.
+  QVector<QPointer<PreviewWidget>> widgets;
+  widgets.reserve(m_items.size());
+  for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it) {
+    if (it.value().m_widget) {
+      widgets.append(it.value().m_widget);
+    }
+  }
+
+  if (widgets.isEmpty()) {
+    return;
+  }
+
+  // A public extension point, like supportedTypes() and setPreview(): the
+  // callback may request a source replacement, unregister a factory, delete
+  // itself or spin a nested event loop.
+  BlockGuard guard(this, BlockGuard::Reason::FactoryCallback);
+  for (const auto &widget : widgets) {
+    if (widget) {
+      widget->clearSelection();
+    }
+  }
+}
+
 void InteractivePreviewHost::handleApplicationFocusChanged(QWidget *p_old, QWidget *p_now) {
   Q_UNUSED(p_old);
 
@@ -1436,6 +1462,9 @@ void InteractivePreviewHost::handleApplicationFocusChanged(QWidget *p_old, QWidg
     // The editor, another window, or nothing at all. handleFocusEscape() lands
     // here too, and must not have its caret moved back afterwards.
     m_focusedItemId = 0;
+    if (m_textEdit && p_now && (p_now == m_textEdit || m_textEdit->isAncestorOf(p_now))) {
+      clearPreviewSelections();
+    }
     return;
   }
 
