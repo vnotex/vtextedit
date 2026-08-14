@@ -406,9 +406,10 @@ QVector<QVector<QString>> TablePreviewDocument::cells() const {
       QTextCursor cursor = cell.firstCursorPosition();
       cursor.setPosition(cell.lastCursorPosition().position(), QTextCursor::KeepAnchor);
       // selectedText() reports a block boundary as U+2029, which the
-      // serializer rejects. A cell can only ever hold one block - Enter is
-      // swallowed and every paste is sanitized - so this is defence in depth
-      // rather than an expected shape.
+      // serializer rejects. A cell can only ever hold one block - Enter never
+      // inserts one (it either does nothing or appends a whole row) and every
+      // paste is sanitized - so this is defence in depth rather than an
+      // expected shape.
       row.append(cursor.selectedText());
     }
 
@@ -519,6 +520,52 @@ void TablePreviewDocument::applyCellFormats() {
       applyCellFormat(r, c);
     }
   }
+}
+
+bool TablePreviewDocument::canAppendRow() const {
+  if (!m_table || m_columnCount <= 0 || m_rowCount <= 0) {
+    return false;
+  }
+
+  // qint64 for the same reason normalizedCellCount() uses it: the product of
+  // two ints is what is being bounded here, and it must not be the overflow
+  // which decides the answer.
+  return qint64(m_rowCount + 1) * qint64(m_columnCount) <= qint64(c_maxCells);
+}
+
+bool TablePreviewDocument::appendRow() {
+  if (!canAppendRow()) {
+    return false;
+  }
+
+  // One edit block for the whole append, as in build(): the row, its prefix
+  // and its formats have to reach TablePreviewWidget::handleContentsChanged()
+  // as a single change. That slot re-runs isIntact() and rebuilds from source
+  // when the table looks gone, so an intermediate state observed halfway
+  // through would risk throwing the user's edit away.
+  QTextCursor cursor(m_doc.data());
+  cursor.beginEditBlock();
+
+  m_table->appendRows(1);
+
+  // The prefix vector is per row, and the serializer refuses a matrix whose
+  // size disagrees with it. m_delimiterPrefix is what arePrefixesSafe()
+  // requires of every row after the header, so it is the only prefix a new
+  // body row may carry.
+  m_rowPrefixes.append(m_delimiterPrefix);
+
+  // Derived from the table rather than incremented, exactly as build() derives
+  // it, so the cached count cannot drift if appendRows() ever refuses.
+  m_rowCount = m_table->rows();
+
+  for (int c = 0; c < m_columnCount; ++c) {
+    // appendRows() carries no per-cell format, so the new cells would
+    // otherwise be left-aligned regardless of the column's alignment.
+    applyCellFormat(m_rowCount - 1, c);
+  }
+
+  cursor.endEditBlock();
+  return true;
 }
 
 void TablePreviewDocument::applyPalette(const QPalette &p_palette) {
@@ -1066,6 +1113,62 @@ bool TablePreviewSheet::isAtBottomEdge() const {
   return probe.currentTable() == nullptr;
 }
 
+bool TablePreviewSheet::appendRowFromLastCell() {
+  // Everything below the accept point is a preflight: it must not touch the
+  // document or the cursor, because a refused Enter has to remain the inert
+  // swallow it has always been.
+  if (isReadOnly()) {
+    // applyEditability() is the single writer of this flag and already folds in
+    // the editor's read-only state, a revoked authority and a table which is
+    // not round-trippable, so this one test covers all of them.
+    return false;
+  }
+
+  QTextTable *table = m_document ? m_document->table() : nullptr;
+  if (!table || table->rows() <= 0 || table->columns() <= 0) {
+    return false;
+  }
+
+  const auto isInLastCell = [](const QTextTable *p_table, const QTextCursor &p_cursor) {
+    const QTextTableCell cell = p_table->cellAt(p_cursor.position());
+    return cell.isValid() && cell.row() == p_table->rows() - 1 &&
+           cell.column() == p_table->columns() - 1;
+  };
+
+  if (!isInLastCell(table, textCursor()) || !m_document->canAppendRow()) {
+    return false;
+  }
+
+  // Accepted from here on, so the side effects may run. The preedit has to
+  // land in the document before the row is added, otherwise the composition
+  // would be committed into a cell the caret has already left.
+  commitPreedit();
+  clampCursorIntoTable();
+  clearSelection();
+
+  // commitPreedit() can insert text synchronously, which moves the caret and
+  // changes the document, so both conditions are re-resolved rather than
+  // trusted from before it ran.
+  table = m_document->table();
+  if (!table || !isInLastCell(table, textCursor()) || !m_document->canAppendRow()) {
+    return false;
+  }
+
+  if (!m_document->appendRow()) {
+    return false;
+  }
+
+  const QTextTableCell target = table->cellAt(table->rows() - 1, 0);
+  if (!target.isValid()) {
+    return false;
+  }
+
+  // Moving the caret out of the previous cell is what emits cellLeft(), and
+  // therefore what commits the row the user has just finished typing.
+  setTextCursor(target.firstCursorPosition());
+  return true;
+}
+
 void TablePreviewSheet::keyPressEvent(QKeyEvent *p_event) {
   // Undo and redo belong to the editor: the inner document has no undo stack
   // precisely so the granularity is one whole-table replacement. Both are
@@ -1088,7 +1191,19 @@ void TablePreviewSheet::keyPressEvent(QKeyEvent *p_event) {
   case Qt::Key_Return:
   case Qt::Key_Enter:
     // One cell is one line: a table row is a single source line, and every
-    // separator that could end it is rejected by the serializer.
+    // separator that could end it is rejected by the serializer. So Enter
+    // never inserts anything - but in the last cell of the last row it means
+    // "one more row", the way it does in every other table editor.
+    //
+    // KeypadModifier is masked off rather than compared away: the keypad's
+    // Enter is the very key Qt::Key_Enter stands for, and native events carry
+    // that modifier, so requiring Qt::NoModifier would make the branch
+    // unreachable for it. Every semantic modifier still swallows.
+    if (!(modifiers & ~Qt::KeypadModifier)) {
+      appendRowFromLastCell();
+    }
+    // Accepted either way, so Enter is never handed to QTextEdit, which would
+    // split the cell into two blocks.
     p_event->accept();
     return;
 

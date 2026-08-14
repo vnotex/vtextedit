@@ -895,6 +895,63 @@ void TestInteractivePreview::testTableEditCommitsCanonicalMarkdown() {
   QVERIFY2(after.contains(QStringLiteral("| h1 | h2 |")), qPrintable(after));
 }
 
+void TestInteractivePreview::testEnterInTheLastCellGrowsTheSource() {
+  // The unit test's harness answers the replacement itself, so only this
+  // target can prove that the *real* host accepts a table which grew: the
+  // candidate carries a row the bound snapshot never had, which is exactly
+  // what its prefix matching and its anchor retargeting have to tolerate.
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QLatin1String(c_table));
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+  QTextTable *table = sheetTable(sheet);
+  QVERIFY(table);
+  QCOMPARE(table->rows(), 2);
+
+  putCaretIn(sheet, table->rows() - 1, table->columns() - 1);
+  QTest::keyClick(sheet, Qt::Key_Return);
+  QCoreApplication::processEvents();
+
+  // Leaving the finished cell flushes without waiting for the idle window, so
+  // the source has already grown by exactly one body row.
+  const QString after = editor.document()->toPlainText();
+  QVERIFY2(after.contains(QStringLiteral("| h1 | h2 |\n"
+                                         "| --- | --- |\n"
+                                         "| a | b |\n"
+                                         "|  |  |")),
+           qPrintable(after));
+
+  // The replacement was accepted, not rejected into a reset: the sheet keeps
+  // its enlarged table and its caret in the new row.
+  QCOMPARE(sheetTable(sheet)->rows(), 3);
+  QTextTableCell caretCell = sheetTable(sheet)->cellAt(sheet->textCursor().position());
+  QVERIFY(caretCell.isValid());
+  QCOMPARE(caretCell.row(), 2);
+  QCOMPARE(caretCell.column(), 0);
+
+  // And the parse generation which follows re-binds the same widget onto the
+  // enlarged snapshot rather than rebuilding the sheet away underneath the
+  // caret.
+  settle(editor);
+  QCOMPARE(singlePreviewWidget(editor), widget);
+  QCOMPARE(sheetView(widget), sheet);
+  QCOMPARE(sheetTable(sheet)->rows(), 3);
+  caretCell = sheetTable(sheet)->cellAt(sheet->textCursor().position());
+  QVERIFY(caretCell.isValid());
+  QCOMPARE(caretCell.row(), 2);
+  QCOMPARE(caretCell.column(), 0);
+
+  // Typing into the new row still commits, which is the proof the anchor was
+  // retargeted onto the enlarged table.
+  editCell(sheet, 2, 0, QStringLiteral("c"));
+  flushSheet(sheet);
+  QVERIFY2(editor.document()->toPlainText().contains(QStringLiteral("| c |  |")),
+           qPrintable(editor.document()->toPlainText()));
+}
+
 void TestInteractivePreview::testPaddedSourceIsOnlyRewrittenOnARealEdit() {
   VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
   // A padded source is not the canonical form any more, so it is the case

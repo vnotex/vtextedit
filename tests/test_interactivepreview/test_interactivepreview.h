@@ -206,6 +206,7 @@ private slots:
   void testReplacementAcceptedAfterUnrelatedEdit();
   void testReplacementPreservesBlockquotePrefix();
   void testTableEditCommitsCanonicalMarkdown();
+  void testEnterInTheLastCellGrowsTheSource();
 
   void testPaddedSourceIsOnlyRewrittenOnARealEdit();
   void testSourceBitDisablesTablePreview();

@@ -156,6 +156,29 @@ public:
   // Canonical Markdown of the current document contents.
   QString toMarkdown() const;
 
+  // Whether one more row would still fit inside the cell bound.
+  //
+  // Growth by keystroke is the one path which is not covered by
+  // isWithinLimits(), which only ever runs at bind time. The bound is the
+  // latency budget documented on c_maxCells, and a keystroke which crossed it
+  // would make every following keystroke miss its frame.
+  bool canAppendRow() const;
+
+  // Append one empty row at the bottom of the table.
+  //
+  // Not a plain QTextTable::appendRows(1): m_rowPrefixes carries one entry per
+  // row and TablePreviewSerializer::serialize() returns an empty string on a
+  // size mismatch, which flushPendingCommit() reads as a rejection and answers
+  // by rebuilding from source - the appended row would silently disappear. The
+  // prefix appended here is m_delimiterPrefix, which is exactly the prefix
+  // arePrefixesSafe() demands of every row after the header. The per-cell
+  // formats are not carried over by appendRows() either, so they are written
+  // explicitly.
+  //
+  // Returns false when the row could not be added, in which case nothing was
+  // touched.
+  bool appendRow();
+
   // Re-apply the per-cell formats - the column alignment and the header
   // weight - without touching a single character of cell text.
   //
@@ -364,6 +387,16 @@ private:
   bool isAtTopEdge() const;
 
   bool isAtBottomEdge() const;
+
+  // Grow the table by one row when the caret sits in the last cell of the last
+  // row, and put the caret in the first cell of the new row.
+  //
+  // Returns false when the key does not apply here, in which case *nothing*
+  // has been touched: the checks deliberately run before commitPreedit() and
+  // clearSelection(), both of which have side effects (the former can insert
+  // the composition text synchronously, the latter rewrites the cursor), and a
+  // refused Enter has to stay as inert as the plain swallow it replaces.
+  bool appendRowFromLastCell();
 
   // Re-seed the sheet's palette from its parent and hand the derived colours
   // to the document. Returns the effective palette.

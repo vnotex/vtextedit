@@ -1250,6 +1250,361 @@ void TestTablePreview::testEnterIsSwallowed() {
   QCOMPARE(cellText(sheet->document(), 1, 1), QStringLiteral("**bold**"));
 }
 
+void TestTablePreview::testAppendRowKeepsThePrefixesAndTheRowCount() {
+  // Straight at the document, because the invariants an appended row can break
+  // - the per-row prefix vector and the cached row count - are only observable
+  // here, and a break in either makes toMarkdown() empty, which the commit
+  // machinery reads as a rejection and answers by throwing the row away.
+  QVector<QVector<QString>> cells;
+  cells.append({QStringLiteral("h1"), QStringLiteral("h2")});
+  cells.append({QStringLiteral("a"), QStringLiteral("b")});
+
+  TablePreviewDocument document;
+  // A block quote prefix, so the appended row has a prefix which is actually
+  // something: an empty one would be reproduced by a plain bug too.
+  document.setTable(makeTable(cells, {PreviewTableAlignment::None, PreviewTableAlignment::None},
+                              {QStringLiteral("> "), QStringLiteral("> ")},
+                              QStringLiteral("> ")));
+  QVERIFY(document.table());
+  QCOMPARE(document.rowCount(), 2);
+
+  // Every state a change observer can see is the completed one: the row, its
+  // prefix and its formats are one edit block.
+  int changes = 0;
+  bool complete = true;
+  QObject::connect(document.document(), &QTextDocument::contentsChanged, document.document(),
+                   [&]() {
+                     ++changes;
+                     if (document.rowCount() != document.table()->rows() ||
+                         document.toMarkdown().isEmpty()) {
+                       complete = false;
+                     }
+                   });
+
+  QVERIFY(document.canAppendRow());
+  QVERIFY(document.appendRow());
+
+  QCOMPARE(changes, 1);
+  QVERIFY(complete);
+  QCOMPARE(document.rowCount(), 3);
+  QCOMPARE(document.table()->rows(), 3);
+
+  // The new row carries the delimiter row's prefix, which is the only prefix
+  // arePrefixesSafe() allows a body row to have.
+  QCOMPARE(document.toMarkdown(), QStringLiteral("> | h1 | h2 |\n"
+                                                 "> | --- | --- |\n"
+                                                 "> | a | b |\n"
+                                                 "> |  |  |"));
+}
+
+void TestTablePreview::testEnterInLastCellAppendsRow() {
+  QScopedPointer<TablePreviewWidget> holder;
+  auto widget = buildEditableSheet(holder);
+  QVERIFY(widget);
+  auto sheet = sheetOf(*widget);
+  QVERIFY(sheet);
+
+  QTextTable *table = tableOf(sheet->document());
+  QVERIFY(table);
+  const int rows = table->rows();
+  const int columns = table->columns();
+
+  putCaretIn(sheet, rows - 1, columns - 1);
+  QTest::keyClick(sheet, Qt::Key_Return);
+
+  table = tableOf(sheet->document());
+  QVERIFY(table);
+  QCOMPARE(table->rows(), rows + 1);
+  QCOMPARE(table->columns(), columns);
+
+  // The new row is empty and the caret waits in its first cell, which is where
+  // the user is about to type.
+  for (int c = 0; c < columns; ++c) {
+    QVERIFY(cellText(sheet->document(), rows, c).isEmpty());
+  }
+
+  const QTextTableCell caretCell = table->cellAt(sheet->textCursor().position());
+  QVERIFY(caretCell.isValid());
+  QCOMPARE(caretCell.row(), rows);
+  QCOMPARE(caretCell.column(), 0);
+
+  // The header weight must not leak down: the new row is a body row, and a
+  // cell holds its raw source, so bold here would be a lie about the Markdown.
+  for (int c = 0; c < columns; ++c) {
+    const QTextTableCell cell = table->cellAt(rows, c);
+    QVERIFY(cell.isValid());
+    QVERIFY(cell.firstCursorPosition().blockCharFormat().fontWeight() != QFont::Bold);
+  }
+
+  // QTextTable::appendRows() carries no per-cell format, so the alignments are
+  // the thing most likely to be missing from a new row.
+  const QVector<Qt::Alignment> expected{Qt::AlignLeft, Qt::AlignHCenter, Qt::AlignRight};
+  for (int c = 0; c < columns; ++c) {
+    const QTextTableCell cell = table->cellAt(rows, c);
+    QCOMPARE(cell.firstCursorPosition().blockFormat().alignment(), expected.at(c));
+  }
+}
+
+void TestTablePreview::testEnterAppendsTheFirstBodyRowOfAHeaderOnlyTable() {
+  QVector<QVector<QString>> cells;
+  cells.append({QStringLiteral("h1"), QStringLiteral("h2")});
+
+  QScopedPointer<TablePreviewWidget> holder(new TablePreviewWidget(nullptr, nullptr));
+  QVERIFY(holder->setPreview(
+      makeTable(cells, {PreviewTableAlignment::None, PreviewTableAlignment::Right})));
+  showOffScreen(*holder, 600);
+  settle();
+
+  auto sheet = sheetOf(*holder);
+  QVERIFY(sheet);
+
+  putCaretIn(sheet, 0, 1);
+  QTest::keyClick(sheet, Qt::Key_Return);
+
+  QTextTable *table = tableOf(sheet->document());
+  QVERIFY(table);
+  QCOMPARE(table->rows(), 2);
+
+  // The header row is the last row here, which is the shape most likely to
+  // hand its own bold format to the row appended under it.
+  const QTextTableCell cell = table->cellAt(1, 0);
+  QVERIFY(cell.isValid());
+  QVERIFY(cell.firstCursorPosition().blockCharFormat().fontWeight() != QFont::Bold);
+  QCOMPARE(table->cellAt(1, 1).firstCursorPosition().blockFormat().alignment(), Qt::AlignRight);
+}
+
+void TestTablePreview::testEnterInTheLastCellOfANonLastRowDoesNotGrow() {
+  QScopedPointer<TablePreviewWidget> holder;
+  auto widget = buildEditableSheet(holder);
+  QVERIFY(widget);
+  auto sheet = sheetOf(*widget);
+  QVERIFY(sheet);
+
+  QTextTable *table = tableOf(sheet->document());
+  QVERIFY(table);
+  const int rows = table->rows();
+
+  // The last column, but not the last row: only the very last cell of the
+  // table means "one more row".
+  putCaretIn(sheet, 0, table->columns() - 1);
+  QTest::keyClick(sheet, Qt::Key_Return);
+
+  QCOMPARE(tableOf(sheet->document())->rows(), rows);
+}
+
+void TestTablePreview::testEnterModifiersDecideWhetherARowIsAppended() {
+  QScopedPointer<TablePreviewWidget> holder;
+  auto widget = buildEditableSheet(holder);
+  QVERIFY(widget);
+  auto sheet = sheetOf(*widget);
+  QVERIFY(sheet);
+
+  auto rowsNow = [&]() { return tableOf(sheet->document())->rows(); };
+  auto pressInLastCell = [&](int p_key, Qt::KeyboardModifiers p_modifiers) {
+    QTextTable *table = tableOf(sheet->document());
+    putCaretIn(sheet, table->rows() - 1, table->columns() - 1);
+    QTest::keyClick(sheet, static_cast<Qt::Key>(p_key), p_modifiers);
+  };
+
+  int rows = rowsNow();
+  pressInLastCell(Qt::Key_Return, Qt::NoModifier);
+  QCOMPARE(rowsNow(), ++rows);
+
+  // The keypad's Enter is the key Qt::Key_Enter stands for and native events
+  // carry KeypadModifier, so it must not be read as a semantic modifier.
+  pressInLastCell(Qt::Key_Enter, Qt::KeypadModifier);
+  QCOMPARE(rowsNow(), ++rows);
+
+  for (auto modifier : {Qt::ShiftModifier, Qt::ControlModifier, Qt::AltModifier,
+                        Qt::MetaModifier}) {
+    pressInLastCell(Qt::Key_Return, modifier);
+    QCOMPARE(rowsNow(), rows);
+  }
+}
+
+void TestTablePreview::testARefusedEnterHasNoSideEffects() {
+  QScopedPointer<TablePreviewWidget> holder;
+  auto widget = buildEditableSheet(holder);
+  QVERIFY(widget);
+  auto sheet = sheetOf(*widget);
+  QVERIFY(sheet);
+
+  // A refused Enter used to be a plain swallow, which touched nothing at all,
+  // and it still has to be: the eligibility checks run before commitPreedit()
+  // and clearSelection(), both of which have side effects.
+  QTextTable *table = tableOf(sheet->document());
+  QVERIFY(table);
+  const QTextTableCell cell = table->cellAt(1, 1);
+  QTextCursor selection = cell.firstCursorPosition();
+  selection.setPosition(cell.lastCursorPosition().position(), QTextCursor::KeepAnchor);
+  sheet->setTextCursor(selection);
+  QVERIFY(sheet->textCursor().hasSelection());
+
+  const int rows = table->rows();
+  QTest::keyClick(sheet, Qt::Key_Return);
+
+  QCOMPARE(tableOf(sheet->document())->rows(), rows);
+  QVERIFY(sheet->textCursor().hasSelection());
+  QCOMPARE(cellText(sheet->document(), 1, 1), QStringLiteral("**bold**"));
+}
+
+void TestTablePreview::testAnAcceptedEnterCollapsesTheSelection() {
+  QScopedPointer<TablePreviewWidget> holder;
+  auto widget = buildEditableSheet(holder);
+  QVERIFY(widget);
+  auto sheet = sheetOf(*widget);
+  QVERIFY(sheet);
+
+  QTextTable *table = tableOf(sheet->document());
+  QVERIFY(table);
+  const int rows = table->rows();
+  const int columns = table->columns();
+
+  const QTextTableCell cell = table->cellAt(rows - 1, columns - 1);
+  QTextCursor selection = cell.firstCursorPosition();
+  selection.setPosition(cell.lastCursorPosition().position(), QTextCursor::KeepAnchor);
+  sheet->setTextCursor(selection);
+
+  const QString before = cellText(sheet->document(), rows - 1, columns - 1);
+  QTest::keyClick(sheet, Qt::Key_Return);
+
+  // Collapsed, not deleted: the selection is in the way of the caret move, not
+  // something the key was ever meant to replace.
+  QVERIFY(!sheet->textCursor().hasSelection());
+  QCOMPARE(cellText(sheet->document(), rows - 1, columns - 1), before);
+  QCOMPARE(tableOf(sheet->document())->rows(), rows + 1);
+}
+
+void TestTablePreview::testEnterRespectsCellBound() {
+  // One row below the bound, so both sides of the fencepost are exercised: the
+  // append which lands exactly on c_maxCells is allowed, the one which would
+  // cross it is not.
+  const int columns = 2;
+  const int rows = TablePreviewDocument::c_maxCells / columns - 1;
+  QVector<QVector<QString>> cells;
+  for (int r = 0; r < rows; ++r) {
+    cells.append({QStringLiteral("a"), QStringLiteral("b")});
+  }
+
+  QScopedPointer<TablePreviewWidget> holder(new TablePreviewWidget(nullptr, nullptr));
+  QVERIFY(holder->setPreview(
+      makeTable(cells, {PreviewTableAlignment::None, PreviewTableAlignment::None})));
+  showOffScreen(*holder, 600);
+  settle();
+
+  auto sheet = sheetOf(*holder);
+  QVERIFY(sheet);
+
+  auto selectLastCell = [&]() {
+    QTextTable *table = tableOf(sheet->document());
+    const QTextTableCell cell = table->cellAt(table->rows() - 1, columns - 1);
+    QTextCursor selection = cell.firstCursorPosition();
+    selection.setPosition(cell.lastCursorPosition().position(), QTextCursor::KeepAnchor);
+    sheet->setTextCursor(selection);
+  };
+
+  selectLastCell();
+  QTest::keyClick(sheet, Qt::Key_Return);
+  QCOMPARE(tableOf(sheet->document())->rows(), rows + 1);
+
+  // Exactly at the bound now, so the next Enter is refused - and refused means
+  // inert, selection included. The new row is empty, so it is typed into first:
+  // an empty cell has no selection to preserve.
+  typeInto(sheet, rows, columns - 1, QStringLiteral("z"));
+  selectLastCell();
+  QVERIFY(sheet->textCursor().hasSelection());
+  QTest::keyClick(sheet, Qt::Key_Return);
+
+  QCOMPARE(tableOf(sheet->document())->rows(), rows + 1);
+  QVERIFY(sheet->textCursor().hasSelection());
+  QCOMPARE(cellText(sheet->document(), rows, columns - 1), QStringLiteral("z"));
+}
+
+void TestTablePreview::testEnterInReadOnlySheetDoesNothing() {
+  QScopedPointer<TablePreviewWidget> holder;
+  auto widget = buildEditableSheet(holder);
+  QVERIFY(widget);
+  auto sheet = sheetOf(*widget);
+  QVERIFY(sheet);
+
+  QTextTable *table = tableOf(sheet->document());
+  QVERIFY(table);
+  const int rows = table->rows();
+
+  widget->setReadOnly(true);
+  putCaretIn(sheet, rows - 1, table->columns() - 1);
+  QTest::keyClick(sheet, Qt::Key_Return);
+
+  QCOMPARE(tableOf(sheet->document())->rows(), rows);
+}
+
+void TestTablePreview::testTheAppendedRowKeepsTheTableFormat() {
+  QScopedPointer<TablePreviewWidget> holder;
+  auto widget = buildEditableSheet(holder);
+  QVERIFY(widget);
+  auto sheet = sheetOf(*widget);
+  QVERIFY(sheet);
+
+  QTextTable *table = tableOf(sheet->document());
+  QVERIFY(table);
+  const QTextTableFormat before = table->format().toTableFormat();
+
+  putCaretIn(sheet, table->rows() - 1, table->columns() - 1);
+  QTest::keyClick(sheet, Qt::Key_Return);
+
+  // appendRows() is documented to keep the format; this pins it, because the
+  // column width constraints were sized at build time and losing them would
+  // reshape the whole sheet.
+  const QTextTableFormat after = tableOf(sheet->document())->format().toTableFormat();
+  QCOMPARE(after.width().type(), before.width().type());
+  QCOMPARE(after.width().rawValue(), before.width().rawValue());
+  QCOMPARE(after.headerRowCount(), before.headerRowCount());
+  QCOMPARE(after.columnWidthConstraints().size(), before.columnWidthConstraints().size());
+  for (int c = 0; c < before.columnWidthConstraints().size(); ++c) {
+    QCOMPARE(after.columnWidthConstraints().at(c).type(),
+             before.columnWidthConstraints().at(c).type());
+    QCOMPARE(after.columnWidthConstraints().at(c).rawValue(),
+             before.columnWidthConstraints().at(c).rawValue());
+  }
+  QCOMPARE(after.border(), before.border());
+  QCOMPARE(after.cellPadding(), before.cellPadding());
+  QCOMPARE(after.cellSpacing(), before.cellSpacing());
+}
+
+void TestTablePreview::testTheAppendIsObservedAsOneChange() {
+  QScopedPointer<TablePreviewWidget> holder;
+  auto widget = buildEditableSheet(holder);
+  QVERIFY(widget);
+  auto sheet = sheetOf(*widget);
+  QVERIFY(sheet);
+
+  QTextDocument *doc = sheet->document();
+  QTextTable *table = tableOf(doc);
+  QVERIFY(table);
+  const int rows = table->rows();
+  const int columns = table->columns();
+
+  // The row, its prefix and its formats reach the commit machinery as one
+  // change: handleContentsChanged() re-runs isIntact() and rebuilds from
+  // source when the table looks gone, so a half-applied state seen here would
+  // be a real risk of losing the edit.
+  int changes = 0;
+  bool complete = true;
+  QObject::connect(doc, &QTextDocument::contentsChanged, sheet, [&]() {
+    ++changes;
+    QTextTable *live = tableOf(doc);
+    if (!live || live->rows() != rows + 1 || live->columns() != columns) {
+      complete = false;
+    }
+  });
+
+  putCaretIn(sheet, rows - 1, columns - 1);
+  QTest::keyClick(sheet, Qt::Key_Return);
+
+  QCOMPARE(changes, 1);
+  QVERIFY(complete);
+}
+
 void TestTablePreview::testSelectAllCannotTakeTheTableApart() {
   QScopedPointer<TablePreviewWidget> holder;
   auto widget = buildEditableSheet(holder);
@@ -1981,6 +2336,36 @@ void TestTablePreview::testCellLeaveFlushesImmediately() {
   QCoreApplication::processEvents();
   QCOMPARE(harness.requestCount(), 1);
   QVERIFY(harness.lastRequest().contains(QStringLiteral("a!")));
+}
+
+void TestTablePreview::testEnterAppendedRowIsCommitted() {
+  SheetHarness harness(makeCommittableTable());
+  auto sheet = harness.sheet();
+  QVERIFY(sheet);
+
+  QTextTable *table = tableOf(sheet->document());
+  QVERIFY(table);
+  const int rows = table->rows();
+  const int columns = table->columns();
+
+  putCaretIn(sheet, rows - 1, columns - 1);
+  QTest::keyClick(sheet, Qt::Key_Return);
+  QCoreApplication::processEvents();
+
+  // Moving into the new row leaves the cell the user was in, and a finished
+  // cell does not wait for the idle window.
+  QCOMPARE(harness.requestCount(), 1);
+
+  const QStringList lines = harness.lastRequest().split(QLatin1Char('\n'));
+  // The header, the delimiter row, the original body row and exactly one new
+  // one - whose prefix has to be there, or the serializer would have returned
+  // an empty string and the sheet would have been reset from source.
+  QCOMPARE(lines.size(), rows + 2);
+  QCOMPARE(lines.last(), QStringLiteral("|  |  |"));
+
+  // And nothing further is owed: the append is one edit, not two.
+  waitForCommit();
+  QCOMPARE(harness.requestCount(), 1);
 }
 
 void TestTablePreview::testFocusOutFlushesImmediately() {

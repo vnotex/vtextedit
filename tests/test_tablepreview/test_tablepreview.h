@@ -54,6 +54,18 @@ private slots:
 
   // Content invariants.
   void testEnterIsSwallowed();
+  void testAppendRowKeepsThePrefixesAndTheRowCount();
+  void testEnterInLastCellAppendsRow();
+  void testEnterAppendsTheFirstBodyRowOfAHeaderOnlyTable();
+  void testEnterInTheLastCellOfANonLastRowDoesNotGrow();
+  void testEnterModifiersDecideWhetherARowIsAppended();
+  void testARefusedEnterHasNoSideEffects();
+  void testAnAcceptedEnterCollapsesTheSelection();
+  void testEnterRespectsCellBound();
+  void testEnterInReadOnlySheetDoesNothing();
+  void testTheAppendedRowKeepsTheTableFormat();
+  void testTheAppendIsObservedAsOneChange();
+  void testEnterAppendedRowIsCommitted();
   void testSelectAllCannotTakeTheTableApart();
   void testCutAndDeleteStayInsideOneCell();
   void testWordDeleteShortcutsStayInsideOneCell();
