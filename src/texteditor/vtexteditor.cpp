@@ -23,9 +23,9 @@
 #include "syntaxhighlighter.h"
 #include "textfolding.h"
 
-#include <utils/utils.h>
 #include <Repository>
 #include <Theme>
+#include <utils/utils.h>
 #include <vtextedit/spellchecker.h>
 #include <vtextedit/texteditutils.h>
 #include <vtextedit/textutils.h>
@@ -860,15 +860,14 @@ void VTextEditor::updateInputModeStatusWidget() {
   // StatusIndicator (the migrated status-bar path never creates one).
   disconnect(m_inputModeFocusConnection);
   if (inputModeWidget) {
-    m_inputModeFocusConnection =
-        connect(inputModeWidget.data(), &InputModeStatusWidget::focusOut, this,
-                [this]() { m_textEdit->setFocus(); });
+    m_inputModeFocusConnection = connect(inputModeWidget.data(), &InputModeStatusWidget::focusOut,
+                                         this, [this]() { m_textEdit->setFocus(); });
   }
 
   // Emit outside the m_statusIndicator guard so migrated hosts (which never
   // create a StatusIndicator) still receive the widget swap.
   emit inputModeStatusWidgetChanged(inputModeWidget ? inputModeWidget->widget()
-                                                     : QSharedPointer<QWidget>());
+                                                    : QSharedPointer<QWidget>());
 }
 
 EditorMode VTextEditor::getEditorMode() const {
@@ -950,6 +949,8 @@ void VTextEditor::insertText(const QString &p_text) { m_textEdit->insertPlainTex
 int VTextEditor::zoomDelta() const { return m_zoomDelta; }
 
 int VTextEditor::editorFontPointSize() const { return m_editorFontPointSize; }
+
+int VTextEditor::baseEditorFontPointSize() const { return m_themeFont.pointSize(); }
 
 // zoomIn() and zoomOut() does not work if we set stylesheet of editor.
 void VTextEditor::zoom(int p_delta) {

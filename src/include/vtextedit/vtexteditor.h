@@ -153,6 +153,9 @@ public:
 
   int editorFontPointSize() const;
 
+  // The unzoomed base font point size from the theme/config.
+  int baseEditorFontPointSize() const;
+
   // @p_delta: font point size added to the base font size.
   virtual void zoom(int p_delta);
 
