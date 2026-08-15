@@ -7,6 +7,8 @@
 #include <QStatusBar>
 #include <QVBoxLayout>
 
+#include <functional>
+
 #include "helper.h"
 #include "logger.h"
 
@@ -72,7 +74,11 @@ static const char *c_richTextHtml = "<h2>Rich text demo</h2>"
 
 // Rich text editor demo with an input mode switcher and a status bar slot for
 // the input mode status widget (the Vi command bar).
-static void setupRichTextEditor(QMainWindow *p_win) {
+// Returns a cleanup callable which must run before the window is destroyed:
+// QStatusBar::addWidget() reparents the widget, while the input mode owns it
+// through a QSharedPointer, so it has to be handed back before the status bar
+// dies.
+static std::function<void()> setupRichTextEditor(QMainWindow *p_win) {
   auto config = QSharedPointer<RichTextEditorConfig>::create();
   config->m_viConfig = QSharedPointer<ViConfig>::create();
 
@@ -96,6 +102,9 @@ static void setupRichTextEditor(QMainWindow *p_win) {
   auto mountStatusWidget = [p_win, statusWidget](QSharedPointer<QWidget> p_widget) {
     if (*statusWidget) {
       p_win->statusBar()->removeWidget(statusWidget->data());
+      // removeWidget() only hides it; the status bar is still its parent and
+      // would delete it, so give the ownership back to the input mode.
+      (*statusWidget)->setParent(nullptr);
       statusWidget->clear();
     }
 
@@ -118,6 +127,8 @@ static void setupRichTextEditor(QMainWindow *p_win) {
                      editor->setInputMode(
                          static_cast<InputMode>(modeCombo->itemData(p_index).toInt()));
                    });
+
+  return [mountStatusWidget]() { mountStatusWidget(QSharedPointer<QWidget>()); };
 }
 
 int main(int p_argc, char *p_argv[]) {
@@ -138,12 +149,17 @@ int main(int p_argc, char *p_argv[]) {
   VTextEditor::addSyntaxCustomSearchPaths(QStringList(QStringLiteral(":/demo/data")));
 
   if (app.arguments().contains(QStringLiteral("--richtext"))) {
-    setupRichTextEditor(&win);
+    auto cleanup = setupRichTextEditor(&win);
 
     win.resize(800, 600);
     win.show();
 
-    return app.exec();
+    const int ret = app.exec();
+    // Hand the Vi command bar back to the input mode before the window (and
+    // its status bar) is destroyed.
+    cleanup();
+
+    return ret;
   }
 
   auto editor = setupMarkdownEditor(&win);
@@ -158,6 +174,9 @@ int main(int p_argc, char *p_argv[]) {
 
   int ret = app.exec();
   win.statusBar()->removeWidget(statusWidget.data());
+  // removeWidget() keeps the status bar as the parent, which would delete the
+  // widget the editor still owns through a QSharedPointer.
+  statusWidget->setParent(nullptr);
 
   return ret;
 }
