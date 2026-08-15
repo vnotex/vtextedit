@@ -381,7 +381,8 @@ public:
   // Moves the caret to the cell under @p_viewportPos, so the operations are
   // relative to what the user pointed at. A click which is not in a cell at
   // all - the shrunken block after the table, for one - leaves the caret alone
-  // and gets the standard menu unchanged.
+  // and gets the standard menu unchanged, and so does a click on a selection:
+  // that one is aimed at the text, which is what the standard menu acts on.
   //
   // Public because it is the only seam a test can inspect without entering a
   // modal exec() - the action tree, the enabled states and the checked

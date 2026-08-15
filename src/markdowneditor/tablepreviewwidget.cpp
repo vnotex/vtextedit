@@ -1603,6 +1603,13 @@ QMenu *TablePreviewSheet::createContextMenu(const QPoint &p_viewportPos) {
     }
   }
 
+  // A surviving selection means the right click was aimed at the text, not at
+  // the table: the standard menu's Cut, Copy and Delete are what it is for,
+  // and a row or column operation would silently act on something else. Read
+  // after the retargeting above, which collapses the selection whenever the
+  // click landed outside it.
+  const bool offerTableOperations = hitACell && !textCursor().hasSelection();
+
   // Null for a document which cannot offer one at all; the caller still gets a
   // menu, because the table operations below are appended to it.
   QMenu *menu = createStandardContextMenu(p_viewportPos);
@@ -1610,7 +1617,7 @@ QMenu *TablePreviewSheet::createContextMenu(const QPoint &p_viewportPos) {
     menu = new QMenu(this);
   }
 
-  if (hitACell) {
+  if (offerTableOperations) {
     if (QMenu *tableMenu = buildTableMenu(menu)) {
       // At the front, not appended: the table operations are what the sheet is
       // right-clicked for, and QTextEdit's standard menu ends with entries -

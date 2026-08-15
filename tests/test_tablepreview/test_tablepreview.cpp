@@ -3062,7 +3062,9 @@ void TestTablePreview::testTheContextMenuReflectsWhereItWasOpened() {
   QCOMPARE(table->cellAt(sheet->textCursor().position()).column(), 2);
 
   // One inside a selection leaves it alone: the standard menu's Cut and Copy
-  // are relative to it.
+  // are relative to it, and a row or column operation would act on something
+  // the user is not pointing at - so the table operations are not offered at
+  // all while a selection survives.
   {
     const QTextTableCell cell = table->cellAt(1, 0);
     QTextCursor selection = cell.firstCursorPosition();
@@ -3071,8 +3073,25 @@ void TestTablePreview::testTheContextMenuReflectsWhereItWasOpened() {
   }
   const QString selected = sheet->textCursor().selectedText();
   QVERIFY(!selected.isEmpty());
-  sendContextMenu(sheet, cellRect(sheet, 1, 0).center());
+  const QPoint onSelection = cellRect(sheet, 1, 0).center();
+  sendContextMenu(sheet, onSelection);
   QCOMPARE(sheet->textCursor().selectedText(), selected);
+
+  {
+    QScopedPointer<QMenu> selectionMenu(sheet->createContextMenu(onSelection));
+    QVERIFY(selectionMenu);
+    QCOMPARE(sheet->textCursor().selectedText(), selected);
+    QVERIFY(!selectionMenu->findChild<QMenu *>(QStringLiteral("TablePreviewTableMenu")));
+    QVERIFY(!actionNamed(selectionMenu.data(), "InsertRowBelow"));
+  }
+
+  // A click outside it collapses the selection onto the clicked cell, and the
+  // operations are back.
+  {
+    QScopedPointer<QMenu> movedMenu(sheet->createContextMenu(cellRect(sheet, 1, 2).center()));
+    QVERIFY(sheet->textCursor().selectedText().isEmpty());
+    QVERIFY(movedMenu->findChild<QMenu *>(QStringLiteral("TablePreviewTableMenu")));
+  }
 
   // A click which is not in a cell at all - the shrunken block a QTextDocument
   // always keeps after a table - gets the standard menu unchanged. Clamping it
