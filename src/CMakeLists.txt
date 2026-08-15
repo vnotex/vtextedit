@@ -40,6 +40,7 @@ add_library(VTextEdit SHARED
     include/vtextedit/previewdata.h
     include/vtextedit/previewmgr.h
     include/vtextedit/previewwidget.h
+    include/vtextedit/richtexteditorconfig.h
     include/vtextedit/spellchecker.h
     include/vtextedit/textblockdata.h
     include/vtextedit/texteditorconfig.h
@@ -49,6 +50,7 @@ add_library(VTextEdit SHARED
     include/vtextedit/theme.h
     include/vtextedit/viconfig.h
     include/vtextedit/vmarkdowneditor.h
+    include/vtextedit/vrichtexteditor.h
     include/vtextedit/vsyntaxhighlighter.h
     include/vtextedit/vtextedit.h
     include/vtextedit/vtextedit_export.h
@@ -59,6 +61,7 @@ add_library(VTextEdit SHARED
     inputmode/inputmodemgr.cpp inputmode/inputmodemgr.h
     inputmode/normalinputmode.cpp inputmode/normalinputmode.h
     inputmode/normalinputmodefactory.cpp inputmode/normalinputmodefactory.h
+    inputmode/texteditinputmode.cpp inputmode/texteditinputmode.h
     inputmode/viinputmode.cpp inputmode/viinputmode.h
     inputmode/viinputmodefactory.cpp inputmode/viinputmodefactory.h
     inputmode/vscodeinputmode.cpp inputmode/vscodeinputmode.h
@@ -90,6 +93,7 @@ add_library(VTextEdit SHARED
     markdowneditor/vmarkdowneditor.cpp
     markdowneditor/webcodeblockhighlighter.cpp markdowneditor/webcodeblockhighlighter.h
     markdowneditor/mathblockhighlighter.cpp markdowneditor/mathblockhighlighter.h
+    richtexteditor/vrichtexteditor.cpp
     spellcheck/spellchecker.cpp
     spellcheck/spellcheckhighlighthelper.cpp spellcheck/spellcheckhighlighthelper.h
     textedit/autoindenthelper.cpp textedit/autoindenthelper.h

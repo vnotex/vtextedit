@@ -430,12 +430,22 @@ void VTextEditor::updateSpaceWidth() {
 }
 
 void VTextEditor::setInputMode(InputMode p_mode) {
+  // Note: the owning pointer is deliberately kept alive across the swap below.
+  // VTextEditor publishes its input mode status widget only later, from
+  // updateStatusWidget(), and ViInputMode::~ViInputMode() asserts that its
+  // status bar is no longer parented. Releasing it earlier would destroy the
+  // outgoing Vi mode while StatusIndicator still hosts its command bar.
   auto currentMode = m_textEdit->getInputMode();
   if (currentMode && currentMode->mode() == p_mode) {
     return;
   }
 
   QScopedPointer<EditorInputMode> newInputMode(new EditorInputMode(this));
+
+  // Connect before the mode is installed, so that no mode notification emitted
+  // during the activation of the new input mode is lost.
+  connect(newInputMode.data(), &TextEditInputMode::editorModeChanged, this,
+          &VTextEditor::modeChanged);
 
   auto modeFactory = InputModeMgr::getInst().getFactory(p_mode);
   Q_ASSERT(modeFactory);

@@ -12,6 +12,7 @@
 #include <QResizeEvent>
 #include <QScrollBar>
 #include <QTextBlock>
+#include <QTextDocumentFragment>
 #include <QTextLayout>
 #include <QTimer>
 #include <QWheelEvent>
@@ -605,6 +606,8 @@ void VTextEdit::setExpandTab(bool p_enable) { m_expandTab = p_enable; }
 
 bool VTextEdit::isTabExpanded() const { return m_expandTab; }
 
+void VTextEdit::setAutoBracketsEnabled(bool p_enable) { m_autoBracketsEnabled = p_enable; }
+
 void VTextEdit::setTabStopWidthInSpaces(int p_spaces) {
   Q_ASSERT(p_spaces > 0);
   m_tabStopWidthInSpaces = p_spaces;
@@ -725,6 +728,12 @@ QMimeData *VTextEdit::createMimeDataFromSelection() const {
   const auto &selection = m_selections.m_overriddenSelection;
   if (selection.isValid()) {
     mimeData = new QMimeData();
+    // Preserve the rich flavour as well, matching what
+    // QTextEdit::createMimeDataFromSelection() would provide.
+    QTextCursor cursor(document());
+    cursor.setPosition(selection.start());
+    cursor.setPosition(selection.end(), QTextCursor::KeepAnchor);
+    mimeData->setHtml(cursor.selection().toHtml());
     // QTextCursor::selectedText() encodes block boundaries as U+2029
     // paragraph separators; normalize them to newlines like the default
     // QTextEdit path does, so multi-line copies paste correctly.

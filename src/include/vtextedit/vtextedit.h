@@ -142,6 +142,8 @@ public:
 
   bool isTabExpanded() const;
 
+  void setAutoBracketsEnabled(bool p_enable);
+
   void setTabStopWidthInSpaces(int p_spaces);
 
   int getTabStopWidthInSpaces() const;
