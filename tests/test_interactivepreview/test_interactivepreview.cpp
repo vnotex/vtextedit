@@ -4,9 +4,12 @@
 #include <limits>
 
 #include <QAbstractTextDocumentLayout>
+#include <QAction>
 #include <QApplication>
+#include <QContextMenuEvent>
 #include <QEventLoop>
 #include <QFocusEvent>
+#include <QMenu>
 #include <QPointer>
 #include <QScrollBar>
 #include <QSignalSpy>
@@ -401,6 +404,53 @@ QRect sheetCellRect(QTextEdit *p_sheet, int p_row, int p_column) {
 
   return p_sheet->cursorRect(cell.firstCursorPosition())
       .united(p_sheet->cursorRect(cell.lastCursorPosition()));
+}
+
+// Right-click one cell and trigger a table action by object name.
+//
+// The sheet shows its menu with exec(), which spins its own event loop, so the
+// action is triggered from a timer running inside it. Object names are the
+// only handle this target has: it deliberately cannot include the sheet's
+// header, and the labels are translated.
+bool triggerTableAction(QTextEdit *p_sheet, int p_row, int p_column, const char *p_name) {
+  const QRect rect = sheetCellRect(p_sheet, p_row, p_column);
+  if (!rect.isValid()) {
+    return false;
+  }
+
+  bool triggered = false;
+  int attempts = 0;
+  QTimer timer;
+  timer.setInterval(5);
+  QObject::connect(&timer, &QTimer::timeout, [&]() {
+    auto popup = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+    if (!popup) {
+      if (++attempts > 400) {
+        timer.stop();
+      }
+
+      return;
+    }
+
+    timer.stop();
+    if (QAction *action = popup->findChild<QAction *>(QString::fromLatin1(p_name))) {
+      triggered = action->isEnabled();
+      if (triggered) {
+        action->trigger();
+      }
+    }
+
+    popup->close();
+  });
+  timer.start();
+
+  const QPoint pos = rect.center();
+  QContextMenuEvent event(QContextMenuEvent::Mouse, pos, p_sheet->viewport()->mapToGlobal(pos));
+  // To the viewport, which is where a real right click lands.
+  QCoreApplication::sendEvent(p_sheet->viewport(), &event);
+  timer.stop();
+  QCoreApplication::processEvents();
+  return triggered;
 }
 
 void putCaretIn(QTextEdit *p_sheet, int p_row, int p_column) {
@@ -950,6 +1000,116 @@ void TestInteractivePreview::testEnterInTheLastCellGrowsTheSource() {
   flushSheet(sheet);
   QVERIFY2(editor.document()->toPlainText().contains(QStringLiteral("| c |  |")),
            qPrintable(editor.document()->toPlainText()));
+}
+
+void TestInteractivePreview::testAColumnInsertGrowsTheSource() {
+  // The unit target's harness accepts a replacement itself; only the real host
+  // re-validates the parse, the prefixes, the expected source and the live
+  // anchor. A column insert is the widest of those changes - the header and
+  // the delimiter row both grow - so it is what proves the retargeting copes
+  // with more than an appended row.
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QLatin1String(c_table));
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+  QCOMPARE(sheetTable(sheet)->columns(), 2);
+
+  const QString sourceBefore = editor.document()->toPlainText();
+
+  QVERIFY(triggerTableAction(sheet, 1, 1, "InsertColumnRight"));
+  flushSheet(sheet);
+
+  const QString after = editor.document()->toPlainText();
+  QVERIFY2(after.contains(QStringLiteral("| h1 | h2 |  |\n"
+                                         "| --- | --- | --- |\n"
+                                         "| a | b |  |")),
+           qPrintable(after));
+
+  // Accepted rather than rejected into a reset: the sheet keeps the column and
+  // the caret waits in it.
+  QCOMPARE(sheetTable(sheet)->columns(), 3);
+  const QTextTableCell caretCell = sheetTable(sheet)->cellAt(sheet->textCursor().position());
+  QVERIFY(caretCell.isValid());
+  QCOMPARE(caretCell.column(), 2);
+
+  settle(editor);
+  QCOMPARE(singlePreviewWidget(editor), widget);
+  QCOMPARE(sheetView(widget), sheet);
+
+  const QString sourceAfterInsert = editor.document()->toPlainText();
+
+  // Typing into the new column still commits, which is the proof the anchor
+  // was retargeted onto the widened table.
+  editCell(sheet, 1, 2, QStringLiteral("c"));
+  flushSheet(sheet);
+  QVERIFY2(editor.document()->toPlainText().contains(QStringLiteral("| a | b | c |")),
+           qPrintable(editor.document()->toPlainText()));
+
+  // The inner document has no undo stack of its own, so every commit is one
+  // whole-table replacement on the editor's: one undo per operation, and the
+  // second one takes the column out again.
+  editor.document()->undo();
+  settle(editor);
+  QCOMPARE(editor.document()->toPlainText(), sourceAfterInsert);
+
+  editor.document()->undo();
+  settle(editor);
+  QCOMPARE(editor.document()->toPlainText(), sourceBefore);
+
+  // And a structural change which really does move the sheet's geometry is
+  // reported to the host, which is what makes it re-reserve the band. A row is
+  // what proves the path: a column can leave the height exactly as it was, and
+  // the sheet deliberately terminates on an unchanged measurement.
+  widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  sheet = sheetView(widget);
+  QVERIFY(sheet);
+  const int heightBefore = widget->height();
+  QSignalSpy geometrySpy(sheet, SIGNAL(preferredGeometryChanged()));
+  QVERIFY(geometrySpy.isValid());
+
+  QVERIFY(triggerTableAction(sheet, 1, 1, "InsertRowBelow"));
+  flushSheet(sheet);
+  settle(editor);
+
+  QVERIFY2(geometrySpy.count() > 0, "the structural change was not re-measured");
+  QVERIFY2(singlePreviewWidget(editor)->height() > heightBefore,
+           "the band did not grow with the row");
+}
+
+void TestInteractivePreview::testAnAlignmentChangeReachesTheDelimiterRow() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QLatin1String(c_table));
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+
+  const QString sourceBefore = editor.document()->toPlainText();
+
+  // Nothing about the cells changes, so the delimiter row is the only thing
+  // which can carry this commit at all.
+  QVERIFY(triggerTableAction(sheet, 0, 1, "AlignmentRight"));
+  flushSheet(sheet);
+
+  const QString after = editor.document()->toPlainText();
+  QVERIFY2(after.contains(QStringLiteral("| h1 | h2 |\n"
+                                         "| --- | ---: |\n"
+                                         "| a | b |")),
+           qPrintable(after));
+
+  settle(editor);
+  QCOMPARE(singlePreviewWidget(editor), widget);
+  QCOMPARE(sheetView(widget), sheet);
+
+  // One undo, and the source is exactly what it was.
+  editor.document()->undo();
+  settle(editor);
+  QCOMPARE(editor.document()->toPlainText(), sourceBefore);
 }
 
 void TestInteractivePreview::testPaddedSourceIsOnlyRewrittenOnARealEdit() {

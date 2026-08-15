@@ -1,11 +1,15 @@
 #include "test_tablepreview.h"
 
 #include <QAbstractTextDocumentLayout>
+#include <QAction>
+#include <QApplication>
 #include <QClipboard>
+#include <QContextMenuEvent>
 #include <QDropEvent>
 #include <QFontDatabase>
 #include <QImage>
 #include <QInputMethodEvent>
+#include <QMenu>
 #include <QMimeData>
 #include <QPainter>
 #include <QScrollBar>
@@ -18,6 +22,7 @@
 #include <QTextLayout>
 #include <QTextTable>
 #include <QTextTableCell>
+#include <QTimer>
 
 #include <vtextedit/preview.h>
 
@@ -2660,6 +2665,607 @@ void TestTablePreview::testRevokedAuthoritySilencesEveryCommit() {
 
   QCOMPARE(harness.requestCount(), 1);
 }
+
+// ---------------------------------------------------------------------------
+// Row and column operations
+// ---------------------------------------------------------------------------
+
+namespace {
+// A two by two document with the given alignments, built straight rather than
+// through a widget: the invariants a structural change can break - the per-row
+// prefix vector, the alignment vector and the declared column count - are only
+// observable here, and breaking any of them makes toMarkdown() empty, which
+// the commit machinery reads as a rejection and answers by throwing the edit
+// away.
+void buildDocument(TablePreviewDocument &p_document,
+                   const QVector<PreviewTableAlignment> &p_alignments) {
+  QVector<QVector<QString>> cells;
+  cells.append({QStringLiteral("h1"), QStringLiteral("h2")});
+  cells.append({QStringLiteral("a"), QStringLiteral("b")});
+  p_document.setTable(makeTable(cells, p_alignments));
+}
+
+QVector<QTextLength> constraintsOf(const TablePreviewDocument &p_document) {
+  return p_document.table()->format().toTableFormat().columnWidthConstraints();
+}
+
+QAction *actionNamed(QMenu *p_menu, const char *p_name) {
+  return p_menu->findChild<QAction *>(QString::fromLatin1(p_name));
+}
+
+// The menu the sheet would show for a right click in one cell.
+QMenu *menuForCell(TablePreviewSheet *p_sheet, int p_row, int p_column) {
+  putCaretIn(p_sheet, p_row, p_column, false);
+  return p_sheet->createContextMenu(cellRect(p_sheet, p_row, p_column).center());
+}
+
+// Deliver a real right click. The handler shows the menu with exec(), which
+// spins its own event loop, so the popup is closed from a timer running inside
+// it - the point of the test is what the handler does to the caret before the
+// menu is up, not the menu itself.
+void sendContextMenu(TablePreviewSheet *p_sheet, const QPoint &p_viewportPos) {
+  QTimer closer;
+  closer.setInterval(5);
+  int attempts = 0;
+  QObject::connect(&closer, &QTimer::timeout, [&closer, &attempts]() {
+    if (QWidget *popup = QApplication::activePopupWidget()) {
+      popup->close();
+      closer.stop();
+      return;
+    }
+
+    if (++attempts > 400) {
+      closer.stop();
+    }
+  });
+  closer.start();
+
+  QContextMenuEvent event(QContextMenuEvent::Mouse, p_viewportPos,
+                          p_sheet->viewport()->mapToGlobal(p_viewportPos));
+  // To the viewport, which is where a real right click lands: the scroll area
+  // forwards it to the sheet itself.
+  QCoreApplication::sendEvent(p_sheet->viewport(), &event);
+  closer.stop();
+}
+} // namespace
+
+void TestTablePreview::testInsertRowKeepsThePrefixes() {
+  TablePreviewDocument document;
+  buildDocument(document, {PreviewTableAlignment::None, PreviewTableAlignment::Right});
+
+  // Every state a change observer can see is the completed one: the row, its
+  // prefix and its formats are one edit block.
+  int changes = 0;
+  bool complete = true;
+  QObject::connect(
+      document.document(), &QTextDocument::contentsChanged, document.document(), [&]() {
+        ++changes;
+        if (document.rowCount() != document.table()->rows() || document.toMarkdown().isEmpty()) {
+          complete = false;
+        }
+      });
+
+  QVERIFY(document.canInsertRow());
+  QVERIFY(document.insertRow(1));
+
+  QCOMPARE(changes, 1);
+  QVERIFY(complete);
+  QCOMPARE(document.rowCount(), 3);
+  QCOMPARE(document.table()->rows(), 3);
+
+  // The empty row is between the header and the old body row, and the round
+  // trip proves the prefix vector kept one entry per row.
+  QCOMPARE(document.toMarkdown(), QStringLiteral("| h1 | h2 |\n"
+                                                 "| --- | ---: |\n"
+                                                 "|  |  |\n"
+                                                 "| a | b |"));
+
+  // A new row carries no per-cell format of its own, so the column's
+  // alignment is the thing most likely to be missing from it.
+  QCOMPARE(document.table()->cellAt(1, 1).firstCursorPosition().blockFormat().alignment(),
+           Qt::Alignment(Qt::AlignRight));
+  // And the header weight must not leak down into a body row.
+  QVERIFY(document.table()->cellAt(1, 0).firstCursorPosition().blockCharFormat().fontWeight() !=
+          QFont::Bold);
+}
+
+void TestTablePreview::testRemoveRowKeepsThePrefixes() {
+  QVector<QVector<QString>> cells;
+  cells.append({QStringLiteral("h1"), QStringLiteral("h2")});
+  cells.append({QStringLiteral("a"), QStringLiteral("b")});
+  cells.append({QStringLiteral("c"), QStringLiteral("d")});
+
+  TablePreviewDocument document;
+  document.setTable(makeTable(cells, {PreviewTableAlignment::None, PreviewTableAlignment::None}));
+
+  int changes = 0;
+  QObject::connect(document.document(), &QTextDocument::contentsChanged, document.document(),
+                   [&]() { ++changes; });
+
+  QVERIFY(document.canDeleteRow(1));
+  QVERIFY(document.removeRow(1));
+
+  QCOMPARE(changes, 1);
+  QCOMPARE(document.rowCount(), 2);
+  QCOMPARE(document.toMarkdown(), QStringLiteral("| h1 | h2 |\n"
+                                                 "| --- | --- |\n"
+                                                 "| c | d |"));
+
+  // Down to the header alone, which is a legal table - and the last row which
+  // may go.
+  QVERIFY(document.removeRow(1));
+  QCOMPARE(document.rowCount(), 1);
+  QVERIFY(!document.canDeleteRow(0));
+  QVERIFY(!document.removeRow(0));
+  QCOMPARE(document.toMarkdown(), QStringLiteral("| h1 | h2 |\n"
+                                                 "| --- | --- |"));
+}
+
+void TestTablePreview::testInsertColumnKeepsTheAlignmentsAndTheDeclaredWidth() {
+  TablePreviewDocument document;
+  buildDocument(document, {PreviewTableAlignment::None, PreviewTableAlignment::Right});
+
+  QVERIFY(document.canInsertColumn());
+  QVERIFY(document.insertColumn(1));
+
+  QCOMPARE(document.columnCount(), 3);
+  // The declared width has to move with the column: a stale one makes
+  // isRoundTrippable() refuse, toMarkdown() empty and flushPendingCommit()
+  // restore the source, so the column would vanish at commit time rather than
+  // be refused visibly.
+  QVERIFY(document.isRoundTrippable());
+  const QString markdown = document.toMarkdown();
+  QVERIFY(!markdown.isEmpty());
+  QCOMPARE(markdown, QStringLiteral("| h1 |  | h2 |\n"
+                                    "| --- | --- | ---: |\n"
+                                    "| a |  | b |"));
+
+  // The alignment moved with the column it belongs to rather than staying on
+  // the index it used to sit at.
+  QCOMPARE(document.columnAlignment(1), PreviewTableAlignment::None);
+  QCOMPARE(document.columnAlignment(2), PreviewTableAlignment::Right);
+  QCOMPARE(document.table()->cellAt(1, 2).firstCursorPosition().blockFormat().alignment(),
+           Qt::Alignment(Qt::AlignRight));
+  QCOMPARE(document.table()->cellAt(1, 1).firstCursorPosition().blockFormat().alignment(),
+           Qt::Alignment(Qt::AlignLeft));
+  // The header weight follows the shifted cells too.
+  QCOMPARE(document.table()->cellAt(0, 1).firstCursorPosition().blockCharFormat().fontWeight(),
+           int(QFont::Bold));
+}
+
+void TestTablePreview::testRemoveColumnKeepsTheAlignmentsAndTheDeclaredWidth() {
+  TablePreviewDocument document;
+  buildDocument(document, {PreviewTableAlignment::Center, PreviewTableAlignment::Right});
+
+  QVERIFY(document.canDeleteColumn(0));
+  QVERIFY(document.removeColumn(0));
+
+  QCOMPARE(document.columnCount(), 1);
+  QVERIFY(document.isRoundTrippable());
+  QCOMPARE(document.toMarkdown(), QStringLiteral("| h2 |\n"
+                                                 "| ---: |\n"
+                                                 "| b |"));
+  QCOMPARE(document.columnAlignment(0), PreviewTableAlignment::Right);
+
+  // The last column may not go.
+  QVERIFY(!document.canDeleteColumn(0));
+  QVERIFY(!document.removeColumn(0));
+  QCOMPARE(document.columnCount(), 1);
+}
+
+void TestTablePreview::testColumnConstraintsFollowTheColumnCount() {
+  TablePreviewDocument document;
+  buildDocument(document, {PreviewTableAlignment::None, PreviewTableAlignment::None});
+
+  auto verify = [&](int p_expected) {
+    const QVector<QTextLength> constraints = constraintsOf(document);
+    QCOMPARE(constraints.size(), p_expected);
+    for (const auto &length : constraints) {
+      // VariableLength is what makes Qt's table layout share the band out by
+      // content, which is the whole column-width policy of the sheet.
+      QCOMPARE(length.type(), QTextLength::VariableLength);
+    }
+  };
+
+  verify(2);
+  QVERIFY(document.insertColumn(2));
+  verify(3);
+  QVERIFY(document.removeColumn(0));
+  verify(2);
+}
+
+void TestTablePreview::testStructuralRefusalsChangeNothing() {
+  TablePreviewDocument document;
+  buildDocument(document, {PreviewTableAlignment::None, PreviewTableAlignment::None});
+
+  const QString before = document.toMarkdown();
+  QVERIFY(!before.isEmpty());
+
+  int changes = 0;
+  QObject::connect(document.document(), &QTextDocument::contentsChanged, document.document(),
+                   [&]() { ++changes; });
+
+  // Row 0 is the header, not an ordinary row: neither inserting above it nor
+  // removing it has a meaning which keeps the prefixes the host re-validates.
+  QVERIFY(!document.insertRow(0));
+  QVERIFY(!document.removeRow(0));
+  QVERIFY(!document.insertRow(-1));
+  QVERIFY(!document.removeRow(-1));
+  // Past the end: QTextTable clamps silently while QVector::insert() asserts,
+  // so both are refused before either is reached.
+  QVERIFY(!document.insertRow(document.rowCount() + 1));
+  QVERIFY(!document.removeRow(document.rowCount()));
+  QVERIFY(!document.insertColumn(-1));
+  QVERIFY(!document.insertColumn(document.columnCount() + 1));
+  QVERIFY(!document.removeColumn(-1));
+  QVERIFY(!document.removeColumn(document.columnCount()));
+  QVERIFY(!document.setColumnAlignment(-1, PreviewTableAlignment::Left));
+  QVERIFY(!document.setColumnAlignment(document.columnCount(), PreviewTableAlignment::Left));
+  // Unchanged, so no commit is armed for it.
+  QVERIFY(!document.setColumnAlignment(0, PreviewTableAlignment::None));
+
+  QCOMPARE(changes, 0);
+  QCOMPARE(document.rowCount(), 2);
+  QCOMPARE(document.columnCount(), 2);
+  QCOMPARE(document.toMarkdown(), before);
+
+  // A one-row table keeps its row and a one-column table keeps its column.
+  TablePreviewDocument minimal;
+  QVector<QVector<QString>> single;
+  single.append({QStringLiteral("only")});
+  minimal.setTable(makeTable(single, {PreviewTableAlignment::None}));
+  QVERIFY(!minimal.removeRow(0));
+  QVERIFY(!minimal.removeColumn(0));
+  QCOMPARE(minimal.rowCount(), 1);
+  QCOMPARE(minimal.columnCount(), 1);
+}
+
+void TestTablePreview::testStructuralBoundsAreEnforced() {
+  // Exactly at the cell bound: one more row is one more full row of cells.
+  const int rows = TablePreviewDocument::c_maxCells / 2;
+  QVector<QVector<QString>> cells;
+  for (int r = 0; r < rows; ++r) {
+    cells.append({QStringLiteral("a"), QStringLiteral("b")});
+  }
+
+  TablePreviewDocument atCellBound;
+  atCellBound.setTable(
+      makeTable(cells, {PreviewTableAlignment::None, PreviewTableAlignment::None}));
+  QCOMPARE(atCellBound.rowCount(), rows);
+  QVERIFY(!atCellBound.canInsertRow());
+  QVERIFY(!atCellBound.insertRow(1));
+  QVERIFY(!atCellBound.canInsertColumn());
+  QVERIFY(!atCellBound.insertColumn(1));
+
+  // The column bound binds on its own for a short table, which is inside the
+  // cell bound all the way to it.
+  QVector<QVector<QString>> wide;
+  wide.append(QVector<QString>(TablePreviewDocument::c_maxColumns, QStringLiteral("h")));
+  TablePreviewDocument atColumnBound;
+  atColumnBound.setTable(
+      makeTable(wide, QVector<PreviewTableAlignment>(TablePreviewDocument::c_maxColumns,
+                                                     PreviewTableAlignment::None)));
+  QCOMPARE(atColumnBound.columnCount(), TablePreviewDocument::c_maxColumns);
+  QVERIFY(!atColumnBound.canInsertColumn());
+  QVERIFY(!atColumnBound.insertColumn(0));
+}
+
+void TestTablePreview::testSetColumnAlignmentRewritesTheDelimiterAndTheCells() {
+  TablePreviewDocument document;
+  buildDocument(document, {PreviewTableAlignment::None, PreviewTableAlignment::None});
+
+  QVERIFY(document.setColumnAlignment(1, PreviewTableAlignment::Center));
+  QCOMPARE(document.columnAlignment(1), PreviewTableAlignment::Center);
+  QCOMPARE(document.toMarkdown(), QStringLiteral("| h1 | h2 |\n"
+                                                 "| --- | :---: |\n"
+                                                 "| a | b |"));
+
+  for (int r = 0; r < document.rowCount(); ++r) {
+    QCOMPARE(document.table()->cellAt(r, 1).firstCursorPosition().blockFormat().alignment(),
+             Qt::Alignment(Qt::AlignHCenter));
+    // The column which was not touched keeps what it had.
+    QCOMPARE(document.table()->cellAt(r, 0).firstCursorPosition().blockFormat().alignment(),
+             Qt::Alignment(Qt::AlignLeft));
+  }
+
+  // None and Left render identically, so only the delimiter row can show the
+  // difference - which is exactly why the change has to reach the source.
+  QVERIFY(document.setColumnAlignment(0, PreviewTableAlignment::Left));
+  QCOMPARE(document.toMarkdown(), QStringLiteral("| h1 | h2 |\n"
+                                                 "| :--- | :---: |\n"
+                                                 "| a | b |"));
+}
+
+void TestTablePreview::testAPrefixedTableSurvivesARowInsert() {
+  QVector<QVector<QString>> cells;
+  cells.append({QStringLiteral("h1"), QStringLiteral("h2")});
+  cells.append({QStringLiteral("a"), QStringLiteral("b")});
+
+  TablePreviewDocument document;
+  document.setTable(makeTable(cells, {PreviewTableAlignment::None, PreviewTableAlignment::None},
+                              {QStringLiteral("- "), QStringLiteral("  ")}, QStringLiteral("  ")));
+
+  QVERIFY(document.insertRow(1));
+  // The inserted row carries the delimiter prefix, which is the only prefix
+  // arePrefixesSafe() allows a body row to have - the list marker stays on the
+  // header row alone.
+  QCOMPARE(document.toMarkdown(), QStringLiteral("- | h1 | h2 |\n"
+                                                 "  | --- | --- |\n"
+                                                 "  |  |  |\n"
+                                                 "  | a | b |"));
+}
+
+// ---------------------------------------------------------------------------
+// Context menu
+// ---------------------------------------------------------------------------
+
+void TestTablePreview::testTheContextMenuOffersTheTableOperations() {
+  QScopedPointer<TablePreviewWidget> holder;
+  auto widget = buildEditableSheet(holder);
+  QVERIFY(widget);
+  auto sheet = sheetOf(*widget);
+  QVERIFY(sheet);
+
+  QScopedPointer<QMenu> menu(menuForCell(sheet, 1, 1));
+  QVERIFY(menu);
+
+  // The table operations come first - they are what the sheet is right-clicked
+  // for - and the standard menu is kept whole underneath them.
+  QVERIFY(!menu->actions().isEmpty());
+  auto tableMenu = menu->findChild<QMenu *>(QStringLiteral("TablePreviewTableMenu"));
+  QVERIFY(tableMenu);
+  QCOMPARE(menu->actions().first(), tableMenu->menuAction());
+  QVERIFY(menu->actions().value(1) && menu->actions().value(1)->isSeparator());
+  QVERIFY(menu->actions().size() > 2);
+
+  for (const char *name : {"InsertRowAbove", "InsertRowBelow", "DeleteRow", "InsertColumnLeft",
+                           "InsertColumnRight", "DeleteColumn"}) {
+    QAction *action = actionNamed(menu.data(), name);
+    QVERIFY2(action, name);
+    QVERIFY2(action->isEnabled(), name);
+  }
+
+  // The alignment entries are exclusive and the current column's is checked.
+  // The sheet built by buildEditableSheet() is Left/Center/Right, so column 1
+  // is the centered one.
+  QCOMPARE(actionNamed(menu.data(), "AlignmentCenter")->isChecked(), true);
+  QCOMPARE(actionNamed(menu.data(), "AlignmentLeft")->isChecked(), false);
+  QCOMPARE(actionNamed(menu.data(), "AlignmentDefault")->isChecked(), false);
+  QCOMPARE(actionNamed(menu.data(), "AlignmentRight")->isChecked(), false);
+}
+
+void TestTablePreview::testTheContextMenuReflectsWhereItWasOpened() {
+  QScopedPointer<TablePreviewWidget> holder;
+  auto widget = buildEditableSheet(holder);
+  QVERIFY(widget);
+  auto sheet = sheetOf(*widget);
+  QVERIFY(sheet);
+
+  // In the header row there is nothing above to insert into, and the header is
+  // not an ordinary row, so it cannot be deleted either.
+  {
+    QScopedPointer<QMenu> menu(menuForCell(sheet, 0, 0));
+    QVERIFY(!actionNamed(menu.data(), "InsertRowAbove")->isEnabled());
+    QVERIFY(!actionNamed(menu.data(), "DeleteRow")->isEnabled());
+    QVERIFY(actionNamed(menu.data(), "InsertRowBelow")->isEnabled());
+    QVERIFY(actionNamed(menu.data(), "AlignmentLeft")->isChecked());
+  }
+
+  // A right click outside the current selection targets the clicked cell, so
+  // "this row" and "this column" mean what the user pointed at rather than
+  // where the caret happened to be left.
+  putCaretIn(sheet, 0, 0, false);
+  sendContextMenu(sheet, cellRect(sheet, 1, 2).center());
+  QTextTable *table = tableOf(sheet->document());
+  QVERIFY(table);
+  QCOMPARE(table->cellAt(sheet->textCursor().position()).row(), 1);
+  QCOMPARE(table->cellAt(sheet->textCursor().position()).column(), 2);
+
+  // One inside a selection leaves it alone: the standard menu's Cut and Copy
+  // are relative to it.
+  {
+    const QTextTableCell cell = table->cellAt(1, 0);
+    QTextCursor selection = cell.firstCursorPosition();
+    selection.setPosition(cell.lastCursorPosition().position(), QTextCursor::KeepAnchor);
+    sheet->setTextCursor(selection);
+  }
+  const QString selected = sheet->textCursor().selectedText();
+  QVERIFY(!selected.isEmpty());
+  sendContextMenu(sheet, cellRect(sheet, 1, 0).center());
+  QCOMPARE(sheet->textCursor().selectedText(), selected);
+
+  // A click which is not in a cell at all - the shrunken block a QTextDocument
+  // always keeps after a table - gets the standard menu unchanged. Clamping it
+  // into the nearest cell would offer row and column operations relative to a
+  // cell the user never pointed at.
+  putCaretIn(sheet, 1, 1, false);
+  const int caretBefore = sheet->textCursor().position();
+  const QPoint below(cellRect(sheet, 1, 1).center().x(),
+                     sheet->document()->documentLayout()->documentSize().height() - 1);
+  QScopedPointer<QMenu> plain(sheet->createContextMenu(below));
+  QVERIFY(plain);
+  QVERIFY(!plain->findChild<QMenu *>(QStringLiteral("TablePreviewTableMenu")));
+  QVERIFY(!actionNamed(plain.data(), "InsertRowBelow"));
+  QCOMPARE(sheet->textCursor().position(), caretBefore);
+}
+
+void TestTablePreview::testAReadOnlySheetDisablesEveryTableAction() {
+  QScopedPointer<TablePreviewWidget> holder;
+  auto widget = buildEditableSheet(holder);
+  QVERIFY(widget);
+  auto sheet = sheetOf(*widget);
+  QVERIFY(sheet);
+
+  widget->setReadOnly(true);
+  QVERIFY(sheet->isReadOnly());
+
+  QScopedPointer<QMenu> menu(menuForCell(sheet, 1, 1));
+  for (const char *name :
+       {"InsertRowAbove", "InsertRowBelow", "DeleteRow", "InsertColumnLeft", "InsertColumnRight",
+        "DeleteColumn", "AlignmentDefault", "AlignmentLeft", "AlignmentCenter", "AlignmentRight"}) {
+    QAction *action = actionNamed(menu.data(), name);
+    QVERIFY2(action, name);
+    QVERIFY2(!action->isEnabled(), name);
+  }
+}
+
+void TestTablePreview::testANonRoundTrippableSheetDisablesEveryTableAction() {
+  // A body row wider than the header declares: writing it back would promote
+  // its excess cell into the header and the delimiter row.
+  QVector<QVector<QString>> cells;
+  cells.append({QStringLiteral("h1"), QStringLiteral("h2")});
+  cells.append({QStringLiteral("a"), QStringLiteral("b"), QStringLiteral("c")});
+
+  QScopedPointer<TablePreviewWidget> holder(new TablePreviewWidget(nullptr, nullptr));
+  QVERIFY(holder->setPreview(
+      makeTable(cells, {PreviewTableAlignment::None, PreviewTableAlignment::None})));
+  showOffScreen(*holder, 600);
+  settle();
+
+  auto sheet = sheetOf(*holder);
+  QVERIFY(sheet);
+  QVERIFY(sheet->isReadOnly());
+
+  QScopedPointer<QMenu> menu(menuForCell(sheet, 1, 1));
+  QVERIFY(!actionNamed(menu.data(), "InsertRowBelow")->isEnabled());
+  QVERIFY(!actionNamed(menu.data(), "InsertColumnLeft")->isEnabled());
+  QVERIFY(!actionNamed(menu.data(), "AlignmentRight")->isEnabled());
+}
+
+void TestTablePreview::testTheMenuActionsMutateTheTable() {
+  QScopedPointer<TablePreviewWidget> holder;
+  auto widget = buildEditableSheet(holder);
+  QVERIFY(widget);
+  auto sheet = sheetOf(*widget);
+  QVERIFY(sheet);
+
+  // Where the caret ended up, and that it is in a cell at all: a structural
+  // change can park it in the trailing block, and a selection which outlived
+  // one would be free to cross a cell boundary.
+  auto verifyCaret = [sheet](int p_row, int p_column) {
+    QTextTable *table = tableOf(sheet->document());
+    QVERIFY(table);
+    const QTextTableCell cell = table->cellAt(sheet->textCursor().position());
+    QVERIFY(cell.isValid());
+    QCOMPARE(cell.row(), p_row);
+    QCOMPARE(cell.column(), p_column);
+    QVERIFY(sheet->textCursor().selectedText().isEmpty());
+  };
+
+  {
+    QScopedPointer<QMenu> menu(menuForCell(sheet, 1, 1));
+    actionNamed(menu.data(), "InsertRowBelow")->trigger();
+  }
+  QTextTable *table = tableOf(sheet->document());
+  QVERIFY(table);
+  QCOMPARE(table->rows(), 3);
+  // The caret waits in the new row's cell, in the column it was opened on.
+  verifyCaret(2, 1);
+
+  {
+    QScopedPointer<QMenu> menu(menuForCell(sheet, 2, 1));
+    actionNamed(menu.data(), "DeleteRow")->trigger();
+  }
+  QCOMPARE(tableOf(sheet->document())->rows(), 2);
+  // The row the caret was in is gone, so the index is clamped to the new
+  // bounds rather than left pointing past them.
+  verifyCaret(1, 1);
+
+  // Insert Row Above is the riskier variant: every row from the target down
+  // shifts, and so does its prefix.
+  {
+    QScopedPointer<QMenu> menu(menuForCell(sheet, 1, 1));
+    actionNamed(menu.data(), "InsertRowAbove")->trigger();
+  }
+  QCOMPARE(tableOf(sheet->document())->rows(), 3);
+  verifyCaret(1, 1);
+  QVERIFY(cellText(sheet->document(), 1, 1).isEmpty());
+  QCOMPARE(cellText(sheet->document(), 2, 1), QStringLiteral("**bold**"));
+
+  {
+    QScopedPointer<QMenu> menu(menuForCell(sheet, 1, 1));
+    actionNamed(menu.data(), "DeleteRow")->trigger();
+  }
+  QCOMPARE(tableOf(sheet->document())->rows(), 2);
+
+  {
+    QScopedPointer<QMenu> menu(menuForCell(sheet, 1, 0));
+    actionNamed(menu.data(), "InsertColumnRight")->trigger();
+  }
+  table = tableOf(sheet->document());
+  QCOMPARE(table->columns(), 4);
+  verifyCaret(1, 1);
+  QVERIFY(cellText(sheet->document(), 0, 1).isEmpty());
+  QCOMPARE(cellText(sheet->document(), 0, 2), QStringLiteral("Center"));
+
+  {
+    QScopedPointer<QMenu> menu(menuForCell(sheet, 1, 1));
+    actionNamed(menu.data(), "DeleteColumn")->trigger();
+  }
+  table = tableOf(sheet->document());
+  QCOMPARE(table->columns(), 3);
+  verifyCaret(1, 1);
+  QCOMPARE(cellText(sheet->document(), 0, 1), QStringLiteral("Center"));
+
+  // And the mirror image, which shifts every column from the target right.
+  {
+    QScopedPointer<QMenu> menu(menuForCell(sheet, 1, 1));
+    actionNamed(menu.data(), "InsertColumnLeft")->trigger();
+  }
+  table = tableOf(sheet->document());
+  QCOMPARE(table->columns(), 4);
+  verifyCaret(1, 1);
+  QVERIFY(cellText(sheet->document(), 0, 1).isEmpty());
+  QCOMPARE(cellText(sheet->document(), 0, 2), QStringLiteral("Center"));
+
+  {
+    QScopedPointer<QMenu> menu(menuForCell(sheet, 1, 1));
+    actionNamed(menu.data(), "DeleteColumn")->trigger();
+  }
+  QCOMPARE(tableOf(sheet->document())->columns(), 3);
+
+  {
+    QScopedPointer<QMenu> menu(menuForCell(sheet, 1, 0));
+    actionNamed(menu.data(), "AlignmentRight")->trigger();
+  }
+  QCOMPARE(tableOf(sheet->document())->cellAt(1, 0).firstCursorPosition().blockFormat().alignment(),
+           Qt::Alignment(Qt::AlignRight));
+
+  {
+    QScopedPointer<QMenu> menu(menuForCell(sheet, 1, 0));
+    actionNamed(menu.data(), "AlignmentDefault")->trigger();
+  }
+  QCOMPARE(tableOf(sheet->document())->cellAt(1, 0).firstCursorPosition().blockFormat().alignment(),
+           Qt::Alignment(Qt::AlignLeft));
+}
+
+void TestTablePreview::testAnAlignmentOnlyChangeIsCommitted() {
+  SheetHarness harness(makeCommittableTable());
+  auto sheet = harness.sheet();
+  QVERIFY(sheet);
+  showOffScreen(*harness.widget(), 600);
+  settle();
+
+  // None -> Left is the case which proves the commit rides on the document's
+  // format change rather than on any text: both render as Qt::AlignLeft, so
+  // nothing about the table looks different afterwards.
+  {
+    QScopedPointer<QMenu> menu(menuForCell(sheet, 0, 0));
+    QAction *action = actionNamed(menu.data(), "AlignmentLeft");
+    QVERIFY(action);
+    QVERIFY(action->isEnabled());
+    QVERIFY(!action->isChecked());
+    action->trigger();
+  }
+
+  waitForCommit();
+
+  QCOMPARE(harness.requestCount(), 1);
+  QCOMPARE(harness.lastRequest(), QStringLiteral("| h1 | h2 |\n"
+                                                 "| :--- | --- |\n"
+                                                 "| a | b |"));
+}
+
 
 // ---------------------------------------------------------------------------
 // Palette

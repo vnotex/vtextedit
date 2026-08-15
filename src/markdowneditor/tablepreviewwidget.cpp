@@ -2,11 +2,15 @@
 
 #include <QApplication>
 #include <QAbstractTextDocumentLayout>
+#include <QAction>
+#include <QActionGroup>
+#include <QContextMenuEvent>
 #include <QFocusEvent>
 #include <QFont>
 #include <QGuiApplication>
 #include <QInputMethod>
 #include <QKeyEvent>
+#include <QMenu>
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPalette>
@@ -25,6 +29,8 @@
 #include <QVBoxLayout>
 #include <QWheelEvent>
 #include <QtMath>
+
+#include <functional>
 
 #include "previewlogging.h"
 
@@ -533,12 +539,62 @@ bool TablePreviewDocument::canAppendRow() const {
   return qint64(m_rowCount + 1) * qint64(m_columnCount) <= qint64(c_maxCells);
 }
 
-bool TablePreviewDocument::appendRow() {
-  if (!canAppendRow()) {
+bool TablePreviewDocument::appendRow() { return insertRow(m_rowCount); }
+
+bool TablePreviewDocument::canInsertRow() const {
+  // Where the row goes does not change the cell count, so this is exactly the
+  // append bound.
+  return canAppendRow();
+}
+
+bool TablePreviewDocument::canInsertColumn() const {
+  if (!m_table || m_columnCount <= 0 || m_rowCount <= 0) {
     return false;
   }
 
-  // One edit block for the whole append, as in build(): the row, its prefix
+  if (m_columnCount + 1 > c_maxColumns) {
+    return false;
+  }
+
+  // qint64 for the same reason canAppendRow() uses it.
+  return qint64(m_rowCount) * qint64(m_columnCount + 1) <= qint64(c_maxCells);
+}
+
+bool TablePreviewDocument::canDeleteRow(int p_row) const {
+  // Row 0 is the header: see the header file for why it is not an ordinary
+  // row. The table may shrink to a header-only table but not to nothing.
+  return m_table && p_row > 0 && p_row < m_rowCount && m_rowCount > 1;
+}
+
+bool TablePreviewDocument::canDeleteColumn(int p_column) const {
+  return m_table && p_column >= 0 && p_column < m_columnCount && m_columnCount > 1;
+}
+
+PreviewTableAlignment TablePreviewDocument::columnAlignment(int p_column) const {
+  return m_alignments.value(p_column, PreviewTableAlignment::None);
+}
+
+void TablePreviewDocument::rewriteColumnConstraints() {
+  if (!m_table) {
+    return;
+  }
+
+  QTextTableFormat format = m_table->format().toTableFormat();
+  format.setColumnWidthConstraints(
+      QVector<QTextLength>(m_columnCount, QTextLength(QTextLength::VariableLength, 0)));
+  m_table->setFormat(format);
+}
+
+bool TablePreviewDocument::insertRow(int p_row) {
+  // The whole precondition runs before the edit block opens: QTextTable clamps
+  // an out-of-range index silently while QVector::insert() asserts on one, and
+  // the two diverging is exactly the drift the serializer answers by throwing
+  // the edit away. Row 0 is refused because the header is not an ordinary row.
+  if (!m_table || p_row <= 0 || p_row > m_rowCount || !canInsertRow()) {
+    return false;
+  }
+
+  // One edit block for the whole insert, as in build(): the row, its prefix
   // and its formats have to reach TablePreviewWidget::handleContentsChanged()
   // as a single change. That slot re-runs isIntact() and rebuilds from source
   // when the table looks gone, so an intermediate state observed halfway
@@ -546,22 +602,119 @@ bool TablePreviewDocument::appendRow() {
   QTextCursor cursor(m_doc.data());
   cursor.beginEditBlock();
 
-  m_table->appendRows(1);
+  if (p_row == m_rowCount) {
+    // Appending is what appendRows() is for; insertRows() at the row count is
+    // not the documented way to grow at the bottom.
+    m_table->appendRows(1);
+  } else {
+    m_table->insertRows(p_row, 1);
+  }
 
   // The prefix vector is per row, and the serializer refuses a matrix whose
   // size disagrees with it. m_delimiterPrefix is what arePrefixesSafe()
   // requires of every row after the header, so it is the only prefix a new
   // body row may carry.
-  m_rowPrefixes.append(m_delimiterPrefix);
+  m_rowPrefixes.insert(p_row, m_delimiterPrefix);
 
   // Derived from the table rather than incremented, exactly as build() derives
-  // it, so the cached count cannot drift if appendRows() ever refuses.
+  // it, so the cached count cannot drift if the Qt call ever refuses.
   m_rowCount = m_table->rows();
 
   for (int c = 0; c < m_columnCount; ++c) {
-    // appendRows() carries no per-cell format, so the new cells would
-    // otherwise be left-aligned regardless of the column's alignment.
-    applyCellFormat(m_rowCount - 1, c);
+    // A new row carries no per-cell format, so its cells would otherwise be
+    // left-aligned regardless of the column's alignment.
+    applyCellFormat(p_row, c);
+  }
+
+  cursor.endEditBlock();
+  return true;
+}
+
+bool TablePreviewDocument::removeRow(int p_row) {
+  if (!canDeleteRow(p_row)) {
+    return false;
+  }
+
+  QTextCursor cursor(m_doc.data());
+  cursor.beginEditBlock();
+
+  m_table->removeRows(p_row, 1);
+  m_rowPrefixes.remove(p_row);
+  m_rowCount = m_table->rows();
+
+  cursor.endEditBlock();
+  return true;
+}
+
+bool TablePreviewDocument::insertColumn(int p_column) {
+  if (!m_table || p_column < 0 || p_column > m_columnCount || !canInsertColumn()) {
+    return false;
+  }
+
+  QTextCursor cursor(m_doc.data());
+  cursor.beginEditBlock();
+
+  if (p_column == m_columnCount) {
+    m_table->appendColumns(1);
+  } else {
+    m_table->insertColumns(p_column, 1);
+  }
+
+  // One alignment per column, which the delimiter row is written from.
+  m_alignments.insert(p_column, PreviewTableAlignment::None);
+  m_columnCount = m_table->columns();
+  // The width the document now intends to serialize as. Leaving this behind
+  // makes isRoundTrippable() refuse, toMarkdown() empty and
+  // flushPendingCommit() restore the source - the column would vanish at
+  // commit time rather than be refused visibly.
+  m_declaredColumnCount = m_columnCount;
+  rewriteColumnConstraints();
+
+  // Not just the new column: every column right of it has shifted, so its
+  // cells now carry the previous neighbour's alignment.
+  applyCellFormats();
+
+  cursor.endEditBlock();
+  return true;
+}
+
+bool TablePreviewDocument::removeColumn(int p_column) {
+  if (!canDeleteColumn(p_column)) {
+    return false;
+  }
+
+  QTextCursor cursor(m_doc.data());
+  cursor.beginEditBlock();
+
+  m_table->removeColumns(p_column, 1);
+  m_alignments.remove(p_column);
+  m_columnCount = m_table->columns();
+  m_declaredColumnCount = m_columnCount;
+  rewriteColumnConstraints();
+  applyCellFormats();
+
+  cursor.endEditBlock();
+  return true;
+}
+
+bool TablePreviewDocument::setColumnAlignment(int p_column, PreviewTableAlignment p_alignment) {
+  if (!m_table || p_column < 0 || p_column >= m_columnCount) {
+    return false;
+  }
+
+  if (m_alignments.value(p_column) == p_alignment) {
+    // Unchanged: refused so an idempotent click does not arm a commit.
+    return false;
+  }
+
+  m_alignments[p_column] = p_alignment;
+
+  QTextCursor cursor(m_doc.data());
+  cursor.beginEditBlock();
+
+  const int rows = m_table->rows();
+  for (int r = 0; r < rows; ++r) {
+    applyCellFormat(r, p_column);
   }
 
   cursor.endEditBlock();
@@ -1290,6 +1443,198 @@ void TablePreviewSheet::mousePressEvent(QMouseEvent *p_event) {
   // block after the table when the click lands below the last row.
   QTextEdit::mousePressEvent(p_event);
   clampCursorIntoTable();
+}
+
+void TablePreviewSheet::focusCell(int p_row, int p_column) {
+  QTextTable *table = m_document ? m_document->table() : nullptr;
+  if (!table || table->rows() <= 0 || table->columns() <= 0) {
+    return;
+  }
+
+  // Clamped rather than trusted: after a delete the index the caret came from
+  // may no longer exist, and removeRows()/removeColumns() can park the caret
+  // in the trailing block a QTextDocument always keeps after a table.
+  const QTextTableCell cell = table->cellAt(qBound(0, p_row, table->rows() - 1),
+                                            qBound(0, p_column, table->columns() - 1));
+  if (cell.isValid()) {
+    setTextCursor(cell.firstCursorPosition());
+  }
+
+  clampCursorIntoTable();
+  clampSelectionIntoOneCell();
+}
+
+QMenu *TablePreviewSheet::buildTableMenu(QMenu *p_parent) {
+  QTextTable *table = m_document ? m_document->table() : nullptr;
+  if (!table) {
+    return nullptr;
+  }
+
+  const QTextTableCell cell = table->cellAt(textCursor());
+  if (!cell.isValid()) {
+    // No cell to be relative to, so "this row" and "this column" mean nothing.
+    return nullptr;
+  }
+
+  const int row = cell.row();
+  const int column = cell.column();
+  // isReadOnly() is the single test which covers all of it: applyEditability()
+  // already folds the editor's read-only state, a revoked authority and a
+  // table which is not round-trippable into this one flag.
+  const bool writable = !isReadOnly();
+
+  auto menu = new QMenu(tr("Table"), p_parent);
+  menu->setObjectName(QStringLiteral("TablePreviewTableMenu"));
+
+  auto addOperation = [this, menu, writable](const QString &p_text, const QString &p_name,
+                                             bool p_allowed, std::function<void()> p_operation) {
+    QAction *action = menu->addAction(p_text);
+    action->setObjectName(p_name);
+    action->setEnabled(writable && p_allowed);
+    connect(action, &QAction::triggered, this, p_operation);
+    return action;
+  };
+
+  addOperation(tr("Insert Row Above"), QStringLiteral("InsertRowAbove"),
+               row > 0 && m_document->canInsertRow(), [this, row, column]() {
+                 if (m_document->insertRow(row)) {
+                   focusCell(row, column);
+                 }
+               });
+
+  addOperation(tr("Insert Row Below"), QStringLiteral("InsertRowBelow"),
+               m_document->canInsertRow(), [this, row, column]() {
+                 if (m_document->insertRow(row + 1)) {
+                   focusCell(row + 1, column);
+                 }
+               });
+
+  addOperation(tr("Delete Row"), QStringLiteral("DeleteRow"), m_document->canDeleteRow(row),
+               [this, row, column]() {
+                 if (m_document->removeRow(row)) {
+                   focusCell(row, column);
+                 }
+               });
+
+  menu->addSeparator();
+
+  addOperation(tr("Insert Column Left"), QStringLiteral("InsertColumnLeft"),
+               m_document->canInsertColumn(), [this, row, column]() {
+                 if (m_document->insertColumn(column)) {
+                   focusCell(row, column);
+                 }
+               });
+
+  addOperation(tr("Insert Column Right"), QStringLiteral("InsertColumnRight"),
+               m_document->canInsertColumn(), [this, row, column]() {
+                 if (m_document->insertColumn(column + 1)) {
+                   focusCell(row, column + 1);
+                 }
+               });
+
+  addOperation(tr("Delete Column"), QStringLiteral("DeleteColumn"),
+               m_document->canDeleteColumn(column), [this, row, column]() {
+                 if (m_document->removeColumn(column)) {
+                   focusCell(row, column);
+                 }
+               });
+
+  menu->addSeparator();
+
+  auto alignmentMenu = menu->addMenu(tr("Alignment"));
+  alignmentMenu->setObjectName(QStringLiteral("TablePreviewAlignmentMenu"));
+  auto group = new QActionGroup(alignmentMenu);
+  group->setExclusive(true);
+
+  const PreviewTableAlignment current = m_document->columnAlignment(column);
+  const struct {
+    PreviewTableAlignment m_alignment;
+    const char *m_name;
+    QString m_text;
+  } entries[] = {
+      {PreviewTableAlignment::None, "AlignmentDefault", tr("Default")},
+      {PreviewTableAlignment::Left, "AlignmentLeft", tr("Left")},
+      {PreviewTableAlignment::Center, "AlignmentCenter", tr("Center")},
+      {PreviewTableAlignment::Right, "AlignmentRight", tr("Right")},
+  };
+
+  for (const auto &entry : entries) {
+    QAction *action = alignmentMenu->addAction(entry.m_text);
+    action->setObjectName(QString::fromLatin1(entry.m_name));
+    action->setCheckable(true);
+    action->setChecked(entry.m_alignment == current);
+    action->setEnabled(writable);
+    group->addAction(action);
+
+    const PreviewTableAlignment alignment = entry.m_alignment;
+    connect(action, &QAction::triggered, this, [this, row, column, alignment]() {
+      // A no-op returns false and arms nothing; a real change reaches the
+      // commit machinery as the document change the re-formatting is.
+      if (m_document->setColumnAlignment(column, alignment)) {
+        focusCell(row, column);
+      }
+    });
+  }
+
+  return menu;
+}
+
+QMenu *TablePreviewSheet::createContextMenu(const QPoint &p_viewportPos) {
+  QTextTable *table = m_document ? m_document->table() : nullptr;
+  const QTextCursor clicked = cursorForPosition(p_viewportPos);
+  // Deliberately not clamped: a click below the last row lands in the shrunken
+  // block a QTextDocument always keeps after a table, and clamping that into
+  // the nearest cell would offer row and column operations relative to a cell
+  // the user never pointed at.
+  const bool hitACell = table && !clicked.isNull() && clicked.currentTable() == table &&
+                        table->cellAt(clicked).isValid();
+
+  if (hitACell) {
+    // "This row" and "this column" have to mean the cell the user pointed at,
+    // not the one the caret happens to be in. A click inside an existing
+    // selection is left alone, so a right click on a selection can still act
+    // on it - that is what the standard menu's Cut and Copy are relative to.
+    const QTextCursor caret = textCursor();
+    const bool insideSelection = caret.hasSelection() &&
+                                 clicked.position() >= qMin(caret.anchor(), caret.position()) &&
+                                 clicked.position() <= qMax(caret.anchor(), caret.position());
+    if (!insideSelection) {
+      setTextCursor(clicked);
+    }
+  }
+
+  // Null for a document which cannot offer one at all; the caller still gets a
+  // menu, because the table operations below are appended to it.
+  QMenu *menu = createStandardContextMenu(p_viewportPos);
+  if (!menu) {
+    menu = new QMenu(this);
+  }
+
+  if (hitACell) {
+    if (QMenu *tableMenu = buildTableMenu(menu)) {
+      // At the front, not appended: the table operations are what the sheet is
+      // right-clicked for, and QTextEdit's standard menu ends with entries -
+      // Select All among them - which would otherwise bury them.
+      QAction *first = menu->actions().isEmpty() ? nullptr : menu->actions().first();
+      if (first) {
+        menu->insertMenu(first, tableMenu);
+        menu->insertSeparator(first);
+      } else {
+        menu->addMenu(tableMenu);
+      }
+    }
+  }
+
+  return menu;
+}
+
+void TablePreviewSheet::contextMenuEvent(QContextMenuEvent *p_event) {
+  // Already in viewport coordinates: the scroll area forwards the click which
+  // landed on its viewport without retranslating it, and both scroll bars are
+  // off, so there is no offset to add either.
+  QScopedPointer<QMenu> menu(createContextMenu(p_event->pos()));
+  menu->exec(p_event->globalPos());
+  p_event->accept();
 }
 
 void TablePreviewSheet::resizeEvent(QResizeEvent *p_event) {

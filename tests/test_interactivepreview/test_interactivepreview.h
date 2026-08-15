@@ -207,6 +207,8 @@ private slots:
   void testReplacementPreservesBlockquotePrefix();
   void testTableEditCommitsCanonicalMarkdown();
   void testEnterInTheLastCellGrowsTheSource();
+  void testAColumnInsertGrowsTheSource();
+  void testAnAlignmentChangeReachesTheDelimiterRow();
 
   void testPaddedSourceIsOnlyRewrittenOnARealEdit();
   void testSourceBitDisablesTablePreview();

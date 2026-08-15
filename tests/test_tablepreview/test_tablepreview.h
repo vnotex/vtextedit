@@ -99,6 +99,25 @@ private slots:
   void testAnActiveCompositionSurvivesTheRemovalFlush();
   void testRevokedAuthoritySilencesEveryCommit();
 
+  // Row and column operations.
+  void testInsertRowKeepsThePrefixes();
+  void testRemoveRowKeepsThePrefixes();
+  void testInsertColumnKeepsTheAlignmentsAndTheDeclaredWidth();
+  void testRemoveColumnKeepsTheAlignmentsAndTheDeclaredWidth();
+  void testColumnConstraintsFollowTheColumnCount();
+  void testStructuralRefusalsChangeNothing();
+  void testStructuralBoundsAreEnforced();
+  void testSetColumnAlignmentRewritesTheDelimiterAndTheCells();
+  void testAPrefixedTableSurvivesARowInsert();
+
+  // Context menu.
+  void testTheContextMenuOffersTheTableOperations();
+  void testTheContextMenuReflectsWhereItWasOpened();
+  void testAReadOnlySheetDisablesEveryTableAction();
+  void testANonRoundTrippableSheetDisablesEveryTableAction();
+  void testTheMenuActionsMutateTheTable();
+  void testAnAlignmentOnlyChangeIsCommitted();
+
   // Palette.
   void testDarkPaletteReachesTheSheet();
 };

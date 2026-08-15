@@ -12,6 +12,7 @@
 #include <vtextedit/preview.h>
 #include <vtextedit/previewwidget.h>
 
+class QMenu;
 class QTextDocument;
 class QTextTable;
 class QTimer;
@@ -164,6 +165,63 @@ public:
   // would make every following keystroke miss its frame.
   bool canAppendRow() const;
 
+  // Whether one more row would still fit inside the cell bound. Identical to
+  // canAppendRow(): where a row is inserted does not change the cell count.
+  bool canInsertRow() const;
+
+  // Whether one more column would still fit inside both bounds. A column costs
+  // one cell per row, and columns carry a bound of their own.
+  bool canInsertColumn() const;
+
+  // Whether @p_row may be removed. Row 0 is the header and is not an ordinary
+  // row: removing it would mean promoting the next one, which also has to
+  // carry the header's prefix - the only prefix which may hold a list marker -
+  // and the host re-validates that prefix against the original binding. The
+  // last remaining body row may go, but the table may not become empty.
+  bool canDeleteRow(int p_row) const;
+
+  // Whether @p_column may be removed. A table needs at least one column.
+  bool canDeleteColumn(int p_column) const;
+
+  // Insert one empty row above @p_row, which is refused for row 0: see
+  // canDeleteRow() for why the header is not an ordinary row. Passing
+  // rowCount() appends, which is what appendRow() is.
+  //
+  // Every precondition is checked before the edit block opens, because
+  // QTextTable clamps an out-of-range index silently while QVector::insert()
+  // asserts on one - and the two diverging is exactly the metadata/table drift
+  // the serializer answers by throwing the edit away.
+  //
+  // Returns false when the row could not be inserted, in which case nothing
+  // was touched.
+  bool insertRow(int p_row);
+
+  // Remove @p_row, which must be an ordinary body row.
+  bool removeRow(int p_row);
+
+  // Insert one empty column at @p_column, shifting the rest right. Passing
+  // columnCount() appends.
+  //
+  // m_declaredColumnCount is moved with it: it is the width the document
+  // intends to serialize as, and leaving it stale makes toMarkdown() return an
+  // empty string, which flushPendingCommit() answers by restoring the source -
+  // the user's column would silently vanish at commit time.
+  bool insertColumn(int p_column);
+
+  // Remove @p_column, together with its alignment.
+  bool removeColumn(int p_column);
+
+  // Set the alignment of @p_column, which is what the delimiter row of the
+  // serialized table carries.
+  //
+  // Returns false when the value is unchanged, so an idempotent menu click
+  // does not arm a commit. The re-formatting is a document change like any
+  // other, which is what carries a None -> Left switch - invisible in the
+  // rendered table, both being Qt::AlignLeft - to the commit machinery.
+  bool setColumnAlignment(int p_column, PreviewTableAlignment p_alignment);
+
+  PreviewTableAlignment columnAlignment(int p_column) const;
+
   // Append one empty row at the bottom of the table.
   //
   // Not a plain QTextTable::appendRows(1): m_rowPrefixes carries one entry per
@@ -202,6 +260,16 @@ private:
   // The block format one column's cells carry.
   Qt::Alignment blockAlignment(int p_column) const;
 
+  // Rewrite the table format's column width constraints to one VariableLength
+  // entry per column.
+  //
+  // Defensive canonicalization rather than a workaround: both supported Qt
+  // majors do resize a non-empty constraints vector on insertColumns() and
+  // removeColumns(), but the vector is what build() hands the layout to share
+  // the band out by content, and a stale one would silently change how every
+  // column is measured.
+  void rewriteColumnConstraints();
+
   QScopedPointer<QTextDocument> m_doc;
 
   // Owned by m_doc.
@@ -221,7 +289,11 @@ private:
 
   int m_columnCount = 0;
 
-  // Column count declared by the header and delimiter rows of the source.
+  // Column count the document intends to serialize as, i.e. the width its
+  // header and delimiter rows declare. Initialized from the source and moved
+  // by every deliberate column operation; a mismatch with m_columnCount means
+  // a body row is wider than the header declares, which is not
+  // round-trippable.
   int m_declaredColumnCount = 0;
 };
 
@@ -302,6 +374,20 @@ public:
   // Collapse any selection onto the caret, without moving the caret.
   void clearSelection();
 
+  // The menu shown for a right click at @p_viewportPos: a Table submenu
+  // holding the row, column and alignment operations, then a separator, then
+  // QTextEdit's own menu. Never null; the caller owns it.
+  //
+  // Moves the caret to the cell under @p_viewportPos, so the operations are
+  // relative to what the user pointed at. A click which is not in a cell at
+  // all - the shrunken block after the table, for one - leaves the caret alone
+  // and gets the standard menu unchanged.
+  //
+  // Public because it is the only seam a test can inspect without entering a
+  // modal exec() - the action tree, the enabled states and the checked
+  // alignment are the whole contract of the menu.
+  QMenu *createContextMenu(const QPoint &p_viewportPos);
+
 signals:
   // The document's laid out size settled on something the host has not been
   // told about yet.
@@ -330,6 +416,10 @@ protected:
   void focusOutEvent(QFocusEvent *p_event) Q_DECL_OVERRIDE;
 
   void mousePressEvent(QMouseEvent *p_event) Q_DECL_OVERRIDE;
+
+  // QTextEdit has no hook to extend its standard menu, so the whole handler is
+  // replaced: the base one would only ever show the plain menu.
+  void contextMenuEvent(QContextMenuEvent *p_event) Q_DECL_OVERRIDE;
 
   void resizeEvent(QResizeEvent *p_event) Q_DECL_OVERRIDE;
 
@@ -397,6 +487,16 @@ private:
   // the composition text synchronously, the latter rewrites the cursor), and a
   // refused Enter has to stay as inert as the plain swallow it replaces.
   bool appendRowFromLastCell();
+
+  // The Table submenu, parented to @p_parent. Returns null when the caret is
+  // not in a valid cell, in which case the standard menu is shown unchanged.
+  QMenu *buildTableMenu(QMenu *p_parent);
+
+  // Put the caret in @p_row/@p_column, clamped to the table's current bounds,
+  // and re-establish both frame invariants. Called after every mutation: Qt
+  // can park the caret in the trailing block when the row or column it was in
+  // has just been removed.
+  void focusCell(int p_row, int p_column);
 
   // Re-seed the sheet's palette from its parent and hand the derived colours
   // to the document. Returns the effective palette.
