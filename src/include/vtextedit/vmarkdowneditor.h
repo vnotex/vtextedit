@@ -1,6 +1,7 @@
 #ifndef VTEXTEDIT_VMARKDOWNEDITOR_H
 #define VTEXTEDIT_VMARKDOWNEDITOR_H
 
+#include <vtextedit/markdownhighlighterdata.h>
 #include <vtextedit/preview.h>
 #include <vtextedit/vtexteditor.h>
 
@@ -158,6 +159,10 @@ private:
 
   // Managed by QObject.
   MathBlockHighlighter *m_mathBlockHighlighter = nullptr;
+
+  // AST context of the block holding the cursor, probed in preKeyReturn
+  // (before the block insert) and consumed in postKeyReturn.
+  md::BlockContext m_returnBlockContext;
 };
 } // namespace vte
 

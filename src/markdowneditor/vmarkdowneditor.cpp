@@ -390,6 +390,9 @@ void VMarkdownEditor::updateSpaceWidth() {
 void VMarkdownEditor::preKeyReturn(int p_modifiers, bool *p_changed, bool *p_handled) {
   Q_ASSERT(!m_textEdit->isReadOnly());
 
+  // Probe the AST before any block is inserted, so postKeyReturn can consume it.
+  m_returnBlockContext = getHighlighter()->getBlockContext(m_textEdit->textCursor().blockNumber());
+
   if (p_modifiers == Qt::ShiftModifier) {
     *p_changed = true;
     auto cursor = m_textEdit->textCursor();
@@ -399,21 +402,54 @@ void VMarkdownEditor::preKeyReturn(int p_modifiers, bool *p_changed, bool *p_han
     m_textEdit->setTextCursor(cursor);
   } else if (p_modifiers == Qt::NoModifier) {
     auto cursor = m_textEdit->textCursor();
+    if (cursor.hasSelection()) {
+      // Let handleKeyReturn perform its normal selection-replacing block split.
+      // The probe was taken at the active end of the selection, which is not
+      // necessarily the line surviving the split, so it must not be able to
+      // drive an insertion. Suppression-only data is kept: vetoing is always
+      // the safe direction.
+      m_returnBlockContext.m_fresh = false;
+      m_returnBlockContext.m_quoteDepth = 0;
+      return;
+    }
+
+    if (m_returnBlockContext.m_valid && m_returnBlockContext.m_inFencedCode) {
+      // Never strip markers inside a fence.
+      return;
+    }
+
     const auto block = cursor.block();
     const auto text = block.text().left(cursor.positionInBlock());
+
+    QString indent, quotePrefix, rest;
+    int depth = 0;
+    const bool quoted = MarkdownUtils::isQuote(text, indent, quotePrefix, rest, depth);
+    const QString &listSource = quoted ? rest : text;
 
     QChar listMark;
     QString listNumber;
     bool isEmpty = false;
-    if ((MarkdownUtils::isTodoList(text, listMark, isEmpty) ||
-         MarkdownUtils::isUnorderedList(text, listMark, isEmpty) ||
-         MarkdownUtils::isOrderedList(text, listNumber, isEmpty)) &&
-        isEmpty) {
-      int indentation = TextUtils::fetchIndentation(text);
+    const bool isList = MarkdownUtils::isTodoList(listSource, listMark, isEmpty) ||
+                        MarkdownUtils::isUnorderedList(listSource, listMark, isEmpty) ||
+                        MarkdownUtils::isOrderedList(listSource, listNumber, isEmpty);
+
+    QString replacement;
+    bool handled = false;
+    if (isList && isEmpty) {
+      // Drop only the list marker.
+      replacement = quoted ? (indent + quotePrefix + TextUtils::fetchIndentationSpaces(rest))
+                           : TextUtils::fetchIndentationSpaces(text);
+      handled = true;
+    }
+    // A bare quote line ("> " or ">") is a blank line *inside* the quote, not a
+    // request to leave it, so no quote level is ever stripped here. Enter just
+    // starts another quote line via postKeyReturn.
+
+    if (handled) {
       cursor.beginEditBlock();
+      cursor.setPosition(block.position(), QTextCursor::KeepAnchor);
       cursor.removeSelectedText();
-      cursor.setPosition(block.position() + indentation, QTextCursor::KeepAnchor);
-      cursor.removeSelectedText();
+      cursor.insertText(replacement);
       cursor.endEditBlock();
       m_textEdit->setTextCursor(cursor);
 
@@ -425,49 +461,69 @@ void VMarkdownEditor::preKeyReturn(int p_modifiers, bool *p_changed, bool *p_han
 
 void VMarkdownEditor::postKeyReturn(int p_modifiers) {
   Q_ASSERT(!m_textEdit->isReadOnly());
-  if (p_modifiers == Qt::NoModifier) {
-    auto cursor = m_textEdit->textCursor();
+  const auto blockContext = m_returnBlockContext;
+  m_returnBlockContext = md::BlockContext();
 
-    const auto block = cursor.block();
-    auto preBlock = block.previous();
-    Q_ASSERT(preBlock.isValid());
-    const auto preText = preBlock.text();
-
-    if (preText.isEmpty()) {
-      return;
-    }
-
-    // Already indented by VTextEdit.
-
-    bool changed = false;
-    QChar listMark;
-    QString listNumber;
-    bool isEmpty = false;
-    if (MarkdownUtils::isTodoList(preText, listMark, isEmpty)) {
-      // Insert a todo list mark.
-      Q_ASSERT(!isEmpty);
-      changed = true;
-      cursor.joinPreviousEditBlock();
-      cursor.insertText(QStringLiteral("%1 [ ] ").arg(listMark));
-    } else if (MarkdownUtils::isUnorderedList(preText, listMark, isEmpty)) {
-      // Insert an unordered list mark.
-      Q_ASSERT(!isEmpty);
-      changed = true;
-      cursor.joinPreviousEditBlock();
-      cursor.insertText(QStringLiteral("%1 ").arg(listMark));
-    } else if (MarkdownUtils::isOrderedList(preText, listNumber, isEmpty)) {
-      // Insert an ordered list mark.
-      Q_ASSERT(!isEmpty);
-      changed = true;
-      cursor.joinPreviousEditBlock();
-      cursor.insertText(QStringLiteral("%1. ").arg(listNumber.toInt() + 1));
-    }
-
-    if (changed) {
-      cursor.endEditBlock();
-      m_textEdit->setTextCursor(cursor);
-    }
+  if (p_modifiers != Qt::NoModifier) {
+    return;
   }
+
+  auto cursor = m_textEdit->textCursor();
+
+  const auto block = cursor.block();
+  auto preBlock = block.previous();
+  Q_ASSERT(preBlock.isValid());
+  const auto preText = preBlock.text();
+
+  if (blockContext.m_valid && blockContext.m_inFencedCode) {
+    // Never continue markers inside a fence.
+    return;
+  }
+
+  if (preText.isEmpty()) {
+    return;
+  }
+
+  // Already indented by VTextEdit.
+
+  QString indent, quotePrefix, rest;
+  int textDepth = 0;
+  bool quoted = MarkdownUtils::isQuote(preText, indent, quotePrefix, rest, textDepth);
+
+  if (!quoted && blockContext.m_fresh && blockContext.m_quoteDepth > 0) {
+    // Lazy continuation: the AST knows this line belongs to a quote although
+    // the text carries no marker. Insert-causing, so it requires a fresh AST.
+    quotePrefix = QStringLiteral("> ").repeated(blockContext.m_quoteDepth);
+    // The leading indentation has already been copied into the new block by
+    // AutoIndentHelper::autoIndent.
+    rest = preText.mid(TextUtils::fetchIndentation(preText));
+    quoted = true;
+  }
+
+  const QString &listSource = quoted ? rest : preText;
+
+  QString marker;
+  QChar listMark;
+  QString listNumber;
+  bool isEmpty = false;
+  if (MarkdownUtils::isTodoList(listSource, listMark, isEmpty)) {
+    marker = QStringLiteral("%1 [ ] ").arg(listMark);
+  } else if (MarkdownUtils::isUnorderedList(listSource, listMark, isEmpty)) {
+    marker = QStringLiteral("%1 ").arg(listMark);
+  } else if (MarkdownUtils::isOrderedList(listSource, listNumber, isEmpty)) {
+    marker = QStringLiteral("%1. ").arg(listNumber.toInt() + 1);
+  }
+
+  const QString innerIndent = quoted ? TextUtils::fetchIndentationSpaces(rest) : QString();
+  const QString textToInsert = quotePrefix + innerIndent + marker;
+  if (textToInsert.isEmpty()) {
+    return;
+  }
+
+  cursor.joinPreviousEditBlock();
+  cursor.insertText(textToInsert);
+  cursor.endEditBlock();
+  m_textEdit->setTextCursor(cursor);
 }
 
 void VMarkdownEditor::preKeyTab(int p_modifiers, bool *p_handled) {

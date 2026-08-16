@@ -31,6 +31,22 @@ enum HighlightBlockState {
   CodeBlockEnd,
 };
 
+// Best-effort, AST-derived context of a text block.
+struct VTEXTEDIT_EXPORT BlockContext {
+  // True when the data below came from a parse result matching the current
+  // document timestamp. Only fresh data may be used to insert text.
+  bool m_fresh = false;
+
+  // True when there is any usable data at all (fresh or stale).
+  bool m_valid = false;
+
+  // May be derived from a stale result; used only to suppress continuation.
+  bool m_inFencedCode = false;
+
+  // Number of enclosing block quotes (0 if none/unknown).
+  int m_quoteDepth = 0;
+};
+
 // One continuous region for a certain markdown highlight style
 // within a QTextBlock.
 struct HLUnit {

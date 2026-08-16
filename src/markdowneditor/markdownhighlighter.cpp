@@ -17,6 +17,7 @@
 #include "markdownhighlightblockdata.h"
 #include "markdownhighlighterresult.h"
 #include "markdownparser.h"
+#include "markdownsyntaxstyles.h"
 #include "mathblockhighlighter.h"
 #include "interactivepreviewhost.h"
 
@@ -978,6 +979,64 @@ const QVector<md::ElementRegion> &MarkdownHighlighter::getImageRegions() const {
 
 const QVector<md::FencedCodeBlock> &MarkdownHighlighter::getCodeBlocks() const {
   return m_result->m_codeBlocks;
+}
+
+static int countQuoteUnits(const QVector<md::HLUnit> &p_units) {
+  int depth = 0;
+  for (const auto &unit : p_units) {
+    if (static_cast<int>(unit.styleIndex) == STYLE_BLOCKQUOTE) {
+      ++depth;
+    }
+  }
+  return depth;
+}
+
+md::BlockContext MarkdownHighlighter::getBlockContext(int p_blockNumber) const {
+  md::BlockContext ctx;
+  if (p_blockNumber < 0) {
+    return ctx;
+  }
+
+  const auto doc = document();
+
+  // Brand-new blocks may carry a synchronously propagated code block state.
+  if (doc) {
+    const auto block = doc->findBlockByNumber(p_blockNumber);
+    if (block.isValid()) {
+      const int state = block.userState();
+      if (state == md::CodeBlockStart || state == md::CodeBlock || state == md::CodeBlockEnd) {
+        ctx.m_inFencedCode = true;
+        ctx.m_valid = true;
+      }
+    }
+  }
+
+  // Block numbers are not rebased, so a block count mismatch makes the result
+  // unusable.
+  const bool fullUsable = !m_result.isNull() && doc &&
+                          doc->blockCount() == m_result->m_numOfBlocks &&
+                          p_blockNumber < m_result->m_blocksHighlights.size();
+  const bool fullMatched = fullUsable && m_result->matched(m_timeStamp);
+
+  if (fullUsable) {
+    const auto state = m_result->m_codeBlocksState.value(p_blockNumber, md::Normal);
+    if (state == md::CodeBlockStart || state == md::CodeBlock || state == md::CodeBlockEnd) {
+      ctx.m_inFencedCode = true;
+    }
+    ctx.m_valid = true;
+  }
+
+  if (!m_fastResult.isNull() && m_fastResult->matched(m_timeStamp) &&
+      isFastParseBlock(p_blockNumber) && p_blockNumber < m_fastResult->m_blocksHighlights.size()) {
+    ctx.m_quoteDepth = countQuoteUnits(m_fastResult->m_blocksHighlights.at(p_blockNumber));
+    ctx.m_fresh = true;
+    ctx.m_valid = true;
+  } else if (fullUsable) {
+    ctx.m_quoteDepth = countQuoteUnits(m_result->m_blocksHighlights.at(p_blockNumber));
+    ctx.m_fresh = fullMatched;
+  }
+
+  return ctx;
 }
 
 void MarkdownHighlighter::handleCodeBlockHighlightResult(

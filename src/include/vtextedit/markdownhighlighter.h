@@ -71,6 +71,10 @@ public:
   // Get code block style (may not contain the font size value).
   const QTextCharFormat &codeBlockStyle() const;
 
+  // Best-effort AST context of block @p_blockNumber.
+  // m_fresh distinguishes data matching the current timestamp from stale data.
+  md::BlockContext getBlockContext(int p_blockNumber) const;
+
 public slots:
   // Rehighlight sensitive blocks using current parse result, mainly
   // visible blocks.

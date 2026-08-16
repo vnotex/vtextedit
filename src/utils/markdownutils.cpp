@@ -45,6 +45,8 @@ const QString MarkdownUtils::c_unorderedListRegExp =
 
 const QString MarkdownUtils::c_quoteRegExp = QStringLiteral("^(\\s*)>\\s+(.*)$");
 
+const QString MarkdownUtils::c_quotePrefixRegExp = QStringLiteral("^(\\s*)((?:>[ \\t]*)+)(.*)$");
+
 QString MarkdownUtils::unindentCodeBlockText(const QString &p_text) {
   if (p_text.isEmpty()) {
     return p_text;
@@ -1157,6 +1159,30 @@ bool MarkdownUtils::isOrderedList(const QString &p_text, QString &p_listNumber, 
   }
 
   return false;
+}
+
+bool MarkdownUtils::isQuote(const QString &p_text, QString &p_indentation, QString &p_prefix,
+                            QString &p_rest, int &p_depth) {
+  p_indentation.clear();
+  p_prefix.clear();
+  p_rest.clear();
+  p_depth = 0;
+
+  if (p_text.isEmpty()) {
+    return false;
+  }
+
+  QRegularExpression reg(c_quotePrefixRegExp);
+  auto match = reg.match(p_text);
+  if (!match.hasMatch()) {
+    return false;
+  }
+
+  p_indentation = match.captured(1);
+  p_prefix = match.captured(2);
+  p_rest = match.captured(3);
+  p_depth = p_prefix.count(QLatin1Char('>'));
+  return true;
 }
 
 QString MarkdownUtils::setOrderedListNumber(QString p_text, int p_number) {

@@ -15,6 +15,7 @@ namespace tests
         // T5: Block element tests
         void testHeadings();
         void testBlockquotes();
+        void testBlockquoteNestingDepth();
         void testHorizontalRules();
         void testFencedCodeBlocks();
         void testFencedCodeBlockIndentationFormat();

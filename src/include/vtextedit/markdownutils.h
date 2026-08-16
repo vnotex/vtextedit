@@ -134,6 +134,14 @@ public:
 
   static bool isOrderedList(const QString &p_text, QString &p_listNumber, bool &p_empty);
 
+  // Return true if @p_text starts with a block quote prefix.
+  // @p_indentation: leading whitespace before the first '>'.
+  // @p_prefix: the matched quote prefix, verbatim, excluding @p_indentation.
+  // @p_rest: the text after the quote prefix.
+  // @p_depth: number of '>' markers in @p_prefix.
+  static bool isQuote(const QString &p_text, QString &p_indentation, QString &p_prefix,
+                      QString &p_rest, int &p_depth);
+
   static QString setOrderedListNumber(QString p_text, int p_number);
 
   static const QString c_fencedCodeBlockStartRegExp;
@@ -219,6 +227,13 @@ private:
   // 1. Indentation;
   // 2. Quote content;
   static const QString c_quoteRegExp;
+
+  // Regular expression for a (possibly nested) block quote prefix.
+  // Captured texts:
+  // 1. Indentation;
+  // 2. Quote prefix, verbatim;
+  // 3. Remainder of the line;
+  static const QString c_quotePrefixRegExp;
 
   // Regular expression for header block.
   // Captured texts:

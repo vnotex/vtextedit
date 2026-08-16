@@ -1,5 +1,6 @@
 #include "markdownastwalker.h"
 #include "cmarkadapter.h"
+#include "markdownsyntaxstyles.h"
 
 #include <algorithm>
 
@@ -9,34 +10,6 @@
 
 #include <cmark.h>
 #include <node.h>
-
-// MarkdownSyntaxStyle ordinals (must match cmarkadapter.cpp).
-enum {
-  STYLE_LINK = 0,
-  STYLE_AUTO_LINK_URL = 1,
-  STYLE_AUTO_LINK_EMAIL = 2,
-  STYLE_IMAGE = 3,
-  STYLE_CODE = 4,
-  STYLE_HTML = 5,
-  STYLE_EMPH = 7,
-  STYLE_STRONG = 8,
-  STYLE_LIST_BULLET = 9,
-  STYLE_LIST_ENUMERATOR = 10,
-  STYLE_H1 = 12,
-  STYLE_BLOCKQUOTE = 18,
-  STYLE_VERBATIM = 19,
-  STYLE_HTMLBLOCK = 20,
-  STYLE_HRULE = 21,
-  STYLE_FENCEDCODEBLOCK = 23,
-  STYLE_NOTE = 24,
-  STYLE_STRIKE = 25,
-  STYLE_FRONTMATTER = 26,
-  STYLE_DISPLAYFORMULA = 27,
-  STYLE_INLINEEQUATION = 28,
-  STYLE_MARK = 29,
-  STYLE_TABLE = 30,
-  STYLE_TABLEHEADER = 31,
-};
 
 namespace vte {
 namespace md {

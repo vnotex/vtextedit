@@ -201,6 +201,28 @@ void TestMarkdownParser::testBlockquotes()
   QVERIFY((int)elems[0].second > 0);
 }
 
+void TestMarkdownParser::testBlockquoteNestingDepth()
+{
+  // Pins the contract the Enter continuation relies on: the number of
+  // STYLE_BLOCKQUOTE units on a block equals its quote nesting depth.
+  const QString input = QStringLiteral("> a\n\n> > b\n");
+  auto result = parse(input);
+
+  auto quoteUnits = [&result](int p_blockNumber) {
+    int count = 0;
+    for (const auto &unit : result.blocksHighlights.at(p_blockNumber)) {
+      if ((int)unit.styleIndex == HLT_BLOCKQUOTE) {
+        ++count;
+      }
+    }
+    return count;
+  };
+
+  QVERIFY(result.blocksHighlights.size() >= 3);
+  QCOMPARE(quoteUnits(0), 1);
+  QCOMPARE(quoteUnits(2), 2);
+}
+
 void TestMarkdownParser::testHorizontalRules()
 {
   // Use *** instead of --- to avoid cmark frontmatter extension consuming it.

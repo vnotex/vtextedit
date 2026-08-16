@@ -55,8 +55,8 @@ jobs:
           listing="$(ctest --test-dir "${{runner.workspace}}/build" -N)"
           printf '%s\n' "$listing"
           count="$(printf '%s\n' "$listing" | sed -n 's/^Total Tests: //p')"
-          if [ "$count" != "11" ]; then
-            echo "Expected 11 registered tests, found ${count:-unknown}" >&2
+          if [ "$count" != "13" ]; then
+            echo "Expected 13 registered tests, found ${count:-unknown}" >&2
             exit 1
           fi
 
