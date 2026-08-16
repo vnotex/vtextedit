@@ -563,9 +563,20 @@ void TestMarkdownFolding::testDrawUsesStoredBlockOffsets() {
   painter.end();
 
   // The third block is painted where the layout says it is, not 40px lower.
-  const int sampleX = qFloor(doc.documentMargin()) + 2;
-  QCOMPARE(image.pixelColor(sampleX, qCeil(thirdTop) + 2), QColor(Qt::green));
-  QCOMPARE(image.pixelColor(sampleX, qCeil(thirdTop) + 42), QColor(Qt::white));
+  // A whole scan line is inspected instead of one pixel: which pixels of the
+  // green band are covered by glyph ink depends on the font the platform
+  // picks, so a fixed x can land on a letter on one platform and on the
+  // background on another.
+  const auto rowHasGreen = [&image](int p_y) {
+    for (int x = 0; x < image.width(); ++x) {
+      if (image.pixelColor(x, p_y) == QColor(Qt::green)) {
+        return true;
+      }
+    }
+    return false;
+  };
+  QVERIFY(rowHasGreen(qCeil(thirdTop) + 2));
+  QVERIFY(!rowHasGreen(qCeil(thirdTop) + 42));
 }
 
 void TestMarkdownFolding::testDocumentSizeSignals() {
