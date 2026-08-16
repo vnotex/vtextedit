@@ -26,6 +26,7 @@
 
 #include <vtextedit/preview.h>
 
+#include "hlformatresolver.h"
 #include "previewbuilder.h"
 #include "tablepreviewwidget.h"
 
@@ -61,7 +62,9 @@ QSharedPointer<const TablePreview>
 makeTable(const QVector<QVector<QString>> &p_cells,
           const QVector<PreviewTableAlignment> &p_alignments,
           const QVector<QString> &p_rowPrefixes = QVector<QString>(),
-          const QString &p_delimiterPrefix = QString()) {
+          const QString &p_delimiterPrefix = QString(),
+          const QVector<QVector<QVector<PreviewFormatRun>>> &p_cellFormats =
+              QVector<QVector<QVector<PreviewFormatRun>>>()) {
   QVector<QString> prefixes = p_rowPrefixes;
   while (prefixes.size() < p_cells.size()) {
     prefixes.append(QString());
@@ -69,7 +72,7 @@ makeTable(const QVector<QVector<QString>> &p_cells,
 
   auto preview = PreviewBuilder::createTable(1, 0, 10, QStringLiteral("source"),
                                              p_alignments.size(), p_cells, p_alignments, prefixes,
-                                             p_delimiterPrefix);
+                                             p_delimiterPrefix, p_cellFormats);
   return preview.staticCast<const TablePreview>();
 }
 
@@ -78,13 +81,15 @@ makeTable(const QVector<QVector<QString>> &p_cells,
 // echo path, which compares exactly that string.
 QSharedPointer<const TablePreview>
 makeSnapshot(const QVector<QVector<QString>> &p_cells,
-             const QVector<PreviewTableAlignment> &p_alignments, quint64 p_revision = 1) {
+             const QVector<PreviewTableAlignment> &p_alignments, quint64 p_revision = 1,
+             const QVector<QVector<QVector<PreviewFormatRun>>> &p_cellFormats =
+                 QVector<QVector<QVector<PreviewFormatRun>>>()) {
   const QVector<QString> prefixes(p_cells.size(), QString());
   const QString source =
       TablePreviewSerializer::serialize(p_cells, p_alignments, prefixes, QString());
   auto preview = PreviewBuilder::createTable(p_revision, 0, source.size(), source,
                                              p_alignments.size(), p_cells, p_alignments, prefixes,
-                                             QString());
+                                             QString(), p_cellFormats);
   return preview.staticCast<const TablePreview>();
 }
 
@@ -154,7 +159,8 @@ QSharedPointer<const TablePreview> parseCanonical(const QString &p_markdown, qui
   const QVector<QString> prefixes(cells.size(), QString());
   auto preview = PreviewBuilder::createTable(p_revision, 0, p_markdown.size(), p_markdown,
                                              alignments.size(), cells, alignments, prefixes,
-                                             QString());
+                                             QString(),
+                                             QVector<QVector<QVector<PreviewFormatRun>>>());
   return preview.staticCast<const TablePreview>();
 }
 
@@ -810,6 +816,278 @@ void TestTablePreview::testFormatRefreshKeepsTheCaret() {
   QVERIFY(table);
   QCOMPARE(table->cellAt(1, 2).firstCursorPosition().blockFormat().alignment(),
            Qt::Alignment(Qt::AlignRight));
+}
+
+// ---------------------------------------------------------------------------
+// Cell syntax formats
+// ---------------------------------------------------------------------------
+
+namespace {
+QVector<QVector<QVector<PreviewFormatRun>>> makeRuns(const QColor &p_color) {
+  PreviewFormatRun bold;
+  bold.m_start = 0;
+  bold.m_length = 5; // "**a**"
+  bold.m_format.setForeground(p_color);
+  bold.m_format.setFontItalic(true);
+
+  PreviewFormatRun code;
+  code.m_start = 0;
+  code.m_length = 3; // "`b`"
+  code.m_format.setForeground(p_color);
+
+  QVector<QVector<QVector<PreviewFormatRun>>> matrix;
+  matrix.append({QVector<PreviewFormatRun>(), QVector<PreviewFormatRun>()});
+  matrix.append({{bold}, {code}});
+  return matrix;
+}
+
+QVector<QVector<QString>> syntaxCells() {
+  QVector<QVector<QString>> cells;
+  cells.append({QStringLiteral("H1"), QStringLiteral("H2")});
+  cells.append({QStringLiteral("**a**"), QStringLiteral("`b`")});
+  return cells;
+}
+
+// The char format of the character at cell-local offset @p_offset.
+QTextCharFormat formatAt(const QTextDocument *p_doc, int p_row, int p_column, int p_offset) {
+  QTextTable *table = tableOf(p_doc);
+  if (!table) {
+    return QTextCharFormat();
+  }
+
+  QTextCursor cursor(const_cast<QTextDocument *>(p_doc));
+  cursor.setPosition(table->cellAt(p_row, p_column).firstCursorPosition().position() + p_offset);
+  cursor.setPosition(cursor.position() + 1, QTextCursor::KeepAnchor);
+  return cursor.charFormat();
+}
+} // namespace
+
+void TestTablePreview::testCellSyntaxFormatsArePainted() {
+  const QVector<PreviewTableAlignment> alignments{PreviewTableAlignment::Left,
+                                                  PreviewTableAlignment::Left};
+  auto snapshot = makeSnapshot(syntaxCells(), alignments, 1, makeRuns(Qt::red));
+
+  // The matrix has the same shape as the cells.
+  QCOMPARE(snapshot->cellFormats().size(), snapshot->cells().size());
+  QCOMPARE(snapshot->cellFormats().at(1).size(), snapshot->cells().at(1).size());
+
+  TablePreviewWidget widget(nullptr, nullptr);
+  QVERIFY(widget.setPreview(snapshot));
+  auto sheet = sheetOf(widget);
+  QVERIFY(sheet);
+
+  // The text is still the raw Markdown.
+  QCOMPARE(cellText(sheet->document(), 1, 0), QStringLiteral("**a**"));
+
+  // Every character of "**a**" carries the run's format...
+  for (int i = 0; i < 5; ++i) {
+    QCOMPARE(formatAt(sheet->document(), 1, 0, i).foreground().color(), QColor(Qt::red));
+  }
+  QCOMPARE(formatAt(sheet->document(), 1, 1, 0).foreground().color(), QColor(Qt::red));
+
+  // ... while a cell with no runs is untouched, and the header is still bold.
+  QVERIFY(!formatAt(sheet->document(), 0, 0, 0).hasProperty(QTextFormat::ForegroundBrush));
+  QCOMPARE(formatAt(sheet->document(), 0, 0, 0).fontWeight(), static_cast<int>(QFont::Bold));
+
+  // Alignment block formats are unchanged.
+  QCOMPARE(tableOf(sheet->document())->cellAt(1, 0).firstCursorPosition().blockFormat().alignment(),
+           Qt::Alignment(Qt::AlignLeft));
+}
+
+void TestTablePreview::testSameSourceSnapshotRepaintsTheCells() {
+  const QVector<PreviewTableAlignment> alignments{PreviewTableAlignment::Left,
+                                                  PreviewTableAlignment::Left};
+  TablePreviewWidget widget(nullptr, nullptr);
+  QVERIFY(widget.setPreview(makeSnapshot(syntaxCells(), alignments, 1, makeRuns(Qt::red))));
+  showOffScreen(widget, 600);
+  settle();
+
+  auto sheet = sheetOf(widget);
+  QVERIFY(sheet);
+  putCaretIn(sheet, 1, 0);
+  const int caret = sheet->textCursor().position();
+
+  // Same source, same cells, different formats - a theme switch.
+  QVERIFY(widget.setPreview(makeSnapshot(syntaxCells(), alignments, 2, makeRuns(Qt::blue))));
+  settle();
+
+  QCOMPARE(sheet->textCursor().position(), caret);
+  QCOMPARE(cellText(sheet->document(), 1, 0), QStringLiteral("**a**"));
+  QCOMPARE(formatAt(sheet->document(), 1, 0, 0).foreground().color(), QColor(Qt::blue));
+}
+
+void TestTablePreview::testFormatOnlyDifferenceIsDetected() {
+  // Identical shapes, starts, lengths and run counts; only the format differs.
+  const auto red = makeRuns(Qt::red);
+  const auto blue = makeRuns(Qt::blue);
+  QCOMPARE(red.size(), blue.size());
+  QCOMPARE(red.at(1).at(0).size(), blue.at(1).at(0).size());
+  QCOMPARE(red.at(1).at(0).first().m_start, blue.at(1).at(0).first().m_start);
+  QCOMPARE(red.at(1).at(0).first().m_length, blue.at(1).at(0).first().m_length);
+  QVERIFY(red != blue);
+  QVERIFY(red.at(1).at(0).first() != blue.at(1).at(0).first());
+  QVERIFY(red == makeRuns(Qt::red));
+}
+
+void TestTablePreview::testResolveFormatRunsMergesOverlaps() {
+  QVector<QTextCharFormat> styles(3);
+  styles[0].setForeground(Qt::red);
+  styles[0].setFontItalic(true);
+  styles[1].setForeground(Qt::blue);
+  styles[2].setFontStrikeOut(true);
+
+  // Sorted the way the walker sorts them: by start, longest first. The outer
+  // unit is emitted as it is; the nested one merges over it, and the disjoint
+  // one is untouched by both.
+  QVector<vte::md::HLUnit> units;
+  units.append({0, 6, 0});
+  units.append({2, 2, 1});
+  units.append({8, 2, 2});
+
+  const auto runs = vte::md::resolveFormatRuns(units, styles);
+  QCOMPARE(runs.size(), 3);
+
+  QCOMPARE(runs.at(0).m_start, 0);
+  QCOMPARE(runs.at(0).m_length, 6);
+  QCOMPARE(runs.at(0).m_format.foreground().color(), QColor(Qt::red));
+
+  // The nested unit wins on colour and inherits the italic of the one it
+  // overlaps - exactly what the editor's sequential setFormat() produces.
+  QCOMPARE(runs.at(1).m_start, 2);
+  QCOMPARE(runs.at(1).m_format.foreground().color(), QColor(Qt::blue));
+  QVERIFY(runs.at(1).m_format.fontItalic());
+
+  // Disjoint: nothing merged into it.
+  QCOMPARE(runs.at(2).m_start, 8);
+  QVERIFY(runs.at(2).m_format.fontStrikeOut());
+  QVERIFY(!runs.at(2).m_format.hasProperty(QTextFormat::ForegroundBrush));
+}
+
+void TestTablePreview::testResolveFormatRunsSkipsUnknownStyles() {
+  QVector<QTextCharFormat> styles(1);
+  styles[0].setForeground(Qt::red);
+
+  QVector<vte::md::HLUnit> units;
+  units.append({0, 4, 0});
+  // Out of range: dropped instead of indexing past the styles.
+  units.append({1, 2, 7});
+  units.append({2, 2, 0});
+
+  const auto runs = vte::md::resolveFormatRuns(units, styles);
+  QCOMPARE(runs.size(), 2);
+  QCOMPARE(runs.at(0).m_start, 0);
+  QCOMPARE(runs.at(1).m_start, 2);
+
+  QVERIFY(vte::md::resolveFormatRuns(units, QVector<QTextCharFormat>()).isEmpty());
+}
+
+void TestTablePreview::testStaleEchoDoesNotRepaintTheCells() {
+  const QVector<PreviewTableAlignment> alignments{PreviewTableAlignment::Left,
+                                                  PreviewTableAlignment::Left};
+  TablePreviewWidget widget(nullptr, nullptr);
+  QVERIFY(widget.setPreview(makeSnapshot(syntaxCells(), alignments, 1, makeRuns(Qt::red))));
+  showOffScreen(widget, 600);
+  settle();
+
+  auto sheet = sheetOf(widget);
+  QVERIFY(sheet);
+
+  // The user types past the committed source: the cell is no longer what any
+  // snapshot of that source describes.
+  putCaretIn(sheet, 1, 0);
+  sheet->textCursor().insertText(QStringLiteral("Z"));
+  QCOMPARE(cellText(sheet->document(), 1, 0), QStringLiteral("**a**Z"));
+
+  // The echo of the previous commit, with different formats. It must be
+  // refused by the applicability guard rather than painted over newer text.
+  QVERIFY(widget.setPreview(makeSnapshot(syntaxCells(), alignments, 2, makeRuns(Qt::blue))));
+  settle();
+
+  QCOMPARE(cellText(sheet->document(), 1, 0), QStringLiteral("**a**Z"));
+  QCOMPARE(formatAt(sheet->document(), 1, 0, 0).foreground().color(), QColor(Qt::red));
+}
+
+void TestTablePreview::testARunDoesNotBleedIntoTheRestOfTheCell() {
+  // A run in the middle of a cell must leave the text on both sides alone.
+  QVector<QVector<QString>> cells;
+  cells.append({QStringLiteral("h1")});
+  cells.append({QStringLiteral("lead **bold** tail")});
+
+  PreviewFormatRun run;
+  run.m_start = 5;
+  run.m_length = 8; // "**bold**"
+  run.m_format.setFontWeight(QFont::Bold);
+  run.m_format.setForeground(Qt::red);
+
+  QVector<QVector<QVector<PreviewFormatRun>>> matrix;
+  matrix.append({QVector<PreviewFormatRun>()});
+  matrix.append({{run}});
+
+  auto snapshot = makeSnapshot(cells, {PreviewTableAlignment::Left}, 1, matrix);
+  TablePreviewWidget widget(nullptr, nullptr);
+  QVERIFY(widget.setPreview(snapshot));
+  auto sheet = sheetOf(widget);
+  QVERIFY(sheet);
+
+  const QString text = cells.at(1).at(0);
+  for (int i = 0; i < text.size(); ++i) {
+    const QTextCharFormat format = formatAt(sheet->document(), 1, 0, i);
+    const bool inside = i >= run.m_start && i < run.m_start + run.m_length;
+    QVERIFY2(format.hasProperty(QTextFormat::ForegroundBrush) == inside,
+             qPrintable(QStringLiteral("character %1 ('%2') is painted %3")
+                            .arg(i)
+                            .arg(text.at(i))
+                            .arg(inside ? QStringLiteral("plain") : QStringLiteral("styled"))));
+  }
+}
+
+void TestTablePreview::testTypingAfterARunIsNotHighlighted() {
+  // Qt gives an insertion the format of the character to its left, so typing
+  // right after '**bold**' would silently extend its colour and weight - and
+  // a following parse whose runs did not move would not undo it.
+  const QVector<PreviewTableAlignment> alignments{PreviewTableAlignment::Left,
+                                                  PreviewTableAlignment::Left};
+  TablePreviewWidget widget(nullptr, nullptr);
+  QVERIFY(widget.setPreview(makeSnapshot(syntaxCells(), alignments, 1, makeRuns(Qt::red))));
+  showOffScreen(widget, 600);
+  settle();
+
+  auto sheet = sheetOf(widget);
+  QVERIFY(sheet);
+
+  // The caret goes to the end of "**a**", right after the highlighted run.
+  putCaretIn(sheet, 1, 0);
+  QTest::keyClicks(sheet, QStringLiteral(" tail"));
+  QCOMPARE(cellText(sheet->document(), 1, 0), QStringLiteral("**a** tail"));
+
+  // The run still covers exactly "**a**".
+  for (int i = 0; i < 5; ++i) {
+    QCOMPARE(formatAt(sheet->document(), 1, 0, i).foreground().color(), QColor(Qt::red));
+  }
+  for (int i = 5; i < 10; ++i) {
+    QVERIFY2(!formatAt(sheet->document(), 1, 0, i).hasProperty(QTextFormat::ForegroundBrush),
+             qPrintable(QStringLiteral("the typed character %1 inherited the run").arg(i)));
+    QVERIFY(formatAt(sheet->document(), 1, 0, i).fontWeight() != QFont::Bold);
+  }
+}
+
+void TestTablePreview::testTypingIntoAHeaderCellStaysBold() {
+  // The header weight is a character format, so pinning the insertion format
+  // must not strip it.
+  const QVector<PreviewTableAlignment> alignments{PreviewTableAlignment::Left,
+                                                  PreviewTableAlignment::Left};
+  TablePreviewWidget widget(nullptr, nullptr);
+  QVERIFY(widget.setPreview(makeSnapshot(syntaxCells(), alignments, 1, makeRuns(Qt::red))));
+  showOffScreen(widget, 600);
+  settle();
+
+  auto sheet = sheetOf(widget);
+  QVERIFY(sheet);
+
+  putCaretIn(sheet, 0, 0);
+  QTest::keyClicks(sheet, QStringLiteral("X"));
+  QCOMPARE(cellText(sheet->document(), 0, 0), QStringLiteral("H1X"));
+  QCOMPARE(formatAt(sheet->document(), 0, 0, 2).fontWeight(), static_cast<int>(QFont::Bold));
 }
 
 // ---------------------------------------------------------------------------

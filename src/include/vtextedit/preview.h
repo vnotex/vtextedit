@@ -9,6 +9,7 @@
 #include <QSharedDataPointer>
 #include <QSharedPointer>
 #include <QString>
+#include <QTextCharFormat>
 #include <QVector>
 
 namespace vte {
@@ -33,6 +34,22 @@ enum class PreviewPlacement {
 
 // Column alignment of a Markdown table, as declared by the delimiter row.
 enum class PreviewTableAlignment { None, Left, Center, Right };
+
+// One resolved character format run within a cell's raw Markdown, in
+// cell-local UTF-16 coordinates. Runs may overlap and must be applied in
+// order: that reproduces the editor's own sequential highlighting behavior.
+struct VTEXTEDIT_EXPORT PreviewFormatRun {
+  bool operator==(const PreviewFormatRun &p_other) const {
+    return m_start == p_other.m_start && m_length == p_other.m_length
+           && m_format == p_other.m_format;
+  }
+
+  bool operator!=(const PreviewFormatRun &p_other) const { return !(*this == p_other); }
+
+  int m_start = 0;
+  int m_length = 0;
+  QTextCharFormat m_format;
+};
 
 class PreviewPrivate;
 class ImagePreviewPrivate;
@@ -143,6 +160,10 @@ public:
   // Raw Markdown of every cell, row major. Row 0 is the header row. Rows may
   // be ragged: a body row may have fewer or more cells than columnCount().
   const QVector<QVector<QString>> &cells() const;
+
+  // Resolved syntax highlight runs of every cell, row major and parallel to
+  // cells(). An empty inner vector means the cell carries no highlighting.
+  const QVector<QVector<QVector<PreviewFormatRun>>> &cellFormats() const;
 
   // Column alignments. Size equals columnCount().
   const QVector<PreviewTableAlignment> &alignments() const;

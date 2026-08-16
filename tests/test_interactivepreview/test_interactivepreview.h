@@ -186,6 +186,9 @@ class TestInteractivePreview : public QObject {
   Q_OBJECT
 private slots:
   void testBuiltinTableWidgetCreated();
+  void testCellsCarrySyntaxHighlighting();
+  void testHighlightingSurvivesACommit();
+  void testHighlightingStopsAtTheRunEnd();
   void testNoWidgetForImageCodeMathByDefault();
   void testCustomFactoryOverridesBuiltin();
   void testMultiTypeFactory();

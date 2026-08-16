@@ -163,6 +163,10 @@ private:
 
   void completeHighlight(QSharedPointer<MarkdownHighlighterResult> p_result);
 
+  // Re-emit the preview snapshots of the current, matched parse result after
+  // m_styles has been rebuilt. Does nothing when there is no matched result.
+  void republishPreviewElements();
+
   bool isMathEnabled() const;
 
   void startFastParse(int p_position, int p_charsRemoved, int p_charsAdded);

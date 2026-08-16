@@ -79,6 +79,7 @@ add_library(VTextEdit SHARED
     markdowneditor/markdownparser.cpp markdowneditor/markdownparser.h
     markdowneditor/cmarkadapter.cpp markdowneditor/cmarkadapter.h
     markdowneditor/markdownastwalker.cpp markdowneditor/markdownastwalker.h
+    markdowneditor/hlformatresolver.cpp markdowneditor/hlformatresolver.h
     markdowneditor/interactivepreviewhost.cpp markdowneditor/interactivepreviewhost.h
     markdowneditor/preview.cpp
     markdowneditor/previewbuilder.h

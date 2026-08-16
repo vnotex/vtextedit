@@ -4,6 +4,7 @@
 #include <QFile>
 
 #include "markdownastwalker.h"
+#include "markdownsyntaxstyles.h"
 
 using namespace tests;
 
@@ -433,6 +434,137 @@ void TestASTWalker::testImageStandaloneMatchesPaintedPath() {
 
     QVERIFY2(image.m_standalone == paintedStandalone, markdown.constData());
   }
+}
+
+void TestASTWalker::testTableCellOffsets()
+{
+  //             0123456789...
+  QByteArray md = "|  a |\\| b\t|\n"
+                  "| - | - |\n"
+                  "| \xC3\xA9\xF0\x9F\x98\x80 | |\n";
+  auto result = vte::md::walkAndConvert(md, 3);
+  QCOMPARE(result.tableElements.size(), 1);
+
+  const auto &table = result.tableElements.first();
+  QCOMPARE(table.m_startBlock, 0);
+  QCOMPARE(table.m_rows.size(), 3);
+
+  const QString line0 = QString::fromUtf8("|  a |\\| b\t|");
+  const auto &header = table.m_rows.at(0);
+  QCOMPARE(header.m_cells.size(), 2);
+  QCOMPARE(header.m_cellOffsets.size(), 2);
+  QCOMPARE(header.m_cells.at(0), QStringLiteral("a"));
+  QCOMPARE(line0.mid(header.m_cellOffsets.at(0), header.m_cells.at(0).size()),
+           header.m_cells.at(0));
+  QCOMPARE(header.m_cells.at(1), QStringLiteral("\\| b"));
+  QCOMPARE(line0.mid(header.m_cellOffsets.at(1), header.m_cells.at(1).size()),
+           header.m_cells.at(1));
+
+  // Surrogate-safe QChar offsets.
+  const QString line2 = QString::fromUtf8("| \xC3\xA9\xF0\x9F\x98\x80 | |");
+  const auto &body = table.m_rows.at(2);
+  QCOMPARE(body.m_cells.size(), 2);
+  QCOMPARE(line2.mid(body.m_cellOffsets.at(0), body.m_cells.at(0).size()), body.m_cells.at(0));
+  QVERIFY(body.m_cells.at(1).isEmpty());
+}
+
+void TestASTWalker::testTableCellHighlights()
+{
+  QByteArray md = "| **a** | x |\n"
+                  "| - | - |\n"
+                  "| t `b` | |\n";
+  auto result = vte::md::walkAndConvert(md, 3);
+  QCOMPARE(result.tableElements.size(), 1);
+
+  const auto &table = result.tableElements.first();
+  QCOMPARE(table.m_rows.size(), 3);
+
+  const auto &header = table.m_rows.at(0);
+  QCOMPARE(header.m_cellHighlights.size(), 2);
+  QCOMPARE(header.m_cellHighlights.at(0).size(), 1);
+  // Cell-local, covering exactly "**a**".
+  QCOMPARE(static_cast<int>(header.m_cellHighlights.at(0).first().start), 0);
+  QCOMPARE(static_cast<int>(header.m_cellHighlights.at(0).first().length), 5);
+  QVERIFY(header.m_cellHighlights.at(1).isEmpty());
+
+  const auto &body = table.m_rows.at(2);
+  QCOMPARE(body.m_cellHighlights.size(), 2);
+  QCOMPARE(body.m_cellHighlights.at(0).size(), 1);
+  // "t `b`" - the code span starts at cell-local offset 2.
+  QCOMPARE(static_cast<int>(body.m_cellHighlights.at(0).first().start), 2);
+  QCOMPARE(static_cast<int>(body.m_cellHighlights.at(0).first().length), 3);
+
+  // No row-wide table style leaks into a cell.
+  for (const auto &row : table.m_rows) {
+    for (int c = 0; c < row.m_cellHighlights.size(); ++c) {
+      for (const auto &unit : row.m_cellHighlights.at(c)) {
+        const int style = static_cast<int>(unit.styleIndex);
+        QVERIFY(style != STYLE_TABLE);
+        QVERIFY(style != STYLE_TABLEHEADER);
+        QVERIFY(style != STYLE_BLOCKQUOTE);
+        QVERIFY(unit.length > 0);
+        QVERIFY(static_cast<int>(unit.start + unit.length) <= row.m_cells.at(c).size());
+      }
+    }
+  }
+}
+
+void TestASTWalker::testTableCellHighlightsInBlockquote()
+{
+  QByteArray md = "> | **a** | b |\n"
+                  "> | - | - |\n"
+                  "> | c | |\n";
+  auto result = vte::md::walkAndConvert(md, 3);
+  QCOMPARE(result.tableElements.size(), 1);
+
+  const auto &table = result.tableElements.first();
+  QCOMPARE(table.m_startBlock, 0);
+
+  const QString line0 = QStringLiteral("> | **a** | b |");
+  const auto &header = table.m_rows.at(0);
+  QCOMPARE(header.m_prefix, QStringLiteral("> "));
+  QCOMPARE(line0.mid(header.m_cellOffsets.at(0), header.m_cells.at(0).size()),
+           header.m_cells.at(0));
+  QCOMPARE(header.m_cellHighlights.at(0).size(), 1);
+  QCOMPARE(static_cast<int>(header.m_cellHighlights.at(0).first().start), 0);
+  QCOMPARE(static_cast<int>(header.m_cellHighlights.at(0).first().length), 5);
+}
+
+void TestASTWalker::testTableCellHighlightsInListAndRaggedRow()
+{
+  QByteArray md = "- item\n"
+                  "\n"
+                  "  | **a** | b |\n"
+                  "  | - | - |\n"
+                  "  | *c* |\n";
+  auto result = vte::md::walkAndConvert(md, 5);
+  QCOMPARE(result.tableElements.size(), 1);
+
+  const auto &table = result.tableElements.first();
+  QCOMPARE(table.m_startBlock, 2);
+  QCOMPARE(table.m_rows.size(), 3);
+
+  const QString line = QStringLiteral("  | **a** | b |");
+  const auto &header = table.m_rows.at(0);
+  QCOMPARE(header.m_prefix, QStringLiteral("  "));
+  QCOMPARE(line.mid(header.m_cellOffsets.at(0), header.m_cells.at(0).size()),
+           header.m_cells.at(0));
+  QCOMPARE(header.m_cellHighlights.at(0).size(), 1);
+  QCOMPARE(static_cast<int>(header.m_cellHighlights.at(0).first().start), 0);
+  QCOMPARE(static_cast<int>(header.m_cellHighlights.at(0).first().length), 5);
+
+  // A ragged body row keeps its own width, and the matrices stay parallel.
+  const auto &body = table.m_rows.at(2);
+  QCOMPARE(body.m_cells.size(), 1);
+  QCOMPARE(body.m_cellOffsets.size(), 1);
+  QCOMPARE(body.m_cellHighlights.size(), 1);
+  QCOMPARE(body.m_cellHighlights.at(0).size(), 1);
+  QCOMPARE(static_cast<int>(body.m_cellHighlights.at(0).first().start), 0);
+  QCOMPARE(static_cast<int>(body.m_cellHighlights.at(0).first().length), 3);
+
+  // A plain row still gets one (empty) entry per cell.
+  const auto &delimiter = table.m_rows.at(1);
+  QCOMPARE(delimiter.m_cellHighlights.size(), delimiter.m_cells.size());
 }
 
 QTEST_MAIN(tests::TestASTWalker)

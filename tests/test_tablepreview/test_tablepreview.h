@@ -30,6 +30,15 @@ private slots:
   void testDocumentRoundTrip();
   void testRaggedTableIsNotRoundTrippable();
   void testFormatRefreshKeepsTheCaret();
+  void testCellSyntaxFormatsArePainted();
+  void testSameSourceSnapshotRepaintsTheCells();
+  void testFormatOnlyDifferenceIsDetected();
+  void testResolveFormatRunsMergesOverlaps();
+  void testResolveFormatRunsSkipsUnknownStyles();
+  void testStaleEchoDoesNotRepaintTheCells();
+  void testARunDoesNotBleedIntoTheRestOfTheCell();
+  void testTypingAfterARunIsNotHighlighted();
+  void testTypingIntoAHeaderCellStaysBold();
 
   // Limits.
   void testWidgetRejectsNonTable();

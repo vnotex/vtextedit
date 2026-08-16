@@ -32,11 +32,14 @@ public:
                                                   const QString &p_expression,
                                                   bool p_displayMath);
 
+  // @p_cellFormats is row major and parallel to @p_cells; pass an empty vector
+  // when no resolved highlighting is available.
   static QSharedPointer<const Preview>
   createTable(quint64 p_revision, int p_startPos, int p_endPos, const QString &p_source,
               int p_columnCount, const QVector<QVector<QString>> &p_cells,
               const QVector<PreviewTableAlignment> &p_alignments,
-              const QVector<QString> &p_rowPrefixes, const QString &p_delimiterPrefix);
+              const QVector<QString> &p_rowPrefixes, const QString &p_delimiterPrefix,
+              const QVector<QVector<QVector<PreviewFormatRun>>> &p_cellFormats);
 
 private:
   PreviewBuilder() = delete;

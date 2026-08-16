@@ -72,6 +72,8 @@ public:
 
   QVector<QVector<QString>> m_cells;
 
+  QVector<QVector<QVector<PreviewFormatRun>>> m_cellFormats;
+
   QVector<PreviewTableAlignment> m_alignments;
 
   QVector<QString> m_rowPrefixes;
@@ -148,6 +150,11 @@ int TablePreview::rowCount() const { return m_tableData->m_cells.size(); }
 int TablePreview::columnCount() const { return m_tableData->m_columnCount; }
 
 const QVector<QVector<QString>> &TablePreview::cells() const { return m_tableData->m_cells; }
+
+const QVector<QVector<QVector<PreviewFormatRun>>> &TablePreview::cellFormats() const {
+  return m_tableData->m_cellFormats;
+}
+
 
 const QVector<PreviewTableAlignment> &TablePreview::alignments() const {
   return m_tableData->m_alignments;
@@ -283,10 +290,12 @@ PreviewBuilder::createTable(quint64 p_revision, int p_startPos, int p_endPos,
                             const QVector<QVector<QString>> &p_cells,
                             const QVector<PreviewTableAlignment> &p_alignments,
                             const QVector<QString> &p_rowPrefixes,
-                            const QString &p_delimiterPrefix) {
+                            const QString &p_delimiterPrefix,
+                            const QVector<QVector<QVector<PreviewFormatRun>>> &p_cellFormats) {
   auto tableData = new TablePreviewPrivate();
   tableData->m_columnCount = p_columnCount;
   tableData->m_cells = p_cells;
+  tableData->m_cellFormats = p_cellFormats;
   tableData->m_alignments = p_alignments;
   tableData->m_rowPrefixes = p_rowPrefixes;
   tableData->m_delimiterPrefix = p_delimiterPrefix;

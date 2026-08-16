@@ -120,8 +120,11 @@ public:
 
   // Build immutable preview snapshots for the element types set in
   // @p_typeMask (bit i corresponds to PreviewElementType value i).
-  QVector<QSharedPointer<const Preview>> buildPreviews(const QTextDocument *p_doc,
-                                                       int p_typeMask) const;
+  // @p_styles maps HLUnit::styleIndex to a concrete format and is used to
+  // resolve the per-cell syntax runs of table snapshots.
+  QVector<QSharedPointer<const Preview>>
+  buildPreviews(const QTextDocument *p_doc, int p_typeMask,
+                const QVector<QTextCharFormat> &p_styles) const;
 
   QVector<md::HLUnitStyle> m_dummyHighlight;
 

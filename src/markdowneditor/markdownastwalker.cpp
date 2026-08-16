@@ -267,7 +267,8 @@ static QString lineText(const QByteArray &p_utf8Text, const LineOffsetTable &p_o
 // cells, mirroring cmark's scanner (blocks.c scan_table_row_helper): the row
 // starts with '|' right after the prefix, a pipe preceded by an odd number of
 // backslashes is escaped, and only whitespace may follow the trailing pipe.
-static bool splitTableRow(const QString &p_line, QString &p_prefix, QVector<QString> &p_cells)
+static bool splitTableRow(const QString &p_line, QString &p_prefix, QVector<QString> &p_cells,
+                          QVector<int> *p_cellOffsets = nullptr)
 {
   const int firstPipe = p_line.indexOf(QLatin1Char('|'));
   if (firstPipe < 0) {
@@ -275,6 +276,16 @@ static bool splitTableRow(const QString &p_line, QString &p_prefix, QVector<QStr
   }
 
   p_prefix = p_line.left(firstPipe);
+
+  // Offset of the first character of the trimmed slice [p_start, p_end).
+  // Must use the very same whitespace semantics as QString::trimmed().
+  auto trimmedOffset = [&p_line](int p_start, int p_end) {
+    int i = p_start;
+    while (i < p_end && p_line.at(i).isSpace()) {
+      ++i;
+    }
+    return i;
+  };
 
   int cellStart = firstPipe + 1;
   bool escaped = false;
@@ -293,6 +304,9 @@ static bool splitTableRow(const QString &p_line, QString &p_prefix, QVector<QStr
 
     if (ch == QLatin1Char('|')) {
       p_cells.append(p_line.mid(cellStart, i - cellStart).trimmed());
+      if (p_cellOffsets) {
+        p_cellOffsets->append(trimmedOffset(cellStart, i));
+      }
       cellStart = i + 1;
       closed = true;
     }
@@ -352,7 +366,8 @@ static bool isStandaloneOnLine(const QByteArray &p_utf8Text, const LineOffsetTab
 // one-to-one onto consecutive source lines of the table's own range, which is
 // the only situation where a rewrite could corrupt the document.
 static void extractTable(cmark_node *p_tableNode, const LineOffsetTable &p_offsets,
-                         const QByteArray &p_utf8Text, ASTWalkResult &p_result, int p_offset)
+                         const QByteArray &p_utf8Text, ASTWalkResult &p_result, int p_offset,
+                         int p_startBlock)
 {
   const int startLine = cmark_node_get_start_line(p_tableNode);
   const int endLine = cmark_node_get_end_line(p_tableNode);
@@ -397,7 +412,7 @@ static void extractTable(cmark_node *p_tableNode, const LineOffsetTable &p_offse
     }
 
     if (!splitTableRow(lineText(p_utf8Text, p_offsets, expectedLine - 1), rowElement.m_prefix,
-                       rowElement.m_cells)) {
+                       rowElement.m_cells, &rowElement.m_cellOffsets)) {
       return;
     }
     table.m_rows.append(rowElement);
@@ -418,6 +433,8 @@ static void extractTable(cmark_node *p_tableNode, const LineOffsetTable &p_offse
   if (table.m_endPos <= table.m_startPos) {
     return;
   }
+
+  table.m_startBlock = p_startBlock + startLine - 1;
 
   p_result.tableElements.append(table);
 }
@@ -474,6 +491,78 @@ static void extractTypedElement(cmark_node *p_node, cmark_node_type p_type, int 
 
   default:
     break;
+  }
+}
+
+
+// Slice the per-block highlight units of a table's source lines into per-cell,
+// cell-local units. Must run after blocksHighlights has been sorted, so the
+// relative order the merge algorithm depends on is already final.
+static void sliceTableCellHighlights(ASTWalkResult &p_result)
+{
+  // Mirrors TablePreviewWidget::c_maxCells: bigger tables never get a widget,
+  // so there is no point in paying for the slicing.
+  const int c_maxPreviewCells = 300;
+
+  for (auto &table : p_result.tableElements) {
+    if (table.m_startBlock < 0) {
+      continue;
+    }
+
+    int cellCount = 0;
+    for (const auto &row : table.m_rows) {
+      cellCount += row.m_cells.size();
+    }
+    if (cellCount > c_maxPreviewCells) {
+      continue;
+    }
+
+    for (int r = 0; r < table.m_rows.size(); ++r) {
+      auto &row = table.m_rows[r];
+      const int blockNum = table.m_startBlock + r;
+      if (blockNum < 0 || blockNum >= p_result.blocksHighlights.size()) {
+        continue;
+      }
+
+      const auto &units = p_result.blocksHighlights.at(blockNum);
+      // Kept parallel to m_cells even when there is nothing to slice.
+      row.m_cellHighlights.resize(row.m_cells.size());
+      if (units.isEmpty()) {
+        continue;
+      }
+
+      for (int c = 0; c < row.m_cells.size(); ++c) {
+        const int off = row.m_cellOffsets.value(c, -1);
+        const int len = row.m_cells.at(c).size();
+        if (off < 0 || len <= 0) {
+          continue;
+        }
+
+        const long long cellStart = off;
+        const long long cellEnd = static_cast<long long>(off) + len;
+        auto &cellUnits = row.m_cellHighlights[c];
+        for (const auto &unit : units) {
+          const int styleIdx = static_cast<int>(unit.styleIndex);
+          if (styleIdx == STYLE_TABLE || styleIdx == STYLE_TABLEHEADER
+              || styleIdx == STYLE_BLOCKQUOTE) {
+            continue;
+          }
+
+          const long long s = qMax<long long>(static_cast<long long>(unit.start), cellStart);
+          const long long e = qMin<long long>(
+              static_cast<long long>(unit.start) + static_cast<long long>(unit.length), cellEnd);
+          if (e <= s) {
+            continue;
+          }
+
+          HLUnit sliced;
+          sliced.start = static_cast<unsigned long>(s - cellStart);
+          sliced.length = static_cast<unsigned long>(e - s);
+          sliced.styleIndex = unit.styleIndex;
+          cellUnits.append(sliced);
+        }
+      }
+    }
   }
 }
 
@@ -613,7 +702,7 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks,
       addRegion(result, style, absStart, absEnd);
 
       if (type == CMARK_NODE_TABLE) {
-        extractTable(node, offsets, p_utf8Text, result, p_offset);
+        extractTable(node, offsets, p_utf8Text, result, p_offset, p_startBlock);
       } else {
         extractTypedElement(node, type, style, p_utf8Text, offsets, result, sl, el, docStart,
                             docEnd, absStart, absEnd);
@@ -652,6 +741,10 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks,
     std::sort(result.codeElements.begin(), result.codeElements.end(), byStart);
     std::sort(result.mathElements.begin(), result.mathElements.end(), byStart);
     std::sort(result.tableElements.begin(), result.tableElements.end(), byStart);
+
+    // Runs after the blocksHighlights sort so the sliced units keep the final
+    // relative order the format-merge algorithm depends on.
+    sliceTableCellHighlights(result);
   }
 
   cmark_node_free(doc);

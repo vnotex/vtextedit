@@ -14,6 +14,7 @@
 #include <vtextedit/theme.h>
 
 #include "markdownastwalker.h"
+#include "hlformatresolver.h"
 #include "markdownhighlightblockdata.h"
 #include "markdownhighlighterresult.h"
 #include "markdownparser.h"
@@ -260,28 +261,11 @@ void MarkdownHighlighter::highlightBlockOne(const QVector<QVector<md::HLUnit>> &
 }
 
 void MarkdownHighlighter::highlightBlockOne(const QVector<md::HLUnit> &p_units) {
-  for (int i = 0; i < p_units.size(); ++i) {
-    const auto &unit = p_units[i];
-    if (i == 0) {
-      // No need to merge format.
-      setFormat(unit.start, unit.length, m_styles[unit.styleIndex]);
-    } else {
-      QTextCharFormat newFormat = m_styles[unit.styleIndex];
-      for (int j = i - 1; j >= 0; --j) {
-        if (p_units[j].start + p_units[j].length <= unit.start) {
-          // It won't affect current unit.
-          continue;
-        } else {
-          // Merge the format.
-          QTextCharFormat tmpFormat(newFormat);
-          newFormat = m_styles[p_units[j].styleIndex];
-          // tmpFormat takes precedence.
-          newFormat.merge(tmpFormat);
-        }
-      }
-
-      setFormat(unit.start, unit.length, newFormat);
-    }
+  // Runs come back one per unit, possibly overlapping, in input order; applying
+  // them in order reproduces the original sequential setFormat() behavior.
+  const auto runs = md::resolveFormatRuns(p_units, m_styles);
+  for (const auto &run : runs) {
+    setFormat(run.m_start, run.m_length, run.m_format);
   }
 }
 
@@ -710,6 +694,10 @@ void MarkdownHighlighter::setTheme(const QSharedPointer<Theme> &p_theme) {
       m_styles[i] = syntaxStyles->at(i).toTextCharFormat();
     }
   }
+
+  // Snapshots carry concrete formats resolved from m_styles, and rehighlight()
+  // never re-enters completeHighlight(), so they have to be republished here.
+  republishPreviewElements();
 }
 
 bool MarkdownHighlighter::rehighlightBlockRange(int p_first, int p_last) {
@@ -826,10 +814,30 @@ void MarkdownHighlighter::completeHighlight(QSharedPointer<MarkdownHighlighterRe
   const QVariant maskValue = property(InteractivePreviewHost::c_enabledTypeMaskProperty);
   const int typeMask = maskValue.isValid() ? maskValue.toInt() : 0;
   emit previewElementsUpdated(static_cast<quint64>(p_result->m_timeStamp),
-                              p_result->buildPreviews(document(), typeMask));
+                              p_result->buildPreviews(document(), typeMask, m_styles));
 }
 
 bool MarkdownHighlighter::isMathEnabled() const { return m_parserExts & EXT_MATH; }
+
+void MarkdownHighlighter::republishPreviewElements() {
+  // setTheme() is called from the constructor before m_result exists, and an
+  // unmatched result would hand stale source positions to the preview host.
+  if (m_result.isNull() || !m_result->matched(m_timeStamp)) {
+    return;
+  }
+
+  const QVariant maskValue = property(InteractivePreviewHost::c_enabledTypeMaskProperty);
+  const int typeMask = maskValue.isValid() ? maskValue.toInt() : 0;
+  if (typeMask == 0) {
+    return;
+  }
+
+  // Deliberately not completeHighlight(): that republishes unrelated regions
+  // and mutates m_notifyHighlightComplete.
+  emit previewElementsUpdated(static_cast<quint64>(m_result->m_timeStamp),
+                              m_result->buildPreviews(document(), typeMask, m_styles));
+}
+
 
 void MarkdownHighlighter::rehighlightSensitiveBlocks() {
   QTextBlock cb = m_interface->textCursor().block();
@@ -1091,6 +1099,8 @@ void MarkdownHighlighter::updateStylesFontSize(int p_delta) {
     int ptSize = qMax(minSize, static_cast<int>(style.fontPointSize() + p_delta));
     style.setFontPointSize(ptSize);
   }
+
+  republishPreviewElements();
 
   rehighlight();
 }

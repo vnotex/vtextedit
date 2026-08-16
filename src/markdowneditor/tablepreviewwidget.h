@@ -237,13 +237,35 @@ public:
   // touched.
   bool appendRow();
 
+  // The character format a cell of @p_row starts from, before any syntax run
+  // is merged over it: the header weight and nothing else.
+  //
+  // This is what newly typed or pasted text must carry. Qt otherwise gives an
+  // insertion the format of the character to its left, so typing right after a
+  // highlighted span - '**bold**' - would silently extend that span's colour
+  // and weight over the new text, which the next parse does not necessarily
+  // undo: a run whose start and length did not move leaves the format matrix
+  // unchanged, and the refresh pass then has nothing to do.
+  QTextCharFormat baselineCellFormat(int p_row) const;
+
   // Re-apply the per-cell formats - the column alignment and the header
   // weight - without touching a single character of cell text.
   //
   // A font, palette or style change has to be answered without rebuilding the
   // document: rebuilding would destroy the caret and any selection, which for
   // a theme switch during typing is a silent loss of the user's place.
+  //
+  // The per-character syntax highlight runs are deliberately not re-applied
+  // here: they are owned by build() and refreshCellSyntaxFormats(), and
+  // re-applying a stored matrix from a font or palette change would paint a
+  // stale row/column/offset mapping after in-cell typing or a row/column
+  // insert or delete.
   void applyCellFormats();
+
+  // Re-apply the per-cell syntax highlight runs of a snapshot which describes
+  // exactly the live cells, without rebuilding the document. Returns false
+  // when the matrix is already the applied one and nothing was done.
+  bool refreshCellSyntaxFormats(const QVector<QVector<QVector<PreviewFormatRun>>> &p_cellFormats);
 
   // The one colour the table itself owns. Separate from applyCellFormats()
   // because a rebuild has just written every per-cell format and only this is
@@ -256,6 +278,19 @@ private:
   // The single writer of one cell's formats, so build() and applyCellFormats()
   // cannot drift apart.
   void applyCellFormat(int p_row, int p_column);
+
+  // Overlay the resolved syntax highlight runs of one cell. Runs are merged,
+  // in order, over whatever applyCellFormat() has just written, so the header
+  // weight survives while inline styles win on overlap. A run whose range does
+  // not fit the cell text exactly is skipped entirely rather than clipped: the
+  // walker already clipped to the cell, so a bad range means offset drift and
+  // clipping would paint the wrong substring.
+  void applyCellSyntaxFormats(int p_row, int p_column);
+
+  // Normalize a snapshot's run matrix onto the current m_rowCount/m_columnCount
+  // shape, so a padded cell gets an empty run list.
+  QVector<QVector<QVector<PreviewFormatRun>>>
+  normalizeCellFormats(const QVector<QVector<QVector<PreviewFormatRun>>> &p_cellFormats) const;
 
   // The block format one column's cells carry.
   Qt::Alignment blockAlignment(int p_column) const;
@@ -278,6 +313,12 @@ private:
   // The raw matrix of the bound snapshot, normalized. Only used to build the
   // document; cells() reads the document itself afterwards.
   QVector<QVector<QString>> m_source;
+
+  // The syntax highlight runs currently written into the document, normalized
+  // onto the same shape as m_source. Compared against an incoming matrix to
+  // decide whether a refresh has anything to do: a theme or font-size change
+  // keeps every start, length and count identical and only changes the format.
+  QVector<QVector<QVector<PreviewFormatRun>>> m_appliedCellFormats;
 
   QVector<PreviewTableAlignment> m_alignments;
 
@@ -370,6 +411,15 @@ public:
   // retired QTableView sheet was SingleSelection for the same reason, so no
   // affordance is lost.
   void clampSelectionIntoOneCell();
+
+  // Pin the format of the next insertion to the caret cell's baseline.
+  //
+  // Qt gives an insertion the character format of the text to its left, so
+  // typing or pasting right after a highlighted span - '**bold**' - would
+  // extend that span's colour and weight over the new characters. The next
+  // parse does not necessarily undo it: when the run's start and length do not
+  // move, the format matrix is unchanged and the refresh pass is skipped.
+  void resetInsertionFormat();
 
   // Collapse any selection onto the caret, without moving the caret.
   void clearSelection();
@@ -635,6 +685,18 @@ private slots:
 
 private:
   void resetFromSource();
+
+  // Repaint the cells with the syntax runs of @p_table without rebuilding the
+  // document, so the caret and the selection survive.
+  //
+  // Only applied when the snapshot's normalized cell matrix is equal, cell by
+  // cell, to what the document currently holds: the unchanged-source path of
+  // setPreview() also accepts the echo of a commit which the user has already
+  // typed past, and painting that snapshot's offsets over newer text would
+  // highlight the wrong characters. A theme change landing during an
+  // uncommitted cell edit therefore stays stale until that edit is committed
+  // and re-parsed.
+  void refreshCellSyntaxFormats(const vte::TablePreview &p_table);
 
   // Take the bound snapshot from the context, which is the authoritative
   // binding: an accepted replacement rebases it onto the text now in the

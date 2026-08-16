@@ -275,8 +275,10 @@ Qt::Alignment TablePreviewDocument::blockAlignment(int p_column) const {
 }
 
 void TablePreviewDocument::setTable(const QSharedPointer<const TablePreview> &p_table) {
+  QVector<QVector<QVector<PreviewFormatRun>>> cellFormats;
   if (p_table) {
     m_source = p_table->cells();
+    cellFormats = p_table->cellFormats();
     m_alignments = p_table->alignments();
     m_rowPrefixes = p_table->rowPrefixes();
     m_delimiterPrefix = p_table->delimiterPrefix();
@@ -310,7 +312,26 @@ void TablePreviewDocument::setTable(const QSharedPointer<const TablePreview> &p_
 
   m_rowCount = m_source.size();
 
+  // Padded exactly like m_source, so a padded cell carries no runs.
+  m_appliedCellFormats = normalizeCellFormats(cellFormats);
+
   build();
+}
+
+QVector<QVector<QVector<PreviewFormatRun>>> TablePreviewDocument::normalizeCellFormats(
+    const QVector<QVector<QVector<PreviewFormatRun>>> &p_cellFormats) const {
+  QVector<QVector<QVector<PreviewFormatRun>>> normalized;
+  normalized.reserve(m_rowCount);
+  for (int r = 0; r < m_rowCount; ++r) {
+    QVector<QVector<PreviewFormatRun>> row = p_cellFormats.value(r);
+    while (row.size() < m_columnCount) {
+      row.append(QVector<PreviewFormatRun>());
+    }
+    row.resize(m_columnCount);
+    normalized.append(row);
+  }
+
+  return normalized;
 }
 
 void TablePreviewDocument::build() {
@@ -366,6 +387,10 @@ void TablePreviewDocument::build() {
       // The same writer applyCellFormats() uses, so the two cannot disagree
       // about what a cell looks like.
       applyCellFormat(r, c);
+
+      // After applyCellFormat(), so inline styles win on overlap while the
+      // header weight survives the merge.
+      applyCellSyntaxFormats(r, c);
     }
   }
 
@@ -482,6 +507,17 @@ QString TablePreviewDocument::toMarkdown() const {
                                            m_delimiterPrefix);
 }
 
+QTextCharFormat TablePreviewDocument::baselineCellFormat(int p_row) const {
+  QTextCharFormat format;
+  if (p_row == 0) {
+    // The same weight applyCellFormat() writes, so typing into a header cell
+    // stays bold.
+    format.setFontWeight(QFont::Bold);
+  }
+
+  return format;
+}
+
 void TablePreviewDocument::applyCellFormat(int p_row, int p_column) {
   if (!m_table) {
     return;
@@ -508,8 +544,7 @@ void TablePreviewDocument::applyCellFormat(int p_row, int p_column) {
   // are needed - the block's char format so a cell which is empty in the
   // source is still bold once it is typed into, and the merge so text which is
   // already there is restyled.
-  QTextCharFormat headerFormat;
-  headerFormat.setFontWeight(QFont::Bold);
+  const QTextCharFormat headerFormat = baselineCellFormat(p_row);
   cursor.setBlockCharFormat(headerFormat);
   cursor.mergeCharFormat(headerFormat);
 }
@@ -526,6 +561,80 @@ void TablePreviewDocument::applyCellFormats() {
       applyCellFormat(r, c);
     }
   }
+}
+
+void TablePreviewDocument::applyCellSyntaxFormats(int p_row, int p_column) {
+  if (!m_table) {
+    return;
+  }
+
+  const auto runs = m_appliedCellFormats.value(p_row).value(p_column);
+  if (runs.isEmpty()) {
+    return;
+  }
+
+  const QTextTableCell cell = m_table->cellAt(p_row, p_column);
+  if (!cell.isValid()) {
+    return;
+  }
+
+  const int start = cell.firstCursorPosition().position();
+  const int textLength = cell.lastCursorPosition().position() - start;
+
+  QTextCursor cursor(m_doc.data());
+  for (const auto &run : runs) {
+    // Never clipped: the walker already clipped to the cell, so a range which
+    // does not fit means offset drift, and clipping would paint the wrong
+    // substring.
+    if (run.m_start < 0 || run.m_length <= 0 || run.m_start + run.m_length > textLength) {
+      continue;
+    }
+
+    cursor.setPosition(start + run.m_start);
+    cursor.setPosition(start + run.m_start + run.m_length, QTextCursor::KeepAnchor);
+    cursor.mergeCharFormat(run.m_format);
+  }
+}
+
+bool TablePreviewDocument::refreshCellSyntaxFormats(
+    const QVector<QVector<QVector<PreviewFormatRun>>> &p_cellFormats) {
+  if (!m_table) {
+    return false;
+  }
+
+  const auto normalized = normalizeCellFormats(p_cellFormats);
+  if (normalized == m_appliedCellFormats) {
+    // A run-count or revision guard would not catch this: a theme or font-size
+    // republish keeps every start, length and count identical and only changes
+    // the format.
+    return false;
+  }
+
+  m_appliedCellFormats = normalized;
+
+  QTextCursor cursor(m_doc.data());
+  cursor.beginEditBlock();
+  for (int r = 0; r < m_rowCount; ++r) {
+    for (int c = 0; c < m_columnCount; ++c) {
+      const QTextTableCell cell = m_table->cellAt(r, c);
+      if (!cell.isValid()) {
+        continue;
+      }
+
+      // Back to the clean baseline first, so the runs of the previous snapshot
+      // do not survive underneath the new ones. Text is untouched, so the caret
+      // and any selection stay valid.
+      QTextCursor cellCursor = cell.firstCursorPosition();
+      cellCursor.setPosition(cell.lastCursorPosition().position(), QTextCursor::KeepAnchor);
+      cellCursor.setCharFormat(QTextCharFormat());
+
+      applyCellFormat(r, c);
+      applyCellSyntaxFormats(r, c);
+    }
+  }
+  cursor.endEditBlock();
+
+  return true;
 }
 
 bool TablePreviewDocument::canAppendRow() const {
@@ -1039,6 +1148,20 @@ void TablePreviewSheet::clampCursorIntoTable() {
                                                             : cell.lastCursorPosition());
 }
 
+void TablePreviewSheet::resetInsertionFormat() {
+  QTextTable *table = m_document ? m_document->table() : nullptr;
+  if (!table) {
+    return;
+  }
+
+  const QTextTableCell cell = table->cellAt(textCursor());
+  if (!cell.isValid()) {
+    return;
+  }
+
+  setCurrentCharFormat(m_document->baselineCellFormat(cell.row()));
+}
+
 void TablePreviewSheet::clampSelectionIntoOneCell() {
   QTextTable *table = m_document ? m_document->table() : nullptr;
   if (!table) {
@@ -1415,6 +1538,10 @@ void TablePreviewSheet::keyPressEvent(QKeyEvent *p_event) {
       p_event->accept();
       return;
     }
+
+    // Whatever this key inserts must not inherit the highlighting of the
+    // character to its left.
+    resetInsertionFormat();
   }
 
   QTextEdit::keyPressEvent(p_event);
@@ -1784,6 +1911,9 @@ void TablePreviewSheet::inputMethodEvent(QInputMethodEvent *p_event) {
 
   QInputMethodEvent replacement(p_event->preeditString(), attributes);
   replacement.setCommitString(sanitized, start - position, end - start);
+  // The commit is an insertion like any other: it must not inherit the
+  // highlighting of the character to its left.
+  resetInsertionFormat();
   QTextEdit::inputMethodEvent(&replacement);
   p_event->accept();
 }
@@ -1812,6 +1942,7 @@ void TablePreviewSheet::insertFromMimeData(const QMimeData *p_source) {
   }
 
   // Drops arrive here too, so one validator covers both.
+  resetInsertionFormat();
   insertPlainText(sanitizeForCell(text));
 }
 
@@ -1946,6 +2077,8 @@ bool TablePreviewWidget::setPreview(const QSharedPointer<const Preview> &p_previ
                                << "(" << reason << ")";
       m_table = table;
 
+      refreshCellSyntaxFormats(*table);
+
       // The document may already hold edits newer than the commit this
       // snapshot echoes. They are still owed a write-back, so re-arm rather
       // than let them be stranded by a debounce which has already fired.
@@ -2024,6 +2157,39 @@ void TablePreviewWidget::rebindFromContext() {
   const auto bound = context->preview();
   if (bound && bound->type() == PreviewElementType::Table) {
     m_table = bound.staticCast<const TablePreview>();
+  }
+}
+
+void TablePreviewWidget::refreshCellSyntaxFormats(const TablePreview &p_table) {
+  if (!m_document->table()) {
+    return;
+  }
+
+  // Normalize the snapshot matrix exactly as TablePreviewDocument::setTable()
+  // does, so it can be compared against the live cells.
+  QVector<QVector<QString>> source = p_table.cells();
+  int columns = p_table.alignments().size();
+  for (const auto &row : source) {
+    columns = qMax(columns, row.size());
+  }
+  for (auto &row : source) {
+    while (row.size() < columns) {
+      row.append(QString());
+    }
+  }
+
+  if (source != m_document->cells()) {
+    // The snapshot does not describe the live cells - typically the echo of a
+    // commit the user has already typed past. Wait for the snapshot which
+    // matches instead of painting stale offsets.
+    qCDebug(previewTableLog) << "skipped a syntax format refresh - the snapshot does not describe"
+                             << "the live cells";
+    return;
+  }
+
+  QScopedValueRollback<bool> guard(m_applyingSource, true);
+  if (m_document->refreshCellSyntaxFormats(p_table.cellFormats())) {
+    qCDebug(previewTableLog) << "repainted the sheet's cells with new syntax formats";
   }
 }
 

@@ -2228,8 +2228,11 @@ static QSharedPointer<const Preview> rebaseMath(const QSharedPointer<const Previ
 static QSharedPointer<const Preview> rebaseTable(const QSharedPointer<const Preview> &p_original,
                                                  int p_startPos, const QString &p_text,
                                                  const md::TableElement &p_element) {
+  // No highlighter styles are available on the rebase path, so the rebased
+  // snapshot deliberately carries no syntax runs: the widget keeps its current
+  // physical formats until the next full-parse snapshot brings correct ones.
   return createTablePreview(p_original->revision(), p_startPos, p_startPos + p_text.size(),
-                            p_text, p_element);
+                            p_text, p_element, QVector<QTextCharFormat>());
 }
 
 // Per-type dispatch onto the snapshot builders above. Returns a null pointer

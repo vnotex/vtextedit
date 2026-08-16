@@ -48,9 +48,20 @@ struct TableRowElement {
 
   // Raw Markdown of each cell, trimmed of the framing whitespace only.
   QVector<QString> m_cells;
+
+  // Offset within the source line of each trimmed cell's first character.
+  // Parallel to m_cells.
+  QVector<int> m_cellOffsets;
+
+  // Highlight units of each cell, in cell-local coordinates. Parallel to
+  // m_cells; an empty entry means the cell carries no inline highlighting.
+  QVector<QVector<HLUnit>> m_cellHighlights;
 };
 
 struct TableElement : public TypedPreviewElement {
+  // Global block number of the table's first (header) row.
+  int m_startBlock = -1;
+
   // Column count declared by the header/delimiter rows.
   int m_columns = 0;
 

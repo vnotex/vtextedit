@@ -15,6 +15,7 @@ add_executable(test_tablepreview
     ${MDEDITOR_FOLDER}/previewlogging.cpp ${MDEDITOR_FOLDER}/previewlogging.h
     ${MDEDITOR_FOLDER}/previewwidget.cpp
     ${MDEDITOR_FOLDER}/tablepreviewwidget.cpp ${MDEDITOR_FOLDER}/tablepreviewwidget.h
+    ${MDEDITOR_FOLDER}/hlformatresolver.cpp ${MDEDITOR_FOLDER}/hlformatresolver.h
     test_tablepreview.cpp test_tablepreview.h
 )
 target_include_directories(test_tablepreview PRIVATE

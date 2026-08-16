@@ -549,6 +549,101 @@ void TestInteractivePreview::testBuiltinTableWidgetCreated() {
   QCOMPARE(context->preview()->startPos(), 0);
 }
 
+namespace {
+// The char format of the character at cell-local offset @p_offset.
+QTextCharFormat sheetFormatAt(QTextEdit *p_sheet, int p_row, int p_column, int p_offset) {
+  QTextTable *table = sheetTable(p_sheet);
+  if (!table) {
+    return QTextCharFormat();
+  }
+
+  QTextCursor cursor(p_sheet->document());
+  cursor.setPosition(table->cellAt(p_row, p_column).firstCursorPosition().position() + p_offset);
+  cursor.setPosition(cursor.position() + 1, QTextCursor::KeepAnchor);
+  return cursor.charFormat();
+}
+
+const char *c_styledTable = "| h1 | h2 | h3 |\n| --- | --- | --- |\n| **a** | b | c |\n";
+} // namespace
+
+void TestInteractivePreview::testCellsCarrySyntaxHighlighting() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QLatin1String(c_styledTable));
+
+  auto sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+
+  // The cell keeps its literal raw Markdown...
+  QCOMPARE(sheetCell(sheet, 1, 0), QStringLiteral("**a**"));
+
+  // ... and is painted with the editor's own style for it, which a plain cell
+  // of the very same row does not carry.
+  const QTextCharFormat styled = sheetFormatAt(sheet, 1, 0, 0);
+  const QTextCharFormat plain = sheetFormatAt(sheet, 1, 1, 0);
+  QVERIFY2(styled != plain, "the emphasized cell is painted like a plain one");
+}
+
+void TestInteractivePreview::testHighlightingSurvivesACommit() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 400);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor, QLatin1String(c_styledTable));
+
+  auto sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+
+  // The reference: a cell which stays plain for the whole test.
+  const QTextCharFormat plainBefore = sheetFormatAt(sheet, 1, 2, 0);
+
+  editCell(sheet, 1, 1, QStringLiteral("`x`"));
+  // Still inside the debounce: nothing has been written back yet.
+  QVERIFY(!editor.document()->toPlainText().contains(QStringLiteral("`x`")));
+
+  flushSheet(sheet);
+  QTest::qWait(c_commitDebounceMs + 200);
+  settle(editor);
+
+  // The round trip is unaffected.
+  QVERIFY2(editor.document()->toPlainText().contains(QStringLiteral("`x`")),
+           qPrintable(editor.document()->toPlainText()));
+
+  auto rebound = sheetView(singlePreviewWidget(editor));
+  QVERIFY(rebound);
+  QCOMPARE(sheetCell(rebound, 1, 1), QStringLiteral("`x`"));
+
+  // The full-parse snapshot which follows the run-less rebase brings the runs
+  // back: the committed code span is painted differently from a plain cell,
+  // and the untouched emphasized cell kept its own style.
+  const QTextCharFormat code = sheetFormatAt(rebound, 1, 1, 0);
+  const QTextCharFormat plainAfter = sheetFormatAt(rebound, 1, 2, 0);
+  const QTextCharFormat emphasized = sheetFormatAt(rebound, 1, 0, 0);
+  QCOMPARE(plainAfter, plainBefore);
+  QVERIFY2(code != plainAfter, "the committed code cell was not highlighted");
+  QVERIFY2(emphasized != plainAfter, "the untouched cell lost its highlighting");
+}
+
+void TestInteractivePreview::testHighlightingStopsAtTheRunEnd() {
+  // A styled span in the middle of a cell must not bleed into the text which
+  // follows it.
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QStringLiteral("| h1 | h2 |\n| --- | --- |\n"
+                                          "| `c` | lead **bold** tail |\n"));
+
+  auto sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+
+  const QString text = QStringLiteral("lead **bold** tail");
+  QCOMPARE(sheetCell(sheet, 1, 1), text);
+
+  const QTextCharFormat lead = sheetFormatAt(sheet, 1, 1, 0);
+  const QTextCharFormat strong = sheetFormatAt(sheet, 1, 1, 5);
+  const QTextCharFormat tail = sheetFormatAt(sheet, 1, 1, text.size() - 1);
+
+  QVERIFY2(strong != lead, "the emphasized span is not highlighted");
+  QVERIFY2(tail == lead, "the text after the emphasized span inherited its format");
+}
+
 void TestInteractivePreview::testNoWidgetForImageCodeMathByDefault() {
   VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
   setTextAndSettle(editor, QStringLiteral("![a](b.png)\n\n```cpp\nint a;\n```\n\n$$\nx\n$$\n"));
