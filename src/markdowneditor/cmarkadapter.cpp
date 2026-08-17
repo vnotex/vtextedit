@@ -13,19 +13,20 @@
 // ---------------------------------------------------------------------------
 
 // Return the number of bytes in a UTF-8 lead byte's sequence.
-static int utf8SeqLen(unsigned char p_byte)
-{
-  if (p_byte < 0x80) return 1;
-  if ((p_byte & 0xE0) == 0xC0) return 2;
-  if ((p_byte & 0xF0) == 0xE0) return 3;
-  if ((p_byte & 0xF8) == 0xF0) return 4;
+static int utf8SeqLen(unsigned char p_byte) {
+  if (p_byte < 0x80)
+    return 1;
+  if ((p_byte & 0xE0) == 0xC0)
+    return 2;
+  if ((p_byte & 0xF0) == 0xE0)
+    return 3;
+  if ((p_byte & 0xF8) == 0xF0)
+    return 4;
   return 1; // Fallback for continuation/invalid bytes.
 }
 
-LineOffsetTable::LineOffsetTable(const QByteArray &p_utf8Text)
-{
-  const unsigned char *data =
-      reinterpret_cast<const unsigned char *>(p_utf8Text.constData());
+LineOffsetTable::LineOffsetTable(const QByteArray &p_utf8Text) {
+  const unsigned char *data = reinterpret_cast<const unsigned char *>(p_utf8Text.constData());
   const int len = p_utf8Text.size();
   m_data = data;
   m_dataLen = len;
@@ -46,8 +47,7 @@ LineOffsetTable::LineOffsetTable(const QByteArray &p_utf8Text)
 
   for (int lineIdx = 0; lineIdx < lineCount; ++lineIdx) {
     int lineStart = m_lineByteOffsets[lineIdx];
-    int lineEnd = (lineIdx + 1 < lineCount) ? m_lineByteOffsets[lineIdx + 1]
-                                             : len;
+    int lineEnd = (lineIdx + 1 < lineCount) ? m_lineByteOffsets[lineIdx + 1] : len;
 
     m_lineQCharOffsets[lineIdx] = cumulativeQChars;
 
@@ -82,8 +82,7 @@ LineOffsetTable::LineOffsetTable(const QByteArray &p_utf8Text)
   }
 }
 
-int LineOffsetTable::toDocPosition(int p_line, int p_col) const
-{
+int LineOffsetTable::toDocPosition(int p_line, int p_col) const {
   // cmark uses 1-indexed lines and columns.
   int lineIdx = p_line - 1;
   int byteCol = p_col - 1; // Convert to 0-indexed byte offset within line.
@@ -106,14 +105,12 @@ int LineOffsetTable::toDocPosition(int p_line, int p_col) const
 
   int result = lineStartQChar + byteMap[byteCol];
 #ifdef VTE_DEBUG_HIGHLIGHT
-  qDebug() << "toDocPosition: line=" << p_line << "col=" << p_col
-           << "result=" << result;
+  qDebug() << "toDocPosition: line=" << p_line << "col=" << p_col << "result=" << result;
 #endif
   return result;
 }
 
-int LineOffsetTable::qcharWidthAtEndColumn(int p_line, int p_col) const
-{
+int LineOffsetTable::qcharWidthAtEndColumn(int p_line, int p_col) const {
   // cmark end_column is 1-indexed and points at the LAST byte of the last
   // character. m_byteToQChar maps a byte offset to the cumulative QChar count at
   // the START of the character containing that byte, and the entry one past the
@@ -135,28 +132,23 @@ int LineOffsetTable::qcharWidthAtEndColumn(int p_line, int p_col) const
   return width > 0 ? width : 1;
 }
 
-int LineOffsetTable::lineStartQCharOffset(int p_lineIdx) const
-{
+int LineOffsetTable::lineStartQCharOffset(int p_lineIdx) const {
   if (p_lineIdx < 0 || p_lineIdx >= m_lineQCharOffsets.size()) {
     return 0;
   }
   return m_lineQCharOffsets[p_lineIdx];
 }
 
-int LineOffsetTable::lineCount() const
-{
-  return m_lineQCharOffsets.size();
-}
+int LineOffsetTable::lineCount() const { return m_lineQCharOffsets.size(); }
 
-bool LineOffsetTable::lineByteRange(int p_lineIdx, int &p_start, int &p_length) const
-{
+bool LineOffsetTable::lineByteRange(int p_lineIdx, int &p_start, int &p_length) const {
   if (!m_data || p_lineIdx < 0 || p_lineIdx >= m_lineByteOffsets.size()) {
     return false;
   }
 
   const int lineStart = m_lineByteOffsets[p_lineIdx];
-  int lineEnd = (p_lineIdx + 1 < m_lineByteOffsets.size()) ? m_lineByteOffsets[p_lineIdx + 1]
-                                                           : m_dataLen;
+  int lineEnd =
+      (p_lineIdx + 1 < m_lineByteOffsets.size()) ? m_lineByteOffsets[p_lineIdx + 1] : m_dataLen;
   // Drop the line terminator.
   while (lineEnd > lineStart && (m_data[lineEnd - 1] == '\n' || m_data[lineEnd - 1] == '\r')) {
     --lineEnd;
@@ -167,8 +159,7 @@ bool LineOffsetTable::lineByteRange(int p_lineIdx, int &p_start, int &p_length) 
   return true;
 }
 
-int LineOffsetTable::lineEndQCharOffset(int p_lineIdx) const
-{
+int LineOffsetTable::lineEndQCharOffset(int p_lineIdx) const {
   int byteStart = 0;
   int byteLength = 0;
   if (!lineByteRange(p_lineIdx, byteStart, byteLength)) {
@@ -184,15 +175,13 @@ int LineOffsetTable::lineEndQCharOffset(int p_lineIdx) const
   return m_lineQCharOffsets[p_lineIdx] + byteMap[idx];
 }
 
-int LineOffsetTable::lineLeadingSpaces(int p_lineIdx) const
-{
+int LineOffsetTable::lineLeadingSpaces(int p_lineIdx) const {
   if (!m_data || p_lineIdx < 0 || p_lineIdx >= m_lineByteOffsets.size()) {
     return 0;
   }
   int lineStart = m_lineByteOffsets[p_lineIdx];
-  int lineEnd = (p_lineIdx + 1 < m_lineByteOffsets.size())
-                    ? m_lineByteOffsets[p_lineIdx + 1]
-                    : m_dataLen;
+  int lineEnd =
+      (p_lineIdx + 1 < m_lineByteOffsets.size()) ? m_lineByteOffsets[p_lineIdx + 1] : m_dataLen;
   int count = 0;
   for (int i = lineStart; i < lineEnd; ++i) {
     if (m_data[i] == 0x20) {
@@ -204,15 +193,13 @@ int LineOffsetTable::lineLeadingSpaces(int p_lineIdx) const
   return count;
 }
 
-int LineOffsetTable::lineStrippedPrefixWidth(int p_lineIdx, int p_blockOffset) const
-{
+int LineOffsetTable::lineStrippedPrefixWidth(int p_lineIdx, int p_blockOffset) const {
   if (!m_data || p_lineIdx < 0 || p_lineIdx >= m_lineByteOffsets.size()) {
     return 0;
   }
   int lineStart = m_lineByteOffsets[p_lineIdx];
-  int lineEnd = (p_lineIdx + 1 < m_lineByteOffsets.size())
-                    ? m_lineByteOffsets[p_lineIdx + 1]
-                    : m_dataLen;
+  int lineEnd =
+      (p_lineIdx + 1 < m_lineByteOffsets.size()) ? m_lineByteOffsets[p_lineIdx + 1] : m_dataLen;
   int i = lineStart;
   // Leading indentation: list-continuation padding and/or block-quote indent.
   // These are always stripped or skipped by cmark before the first content column.
@@ -238,8 +225,7 @@ int LineOffsetTable::lineStrippedPrefixWidth(int p_lineIdx, int p_blockOffset) c
 // mapCmarkNodeToStyle
 // ---------------------------------------------------------------------------
 
-int mapCmarkNodeToStyle(cmark_node_type p_type, cmark_node *p_node)
-{
+int mapCmarkNodeToStyle(cmark_node_type p_type, cmark_node *p_node) {
   switch (p_type) {
   case CMARK_NODE_HEADING: {
     int level = cmark_node_get_heading_level(p_node);
@@ -312,4 +298,109 @@ int mapCmarkNodeToStyle(cmark_node_type p_type, cmark_node *p_node)
   }
 }
 
+// ---------------------------------------------------------------------------
+// Source-position mapping
+// ---------------------------------------------------------------------------
 
+static cmark_node *findAncestorParagraph(cmark_node *p_node) {
+  cmark_node *cur = cmark_node_parent(p_node);
+  while (cur) {
+    cmark_node_type t = cmark_node_get_type(cur);
+    if (t == CMARK_NODE_PARAGRAPH || t == CMARK_NODE_HEADING) {
+      return cur;
+    }
+    cur = cmark_node_parent(cur);
+  }
+  return nullptr;
+}
+
+// Shared body of cmarkNodeSpan()/cmarkNodeUrlSpan(): both take cmark's 1-indexed
+// line / byte-column pairs (the end column being INCLUSIVE of the last byte) and
+// need the same continuation-line correction, which depends only on the node's
+// ancestor paragraph.
+static bool cmarkSpanFromCoords(cmark_node *p_node, const LineOffsetTable &p_offsets, int p_sl,
+                                int p_sc, int p_el, int p_ec, int &p_startQChar, int &p_endQChar) {
+  if (p_sl == 0 && p_sc == 0 && p_el == 0 && p_ec == 0) {
+    return false;
+  }
+
+  int sl = p_sl;
+  int sc = p_sc;
+  int el = p_el;
+  int ec = p_ec;
+
+  // Correct for cmark's block_offset accounting on continuation lines.
+  // cmark adds the paragraph's first-line prefix width (block_offset =
+  // start_column - 1) to ALL inline columns, but on any later line only the
+  // container prefix actually present on THAT line was stripped/skipped from
+  // the content. The true column is therefore
+  //   cmark_col - blockOffset + strippedPrefixWidth(line).
+  // strippedPrefixWidth counts the leading run of spaces and block-quote '>'
+  // markers (markers only while they begin within blockOffset columns). For a
+  // pure-space line it equals the leading-space count, so list lazy / aligned /
+  // over-indented continuations behave exactly as before; block-quote '>'
+  // markers (invisible to a space-only count) are what was missing, which
+  // shifted inline highlights inside block quotes.
+  cmark_node *para = findAncestorParagraph(p_node);
+  if (para) {
+    int blockOffset = cmark_node_get_start_column(para) - 1;
+    if (blockOffset > 0) {
+      int paraStartLine = cmark_node_get_start_line(para);
+      int stripSc = -1;
+      if (sl > paraStartLine) {
+        stripSc = p_offsets.lineStrippedPrefixWidth(sl - 1, blockOffset);
+        sc += stripSc - blockOffset;
+#ifdef VTE_DEBUG_HIGHLIGHT
+        qDebug() << "  CONT FIX sc: line=" << sl << "blockOffset=" << blockOffset
+                 << "strip=" << stripSc << "corrected sc=" << sc;
+#endif
+      }
+      if (el > paraStartLine) {
+        // Most inline spans are single-line (el == sl); reuse the start-line
+        // prefix width instead of rescanning the identical line for the end.
+        int strip = (el == sl && stripSc >= 0)
+                        ? stripSc
+                        : p_offsets.lineStrippedPrefixWidth(el - 1, blockOffset);
+        ec += strip - blockOffset;
+#ifdef VTE_DEBUG_HIGHLIGHT
+        qDebug() << "  CONT FIX ec: line=" << el << "blockOffset=" << blockOffset
+                 << "strip=" << strip << "corrected ec=" << ec;
+#endif
+      }
+      // Guard against negative/invalid columns
+      sc = qMax(1, sc);
+      ec = qMax(sc, ec);
+    }
+  }
+
+  p_startQChar = p_offsets.toDocPosition(sl, sc);
+  // cmark's end_column is the (1-indexed, byte-based) column of the LAST BYTE of
+  // the last character (inclusive). Convert to an exclusive QChar end by adding
+  // that character's QChar width. A blind "+ 1" under-counts by 1 for 4-byte
+  // UTF-8 chars (e.g. emoji), landing in the MIDDLE of a surrogate pair and
+  // splitting it into two lone surrogates that render as tofu. For BMP chars
+  // (incl. CJK) and past-content end columns the width is 1, so behavior there
+  // is unchanged.
+  p_endQChar = p_offsets.toDocPosition(el, ec) + p_offsets.qcharWidthAtEndColumn(el, ec);
+  return true;
+}
+
+bool cmarkNodeSpan(cmark_node *p_node, const LineOffsetTable &p_offsets, int &p_startQChar,
+                   int &p_endQChar) {
+  return cmarkSpanFromCoords(p_node, p_offsets, cmark_node_get_start_line(p_node),
+                             cmark_node_get_start_column(p_node), cmark_node_get_end_line(p_node),
+                             cmark_node_get_end_column(p_node), p_startQChar, p_endQChar);
+}
+
+bool cmarkNodeUrlSpan(cmark_node *p_node, const LineOffsetTable &p_offsets, int &p_startQChar,
+                      int &p_endQChar) {
+  int sl = cmark_node_get_url_start_line(p_node);
+  if (sl == 0) {
+    // Reference-style, or an empty destination: no source bytes to point at.
+    return false;
+  }
+
+  return cmarkSpanFromCoords(p_node, p_offsets, sl, cmark_node_get_url_start_column(p_node),
+                             cmark_node_get_url_end_line(p_node),
+                             cmark_node_get_url_end_column(p_node), p_startQChar, p_endQChar);
+}

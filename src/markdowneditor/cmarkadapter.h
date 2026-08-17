@@ -79,4 +79,23 @@ private:
 // Returns -1 if the node type should be skipped.
 int mapCmarkNodeToStyle(cmark_node_type p_type, cmark_node *p_node);
 
+// Half-open QChar span [p_startQChar, p_endQChar) of p_node, derived from
+// cmark's reported source coordinates and corrected for cmark's block_offset
+// accounting on continuation lines. Returns false when the node carries no
+// source position, in which case the out-params are untouched.
+//
+// This is the single implementation of cmark-coordinates-to-document-offset
+// mapping: the walker uses it to place highlights and previews, and the
+// snapshot API uses it to locate images in raw text. Two implementations
+// previously disagreed.
+bool cmarkNodeSpan(cmark_node *p_node, const LineOffsetTable &p_offsets, int &p_startQChar,
+                   int &p_endQChar);
+
+// As cmarkNodeSpan(), but for the *raw* destination of an inline link or image
+// -- the bytes as spelled in the source, so angle brackets, backslash escapes
+// and entities are all still present. Returns false for reference-style links
+// and for an empty destination, neither of which spans any source bytes.
+bool cmarkNodeUrlSpan(cmark_node *p_node, const LineOffsetTable &p_offsets, int &p_startQChar,
+                      int &p_endQChar);
+
 #endif

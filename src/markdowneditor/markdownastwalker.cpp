@@ -14,9 +14,9 @@
 namespace vte {
 namespace md {
 
-static int numberWidth(int p_num)
-{
-  if (p_num <= 0) return 1;
+static int numberWidth(int p_num) {
+  if (p_num <= 0)
+    return 1;
   int w = 0;
   int n = p_num;
   while (n > 0) {
@@ -26,10 +26,8 @@ static int numberWidth(int p_num)
   return w;
 }
 
-static void addHLUnit(ASTWalkResult &p_result, const LineOffsetTable &p_offsets,
-                      int p_docStart, int p_docEnd, int p_style,
-                      int p_startBlock, int p_numBlocks)
-{
+static void addHLUnit(ASTWalkResult &p_result, const LineOffsetTable &p_offsets, int p_docStart,
+                      int p_docEnd, int p_style, int p_startBlock, int p_numBlocks) {
   // Compute 0-indexed line indices from document-local positions.
   // We need to figure out which lines this element spans.
   // docStart and docEnd are relative to the input text (not document-absolute).
@@ -92,25 +90,28 @@ static void addHLUnit(ASTWalkResult &p_result, const LineOffsetTable &p_offsets,
         continue;
       }
       int lineStartQChar = p_offsets.lineStartQCharOffset(lineIdx);
-      int nextLineStartQChar = (lineIdx + 1 < lc)
-                                   ? p_offsets.lineStartQCharOffset(lineIdx + 1)
-                                   : p_docEnd;
+      int nextLineStartQChar =
+          (lineIdx + 1 < lc) ? p_offsets.lineStartQCharOffset(lineIdx + 1) : p_docEnd;
       HLUnit unit;
       if (lineIdx == startLineIdx) {
         unit.start = p_docStart - lineStartQChar;
         unit.length = nextLineStartQChar - p_docStart;
       } else if (lineIdx == endLineIdx) {
-        // Skip leading indentation for styles whose monospace font should not bleed into list-item indentation whitespace.
-        int ls = (p_style == STYLE_TABLE || p_style == STYLE_TABLEHEADER
-                  || p_style == STYLE_DISPLAYFORMULA)
-                     ? p_offsets.lineLeadingSpaces(lineIdx) : 0;
+        // Skip leading indentation for styles whose monospace font should not bleed into list-item
+        // indentation whitespace.
+        int ls = (p_style == STYLE_TABLE || p_style == STYLE_TABLEHEADER ||
+                  p_style == STYLE_DISPLAYFORMULA)
+                     ? p_offsets.lineLeadingSpaces(lineIdx)
+                     : 0;
         unit.start = ls;
         unit.length = p_docEnd - lineStartQChar - ls;
       } else {
-        // Skip leading indentation for styles whose monospace font should not bleed into list-item indentation whitespace.
-        int ls = (p_style == STYLE_TABLE || p_style == STYLE_TABLEHEADER
-                  || p_style == STYLE_DISPLAYFORMULA)
-                     ? p_offsets.lineLeadingSpaces(lineIdx) : 0;
+        // Skip leading indentation for styles whose monospace font should not bleed into list-item
+        // indentation whitespace.
+        int ls = (p_style == STYLE_TABLE || p_style == STYLE_TABLEHEADER ||
+                  p_style == STYLE_DISPLAYFORMULA)
+                     ? p_offsets.lineLeadingSpaces(lineIdx)
+                     : 0;
         unit.start = ls;
         unit.length = nextLineStartQChar - lineStartQChar - ls;
       }
@@ -122,9 +123,7 @@ static void addHLUnit(ASTWalkResult &p_result, const LineOffsetTable &p_offsets,
   }
 }
 
-static void addRegion(ASTWalkResult &p_result, int p_style,
-                      int p_absStart, int p_absEnd)
-{
+static void addRegion(ASTWalkResult &p_result, int p_style, int p_absStart, int p_absEnd) {
   ElementRegion region(p_absStart, p_absEnd);
   switch (p_style) {
   case STYLE_IMAGE:
@@ -163,9 +162,8 @@ static void addRegion(ASTWalkResult &p_result, int p_style,
   }
 }
 
-static void addFoldingRegion(ASTWalkResult &p_result, int p_style,
-                             int p_startBlock, int p_endBlock)
-{
+static void addFoldingRegion(ASTWalkResult &p_result, int p_style, int p_startBlock,
+                             int p_endBlock) {
   FoldingRegion region;
   region.m_startBlock = p_startBlock;
   region.m_endBlock = p_endBlock;
@@ -188,17 +186,13 @@ static void addFoldingRegion(ASTWalkResult &p_result, int p_style,
   p_result.foldingRegions.append(region);
 }
 
-static void handleListDirect(cmark_node *p_listNode,
-                             const LineOffsetTable &p_offsets,
-                             ASTWalkResult &p_result,
-                             int p_startBlock, int p_numBlocks)
-{
+static void handleListDirect(cmark_node *p_listNode, const LineOffsetTable &p_offsets,
+                             ASTWalkResult &p_result, int p_startBlock, int p_numBlocks) {
   cmark_list_type listType = cmark_node_get_list_type(p_listNode);
   int startNum = cmark_node_get_list_start(p_listNode);
 
   int itemIdx = 0;
-  for (cmark_node *item = cmark_node_first_child(p_listNode);
-       item != nullptr;
+  for (cmark_node *item = cmark_node_first_child(p_listNode); item != nullptr;
        item = cmark_node_next(item)) {
     if (cmark_node_get_type(item) != CMARK_NODE_ITEM) {
       continue;
@@ -236,24 +230,10 @@ static void handleListDirect(cmark_node *p_listNode,
   }
 }
 
-static cmark_node *findAncestorParagraph(cmark_node *p_node)
-{
-  cmark_node *cur = cmark_node_parent(p_node);
-  while (cur) {
-    cmark_node_type t = cmark_node_get_type(cur);
-    if (t == CMARK_NODE_PARAGRAPH || t == CMARK_NODE_HEADING) {
-      return cur;
-    }
-    cur = cmark_node_parent(cur);
-  }
-  return nullptr;
-}
-
 // Return the raw QChar text of the given 0-indexed source line, excluding the
 // line terminator.
 static QString lineText(const QByteArray &p_utf8Text, const LineOffsetTable &p_offsets,
-                        int p_lineIdx)
-{
+                        int p_lineIdx) {
   int start = 0;
   int len = 0;
   if (!p_offsets.lineByteRange(p_lineIdx, start, len)) {
@@ -268,8 +248,7 @@ static QString lineText(const QByteArray &p_utf8Text, const LineOffsetTable &p_o
 // starts with '|' right after the prefix, a pipe preceded by an odd number of
 // backslashes is escaped, and only whitespace may follow the trailing pipe.
 static bool splitTableRow(const QString &p_line, QString &p_prefix, QVector<QString> &p_cells,
-                          QVector<int> *p_cellOffsets = nullptr)
-{
+                          QVector<int> *p_cellOffsets = nullptr) {
   const int firstPipe = p_line.indexOf(QLatin1Char('|'));
   if (firstPipe < 0) {
     return false;
@@ -320,11 +299,9 @@ static bool splitTableRow(const QString &p_line, QString &p_prefix, QVector<QStr
 }
 
 // Collect the concatenated literal text of all descendants.
-static QString collectLiteralText(cmark_node *p_node)
-{
+static QString collectLiteralText(cmark_node *p_node) {
   QString text;
-  for (cmark_node *child = cmark_node_first_child(p_node); child;
-       child = cmark_node_next(child)) {
+  for (cmark_node *child = cmark_node_first_child(p_node); child; child = cmark_node_next(child)) {
     const char *literal = cmark_node_get_literal(child);
     if (literal) {
       text += QString::fromUtf8(literal);
@@ -346,19 +323,36 @@ static QString collectLiteralText(cmark_node *p_node)
 // two source lines never reaches here with p_startLine != p_endLine (see the
 // image span cases in tests/test_astwalker). Revisit both together if cmark's
 // inline source positions ever change.
-static bool isStandaloneOnLine(const QByteArray &p_utf8Text, const LineOffsetTable &p_offsets,
-                               int p_line, int p_docStart, int p_docEnd)
-{
-  const int lineIdx = p_line - 1;
-  const QString text = lineText(p_utf8Text, p_offsets, lineIdx);
-  const int lineStart = p_offsets.lineStartQCharOffset(lineIdx);
-  const int localStart = p_docStart - lineStart;
-  const int localEnd = p_docEnd - lineStart;
-  if (localStart < 0 || localEnd > text.size() || localEnd < localStart) {
+// True when nothing but whitespace precedes the span on its first line and
+// nothing but whitespace follows it on its last line -- the same rule
+// PreviewMgr applies when deciding to paint a block-wise preview.
+//
+// This used to be restricted to single-line spans, because cmark collapsed a
+// multiline link or image onto the line where parsing finished, making its
+// reported start and end mutually inconsistent. cmark now reports the true
+// span, so the rule applies to multiline constructs as well.
+static bool isStandaloneSpan(const QByteArray &p_utf8Text, const LineOffsetTable &p_offsets,
+                             int p_startLine, int p_endLine, int p_docStart, int p_docEnd) {
+  const int startLineIdx = p_startLine - 1;
+  const int endLineIdx = p_endLine - 1;
+  if (startLineIdx < 0 || endLineIdx < startLineIdx) {
     return false;
   }
 
-  return text.left(localStart).trimmed().isEmpty() && text.mid(localEnd).trimmed().isEmpty();
+  const QString startText = lineText(p_utf8Text, p_offsets, startLineIdx);
+  const int localStart = p_docStart - p_offsets.lineStartQCharOffset(startLineIdx);
+  if (localStart < 0 || localStart > startText.size()) {
+    return false;
+  }
+
+  const QString endText = lineText(p_utf8Text, p_offsets, endLineIdx);
+  const int localEnd = p_docEnd - p_offsets.lineStartQCharOffset(endLineIdx);
+  if (localEnd < 0 || localEnd > endText.size()) {
+    return false;
+  }
+
+  return startText.left(localStart).trimmed().isEmpty() &&
+         endText.mid(localEnd).trimmed().isEmpty();
 }
 
 // Capture the full structure of a table while the AST and the original input
@@ -367,8 +361,7 @@ static bool isStandaloneOnLine(const QByteArray &p_utf8Text, const LineOffsetTab
 // the only situation where a rewrite could corrupt the document.
 static void extractTable(cmark_node *p_tableNode, const LineOffsetTable &p_offsets,
                          const QByteArray &p_utf8Text, ASTWalkResult &p_result, int p_offset,
-                         int p_startBlock)
-{
+                         int p_startBlock) {
   const int startLine = cmark_node_get_start_line(p_tableNode);
   const int endLine = cmark_node_get_end_line(p_tableNode);
   if (startLine <= 0 || endLine < startLine) {
@@ -443,8 +436,7 @@ static void extractTable(cmark_node *p_tableNode, const LineOffsetTable &p_offse
 static void extractTypedElement(cmark_node *p_node, cmark_node_type p_type, int p_style,
                                 const QByteArray &p_utf8Text, const LineOffsetTable &p_offsets,
                                 ASTWalkResult &p_result, int p_startLine, int p_endLine,
-                                int p_docStart, int p_docEnd, int p_absStart, int p_absEnd)
-{
+                                int p_docStart, int p_docEnd, int p_absStart, int p_absEnd) {
   switch (p_type) {
   case CMARK_NODE_IMAGE: {
     ImageElement image;
@@ -456,8 +448,7 @@ static void extractTypedElement(cmark_node *p_node, cmark_node_type p_type, int 
     image.m_title = title ? QString::fromUtf8(title) : QString();
     image.m_alternateText = collectLiteralText(p_node);
     image.m_standalone =
-        (p_startLine == p_endLine) &&
-        isStandaloneOnLine(p_utf8Text, p_offsets, p_startLine, p_docStart, p_docEnd);
+        isStandaloneSpan(p_utf8Text, p_offsets, p_startLine, p_endLine, p_docStart, p_docEnd);
     p_result.imageElements.append(image);
     break;
   }
@@ -494,12 +485,10 @@ static void extractTypedElement(cmark_node *p_node, cmark_node_type p_type, int 
   }
 }
 
-
 // Slice the per-block highlight units of a table's source lines into per-cell,
 // cell-local units. Must run after blocksHighlights has been sorted, so the
 // relative order the merge algorithm depends on is already final.
-static void sliceTableCellHighlights(ASTWalkResult &p_result)
-{
+static void sliceTableCellHighlights(ASTWalkResult &p_result) {
   // Mirrors TablePreviewWidget::c_maxCells: bigger tables never get a widget,
   // so there is no point in paying for the slicing.
   const int c_maxPreviewCells = 300;
@@ -543,8 +532,8 @@ static void sliceTableCellHighlights(ASTWalkResult &p_result)
         auto &cellUnits = row.m_cellHighlights[c];
         for (const auto &unit : units) {
           const int styleIdx = static_cast<int>(unit.styleIndex);
-          if (styleIdx == STYLE_TABLE || styleIdx == STYLE_TABLEHEADER
-              || styleIdx == STYLE_BLOCKQUOTE) {
+          if (styleIdx == STYLE_TABLE || styleIdx == STYLE_TABLEHEADER ||
+              styleIdx == STYLE_BLOCKQUOTE) {
             continue;
           }
 
@@ -566,10 +555,8 @@ static void sliceTableCellHighlights(ASTWalkResult &p_result)
   }
 }
 
-
-ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks,
-                             int p_offset, int p_startBlock, bool p_fast)
-{
+ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int p_offset,
+                             int p_startBlock, bool p_fast) {
   ASTWalkResult result;
   result.blocksHighlights.resize(p_numBlocks);
 
@@ -577,9 +564,8 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks,
     return result;
   }
 
-  cmark_node *doc = cmark_parse_document(p_utf8Text.constData(),
-                                         p_utf8Text.size(),
-                                          CMARK_OPT_DEFAULT);
+  cmark_node *doc =
+      cmark_parse_document(p_utf8Text.constData(), p_utf8Text.size(), CMARK_OPT_DEFAULT);
   if (!doc) {
     return result;
   }
@@ -616,84 +602,32 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks,
       continue;
     }
 
-    int sl = cmark_node_get_start_line(node);
-    int sc = cmark_node_get_start_column(node);
-    int el = cmark_node_get_end_line(node);
-    int ec = cmark_node_get_end_column(node);
-
-    if (sl == 0 && sc == 0 && el == 0 && ec == 0) {
+    int docStart = 0;
+    int docEnd = 0;
+    if (!cmarkNodeSpan(node, offsets, docStart, docEnd)) {
       continue;
     }
 
-    // Correct for cmark's block_offset accounting on continuation lines.
-    // cmark adds the paragraph's first-line prefix width (block_offset =
-    // start_column - 1) to ALL inline columns, but on any later line only the
-    // container prefix actually present on THAT line was stripped/skipped from
-    // the content. The true column is therefore
-    //   cmark_col - blockOffset + strippedPrefixWidth(line).
-    // strippedPrefixWidth counts the leading run of spaces and block-quote '>'
-    // markers (markers only while they begin within blockOffset columns). For a
-    // pure-space line it equals the leading-space count, so list lazy / aligned /
-    // over-indented continuations behave exactly as before; block-quote '>'
-    // markers (invisible to a space-only count) are what was missing, which
-    // shifted inline highlights inside block quotes.
-    cmark_node *para = findAncestorParagraph(node);
-    if (para) {
-      int blockOffset = cmark_node_get_start_column(para) - 1;
-      if (blockOffset > 0) {
-        int paraStartLine = cmark_node_get_start_line(para);
-        int stripSc = -1;
-        if (sl > paraStartLine) {
-          stripSc = offsets.lineStrippedPrefixWidth(sl - 1, blockOffset);
-          sc += stripSc - blockOffset;
-#ifdef VTE_DEBUG_HIGHLIGHT
-          qDebug() << "  CONT FIX sc: line=" << sl << "blockOffset=" << blockOffset
-                   << "strip=" << stripSc << "corrected sc=" << sc;
-#endif
-        }
-        if (el > paraStartLine) {
-          // Most inline spans are single-line (el == sl); reuse the start-line
-          // prefix width instead of rescanning the identical line for the end.
-          int strip = (el == sl && stripSc >= 0)
-                          ? stripSc
-                          : offsets.lineStrippedPrefixWidth(el - 1, blockOffset);
-          ec += strip - blockOffset;
-#ifdef VTE_DEBUG_HIGHLIGHT
-          qDebug() << "  CONT FIX ec: line=" << el << "blockOffset=" << blockOffset
-                   << "strip=" << strip << "corrected ec=" << ec;
-#endif
-        }
-        // Guard against negative/invalid columns
-        sc = qMax(1, sc);
-        ec = qMax(sc, ec);
-      }
-    }
+    // Line numbers are still needed below for folding regions and for the
+    // typed-element extractors, which work line-wise rather than by offset.
+    int sl = cmark_node_get_start_line(node);
+    int el = cmark_node_get_end_line(node);
 
-    int docStart = offsets.toDocPosition(sl, sc);
-    // cmark's end_column is the (1-indexed, byte-based) column of the LAST BYTE of
-    // the last character (inclusive). Convert to an exclusive QChar end by adding
-    // that character's QChar width. A blind "+ 1" under-counts by 1 for 4-byte
-    // UTF-8 chars (e.g. emoji), landing in the MIDDLE of a surrogate pair and
-    // splitting it into two lone surrogates that render as tofu. For BMP chars
-    // (incl. CJK) and past-content end columns the width is 1, so behavior there
-    // is unchanged.
-    int docEnd = offsets.toDocPosition(el, ec) + offsets.qcharWidthAtEndColumn(el, ec);
-
+    // The formula delimiters are not part of cmark's reported span; widening by
+    // one on each side is node-type policy, so it stays at the call site.
     if (type == CMARK_NODE_FORMULA_INLINE) {
       docStart -= 1;
       docEnd += 1;
     }
 
 #ifdef VTE_DEBUG_HIGHLIGHT
-    qDebug() << "WALKER inline: type=" << cmark_node_get_type_string(node)
-             << "sl=" << sl << "sc=" << sc << "el=" << el << "ec=" << ec
-             << "docStart=" << docStart << "docEnd=" << docEnd
+    qDebug() << "WALKER inline: type=" << cmark_node_get_type_string(node) << "sl=" << sl
+             << "el=" << el << "docStart=" << docStart << "docEnd=" << docEnd
              << "startBlock=" << p_startBlock;
 #endif
 
     // Add per-block HLUnits.
-    addHLUnit(result, offsets, docStart, docEnd, style,
-              p_startBlock, p_numBlocks);
+    addHLUnit(result, offsets, docStart, docEnd, style, p_startBlock, p_numBlocks);
 
     // Collect regions (only when not fast-parsing).
     if (!p_fast) {

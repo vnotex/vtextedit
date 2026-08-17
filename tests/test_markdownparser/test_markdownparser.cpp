@@ -17,6 +17,7 @@
 #include <vtextedit/vmarkdowneditor.h>
 #include <vtextedit/vtextedit.h>
 
+#include "cmarkadapter.h"
 #include "markdownastwalker.h"
 
 using namespace tests;
@@ -60,30 +61,29 @@ enum {
 };
 
 // Helper: count blocks (newlines + 1) in UTF-8 text.
-static int countBlocks(const QByteArray &p_utf8)
-{
+static int countBlocks(const QByteArray &p_utf8) {
   int n = 1;
   for (int i = 0; i < p_utf8.size(); ++i) {
-    if (p_utf8[i] == '\n') ++n;
+    if (p_utf8[i] == '\n')
+      ++n;
   }
   return n;
 }
 
 // Helper: parse text and return ASTWalkResult.
-static vte::md::ASTWalkResult parse(const QString &p_text)
-{
+static vte::md::ASTWalkResult parse(const QString &p_text) {
   QByteArray utf8 = p_text.toUtf8();
   int numBlocks = countBlocks(utf8);
   return vte::md::walkAndConvert(utf8, numBlocks);
 }
 
 // Helper: count HLUnits with given style across all blocks.
-static int countElements(const vte::md::ASTWalkResult &p_result, int p_style)
-{
+static int countElements(const vte::md::ASTWalkResult &p_result, int p_style) {
   int count = 0;
   for (const auto &block : p_result.blocksHighlights) {
     for (const auto &unit : block) {
-      if (unit.styleIndex == (unsigned int)p_style) ++count;
+      if (unit.styleIndex == (unsigned int)p_style)
+        ++count;
     }
   }
   return count;
@@ -93,15 +93,15 @@ static int countElements(const vte::md::ASTWalkResult &p_result, int p_style)
 // Elements are returned in the order they appear in blocksHighlights (block order, then
 // unit order within block). The old parseCmark prepended elements (reverse order within
 // a style bucket). We sort by position ascending here for consistent comparison.
-static QVector<QPair<unsigned long, unsigned long>> findElements(
-    const vte::md::ASTWalkResult &p_result, int p_style, const QString &p_text)
-{
+static QVector<QPair<unsigned long, unsigned long>>
+findElements(const vte::md::ASTWalkResult &p_result, int p_style, const QString &p_text) {
   QVector<QPair<unsigned long, unsigned long>> elems;
   // Build block start positions from text.
   QVector<int> blockStarts;
   blockStarts.append(0);
   for (int i = 0; i < p_text.size(); ++i) {
-    if (p_text[i] == '\n') blockStarts.append(i + 1);
+    if (p_text[i] == '\n')
+      blockStarts.append(i + 1);
   }
   for (int blockNum = 0; blockNum < p_result.blocksHighlights.size(); ++blockNum) {
     for (const auto &unit : p_result.blocksHighlights[blockNum]) {
@@ -116,8 +116,7 @@ static QVector<QPair<unsigned long, unsigned long>> findElements(
   return elems;
 }
 
-static QString readFixture(const QString &p_name)
-{
+static QString readFixture(const QString &p_name) {
   QFile f(QStringLiteral(FIXTURES_DIR) + "/" + p_name);
   if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
     return QString();
@@ -125,8 +124,7 @@ static QString readFixture(const QString &p_name)
   return QString::fromUtf8(f.readAll());
 }
 
-static QTextCharFormat formatAt(const QTextBlock &p_block, int p_position)
-{
+static QTextCharFormat formatAt(const QTextBlock &p_block, int p_position) {
   const auto ranges = p_block.layout()->formats();
   for (const auto &range : ranges) {
     if (range.start <= p_position && p_position < range.start + range.length) {
@@ -137,20 +135,15 @@ static QTextCharFormat formatAt(const QTextBlock &p_block, int p_position)
   return QTextCharFormat();
 }
 
-void TestMarkdownParser::initTestCase()
-{
-}
+void TestMarkdownParser::initTestCase() {}
 
-void TestMarkdownParser::cleanupTestCase()
-{
-}
+void TestMarkdownParser::cleanupTestCase() {}
 
 // ============================================================
 // T5: Block Element Tests
 // ============================================================
 
-void TestMarkdownParser::testHeadings()
-{
+void TestMarkdownParser::testHeadings() {
   const QString input = QStringLiteral("# H1\n## H2\n### H3\n#### H4\n##### H5\n###### H6\n");
   auto result = parse(input);
 
@@ -185,8 +178,7 @@ void TestMarkdownParser::testHeadings()
   QCOMPARE(result.headerRegions[5].m_endPos, 44);
 }
 
-void TestMarkdownParser::testBlockquotes()
-{
+void TestMarkdownParser::testBlockquotes() {
   const QString input = QStringLiteral("> quoted text\n> more quoted\n");
   auto result = parse(input);
 
@@ -201,8 +193,7 @@ void TestMarkdownParser::testBlockquotes()
   QVERIFY((int)elems[0].second > 0);
 }
 
-void TestMarkdownParser::testBlockquoteNestingDepth()
-{
+void TestMarkdownParser::testBlockquoteNestingDepth() {
   // Pins the contract the Enter continuation relies on: the number of
   // STYLE_BLOCKQUOTE units on a block equals its quote nesting depth.
   const QString input = QStringLiteral("> a\n\n> > b\n");
@@ -223,8 +214,7 @@ void TestMarkdownParser::testBlockquoteNestingDepth()
   QCOMPARE(quoteUnits(2), 2);
 }
 
-void TestMarkdownParser::testHorizontalRules()
-{
+void TestMarkdownParser::testHorizontalRules() {
   // Use *** instead of --- to avoid cmark frontmatter extension consuming it.
   const QString input = QStringLiteral("***\n");
   auto result = parse(input);
@@ -236,8 +226,7 @@ void TestMarkdownParser::testHorizontalRules()
   QCOMPARE(result.hruleRegions[0].m_endPos, 3);
 }
 
-void TestMarkdownParser::testFencedCodeBlocks()
-{
+void TestMarkdownParser::testFencedCodeBlocks() {
   const QString input = QStringLiteral("```cpp\ncode here\n```\n");
   auto result = parse(input);
 
@@ -256,17 +245,15 @@ void TestMarkdownParser::testFencedCodeBlocks()
   QCOMPARE(nestedResult.codeBlockRegions.size(), 1);
   const auto &openingFenceHighlights = nestedResult.blocksHighlights.at(2);
   const auto openingFence = std::find_if(
-      openingFenceHighlights.cbegin(), openingFenceHighlights.cend(), [](const vte::md::HLUnit &p_unit) {
-        return p_unit.styleIndex == HLT_FENCEDCODEBLOCK;
-      });
+      openingFenceHighlights.cbegin(), openingFenceHighlights.cend(),
+      [](const vte::md::HLUnit &p_unit) { return p_unit.styleIndex == HLT_FENCEDCODEBLOCK; });
   QVERIFY(openingFence != openingFenceHighlights.cend());
   // The list indentation is intentionally outside the AST range and must be formatted by the
   // highlighter's second pass.
   QCOMPARE(openingFence->start, 4UL);
 }
 
-void TestMarkdownParser::testFencedCodeBlockIndentationFormat()
-{
+void TestMarkdownParser::testFencedCodeBlockIndentationFormat() {
   const QString themeJson = QStringLiteral(R"({
     "metadata": {"type": "vtextedit", "name": "FencedCodeTest"},
     "editor": {"font-family": "Arial", "font-size": 11},
@@ -291,8 +278,8 @@ void TestMarkdownParser::testFencedCodeBlockIndentationFormat()
   QVERIFY(highlighter);
 
   QSignalSpy completed(highlighter, &vte::MarkdownHighlighter::highlightCompleted);
-  editor.setText(QStringLiteral(
-      "1. Nested code block\n\n    ```cpp\n    code here\n    ```\n2. List item\n"));
+  editor.setText(
+      QStringLiteral("1. Nested code block\n\n    ```cpp\n    code here\n    ```\n2. List item\n"));
   completed.clear();
   highlighter->updateHighlight();
   QTRY_VERIFY(completed.count() > 0);
@@ -315,8 +302,7 @@ void TestMarkdownParser::testFencedCodeBlockIndentationFormat()
   QVERIFY(formatAt(nextListItem, 0).background().color() != expected.background().color());
 }
 
-void TestMarkdownParser::testIndentedCodeBlocks()
-{
+void TestMarkdownParser::testIndentedCodeBlocks() {
   const QString input = QStringLiteral("    indented code\n");
   auto result = parse(input);
 
@@ -329,8 +315,7 @@ void TestMarkdownParser::testIndentedCodeBlocks()
   QVERIFY((int)elems[0].second > 4);
 }
 
-void TestMarkdownParser::testHTMLBlocks()
-{
+void TestMarkdownParser::testHTMLBlocks() {
   const QString input = QStringLiteral("<div>\nhtml content\n</div>\n");
   auto result = parse(input);
 
@@ -343,8 +328,7 @@ void TestMarkdownParser::testHTMLBlocks()
   QVERIFY((int)elems[0].second > 0);
 }
 
-void TestMarkdownParser::testLists()
-{
+void TestMarkdownParser::testLists() {
   const QString input = QStringLiteral("- item 1\n- item 2\n\n1. first\n2. second\n");
   auto result = parse(input);
 
@@ -371,8 +355,7 @@ void TestMarkdownParser::testLists()
   QCOMPARE((int)enums[1].second, 30);
 }
 
-void TestMarkdownParser::testFrontmatter()
-{
+void TestMarkdownParser::testFrontmatter() {
   const QString input = QStringLiteral("---\ntitle: test\n---\n\nContent\n");
   auto result = parse(input);
 
@@ -385,8 +368,7 @@ void TestMarkdownParser::testFrontmatter()
   QVERIFY((int)elems[0].second > 0);
 }
 
-void TestMarkdownParser::testDisplayFormula()
-{
+void TestMarkdownParser::testDisplayFormula() {
   const QString input = QStringLiteral("$$\nE = mc^2\n$$\n");
   auto result = parse(input);
 
@@ -398,8 +380,7 @@ void TestMarkdownParser::testDisplayFormula()
   QVERIFY(result.displayFormulaRegions[0].m_endPos > 0);
 }
 
-void TestMarkdownParser::testTables()
-{
+void TestMarkdownParser::testTables() {
   const QString input = QStringLiteral("| h1 | h2 |\n|---|---|\n| a | b |\n");
   auto result = parse(input);
 
@@ -422,8 +403,7 @@ void TestMarkdownParser::testTables()
 // T6: Inline Element Tests
 // ============================================================
 
-void TestMarkdownParser::testEmphasis()
-{
+void TestMarkdownParser::testEmphasis() {
   const QString input = QStringLiteral("*emph*\n");
   auto result = parse(input);
 
@@ -435,8 +415,7 @@ void TestMarkdownParser::testEmphasis()
   QCOMPARE((int)elems[0].second, 6);
 }
 
-void TestMarkdownParser::testStrong()
-{
+void TestMarkdownParser::testStrong() {
   const QString input = QStringLiteral("**strong**\n");
   auto result = parse(input);
 
@@ -448,8 +427,7 @@ void TestMarkdownParser::testStrong()
   QCOMPARE((int)elems[0].second, 10);
 }
 
-void TestMarkdownParser::testInlineCode()
-{
+void TestMarkdownParser::testInlineCode() {
   const QString input = QStringLiteral("`code`\n");
   auto result = parse(input);
 
@@ -461,8 +439,7 @@ void TestMarkdownParser::testInlineCode()
   QCOMPARE((int)elems[0].second, 6);
 }
 
-void TestMarkdownParser::testLinks()
-{
+void TestMarkdownParser::testLinks() {
   const QString input = QStringLiteral("[text](url)\n");
   auto result = parse(input);
 
@@ -474,8 +451,7 @@ void TestMarkdownParser::testLinks()
   QCOMPARE((int)elems[0].second, 11);
 }
 
-void TestMarkdownParser::testAutoLinks()
-{
+void TestMarkdownParser::testAutoLinks() {
   // URL auto link — cmark maps to LINK (not AUTO_LINK_URL). Count = 1.
   {
     const QString input = QStringLiteral("<http://example.com>\n");
@@ -504,8 +480,7 @@ void TestMarkdownParser::testAutoLinks()
   }
 }
 
-void TestMarkdownParser::testImages()
-{
+void TestMarkdownParser::testImages() {
   const QString input = QStringLiteral("![alt](img.png)\n");
   auto result = parse(input);
 
@@ -516,8 +491,7 @@ void TestMarkdownParser::testImages()
   QCOMPARE(result.imageRegions[0].m_endPos, 15);
 }
 
-void TestMarkdownParser::testHTMLInline()
-{
+void TestMarkdownParser::testHTMLInline() {
   const QString input = QStringLiteral("text <span>html</span> text\n");
   auto result = parse(input);
 
@@ -536,8 +510,7 @@ void TestMarkdownParser::testHTMLInline()
   QCOMPARE((int)elems[1].second, 22);
 }
 
-void TestMarkdownParser::testHTMLEntities()
-{
+void TestMarkdownParser::testHTMLEntities() {
   const QString input = QStringLiteral("&amp; &lt;\n");
   auto result = parse(input);
 
@@ -545,8 +518,7 @@ void TestMarkdownParser::testHTMLEntities()
   QCOMPARE(countElements(result, HLT_HTML_ENTITY), 0);
 }
 
-void TestMarkdownParser::testComments()
-{
+void TestMarkdownParser::testComments() {
   const QString input = QStringLiteral("<!-- comment -->\n");
   auto result = parse(input);
 
@@ -555,8 +527,7 @@ void TestMarkdownParser::testComments()
   QCOMPARE(countElements(result, HLT_HTMLBLOCK), 1);
 }
 
-void TestMarkdownParser::testReferences()
-{
+void TestMarkdownParser::testReferences() {
   const QString input = QStringLiteral("[id]: http://example.com\n\n[text][id]\n");
   auto result = parse(input);
 
@@ -566,8 +537,7 @@ void TestMarkdownParser::testReferences()
   QCOMPARE(countElements(result, HLT_LINK), 1);
 }
 
-void TestMarkdownParser::testStrikethrough()
-{
+void TestMarkdownParser::testStrikethrough() {
   const QString input = QStringLiteral("~~strike~~\n");
   auto result = parse(input);
 
@@ -579,8 +549,7 @@ void TestMarkdownParser::testStrikethrough()
   QCOMPARE((int)elems[0].second, 10);
 }
 
-void TestMarkdownParser::testMark()
-{
+void TestMarkdownParser::testMark() {
   const QString input = QStringLiteral("==marked==\n");
   auto result = parse(input);
 
@@ -595,8 +564,7 @@ void TestMarkdownParser::testMark()
   QCOMPARE((int)elems[0].second, 10);
 }
 
-void TestMarkdownParser::testFootnotes()
-{
+void TestMarkdownParser::testFootnotes() {
   const QString input = QStringLiteral("[^1]: footnote\n\nText [^1]\n");
   auto result = parse(input);
 
@@ -606,8 +574,7 @@ void TestMarkdownParser::testFootnotes()
   QVERIFY(countElements(result, HLT_NOTE) >= 2);
 }
 
-void TestMarkdownParser::testInlineEquation()
-{
+void TestMarkdownParser::testInlineEquation() {
   const QString input = QStringLiteral("$E=mc^2$\n");
   auto result = parse(input);
 
@@ -623,8 +590,7 @@ void TestMarkdownParser::testInlineEquation()
 // T7: Edge Case Tests
 // ============================================================
 
-void TestMarkdownParser::testSurrogatePairs()
-{
+void TestMarkdownParser::testSurrogatePairs() {
   // U+1F389 is 4 UTF-8 bytes -> 2 QChars (surrogate pair).
   // cmark adapter uses QChar offsets via LineOffsetTable.
   const QString input = QString::fromUtf8("# \xF0\x9F\x8E\x89 Hello\n");
@@ -639,8 +605,7 @@ void TestMarkdownParser::testSurrogatePairs()
   QCOMPARE(result.headerRegions[0].m_endPos, 10);
 }
 
-void TestMarkdownParser::testEmptyElements()
-{
+void TestMarkdownParser::testEmptyElements() {
   // Empty bold: **** — no STRONG or EMPH.
   {
     const QString input = QStringLiteral("****\n");
@@ -659,8 +624,7 @@ void TestMarkdownParser::testEmptyElements()
   }
 }
 
-void TestMarkdownParser::testUnclosedDelimiters()
-{
+void TestMarkdownParser::testUnclosedDelimiters() {
   // Unclosed bold — no crash, 0 STRONG elements.
   {
     const QString input = QStringLiteral("**broken\n");
@@ -678,8 +642,7 @@ void TestMarkdownParser::testUnclosedDelimiters()
   }
 }
 
-void TestMarkdownParser::testDegenerate()
-{
+void TestMarkdownParser::testDegenerate() {
   // Empty string — walkAndConvert returns empty result (no crash).
   {
     const QString input = QStringLiteral("");
@@ -689,7 +652,10 @@ void TestMarkdownParser::testDegenerate()
     // Empty result — no highlights.
     bool hasAny = false;
     for (const auto &block : result.blocksHighlights) {
-      if (!block.isEmpty()) { hasAny = true; break; }
+      if (!block.isEmpty()) {
+        hasAny = true;
+        break;
+      }
     }
     QVERIFY(!hasAny);
   }
@@ -710,8 +676,7 @@ void TestMarkdownParser::testDegenerate()
   }
 }
 
-void TestMarkdownParser::testNestedOverlap()
-{
+void TestMarkdownParser::testNestedOverlap() {
   const QString input = QStringLiteral("***bold-italic***\n");
   auto result = parse(input);
 
@@ -728,16 +693,14 @@ void TestMarkdownParser::testNestedOverlap()
   QVERIFY((int)strongElems[0].first < (int)strongElems[0].second);
 }
 
-void TestMarkdownParser::testAllExtensions()
-{
-  const QString input = QStringLiteral(
-      "---\ntitle: test\n---\n\n"
-      "# Heading\n\n"
-      "*emph* **strong** ~~strike~~ ==mark==\n\n"
-      "$E=mc^2$ $$F=ma$$\n\n"
-      "| h1 | h2 |\n|---|---|\n| a | b |\n\n"
-      "[^1]: note\n\n"
-      "Text [^1]\n");
+void TestMarkdownParser::testAllExtensions() {
+  const QString input = QStringLiteral("---\ntitle: test\n---\n\n"
+                                       "# Heading\n\n"
+                                       "*emph* **strong** ~~strike~~ ==mark==\n\n"
+                                       "$E=mc^2$ $$F=ma$$\n\n"
+                                       "| h1 | h2 |\n|---|---|\n| a | b |\n\n"
+                                       "[^1]: note\n\n"
+                                       "Text [^1]\n");
   auto result = parse(input);
 
   QVERIFY(countElements(result, HLT_FRONTMATTER) >= 1);
@@ -757,8 +720,7 @@ void TestMarkdownParser::testAllExtensions()
 // T13: Performance Benchmark
 // ============================================================
 
-void TestMarkdownParser::testPerformance()
-{
+void TestMarkdownParser::testPerformance() {
   // Generate a 1000-line markdown document with mixed content.
   QString doc;
   doc.reserve(64000);
@@ -766,8 +728,8 @@ void TestMarkdownParser::testPerformance()
     doc += QString("# Heading %1\n\n").arg(i);
     doc += QString("## Sub-heading %1\n\n").arg(i);
     doc += QString("### Third level %1\n\n").arg(i);
-    doc += QString(
-        "Paragraph with *emph*, **strong**, `code`, ~~strike~~ and $E=mc^2$ inline.\n\n");
+    doc +=
+        QString("Paragraph with *emph*, **strong**, `code`, ~~strike~~ and $E=mc^2$ inline.\n\n");
     doc += "```cpp\nint x = 42;\nreturn x;\n```\n\n";
     doc += "- bullet one\n- bullet two\n- bullet three\n\n";
     doc += "1. first\n2. second\n\n";
@@ -789,7 +751,10 @@ void TestMarkdownParser::testPerformance()
     // Verify non-empty result.
     bool hasAny = false;
     for (const auto &block : result.blocksHighlights) {
-      if (!block.isEmpty()) { hasAny = true; break; }
+      if (!block.isEmpty()) {
+        hasAny = true;
+        break;
+      }
     }
     QVERIFY(hasAny);
     times.append(elapsed);
@@ -801,8 +766,7 @@ void TestMarkdownParser::testPerformance()
            << "median:" << median;
 
   QVERIFY2(median < 500,
-           qPrintable(
-               QString("Median parse time %1ms exceeds 500ms threshold").arg(median)));
+           qPrintable(QString("Median parse time %1ms exceeds 500ms threshold").arg(median)));
 }
 
 // ============================================================
@@ -811,12 +775,9 @@ void TestMarkdownParser::testPerformance()
 
 namespace {
 // Accumulate the paint regions delivered to a widget.
-class PaintRegionRecorder : public QObject
-{
+class PaintRegionRecorder : public QObject {
 public:
-  explicit PaintRegionRecorder(QWidget *p_widget)
-    : QObject(p_widget)
-  {
+  explicit PaintRegionRecorder(QWidget *p_widget) : QObject(p_widget) {
     p_widget->installEventFilter(this);
   }
 
@@ -825,8 +786,7 @@ public:
   const QRegion &region() const { return m_region; }
 
 protected:
-  bool eventFilter(QObject *p_obj, QEvent *p_event) Q_DECL_OVERRIDE
-  {
+  bool eventFilter(QObject *p_obj, QEvent *p_event) Q_DECL_OVERRIDE {
     if (p_event->type() == QEvent::Paint) {
       m_region += static_cast<QPaintEvent *>(p_event)->region();
     }
@@ -839,8 +799,7 @@ private:
 
 // Wait until no paint event is received during a quiet window, so that delayed
 // highlighting, initial show and resize paints could not pollute the recording.
-bool settlePaints(PaintRegionRecorder &p_recorder, int p_quietMs = 150, int p_maxMs = 5000)
-{
+bool settlePaints(PaintRegionRecorder &p_recorder, int p_quietMs = 150, int p_maxMs = 5000) {
   QElapsedTimer timer;
   timer.start();
   while (timer.elapsed() < p_maxMs) {
@@ -854,21 +813,18 @@ bool settlePaints(PaintRegionRecorder &p_recorder, int p_quietMs = 150, int p_ma
 }
 
 // A one pixel high row spanning the whole viewport.
-QRect fullWidthRow(const QWidget *p_viewport, int p_y)
-{
+QRect fullWidthRow(const QWidget *p_viewport, int p_y) {
   return QRect(0, p_y, p_viewport->width(), 1);
 }
 
 // QRegion::contains(QRect) semantics differ between Qt versions, so check the
 // complete containment explicitly.
-bool regionContains(const QRegion &p_region, const QRect &p_rect)
-{
+bool regionContains(const QRegion &p_region, const QRect &p_rect) {
   return QRegion(p_rect).subtracted(p_region).isEmpty();
 }
 } // namespace
 
-void TestMarkdownParser::testCursorLineInvalidationExpanded_data()
-{
+void TestMarkdownParser::testCursorLineInvalidationExpanded_data() {
   QTest::addColumn<qreal>("lineSpacing");
 
   // A line spacing greater than 1.0 gives the lines a fractional geometry, for
@@ -878,8 +834,7 @@ void TestMarkdownParser::testCursorLineInvalidationExpanded_data()
   QTest::newRow("fractional line geometry") << 1.5;
 }
 
-void TestMarkdownParser::testCursorLineInvalidationExpanded()
-{
+void TestMarkdownParser::testCursorLineInvalidationExpanded() {
   QFETCH(qreal, lineSpacing);
 
   // Avoid cursor blink repaints polluting the recorded paint regions.
@@ -976,18 +931,22 @@ void TestMarkdownParser::testCursorLineInvalidationExpanded()
 
   const QRegion region = recorder.region();
   for (int margin = 1; margin <= maxMargin; ++margin) {
-    QVERIFY2(regionContains(region, fullWidthRow(viewport, oldRect.top() - margin)),
-             qPrintable(QStringLiteral("Row %1 above the old cursor line is not invalidated")
-                            .arg(margin)));
-    QVERIFY2(regionContains(region, fullWidthRow(viewport, oldRect.bottom() + margin)),
-             qPrintable(QStringLiteral("Row %1 below the old cursor line is not invalidated")
-                            .arg(margin)));
-    QVERIFY2(regionContains(region, fullWidthRow(viewport, newRect.top() - margin)),
-             qPrintable(QStringLiteral("Row %1 above the new cursor line is not invalidated")
-                            .arg(margin)));
-    QVERIFY2(regionContains(region, fullWidthRow(viewport, newRect.bottom() + margin)),
-             qPrintable(QStringLiteral("Row %1 below the new cursor line is not invalidated")
-                            .arg(margin)));
+    QVERIFY2(
+        regionContains(region, fullWidthRow(viewport, oldRect.top() - margin)),
+        qPrintable(
+            QStringLiteral("Row %1 above the old cursor line is not invalidated").arg(margin)));
+    QVERIFY2(
+        regionContains(region, fullWidthRow(viewport, oldRect.bottom() + margin)),
+        qPrintable(
+            QStringLiteral("Row %1 below the old cursor line is not invalidated").arg(margin)));
+    QVERIFY2(
+        regionContains(region, fullWidthRow(viewport, newRect.top() - margin)),
+        qPrintable(
+            QStringLiteral("Row %1 above the new cursor line is not invalidated").arg(margin)));
+    QVERIFY2(
+        regionContains(region, fullWidthRow(viewport, newRect.bottom() + margin)),
+        qPrintable(
+            QStringLiteral("Row %1 below the new cursor line is not invalidated").arg(margin)));
   }
 
   // The supplemental invalidation must stay local. This also guards the
@@ -1010,8 +969,7 @@ void TestMarkdownParser::testCursorLineInvalidationExpanded()
 // Typed preview element extraction
 // ============================================================
 
-void TestMarkdownParser::testTableElementBasic()
-{
+void TestMarkdownParser::testTableElementBasic() {
   const QString input = QStringLiteral("| h1 | h2 |\n| --- | --- |\n| a | b |\n");
   auto result = parse(input);
 
@@ -1032,8 +990,7 @@ void TestMarkdownParser::testTableElementBasic()
   QVERIFY(table.m_rows[0].m_prefix.isEmpty());
 }
 
-void TestMarkdownParser::testTableElementAlignments()
-{
+void TestMarkdownParser::testTableElementAlignments() {
   const QString input =
       QStringLiteral("| a | b | c | d |\n| --- | :--- | :---: | ---: |\n| 1 | 2 | 3 | 4 |\n");
   auto result = parse(input);
@@ -1043,9 +1000,9 @@ void TestMarkdownParser::testTableElementAlignments()
   QCOMPARE(result.tableElements.first().m_alignments, QVector<int>({0, 1, 2, 3}));
 }
 
-void TestMarkdownParser::testTableElementRawCells()
-{
-  const QString input = QStringLiteral("| **bold** | [x](y.md) |\n| --- | --- |\n| `a|b` | _i_ |\n");
+void TestMarkdownParser::testTableElementRawCells() {
+  const QString input =
+      QStringLiteral("| **bold** | [x](y.md) |\n| --- | --- |\n| `a|b` | _i_ |\n");
   auto result = parse(input);
 
   QCOMPARE(result.tableElements.size(), 1);
@@ -1057,8 +1014,7 @@ void TestMarkdownParser::testTableElementRawCells()
   QCOMPARE(table.m_rows[2].m_cells.size(), 3);
 }
 
-void TestMarkdownParser::testTableElementEscapedPipes()
-{
+void TestMarkdownParser::testTableElementEscapedPipes() {
   const QString input = QStringLiteral("| a \\| b | c |\n| --- | --- |\n| d | e |\n");
   auto result = parse(input);
 
@@ -1070,10 +1026,8 @@ void TestMarkdownParser::testTableElementEscapedPipes()
   QCOMPARE(table.m_rows[0].m_cells[0], QStringLiteral("a \\| b"));
 }
 
-void TestMarkdownParser::testTableElementEmptyAndRaggedRows()
-{
-  const QString input =
-      QStringLiteral("| a | b |\n| --- | --- |\n||\n| x | y | z |\n| only |\n");
+void TestMarkdownParser::testTableElementEmptyAndRaggedRows() {
+  const QString input = QStringLiteral("| a | b |\n| --- | --- |\n||\n| x | y | z |\n| only |\n");
   auto result = parse(input);
 
   QCOMPARE(result.tableElements.size(), 1);
@@ -1089,12 +1043,11 @@ void TestMarkdownParser::testTableElementEmptyAndRaggedRows()
   QCOMPARE(table.m_rows[4].m_cells, QVector<QString>({QStringLiteral("only")}));
 }
 
-void TestMarkdownParser::testTableElementSurrogatePositions()
-{
+void TestMarkdownParser::testTableElementSurrogatePositions() {
   // The emoji is a surrogate pair: UTF-16 offsets must not be byte offsets.
   const QString prefix = QStringLiteral("\xF0\x9F\x98\x80 head\n\n");
-  const QString input =
-      QString::fromUtf8("\xF0\x9F\x98\x80 head\n\n| \xF0\x9F\x98\x80 | b |\n| --- | --- |\n| c | d |\n");
+  const QString input = QString::fromUtf8(
+      "\xF0\x9F\x98\x80 head\n\n| \xF0\x9F\x98\x80 | b |\n| --- | --- |\n| c | d |\n");
   auto result = parse(input);
 
   QCOMPARE(result.tableElements.size(), 1);
@@ -1105,10 +1058,8 @@ void TestMarkdownParser::testTableElementSurrogatePositions()
   Q_UNUSED(prefix);
 }
 
-void TestMarkdownParser::testTableElementNestedPrefixes()
-{
-  const QString input =
-      QStringLiteral("> | a | b |\n> | --- | --- |\n> | c | d |\n");
+void TestMarkdownParser::testTableElementNestedPrefixes() {
+  const QString input = QStringLiteral("> | a | b |\n> | --- | --- |\n> | c | d |\n");
   auto result = parse(input);
 
   QCOMPARE(result.tableElements.size(), 1);
@@ -1120,8 +1071,7 @@ void TestMarkdownParser::testTableElementNestedPrefixes()
   }
 }
 
-void TestMarkdownParser::testTableElementInvalid()
-{
+void TestMarkdownParser::testTableElementInvalid() {
   // Missing trailing pipe: not a table in this dialect.
   QCOMPARE(parse(QStringLiteral("| a | b\n| --- | ---\n")).tableElements.size(), 0);
   // Column count mismatch.
@@ -1130,8 +1080,7 @@ void TestMarkdownParser::testTableElementInvalid()
   QCOMPARE(parse(QStringLiteral("| a | b |\n| c | d |\n")).tableElements.size(), 0);
 }
 
-void TestMarkdownParser::testImageCodeMathElements()
-{
+void TestMarkdownParser::testImageCodeMathElements() {
   {
     const QString input = QStringLiteral("![alt](pic.png \"t\")\n");
     auto result = parse(input);
@@ -1164,6 +1113,89 @@ void TestMarkdownParser::testImageCodeMathElements()
     auto result = parse(input);
     QCOMPARE(result.mathElements.size(), 1);
     QVERIFY(result.mathElements.first().m_display);
+  }
+}
+
+// cmarkNodeSpan() / cmarkNodeUrlSpan() are the single implementation of
+// cmark-coordinates-to-document-offset mapping, shared by the walker and by the
+// snapshot API. Exercise them directly, in the container shapes where cmark's
+// block_offset accounting needs correcting, and over destinations whose cleaned
+// form differs in length from their raw source spelling.
+void TestMarkdownParser::testCmarkNodeSpans() {
+  struct Case {
+    const char *markdown;
+    const char *region; // exact raw text of the image construct
+    const char *rawUrl; // exact raw text of the destination, "" when spanless
+  };
+
+  const QVector<Case> cases{
+      {"![a](i.png)\n", "![a](i.png)", "i.png"},
+      // Block quote: the stripped `> ` prefix must not shift the span.
+      {"> ![a](i.png)\n", "![a](i.png)", "i.png"},
+      // Block quote continuation line: the prefix is stripped per line.
+      {"> lead\n> ![a](i.png)\n", "![a](i.png)", "i.png"},
+      // List item continuation.
+      {"- lead\n  ![a](i.png)\n", "![a](i.png)", "i.png"},
+      // Lazy continuation (no indent on the second line).
+      {"- lead\n![a](i.png)\n", "![a](i.png)", "i.png"},
+      // Spanning two lines, both ways round.
+      {"![a\nb](i.png)\n", "![a\nb](i.png)", "i.png"},
+      {"![a](\ni.png)\n", "![a](\ni.png)", "i.png"},
+      // Ending in an astral character: exercises qcharWidthAtEndColumn().
+      {"![\xf0\x9f\x92\x8e](i.png)\n", "![\xf0\x9f\x92\x8e](i.png)", "i.png"},
+      {"![a](\xf0\x9f\x92\x8e.png)\n", "![a](\xf0\x9f\x92\x8e.png)", "\xf0\x9f\x92\x8e.png"},
+      // The raw destination keeps what cmark_node_get_url() resolves away, and
+      // differs from it in length -- which is exactly what the old
+      // indexOf(cleanedUrl) search could not handle.
+      {"![a](a\\_b.png)\n", "![a](a\\_b.png)", "a\\_b.png"},
+      {"![a](<a b.png>)\n", "![a](<a b.png>)", "<a b.png>"},
+      {"![a](a&amp;b.png)\n", "![a](a&amp;b.png)", "a&amp;b.png"},
+      // The `=WxH` suffix is inside the region but outside the destination.
+      {"![a](i.png =500x300)\n", "![a](i.png =500x300)", "i.png"},
+      // No inline destination at all.
+      {"![a][r]\n\n[r]: i.png\n", "![a][r]", ""},
+      {"![a]()\n", "![a]()", ""},
+  };
+
+  for (const auto &c : cases) {
+    const QByteArray utf8(c.markdown);
+    const QString text = QString::fromUtf8(utf8);
+    LineOffsetTable offsets(utf8);
+
+    cmark_node *doc = cmark_parse_document(utf8.constData(), utf8.size(), CMARK_OPT_DEFAULT);
+    QVERIFY(doc);
+
+    cmark_iter *iter = cmark_iter_new(doc);
+    cmark_node *image = nullptr;
+    cmark_event_type ev;
+    while ((ev = cmark_iter_next(iter)) != CMARK_EVENT_DONE) {
+      cmark_node *cur = cmark_iter_get_node(iter);
+      if (ev == CMARK_EVENT_ENTER && cmark_node_get_type(cur) == CMARK_NODE_IMAGE) {
+        image = cur;
+        break;
+      }
+    }
+    cmark_iter_free(iter);
+    QVERIFY2(image, c.markdown);
+
+    int start = -1;
+    int end = -1;
+    QVERIFY2(cmarkNodeSpan(image, offsets, start, end), c.markdown);
+    QCOMPARE(text.mid(start, end - start), QString::fromUtf8(c.region));
+
+    int urlStart = -1;
+    int urlEnd = -1;
+    const bool hasUrl = cmarkNodeUrlSpan(image, offsets, urlStart, urlEnd);
+    if (*c.rawUrl == '\0') {
+      QVERIFY2(!hasUrl, c.markdown);
+    } else {
+      QVERIFY2(hasUrl, c.markdown);
+      QCOMPARE(text.mid(urlStart, urlEnd - urlStart), QString::fromUtf8(c.rawUrl));
+      // The destination always sits inside the construct it belongs to.
+      QVERIFY(start <= urlStart && urlStart < urlEnd && urlEnd <= end);
+    }
+
+    cmark_node_free(doc);
   }
 }
 

@@ -14,17 +14,15 @@ using namespace tests;
 static const int NUM_HIGHLIGHT_STYLES = 33;
 
 static const QStringList s_fixtureNames = {
-    QStringLiteral("block_elements.md"),
-    QStringLiteral("inline_elements.md"),
-    QStringLiteral("multiline_elements.md"),
-    QStringLiteral("nested_elements.md"),
-    QStringLiteral("edge_cases.md"),
-    QStringLiteral("extension_elements.md"),
-    QStringLiteral("table_elements.md"),
-    QStringLiteral("math_elements.md")};
+    QStringLiteral("block_elements.md"), QStringLiteral("inline_elements.md"),
+    QStringLiteral("multiline_elements.md"), QStringLiteral("nested_elements.md"),
+    QStringLiteral("edge_cases.md"), QStringLiteral("extension_elements.md"),
+    QStringLiteral("table_elements.md"), QStringLiteral("math_elements.md"),
+    // The permanent record of image handling: every destination spelling, every
+    // `=WxH` shape, reference-style, multiline, and each title delimiter.
+    QStringLiteral("image_elements.md")};
 
-static QString readFixture(const QString &p_name)
-{
+static QString readFixture(const QString &p_name) {
   QFile f(QStringLiteral(FIXTURES_DIR) + "/" + p_name);
   if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
     return QString();
@@ -33,25 +31,24 @@ static QString readFixture(const QString &p_name)
 }
 
 // Helper: count blocks (newlines + 1) in UTF-8 text.
-static int countBlocks(const QByteArray &p_utf8)
-{
+static int countBlocks(const QByteArray &p_utf8) {
   int n = 1;
   for (int i = 0; i < p_utf8.size(); ++i) {
-    if (p_utf8[i] == '\n') ++n;
+    if (p_utf8[i] == '\n')
+      ++n;
   }
   return n;
 }
 
 // Serialize ASTWalkResult to elements golden format: "style:pos:end\n" lines.
 // This reconstructs doc-absolute positions from block-relative HLUnits.
-static QString serializeElements(const vte::md::ASTWalkResult &p_result,
-                                 const QString &p_text)
-{
+static QString serializeElements(const vte::md::ASTWalkResult &p_result, const QString &p_text) {
   // Build block start positions from text.
   QVector<int> blockStarts;
   blockStarts.append(0);
   for (int i = 0; i < p_text.size(); ++i) {
-    if (p_text[i] == '\n') blockStarts.append(i + 1);
+    if (p_text[i] == '\n')
+      blockStarts.append(i + 1);
   }
 
   QStringList lines;
@@ -60,8 +57,7 @@ static QString serializeElements(const vte::md::ASTWalkResult &p_result,
       unsigned long absStart =
           (blockNum < blockStarts.size() ? blockStarts[blockNum] : 0) + unit.start;
       unsigned long absEnd = absStart + unit.length;
-      lines.append(
-          QStringLiteral("%1:%2:%3").arg(unit.styleIndex).arg(absStart).arg(absEnd));
+      lines.append(QStringLiteral("%1:%2:%3").arg(unit.styleIndex).arg(absStart).arg(absEnd));
     }
   }
   std::sort(lines.begin(), lines.end(), [](const QString &a, const QString &b) {
@@ -69,7 +65,8 @@ static QString serializeElements(const vte::md::ASTWalkResult &p_result,
     auto bParts = b.split(':');
     int aStyle = aParts[0].toInt();
     int bStyle = bParts[0].toInt();
-    if (aStyle != bStyle) return aStyle < bStyle;
+    if (aStyle != bStyle)
+      return aStyle < bStyle;
     unsigned long aPos = aParts[1].toULong();
     unsigned long bPos = bParts[1].toULong();
     return aPos < bPos;
@@ -77,9 +74,8 @@ static QString serializeElements(const vte::md::ASTWalkResult &p_result,
   return lines.join('\n') + '\n';
 }
 
-static QString serializeBlocksHighlights(
-    const QVector<QVector<vte::md::HLUnit>> &p_blocksHighlights)
-{
+static QString
+serializeBlocksHighlights(const QVector<QVector<vte::md::HLUnit>> &p_blocksHighlights) {
   QStringList lines;
   for (int blockNum = 0; blockNum < p_blocksHighlights.size(); ++blockNum) {
     for (const auto &unit : p_blocksHighlights[blockNum]) {
@@ -93,8 +89,7 @@ static QString serializeBlocksHighlights(
   return lines.join('\n') + '\n';
 }
 
-static bool writeGoldenFile(const QString &p_path, const QString &p_content)
-{
+static bool writeGoldenFile(const QString &p_path, const QString &p_content) {
   QFile f(p_path);
   // Deliberately not QIODevice::Text: it translates '\n' to the platform
   // separator on write, so a run on Windows rewrote every golden file with
@@ -108,8 +103,7 @@ static bool writeGoldenFile(const QString &p_path, const QString &p_content)
   return true;
 }
 
-static QString readGoldenFile(const QString &p_path)
-{
+static QString readGoldenFile(const QString &p_path) {
   QFile f(p_path);
   // Text is kept on the read side on purpose: the comparison stays tolerant of
   // a golden file which picked up CRLF from somewhere else.
@@ -119,8 +113,7 @@ static QString readGoldenFile(const QString &p_path)
   return QString::fromUtf8(f.readAll());
 }
 
-void TestGoldenMaster::generateGolden()
-{
+void TestGoldenMaster::generateGolden() {
   QDir goldenDir(QStringLiteral(GOLDEN_DIR));
   QVERIFY(goldenDir.exists());
 
@@ -145,8 +138,7 @@ void TestGoldenMaster::generateGolden()
   }
 }
 
-void TestGoldenMaster::verifyGolden()
-{
+void TestGoldenMaster::verifyGolden() {
   QDir goldenDir(QStringLiteral(GOLDEN_DIR));
 
   for (const auto &name : s_fixtureNames) {
