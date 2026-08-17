@@ -4,6 +4,7 @@
 
 #include <QDir>
 #include <QFileInfo>
+#include <QMap>
 #include <QRegularExpression>
 #include <QSet>
 #include <QStringList>
@@ -50,6 +51,36 @@ const QString MarkdownUtils::c_unorderedListRegExp =
 const QString MarkdownUtils::c_quoteRegExp = QStringLiteral("^(\\s*)>\\s+(.*)$");
 
 const QString MarkdownUtils::c_quotePrefixRegExp = QStringLiteral("^(\\s*)((?:>[ \\t]*)+)(.*)$");
+
+namespace {
+// State threaded through insertOrderedList() as p_data, so that converting a
+// multi-line selection yields 1., 2., 3. ... instead of 1. on every line.
+// Each indentation level keeps its own counter; leaving a deeper level discards
+// its counter so that returning to it restarts at 1.
+struct OrderedListNumbering {
+  // indentation -> last used number
+  QMap<int, int> m_counters;
+
+  int nextNumber(int p_indentation) {
+    discardDeeperCounters(p_indentation);
+
+    int &num = m_counters[p_indentation];
+    return ++num;
+  }
+
+  // Drop counters for levels deeper than @p_indentation (portable across Qt 5 and Qt 6).
+  void discardDeeperCounters(int p_indentation) {
+    auto it = m_counters.begin();
+    while (it != m_counters.end()) {
+      if (it.key() > p_indentation) {
+        it = m_counters.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+};
+} // namespace
 
 QString MarkdownUtils::unindentCodeBlockText(const QString &p_text) {
   if (p_text.isEmpty()) {
@@ -644,7 +675,8 @@ void MarkdownUtils::doOnSelectedLinesOrCurrentLine(
 }
 
 void MarkdownUtils::typeOrderedList(VTextEdit *p_edit) {
-  doOnSelectedLinesOrCurrentLine(p_edit, &MarkdownUtils::insertOrderedList, nullptr);
+  OrderedListNumbering numbering;
+  doOnSelectedLinesOrCurrentLine(p_edit, &MarkdownUtils::insertOrderedList, &numbering);
 }
 
 bool MarkdownUtils::insertOrderedList(QTextCursor &p_cursor, const QTextBlock &p_block,
@@ -653,11 +685,15 @@ bool MarkdownUtils::insertOrderedList(QTextCursor &p_cursor, const QTextBlock &p
   // 2. If current line is an unordered list, turn it into an ordered list;
   // 4. If current line is an ordered list, turn it into a normal line;
   // 5. Insert an ordered list treating the front spaces as indentation.
-  Q_UNUSED(p_data);
+  auto numbering = static_cast<OrderedListNumbering *>(p_data);
 
   p_cursor.setPosition(p_block.position());
 
   const auto text = p_block.text();
+  const int indentation = TextUtils::fetchIndentation(text);
+  const auto nextNumber = [numbering, indentation]() {
+    return numbering ? numbering->nextNumber(indentation) : 1;
+  };
 
   // Check todo list.
   {
@@ -665,7 +701,10 @@ bool MarkdownUtils::insertOrderedList(QTextCursor &p_cursor, const QTextBlock &p
     auto match = reg.match(text);
     if (match.hasMatch()) {
       TextEditUtils::selectBlockUnderCursor(p_cursor);
-      p_cursor.insertText(match.captured(1) + QStringLiteral("1. %1").arg(match.captured(4)));
+      p_cursor.insertText(QStringLiteral("%1%2. %3")
+                              .arg(match.captured(1))
+                              .arg(nextNumber())
+                              .arg(match.captured(4)));
       return true;
     }
   }
@@ -676,7 +715,10 @@ bool MarkdownUtils::insertOrderedList(QTextCursor &p_cursor, const QTextBlock &p
     auto match = reg.match(text);
     if (match.hasMatch()) {
       TextEditUtils::selectBlockUnderCursor(p_cursor);
-      p_cursor.insertText(match.captured(1) + QStringLiteral("1. %1").arg(match.captured(3)));
+      p_cursor.insertText(QStringLiteral("%1%2. %3")
+                              .arg(match.captured(1))
+                              .arg(nextNumber())
+                              .arg(match.captured(3)));
       return true;
     }
   }
@@ -688,15 +730,19 @@ bool MarkdownUtils::insertOrderedList(QTextCursor &p_cursor, const QTextBlock &p
     if (match.hasMatch()) {
       TextEditUtils::selectBlockUnderCursor(p_cursor);
       p_cursor.insertText(QStringLiteral("%1%2").arg(match.captured(1), match.captured(3)));
+      // Toggling off does not consume a number, but the line still marks this
+      // indentation level, so deeper levels restart at 1 afterwards.
+      if (numbering) {
+        numbering->discardDeeperCounters(indentation);
+      }
       return true;
     }
   }
 
   // Insert ordered list.
   {
-    int indentation = TextUtils::fetchIndentation(text);
     p_cursor.movePosition(QTextCursor::NextCharacter, QTextCursor::MoveAnchor, indentation);
-    p_cursor.insertText(QStringLiteral("1. "));
+    p_cursor.insertText(QStringLiteral("%1. ").arg(nextNumber()));
     p_cursor.movePosition(QTextCursor::EndOfBlock);
     return true;
   }

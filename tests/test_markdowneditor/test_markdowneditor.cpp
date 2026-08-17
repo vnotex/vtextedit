@@ -797,6 +797,68 @@ void TestMarkdownEditor::testMultiLineMarkerOverriddenSelection() {
   QCOMPARE(fixture.text(), QStringLiteral("~~a~~\n~~b~~"));
 }
 
+// Converting a multi-line selection numbers the items sequentially instead of
+// writing `1.` on every line.
+void TestMarkdownEditor::testOrderedListSequentialNumbering() {
+  Fixture fixture(QStringLiteral("a\nb\nc"), 0);
+  fixture.selectAll();
+  MarkdownUtils::typeOrderedList(fixture.edit());
+  QCOMPARE(fixture.text(), QStringLiteral("1. a\n2. b\n3. c"));
+}
+
+void TestMarkdownEditor::testOrderedListFromOtherListTypes() {
+  {
+    Fixture fixture(QStringLiteral("* a\n* b\n* c"), 0);
+    fixture.selectAll();
+    MarkdownUtils::typeOrderedList(fixture.edit());
+    QCOMPARE(fixture.text(), QStringLiteral("1. a\n2. b\n3. c"));
+  }
+  {
+    Fixture fixture(QStringLiteral("- [ ] a\n- [x] b"), 0);
+    fixture.selectAll();
+    MarkdownUtils::typeOrderedList(fixture.edit());
+    QCOMPARE(fixture.text(), QStringLiteral("1. a\n2. b"));
+  }
+}
+
+void TestMarkdownEditor::testOrderedListIndentationLevels() {
+  // Each indentation level keeps its own counter.
+  {
+    Fixture fixture(QStringLiteral("a\n  b\n  c\nd"), 0);
+    fixture.selectAll();
+    MarkdownUtils::typeOrderedList(fixture.edit());
+    QCOMPARE(fixture.text(), QStringLiteral("1. a\n  1. b\n  2. c\n2. d"));
+  }
+  // Leaving a deeper level discards its counter, so it restarts at 1.
+  {
+    Fixture fixture(QStringLiteral("  a\nb\n  c"), 0);
+    fixture.selectAll();
+    MarkdownUtils::typeOrderedList(fixture.edit());
+    QCOMPARE(fixture.text(), QStringLiteral("  1. a\n1. b\n  1. c"));
+  }
+  // A toggled-off ordered line consumes no number but still resets the deeper
+  // level below it.
+  {
+    Fixture fixture(QStringLiteral("  a\n1. parent\n  b"), 0);
+    fixture.selectAll();
+    MarkdownUtils::typeOrderedList(fixture.edit());
+    QCOMPARE(fixture.text(), QStringLiteral("  1. a\nparent\n  1. b"));
+  }
+}
+
+void TestMarkdownEditor::testOrderedListToggleOff() {
+  Fixture fixture(QStringLiteral("1. a\n2. b\n3. c"), 0);
+  fixture.selectAll();
+  MarkdownUtils::typeOrderedList(fixture.edit());
+  QCOMPARE(fixture.text(), QStringLiteral("a\nb\nc"));
+}
+
+void TestMarkdownEditor::testOrderedListSingleLine() {
+  Fixture fixture(QStringLiteral("abc"), 0, 0);
+  MarkdownUtils::typeOrderedList(fixture.edit());
+  QCOMPARE(fixture.text(), QStringLiteral("1. abc"));
+}
+
 // Bounding only the DECLARED axis is not enough. scaleImage() preserves the
 // aspect ratio when one axis is unspecified, so an extreme-ratio source turns
 // an in-bounds `=4096x` into an enormous allocation along the other axis: a

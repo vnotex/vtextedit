@@ -94,6 +94,17 @@ private slots:
 
   void testMultiLineMarkerOverriddenSelection();
 
+  // Ordered list numbering over a multi-line selection.
+  void testOrderedListSequentialNumbering();
+
+  void testOrderedListFromOtherListTypes();
+
+  void testOrderedListIndentationLevels();
+
+  void testOrderedListToggleOff();
+
+  void testOrderedListSingleLine();
+
   void testAspectRatioDerivedAxisIsBounded();
 };
 } // namespace tests
