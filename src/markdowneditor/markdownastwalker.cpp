@@ -317,9 +317,11 @@ static QString collectLiteralText(cmark_node *p_node) {
 // True when nothing but whitespace precedes the span on its first line and
 // nothing but whitespace follows it on its last line -- the same rule
 // PreviewMgr::buildImageLinksForLayout() applies when deciding to paint a
-// block-wise preview. The two classifications must not drift apart, or an
-// image would render as a block preview in one path and an inline one in the
-// other; testImageStandaloneMatchesPaintedPath() is the gate.
+// block-wise preview. The two must not drift apart, or an image would render
+// as a block preview in one path and an inline one in the other. Note that
+// nothing currently gates that agreement end to end:
+// testImageStandaloneMatchesPaintedPath() pins THIS rule against a reference
+// implementation, but never runs PreviewMgr's.
 //
 // This used to be restricted to single-line spans, because cmark collapsed a
 // multiline link or image onto the line where parsing finished, making its

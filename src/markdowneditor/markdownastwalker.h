@@ -79,6 +79,11 @@ struct TableElement : public TypedPreviewElement {
 
 struct ASTWalkResult {
   QVector<QVector<HLUnit>> blocksHighlights; // indexed by block number
+  // NOT the editor's image channel. Nothing in production reads this any more:
+  // the highlighter publishes md::ImageLinkInfo built from imageElements, which
+  // also carries the destination and the declared `=WxH` size. This survives
+  // only as parser-level test surface (and via MarkdownParseResult, whose
+  // parseImageRegions() likewise has no caller). Use imageElements.
   QVector<ElementRegion> imageRegions;
   QVector<ElementRegion> headerRegions;
   QMap<int, ElementRegion> codeBlockRegions;

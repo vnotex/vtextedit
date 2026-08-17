@@ -801,7 +801,10 @@ void MarkdownHighlighter::completeHighlight(QSharedPointer<MarkdownHighlighterRe
 
   emit tableBlocksUpdated(p_result->m_tableBlocks);
 
-  emit imageLinksUpdated(md::buildImageLinks(p_result->m_imageElements));
+  // Already built by the result's constructor; QVector is implicitly shared, so
+  // emitting the member costs nothing where rebuilding it would allocate on
+  // every parse.
+  emit imageLinksUpdated(p_result->m_imageLinks);
   emit headersUpdated(p_result->m_headerRegions);
   emit foldingRegionsUpdated(p_result->m_foldingRegions);
 

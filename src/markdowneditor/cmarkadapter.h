@@ -84,10 +84,13 @@ int mapCmarkNodeToStyle(cmark_node_type p_type, cmark_node *p_node);
 // accounting on continuation lines. Returns false when the node carries no
 // source position, in which case the out-params are untouched.
 //
-// This is the single implementation of cmark-coordinates-to-document-offset
-// mapping: the walker uses it to place highlights and previews, and the
-// snapshot API uses it to locate images in raw text. Two implementations
-// previously disagreed.
+// This is the mapping the walker uses to place highlights and previews.
+// MarkdownUtils::fetchImageInfoViaCmark() still carries its own, older
+// implementation that searches the raw text for cmark's *cleaned* destination;
+// it is not yet migrated, and it is wrong for any destination whose cleaned
+// form differs from its source spelling (`a\_b.png`, `<a b.png>`,
+// `a&amp;b.png`). Migrating it onto these two functions is what finally removes
+// the duplication.
 bool cmarkNodeSpan(cmark_node *p_node, const LineOffsetTable &p_offsets, int &p_startQChar,
                    int &p_endQChar);
 
@@ -95,6 +98,9 @@ bool cmarkNodeSpan(cmark_node *p_node, const LineOffsetTable &p_offsets, int &p_
 // -- the bytes as spelled in the source, so angle brackets, backslash escapes
 // and entities are all still present. Returns false for reference-style links
 // and for an empty destination, neither of which spans any source bytes.
+//
+// Exercised only by tests until fetchImageInfoViaCmark() is migrated; it exists
+// now because the cmark-side positions it reads landed with the span fix.
 bool cmarkNodeUrlSpan(cmark_node *p_node, const LineOffsetTable &p_offsets, int &p_startQChar,
                       int &p_endQChar);
 

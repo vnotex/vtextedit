@@ -372,17 +372,23 @@ void TestASTWalker::testHLUnitEndingInEmoji() {
   }
 }
 
-// Cross-checks the walker's image classification against the rule
-// PreviewMgr::buildImageLinksForLayout() applies to the painted preview path:
-// what precedes the element on its first line and what follows it on its last
-// line must both be blank. The two must not drift apart, or the same image
-// would render as a block preview in one path and an inline one in the other.
+// Checks the walker's image classification against the rule PreviewMgr applies
+// to the painted preview path: what precedes the element on its first line and
+// what follows it on its last line must both be blank.
 //
-// The multiline cases below are the interesting ones. They used to be
-// satisfied by exclusion -- cmark collapsed a multiline construct onto its last
-// line, so isStandaloneOnLine()'s `startLine == endLine` guard rejected them
-// outright. cmark now reports the true span and the walker applies the real
-// whole-span rule, so these assert the rule rather than the workaround.
+// CAVEAT, so nobody over-trusts this: the reference rule below is a THIRD
+// implementation written here, not a call into
+// PreviewMgr::buildImageLinksForLayout(). This test needs no QTextDocument, and
+// PreviewMgr's version works on document blocks with TextUtils::isSpace() where
+// this one works on raw source lines with QString::trimmed(). It therefore
+// pins the walker's rule; it cannot detect PreviewMgr drifting away from it.
+// The corpus is also all top-level unindented paragraphs.
+//
+// The multiline cases are the interesting ones. They used to be satisfied by
+// exclusion -- cmark collapsed a multiline construct onto its last line, so
+// isStandaloneOnLine()'s `startLine == endLine` guard rejected them outright.
+// cmark now reports the true span and the walker applies the real whole-span
+// rule, so these assert the rule rather than the workaround.
 void TestASTWalker::testImageStandaloneMatchesPaintedPath() {
   const QVector<QByteArray> cases{
       // Alone on one line.

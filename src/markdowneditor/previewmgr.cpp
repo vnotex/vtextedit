@@ -18,16 +18,49 @@ using namespace vte;
 
 typedef PreviewData::Source Source;
 
-// An upper bound on a declared `=WxH` size, in logical pixels per axis.
+// An upper bound on the preview pixmap actually allocated, in logical pixels
+// per axis.
 //
-// The declared size is attacker-supplied in the sense that it comes from the
-// document, and it is multiplied again by the device pixel ratio before
-// allocation: `![](a.png =99999x)` at a scale factor of 2 would ask for a
-// ~200000px-wide pixmap. v3 honored the size without a bound; we do not.
+// The declared `=WxH` size is document-supplied, and it is multiplied again by
+// the device pixel ratio before allocation. Bounding only the *declared* axes
+// is not enough: `scaleImage()` preserves the aspect ratio when one axis is
+// unspecified, so `![](tall.png =4096x)` over a 1x20000 source asks for a
+// 4096 x 81,920,000 pixmap -- hundreds of gigabytes from a few kilobytes of
+// input. v3 honored the declared size with no bound at all; we bound the
+// result.
 static const int c_maxPreviewImageDimension = 4096;
 
 static int clampPreviewDimension(int p_value) {
   return qBound(0, p_value, c_maxPreviewImageDimension);
+}
+
+// The size scaleImage() would actually produce for p_img at the declared
+// dimensions, with each axis bounded. A zero axis means "unspecified", and
+// stays zero so that scaleImage() keeps preserving the aspect ratio; it is only
+// pinned when the ratio would carry the derived axis past the bound.
+static void boundPreviewDimensions(const QPixmap &p_img, int &p_width, int &p_height) {
+  p_width = clampPreviewDimension(p_width);
+  p_height = clampPreviewDimension(p_height);
+  if (p_img.isNull() || p_img.width() <= 0 || p_img.height() <= 0) {
+    return;
+  }
+
+  const qreal ratio = static_cast<qreal>(p_img.height()) / p_img.width();
+  if (p_width > 0 && p_height == 0) {
+    // scaledToWidth() derives the height from the source's aspect ratio.
+    const qreal derived = p_width * ratio;
+    if (derived > c_maxPreviewImageDimension) {
+      p_width = qMax(1, static_cast<int>(c_maxPreviewImageDimension / ratio));
+      p_height = c_maxPreviewImageDimension;
+    }
+  } else if (p_height > 0 && p_width == 0) {
+    // scaledToHeight() derives the width.
+    const qreal derived = ratio > 0 ? p_height / ratio : 0;
+    if (derived > c_maxPreviewImageDimension) {
+      p_height = qMax(1, static_cast<int>(c_maxPreviewImageDimension * ratio));
+      p_width = c_maxPreviewImageDimension;
+    }
+  }
 }
 
 // Identity of a preview resource: the destination plus the declared size.
@@ -270,8 +303,11 @@ QString PreviewMgr::imageResourceName(const ImageLink &p_link) {
     return QString();
   }
 
-  resourceMgr->addImage(name, MarkdownUtils::scaleImage(image, p_link.m_width, p_link.m_height,
-                                                        m_interface->scaleFactor()));
+  int width = p_link.m_width;
+  int height = p_link.m_height;
+  boundPreviewDimensions(image, width, height);
+  resourceMgr->addImage(
+      name, MarkdownUtils::scaleImage(image, width, height, m_interface->scaleFactor()));
   return name;
 }
 
@@ -381,9 +417,11 @@ void PreviewMgr::imageDownloaded(const NetworkReply &p_data, const QString &p_ur
     if (data->m_name.isEmpty() || resourceMgr->containsImage(data->m_name)) {
       continue;
     }
-    resourceMgr->addImage(data->m_name,
-                          MarkdownUtils::scaleImage(image, data->m_width, data->m_height,
-                                                    m_interface->scaleFactor()));
+    int width = data->m_width;
+    int height = data->m_height;
+    boundPreviewDimensions(image, width, height);
+    resourceMgr->addImage(
+        data->m_name, MarkdownUtils::scaleImage(image, width, height, m_interface->scaleFactor()));
     added = true;
   }
 

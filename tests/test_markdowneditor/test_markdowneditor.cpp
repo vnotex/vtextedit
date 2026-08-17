@@ -623,7 +623,7 @@ void TestMarkdownEditor::testOneUrlAtTwoSizesGetsTwoResources() {
 }
 
 // A declared size is document-supplied and is multiplied again by the scale
-// factor before allocation, so it is clamped.
+// factor before allocation, so it is bounded.
 void TestMarkdownEditor::testOversizedImageIsClamped() {
   QTemporaryDir dir;
   QVERIFY(dir.isValid());
@@ -795,6 +795,27 @@ void TestMarkdownEditor::testMultiLineMarkerOverriddenSelection() {
   QVERIFY(fixture.edit()->hasSelection());
   MarkdownUtils::typeStrikethrough(fixture.edit());
   QCOMPARE(fixture.text(), QStringLiteral("~~a~~\n~~b~~"));
+}
+
+// Bounding only the DECLARED axis is not enough. scaleImage() preserves the
+// aspect ratio when one axis is unspecified, so an extreme-ratio source turns
+// an in-bounds `=4096x` into an enormous allocation along the other axis: a
+// 1x8000 image would ask for 4096 x 32,768,000 px. The bound applies to the
+// pixmap actually produced.
+void TestMarkdownEditor::testAspectRatioDerivedAxisIsBounded() {
+  QTemporaryDir dir;
+  QVERIFY(dir.isValid());
+  QVERIFY(!writeTestImage(dir, QStringLiteral("tall.png"), 1, 8000).isEmpty());
+
+  withImageEditor(QStringLiteral("![](tall.png =4096x)\n"), dir.path(), [](Fixture &fixture) {
+    const QPixmap *img = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT((img = fixture.editor()->findImageFromDocumentResourceMgr(
+                                  resourceName(QStringLiteral("tall.png"), 4096, 0))) != nullptr,
+                             5000);
+    // Neither axis may exceed the bound, whichever one the ratio derived.
+    QVERIFY2(img->width() <= 4096 * 4, qPrintable(QString::number(img->width())));
+    QVERIFY2(img->height() <= 4096 * 4, qPrintable(QString::number(img->height())));
+  });
 }
 
 QTEST_MAIN(tests::TestMarkdownEditor)

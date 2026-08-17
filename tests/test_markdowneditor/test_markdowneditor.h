@@ -93,6 +93,8 @@ private slots:
   void testMultiLineMarkerBlankOnly();
 
   void testMultiLineMarkerOverriddenSelection();
+
+  void testAspectRatioDerivedAxisIsBounded();
 };
 } // namespace tests
 
