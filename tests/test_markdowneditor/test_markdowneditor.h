@@ -66,6 +66,33 @@ private slots:
   void testOneUrlAtTwoSizesGetsTwoResources();
 
   void testOversizedImageIsClamped();
+
+  // Multi-line inline markers (typeMarker over a cross-block selection).
+  void testMultiLineMarkerOnList();
+
+  void testMultiLineMarkerToggleOff();
+
+  void testMultiLineMarkerMixedSelection();
+
+  void testMultiLineMarkerNesting();
+
+  void testMultiLineMarkerSkipsBlankLines();
+
+  void testMultiLineMarkerTrailingBlockBoundary();
+
+  void testMultiLineMarkerPartialEdges();
+
+  void testMultiLineMarkerPrefixes();
+
+  void testMultiLineMarkerSingleBlockUnchanged();
+
+  void testMultiLineMarkerAllMarkers();
+
+  void testMultiLineMarkerUndo();
+
+  void testMultiLineMarkerBlankOnly();
+
+  void testMultiLineMarkerOverriddenSelection();
 };
 } // namespace tests
 

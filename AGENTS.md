@@ -70,6 +70,31 @@ Note: actual ordering varies slightly between files. Follow the pattern in the f
 * Defined as `Q_DECL_EXPORT` when building (`VTEXTEDIT_LIB` defined), `Q_DECL_IMPORT` when consuming
 * Tests compile with `VTEXTEDIT_STATIC_DEFINE` (empty macro) to link sources directly
 
+## Inline Markers Over a Multi-Line Selection
+
+`MarkdownUtils::typeMarker` (bold, italic, strikethrough, mark, inline code, inline math) applies
+**one marker pair per line** when the selection crosses blocks — never a single outer pair, which
+would put the marker before a `1.` / `-` / `>` / `#` and destroy the block structure.
+
+Contract (`typeMarkerOnLines` / `markerRangeOfBlock` in `src/utils/markdownutils.cpp`):
+
+* **Prefix aware** — leading indentation, list / todo / quote / heading prefixes (including a
+  heading's auto-generated section number, `c_headerRegExp` groups 4-5) and trailing whitespace
+  stay *outside* the markers. Try `c_todoListRegExp` before `c_unorderedListRegExp`; both match
+  `- [ ] x`.
+* **All-wrapped means unwrap** — the pair is removed only when *every* affected line is already
+  wrapped. A mixed selection normalizes (wraps the rest) instead; `Ctrl+Z` is the way back.
+* **Blank lines are skipped** and do not count toward "all wrapped". If no range survives, the
+  document is not touched at all (no empty `beginEditBlock`, no revision bump).
+* **Edges honor the selection**; a selection ending at column 0 of a block excludes that block.
+* **Selection restoration is syntax-inclusive** — the markers end up selected, so pressing the
+  same action again unwraps and a different one nests outside. The start cursor uses
+  `setKeepPositionOnInsert(true)`, the end cursor keeps the Qt default.
+* Edits run in **reverse document order**, end marker before start marker, inside a single
+  `beginEditBlock`/`endEditBlock`.
+
+Regression coverage: `testMultiLineMarker*` in `tests/test_markdowneditor/`.
+
 ## Testing
 
 * Framework: QtTest (`#include <QtTest>`, link `Qt::Test`)

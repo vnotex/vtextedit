@@ -169,6 +169,24 @@ private:
   static void typeMarker(VTextEdit *p_edit, const QString &p_startMarker,
                          const QString &p_endMarker, bool p_allowSpacesAtTwoEnds = false);
 
+  // Absolute document positions of the marker-able content of one line.
+  struct MarkerRange {
+    int m_start = -1;
+    int m_end = -1;
+    bool isValid() const { return m_start >= 0 && m_start < m_end; }
+  };
+
+  // Content range of @p_block clipped to [@p_selStart, @p_selEnd), with leading
+  // indentation, list/quote/heading prefix and trailing whitespace excluded.
+  // Return false for blank lines or an empty clipped range.
+  static bool markerRangeOfBlock(const QTextBlock &p_block, int p_selStart, int p_selEnd,
+                                 MarkerRange &p_range);
+
+  // Apply/remove one marker pair per selected line. Called by typeMarker when
+  // the selection crosses blocks.
+  static void typeMarkerOnLines(VTextEdit *p_edit, const QString &p_startMarker,
+                                const QString &p_endMarker);
+
   static void typeBlockMarker(VTextEdit *p_edit, const QString &p_startMarker,
                               const QString &p_endMarker, CursorPosition p_cursorPosition);
 

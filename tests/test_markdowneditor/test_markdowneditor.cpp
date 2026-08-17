@@ -72,6 +72,26 @@ public:
     edit()->setTextCursor(cursor);
   }
 
+  // Select from (@p_startBlock, @p_startCol) to (@p_endBlock, @p_endCol).
+  void select(int p_startBlock, int p_startCol, int p_endBlock, int p_endCol) {
+    auto doc = m_editor.document();
+    const auto startBlock = doc->findBlockByNumber(p_startBlock);
+    const auto endBlock = doc->findBlockByNumber(p_endBlock);
+    QTextCursor cursor(doc);
+    cursor.setPosition(startBlock.position() + p_startCol);
+    cursor.setPosition(endBlock.position() + p_endCol, QTextCursor::KeepAnchor);
+    edit()->setTextCursor(cursor);
+  }
+
+  // Select the whole document content.
+  void selectAll() {
+    auto doc = m_editor.document();
+    QTextCursor cursor(doc);
+    cursor.setPosition(0);
+    cursor.setPosition(blockEnd(doc->blockCount() - 1), QTextCursor::KeepAnchor);
+    edit()->setTextCursor(cursor);
+  }
+
   // Bump the document time stamp without changing the block structure, so the
   // existing parse result becomes stale but stays structurally usable.
   void makeAstStale() {
@@ -619,6 +639,162 @@ void TestMarkdownEditor::testOversizedImageIsClamped() {
     QVERIFY(!fixture.editor()->findImageFromDocumentResourceMgr(
         resourceName(QStringLiteral("local.png"), 99999, 0)));
   });
+}
+
+void TestMarkdownEditor::testMultiLineMarkerOnList() {
+  Fixture fixture(QStringLiteral("1. a\n2. b\n3. c"), 0);
+  fixture.selectAll();
+  MarkdownUtils::typeStrikethrough(fixture.edit());
+  QCOMPARE(fixture.text(), QStringLiteral("1. ~~a~~\n2. ~~b~~\n3. ~~c~~"));
+}
+
+void TestMarkdownEditor::testMultiLineMarkerToggleOff() {
+  Fixture fixture(QStringLiteral("1. a\n2. b\n3. c"), 0);
+  fixture.selectAll();
+  MarkdownUtils::typeStrikethrough(fixture.edit());
+  // Without rebuilding the selection: the restored selection is
+  // syntax-inclusive, so the same action unwraps.
+  MarkdownUtils::typeStrikethrough(fixture.edit());
+  QCOMPARE(fixture.text(), QStringLiteral("1. a\n2. b\n3. c"));
+}
+
+void TestMarkdownEditor::testMultiLineMarkerMixedSelection() {
+  Fixture fixture(QStringLiteral("~~a~~\nb"), 0);
+  fixture.selectAll();
+  MarkdownUtils::typeStrikethrough(fixture.edit());
+  QCOMPARE(fixture.text(), QStringLiteral("~~a~~\n~~b~~"));
+  // The first range received no insertion, but the selection still starts at
+  // its opening marker.
+  QCOMPARE(fixture.edit()->getSelection().start(), 0);
+  QCOMPARE(fixture.edit()->getSelection().end(), fixture.blockEnd(1));
+
+  // Normalizing toggle: the second press unwraps everything.
+  MarkdownUtils::typeStrikethrough(fixture.edit());
+  QCOMPARE(fixture.text(), QStringLiteral("a\nb"));
+}
+
+void TestMarkdownEditor::testMultiLineMarkerNesting() {
+  Fixture fixture(QStringLiteral("1. a\n2. b\n3. c"), 0);
+  fixture.selectAll();
+  MarkdownUtils::typeStrikethrough(fixture.edit());
+  QCOMPARE(fixture.edit()->getSelection().start(), 3);
+  QCOMPARE(fixture.edit()->getSelection().end(), fixture.blockEnd(2));
+
+  MarkdownUtils::typeBold(fixture.edit());
+  QCOMPARE(fixture.text(), QStringLiteral("1. **~~a~~**\n2. **~~b~~**\n3. **~~c~~**"));
+}
+
+void TestMarkdownEditor::testMultiLineMarkerSkipsBlankLines() {
+  Fixture fixture(QStringLiteral("a\n\nc"), 0);
+  fixture.selectAll();
+  MarkdownUtils::typeStrikethrough(fixture.edit());
+  QCOMPARE(fixture.text(), QStringLiteral("~~a~~\n\n~~c~~"));
+}
+
+void TestMarkdownEditor::testMultiLineMarkerTrailingBlockBoundary() {
+  Fixture fixture(QStringLiteral("a\nb\nc"), 0);
+  fixture.select(0, 0, 2, 0);
+  MarkdownUtils::typeStrikethrough(fixture.edit());
+  QCOMPARE(fixture.text(), QStringLiteral("~~a~~\n~~b~~\nc"));
+}
+
+void TestMarkdownEditor::testMultiLineMarkerPartialEdges() {
+  Fixture fixture(QStringLiteral("abcdef\nghijkl\nmnopqr"), 0);
+  fixture.select(0, 2, 2, 3);
+  MarkdownUtils::typeStrikethrough(fixture.edit());
+  QCOMPARE(fixture.text(), QStringLiteral("ab~~cdef~~\n~~ghijkl~~\n~~mno~~pqr"));
+}
+
+void TestMarkdownEditor::testMultiLineMarkerPrefixes() {
+  Fixture fixture(QStringLiteral("> quoted\n## Title\n## 1.2. Title\n- [ ] todo\n> - nested\n"
+                                 "  ## Indented\n  ## 1.2. Indented\n> ## Quoted title"),
+                  0);
+  fixture.selectAll();
+  MarkdownUtils::typeStrikethrough(fixture.edit());
+  QCOMPARE(fixture.blockText(0), QStringLiteral("> ~~quoted~~"));
+  QCOMPARE(fixture.blockText(1), QStringLiteral("## ~~Title~~"));
+  QCOMPARE(fixture.blockText(2), QStringLiteral("## 1.2. ~~Title~~"));
+  QCOMPARE(fixture.blockText(3), QStringLiteral("- [ ] ~~todo~~"));
+  QCOMPARE(fixture.blockText(4), QStringLiteral("> - ~~nested~~"));
+  QCOMPARE(fixture.blockText(5), QStringLiteral("  ## ~~Indented~~"));
+  QCOMPARE(fixture.blockText(6), QStringLiteral("  ## 1.2. ~~Indented~~"));
+  QCOMPARE(fixture.blockText(7), QStringLiteral("> ## ~~Quoted title~~"));
+}
+
+void TestMarkdownEditor::testMultiLineMarkerSingleBlockUnchanged() {
+  // Single-block selection.
+  {
+    Fixture fixture(QStringLiteral("abc"), 0);
+    fixture.select(0, 0, 0, 3);
+    MarkdownUtils::typeStrikethrough(fixture.edit());
+    QCOMPARE(fixture.text(), QStringLiteral("~~abc~~"));
+    // The single-line path does not restore a syntax-inclusive selection, so
+    // the selection has to be rebuilt to unwrap. Unchanged behavior.
+    fixture.select(0, 0, 0, 7);
+    MarkdownUtils::typeStrikethrough(fixture.edit());
+    QCOMPARE(fixture.text(), QStringLiteral("abc"));
+  }
+  // No selection.
+  {
+    Fixture fixture(QStringLiteral("abc"), 0, 3);
+    MarkdownUtils::typeStrikethrough(fixture.edit());
+    QCOMPARE(fixture.text(), QStringLiteral("abc~~~~"));
+    QCOMPARE(fixture.edit()->textCursor().positionInBlock(), 5);
+  }
+}
+
+void TestMarkdownEditor::testMultiLineMarkerAllMarkers() {
+  struct Case {
+    void (*m_func)(VTextEdit *);
+    const char *m_expected;
+  };
+  const Case cases[] = {
+      {&MarkdownUtils::typeBold, "**a**\n**b**"},
+      {&MarkdownUtils::typeItalic, "*a*\n*b*"},
+      {&MarkdownUtils::typeStrikethrough, "~~a~~\n~~b~~"},
+      {&MarkdownUtils::typeMark, "<mark>a</mark>\n<mark>b</mark>"},
+      {&MarkdownUtils::typeCode, "`a`\n`b`"},
+      {&MarkdownUtils::typeMath, "$a$\n$b$"},
+  };
+
+  for (const auto &c : cases) {
+    Fixture fixture(QStringLiteral("a\nb"), 0);
+    fixture.selectAll();
+    c.m_func(fixture.edit());
+    QCOMPARE(fixture.text(), QString::fromUtf8(c.m_expected));
+    // And back.
+    c.m_func(fixture.edit());
+    QCOMPARE(fixture.text(), QStringLiteral("a\nb"));
+  }
+}
+
+void TestMarkdownEditor::testMultiLineMarkerUndo() {
+  Fixture fixture(QStringLiteral("1. a\n2. b\n3. c"), 0);
+  const auto before = fixture.text();
+  fixture.selectAll();
+  MarkdownUtils::typeStrikethrough(fixture.edit());
+  QVERIFY(fixture.text() != before);
+
+  fixture.edit()->undo();
+  QCOMPARE(fixture.text(), before);
+}
+
+void TestMarkdownEditor::testMultiLineMarkerBlankOnly() {
+  Fixture fixture(QStringLiteral("  \n\n \n"), 0);
+  fixture.selectAll();
+  const auto before = fixture.text();
+  const int revision = fixture.edit()->document()->revision();
+  MarkdownUtils::typeStrikethrough(fixture.edit());
+  QCOMPARE(fixture.text(), before);
+  QCOMPARE(fixture.edit()->document()->revision(), revision);
+}
+
+void TestMarkdownEditor::testMultiLineMarkerOverriddenSelection() {
+  Fixture fixture(QStringLiteral("a\nb"), 0, 0);
+  fixture.edit()->setOverriddenSelection(0, fixture.blockEnd(1));
+  QVERIFY(fixture.edit()->hasSelection());
+  MarkdownUtils::typeStrikethrough(fixture.edit());
+  QCOMPARE(fixture.text(), QStringLiteral("~~a~~\n~~b~~"));
 }
 
 QTEST_MAIN(tests::TestMarkdownEditor)

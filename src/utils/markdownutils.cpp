@@ -187,10 +187,203 @@ bool MarkdownUtils::insertHeading(QTextCursor &p_cursor, const QTextBlock &p_blo
   return true;
 }
 
+bool MarkdownUtils::markerRangeOfBlock(const QTextBlock &p_block, int p_selStart, int p_selEnd,
+                                       MarkerRange &p_range) {
+  if (!p_block.isValid()) {
+    return false;
+  }
+
+  const QString text = p_block.text();
+  if (text.trimmed().isEmpty()) {
+    return false;
+  }
+
+  int prefixLen = 0;
+
+  // Strip the quote prefix first, if any.
+  {
+    QRegularExpression reg(c_quotePrefixRegExp);
+    auto match = reg.match(text);
+    if (match.hasMatch()) {
+      prefixLen = match.capturedStart(3);
+    }
+  }
+
+  const QString rest = text.mid(prefixLen);
+  bool matched = false;
+
+  // Todo list before unordered list: both match "- [ ] x".
+  {
+    QRegularExpression reg(c_todoListRegExp);
+    auto match = reg.match(rest);
+    if (match.hasMatch()) {
+      prefixLen += match.capturedStart(4);
+      matched = true;
+    }
+  }
+
+  if (!matched) {
+    QRegularExpression reg(c_orderedListRegExp);
+    auto match = reg.match(rest);
+    if (match.hasMatch()) {
+      prefixLen += match.capturedStart(3);
+      matched = true;
+    }
+  }
+
+  if (!matched) {
+    QRegularExpression reg(c_unorderedListRegExp);
+    auto match = reg.match(rest);
+    if (match.hasMatch()) {
+      prefixLen += match.capturedStart(3);
+      matched = true;
+    }
+  }
+
+  if (!matched) {
+    // c_headerRegExp starts at '#' and does not capture indentation, so skip
+    // the leading whitespace of the remainder first.
+    int wsLen = 0;
+    while (wsLen < rest.size() && rest.at(wsLen).isSpace()) {
+      ++wsLen;
+    }
+
+    QRegularExpression reg(c_headerRegExp);
+    auto match = reg.match(rest.mid(wsLen));
+    if (match.hasMatch()) {
+      // The section number (group 4) and its trailing spaces (group 5) are
+      // structural as well.
+      const int off = match.capturedStart(4) != -1 ? match.capturedEnd(5) : match.capturedStart(3);
+      if (off != -1) {
+        prefixLen += wsLen + off;
+        matched = true;
+      }
+    }
+  }
+
+  // Skip any further leading whitespace.
+  while (prefixLen < text.size() && text.at(prefixLen).isSpace()) {
+    ++prefixLen;
+  }
+
+  int contentEnd = text.size();
+  while (contentEnd > prefixLen && text.at(contentEnd - 1).isSpace()) {
+    --contentEnd;
+  }
+
+  int start = qMax(p_block.position() + prefixLen, p_selStart);
+  int end = qMin(p_block.position() + contentEnd, p_selEnd);
+  if (end <= start) {
+    return false;
+  }
+
+  p_range.m_start = start;
+  p_range.m_end = end;
+  return true;
+}
+
+void MarkdownUtils::typeMarkerOnLines(VTextEdit *p_edit, const QString &p_startMarker,
+                                      const QString &p_endMarker) {
+  auto doc = p_edit->document();
+  const auto &selection = p_edit->getSelection();
+  const int start = selection.start();
+  const int end = selection.end();
+
+  auto firstBlock = doc->findBlock(start);
+  auto lastBlock = doc->findBlock(end);
+  if (end > start && lastBlock.isValid() && end == lastBlock.position()) {
+    // Nothing on the last block is selected.
+    lastBlock = lastBlock.previous();
+  }
+
+  if (!firstBlock.isValid() || !lastBlock.isValid() || lastBlock < firstBlock) {
+    return;
+  }
+
+  // Pass 1: collect.
+  QVector<MarkerRange> ranges;
+  for (auto block = firstBlock; block.isValid(); block = block.next()) {
+    MarkerRange range;
+    if (markerRangeOfBlock(block, start, end, range)) {
+      ranges.append(range);
+    }
+    if (!(block < lastBlock)) {
+      break;
+    }
+  }
+
+  if (ranges.isEmpty()) {
+    return;
+  }
+
+  // Pass 2: decide.
+  const int totalMarkersSize = p_startMarker.size() + p_endMarker.size();
+  QVector<bool> wrapped(ranges.size(), false);
+  bool unwrap = true;
+  for (int i = 0; i < ranges.size(); ++i) {
+    const auto &range = ranges[i];
+    if (range.m_end - range.m_start >= totalMarkersSize) {
+      QTextCursor cur(doc);
+      cur.setPosition(range.m_start);
+      cur.setPosition(range.m_end, QTextCursor::KeepAnchor);
+      const auto text = cur.selectedText();
+      wrapped[i] = text.startsWith(p_startMarker) && text.endsWith(p_endMarker);
+    }
+    if (!wrapped[i]) {
+      unwrap = false;
+    }
+  }
+
+  // Track the final selection bounds across the edits.
+  QTextCursor startCursor(doc);
+  startCursor.setPosition(ranges.first().m_start);
+  startCursor.setKeepPositionOnInsert(true);
+  QTextCursor endCursor(doc);
+  endCursor.setPosition(ranges.last().m_end);
+
+  // Pass 3: edit, in reverse document order.
+  QTextCursor cursor(doc);
+  cursor.beginEditBlock();
+  for (int i = ranges.size() - 1; i >= 0; --i) {
+    const auto &range = ranges[i];
+    if (unwrap) {
+      cursor.setPosition(range.m_end - p_endMarker.size());
+      cursor.setPosition(range.m_end, QTextCursor::KeepAnchor);
+      cursor.removeSelectedText();
+
+      cursor.setPosition(range.m_start);
+      cursor.setPosition(range.m_start + p_startMarker.size(), QTextCursor::KeepAnchor);
+      cursor.removeSelectedText();
+    } else {
+      if (wrapped[i]) {
+        continue;
+      }
+      cursor.setPosition(range.m_end);
+      cursor.insertText(p_endMarker);
+      cursor.setPosition(range.m_start);
+      cursor.insertText(p_startMarker);
+    }
+  }
+  cursor.endEditBlock();
+
+  // Restore the selection, syntax-inclusive.
+  cursor.setPosition(startCursor.position());
+  cursor.setPosition(endCursor.position(), QTextCursor::KeepAnchor);
+  p_edit->setTextCursor(cursor);
+}
+
 // TODO: get more information from highlighter result.
 void MarkdownUtils::typeMarker(VTextEdit *p_edit, const QString &p_startMarker,
                                const QString &p_endMarker, bool p_allowSpacesAtTwoEnds) {
   const int totalMarkersSize = p_startMarker.size() + p_endMarker.size();
+  if (p_edit->hasSelection()) {
+    const auto &sel = p_edit->getSelection();
+    if (TextEditUtils::crossBlocks(p_edit, sel.start(), sel.end())) {
+      typeMarkerOnLines(p_edit, p_startMarker, p_endMarker);
+      return;
+    }
+  }
+
   auto cursor = p_edit->textCursor();
   cursor.beginEditBlock();
   if (p_edit->hasSelection()) {
@@ -198,12 +391,6 @@ void MarkdownUtils::typeMarker(VTextEdit *p_edit, const QString &p_startMarker,
     const auto &selection = p_edit->getSelection();
     int start = selection.start();
     int end = selection.end();
-    if (TextEditUtils::crossBlocks(p_edit, start, end)) {
-      // Do not support markers corssing blocks.
-      done = true;
-      cursor.endEditBlock();
-      return;
-    }
 
     if (end - start >= totalMarkersSize) {
       const auto text = p_edit->selectedText();
