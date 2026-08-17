@@ -11,50 +11,40 @@
 using namespace tests;
 
 // Helper: parse document with default options
-static cmark_node *parseDoc(const char *p_text)
-{
+static cmark_node *parseDoc(const char *p_text) {
   return cmark_parse_document(p_text, strlen(p_text), CMARK_OPT_DEFAULT);
 }
 
 // Helper: return node type name for debug output
-static const char *typeName(cmark_node *p_node)
-{
-  return cmark_node_get_type_string(p_node);
-}
+static const char *typeName(cmark_node *p_node) { return cmark_node_get_type_string(p_node); }
 
 // Helper: count blocks (newlines + 1) in UTF-8 text.
-static int countBlocks(const QByteArray &p_utf8)
-{
+static int countBlocks(const QByteArray &p_utf8) {
   int n = 1;
   for (int i = 0; i < p_utf8.size(); ++i) {
-    if (p_utf8[i] == '\n') ++n;
+    if (p_utf8[i] == '\n')
+      ++n;
   }
   return n;
 }
 
 // Helper: count HLUnits with given style across all blocks.
-static int countElements(const vte::md::ASTWalkResult &p_result, int p_style)
-{
+static int countElements(const vte::md::ASTWalkResult &p_result, int p_style) {
   int count = 0;
   for (const auto &block : p_result.blocksHighlights) {
     for (const auto &unit : block) {
-      if (unit.styleIndex == (unsigned int)p_style) ++count;
+      if (unit.styleIndex == (unsigned int)p_style)
+        ++count;
     }
   }
   return count;
 }
 
-void TestCmarkProbe::initTestCase()
-{
-  qDebug() << "cmark version:" << cmark_version_string();
-}
+void TestCmarkProbe::initTestCase() { qDebug() << "cmark version:" << cmark_version_string(); }
 
-void TestCmarkProbe::cleanupTestCase()
-{
-}
+void TestCmarkProbe::cleanupTestCase() {}
 
-void TestCmarkProbe::testPositionModel()
-{
+void TestCmarkProbe::testPositionModel() {
   // Parse: "*emph* **strong** ~~strike~~\n"
   // Positions:  123456789...
   const char *text = "*emph* **strong** ~~strike~~\n";
@@ -75,9 +65,10 @@ void TestCmarkProbe::testPositionModel()
     int el = cmark_node_get_end_line(node);
     int ec = cmark_node_get_end_column(node);
 
-    qDebug().nospace()
-        << (ev == CMARK_EVENT_ENTER ? "ENTER " : (ev == CMARK_EVENT_EXIT ? "EXIT  " : "LEAF  "))
-        << typeName(node) << " [" << sl << ":" << sc << " - " << el << ":" << ec << "]";
+    qDebug().nospace() << (ev == CMARK_EVENT_ENTER ? "ENTER "
+                                                   : (ev == CMARK_EVENT_EXIT ? "EXIT  " : "LEAF  "))
+                       << typeName(node) << " [" << sl << ":" << sc << " - " << el << ":" << ec
+                       << "]";
 
     // Verify columns are 1-indexed (at minimum, start_line >= 1 for non-NONE)
     if (type != CMARK_NODE_NONE && type != CMARK_NODE_DOCUMENT) {
@@ -117,8 +108,7 @@ void TestCmarkProbe::testPositionModel()
   cmark_node_free(doc);
 }
 
-void TestCmarkProbe::testDelimiterBoundary()
-{
+void TestCmarkProbe::testDelimiterBoundary() {
   // Test each delimiter type and record positions
   struct TestCase {
     const char *input;
@@ -153,10 +143,9 @@ void TestCmarkProbe::testDelimiterBoundary()
         int ec = cmark_node_get_end_column(node);
         int sl = cmark_node_get_start_line(node);
         int el = cmark_node_get_end_line(node);
-        qDebug().nospace()
-            << tc.label << " input=\"" << tc.input << "\" => "
-            << "[" << sl << ":" << sc << " - " << el << ":" << ec << "]"
-            << " (sc=1 means delimiter included, sc>1 means content-only)";
+        qDebug().nospace() << tc.label << " input=\"" << tc.input << "\" => "
+                           << "[" << sl << ":" << sc << " - " << el << ":" << ec << "]"
+                           << " (sc=1 means delimiter included, sc>1 means content-only)";
         QVERIFY(sc >= 1);
         QVERIFY(ec >= sc);
         found = true;
@@ -164,31 +153,30 @@ void TestCmarkProbe::testDelimiterBoundary()
       }
     }
 
-    QVERIFY2(found, qPrintable(QString("Node type %1 not found for input: %2")
-                                    .arg(tc.expectedType)
-                                    .arg(tc.input)));
+    QVERIFY2(
+        found,
+        qPrintable(
+            QString("Node type %1 not found for input: %2").arg(tc.expectedType).arg(tc.input)));
 
     cmark_iter_free(iter);
     cmark_node_free(doc);
   }
 }
 
-void TestCmarkProbe::testExtensionSourcePositions()
-{
-  const char *text =
-      "---\n"
-      "title: test\n"
-      "---\n"
-      "\n"
-      "~~strike~~ ==mark== $math$ $$display$$\n"
-      "\n"
-      "| h1 | h2 |\n"
-      "|---|---|\n"
-      "| a | b |\n"
-      "\n"
-      "[^1]: footnote def\n"
-      "\n"
-      "Text with [^1] reference.\n";
+void TestCmarkProbe::testExtensionSourcePositions() {
+  const char *text = "---\n"
+                     "title: test\n"
+                     "---\n"
+                     "\n"
+                     "~~strike~~ ==mark== $math$ $$display$$\n"
+                     "\n"
+                     "| h1 | h2 |\n"
+                     "|---|---|\n"
+                     "| a | b |\n"
+                     "\n"
+                     "[^1]: footnote def\n"
+                     "\n"
+                     "Text with [^1] reference.\n";
 
   cmark_node *doc = parseDoc(text);
   QVERIFY(doc != nullptr);
@@ -216,19 +204,16 @@ void TestCmarkProbe::testExtensionSourcePositions()
         nodesWithPositions++;
       } else {
         nodesWithoutPositions++;
-        qDebug().nospace()
-            << "WARNING: No position for " << typeName(node) << " type=" << type;
+        qDebug().nospace() << "WARNING: No position for " << typeName(node) << " type=" << type;
       }
 
-      qDebug().nospace()
-          << (ev == CMARK_EVENT_ENTER ? "ENTER " : "LEAF  ")
-          << typeName(node) << " type=" << type
-          << " [" << sl << ":" << sc << " - " << el << ":" << ec << "]";
+      qDebug().nospace() << (ev == CMARK_EVENT_ENTER ? "ENTER " : "LEAF  ") << typeName(node)
+                         << " type=" << type << " [" << sl << ":" << sc << " - " << el << ":" << ec
+                         << "]";
     }
   }
 
-  qDebug() << "Total nodes (enter/leaf):" << nodeCount
-           << "with positions:" << nodesWithPositions
+  qDebug() << "Total nodes (enter/leaf):" << nodeCount << "with positions:" << nodesWithPositions
            << "without:" << nodesWithoutPositions;
 
   // Most nodes should have positions; document node itself may be 0
@@ -238,19 +223,17 @@ void TestCmarkProbe::testExtensionSourcePositions()
   cmark_node_free(doc);
 }
 
-void TestCmarkProbe::testMultiLinePositions()
-{
-  const char *text =
-      "> blockquote\n"
-      "> continues\n"
-      "\n"
-      "- item 1\n"
-      "  continues\n"
-      "- item 2\n"
-      "\n"
-      "```cpp\n"
-      "code\n"
-      "```\n";
+void TestCmarkProbe::testMultiLinePositions() {
+  const char *text = "> blockquote\n"
+                     "> continues\n"
+                     "\n"
+                     "- item 1\n"
+                     "  continues\n"
+                     "- item 2\n"
+                     "\n"
+                     "```cpp\n"
+                     "code\n"
+                     "```\n";
 
   cmark_node *doc = parseDoc(text);
   QVERIFY(doc != nullptr);
@@ -270,8 +253,8 @@ void TestCmarkProbe::testMultiLinePositions()
       int sc = cmark_node_get_start_column(node);
       int ec = cmark_node_get_end_column(node);
 
-      qDebug().nospace()
-          << typeName(node) << " [" << sl << ":" << sc << " - " << el << ":" << ec << "]";
+      qDebug().nospace() << typeName(node) << " [" << sl << ":" << sc << " - " << el << ":" << ec
+                         << "]";
 
       // Block-level multi-line elements should span multiple lines
       if (type == CMARK_NODE_BLOCK_QUOTE && ev == CMARK_EVENT_ENTER) {
@@ -297,8 +280,7 @@ void TestCmarkProbe::testMultiLinePositions()
   cmark_node_free(doc);
 }
 
-void TestCmarkProbe::testUtf8Columns()
-{
+void TestCmarkProbe::testUtf8Columns() {
   // CRITICAL: determine if columns are byte offsets or codepoint offsets
   qDebug() << "=== testUtf8Columns ===";
 
@@ -346,7 +328,8 @@ void TestCmarkProbe::testUtf8Columns()
   // Bytes: ** (2) 🎉 (4) b (1) o (1) l (1) d (1) 🎉 (4) ** (2) = 16 bytes
   // Codepoints: ** (2) 🎉 (1) b (1) o (1) l (1) d (1) 🎉 (1) ** (2) = 10 codepoints
   {
-    const char *text = "**\xf0\x9f\x8e\x89" "bold\xf0\x9f\x8e\x89**\n"; // "**🎉bold🎉**\n"
+    const char *text = "**\xf0\x9f\x8e\x89"
+                       "bold\xf0\x9f\x8e\x89**\n"; // "**🎉bold🎉**\n"
     cmark_node *doc = parseDoc(text);
     QVERIFY(doc != nullptr);
 
@@ -382,15 +365,13 @@ void TestCmarkProbe::testUtf8Columns()
   }
 }
 
-void TestCmarkProbe::testHeadingLevel()
-{
-  const char *text =
-      "# H1\n"
-      "## H2\n"
-      "### H3\n"
-      "#### H4\n"
-      "##### H5\n"
-      "###### H6\n";
+void TestCmarkProbe::testHeadingLevel() {
+  const char *text = "# H1\n"
+                     "## H2\n"
+                     "### H3\n"
+                     "#### H4\n"
+                     "##### H5\n"
+                     "###### H6\n";
 
   cmark_node *doc = parseDoc(text);
   QVERIFY(doc != nullptr);
@@ -416,8 +397,7 @@ void TestCmarkProbe::testHeadingLevel()
   cmark_node_free(doc);
 }
 
-void TestCmarkProbe::testFenceInfo()
-{
+void TestCmarkProbe::testFenceInfo() {
   const char *text = "```cpp\ncode\n```\n";
 
   cmark_node *doc = parseDoc(text);
@@ -449,8 +429,7 @@ void TestCmarkProbe::testFenceInfo()
   cmark_node_free(doc);
 }
 
-void TestCmarkProbe::testListType()
-{
+void TestCmarkProbe::testListType() {
   const char *text = "- bullet\n\n1. ordered\n";
 
   cmark_node *doc = parseDoc(text);
@@ -484,13 +463,11 @@ void TestCmarkProbe::testListType()
   cmark_node_free(doc);
 }
 
-void TestCmarkProbe::testTableStructure()
-{
-  const char *text =
-      "| h1 | h2 |\n"
-      "|---|---|\n"
-      "| a | b |\n"
-      "| c | d |\n";
+void TestCmarkProbe::testTableStructure() {
+  const char *text = "| h1 | h2 |\n"
+                     "|---|---|\n"
+                     "| a | b |\n"
+                     "| c | d |\n";
 
   cmark_node *doc = parseDoc(text);
   QVERIFY(doc != nullptr);
@@ -542,12 +519,10 @@ void TestCmarkProbe::testTableStructure()
   cmark_node_free(doc);
 }
 
-void TestCmarkProbe::testFirstTableRowIsHeader()
-{
-  const char *text =
-      "| h1 | h2 |\n"
-      "|---|---|\n"
-      "| a | b |\n";
+void TestCmarkProbe::testFirstTableRowIsHeader() {
+  const char *text = "| h1 | h2 |\n"
+                     "|---|---|\n"
+                     "| a | b |\n";
 
   cmark_node *doc = parseDoc(text);
   QVERIFY(doc != nullptr);
@@ -592,8 +567,7 @@ void TestCmarkProbe::testFirstTableRowIsHeader()
   cmark_node_free(doc);
 }
 
-void TestCmarkProbe::testLinkUrl()
-{
+void TestCmarkProbe::testLinkUrl() {
   const char *text = "[link text](http://example.com)\n";
 
   cmark_node *doc = parseDoc(text);
@@ -628,8 +602,7 @@ void TestCmarkProbe::testLinkUrl()
   cmark_node_free(doc);
 }
 
-void TestCmarkProbe::testLineOffsetTableAscii()
-{
+void TestCmarkProbe::testLineOffsetTableAscii() {
   QByteArray text("Hello world\n");
   LineOffsetTable table(text);
 
@@ -641,8 +614,7 @@ void TestCmarkProbe::testLineOffsetTableAscii()
   QCOMPARE(table.toDocPosition(1, 7), 6); // 'w' at QChar 6
 }
 
-void TestCmarkProbe::testLineOffsetTableCJK()
-{
+void TestCmarkProbe::testLineOffsetTableCJK() {
   // "你好\n" — each CJK char is 3 UTF-8 bytes, 1 QChar.
   // Bytes: 你(E4 BD A0) 好(E5 A5 BD) \n = 7 bytes
   QByteArray text("\xe4\xbd\xa0\xe5\xa5\xbd\n");
@@ -653,8 +625,7 @@ void TestCmarkProbe::testLineOffsetTableCJK()
   QCOMPARE(table.toDocPosition(1, 7), 2); // '\n' at byte 6 (col 7), QChar 2
 }
 
-void TestCmarkProbe::testLineOffsetTableEmoji()
-{
+void TestCmarkProbe::testLineOffsetTableEmoji() {
   // "🎉 test\n" — emoji is 4 UTF-8 bytes = 2 QChars (surrogate pair).
   // Bytes: 🎉(F0 9F 8E 89) ' '(20) t(74) e(65) s(73) t(74) \n = 10 bytes
   QByteArray text("\xf0\x9f\x8e\x89 test\n");
@@ -665,21 +636,19 @@ void TestCmarkProbe::testLineOffsetTableEmoji()
   QCOMPARE(table.toDocPosition(1, 6), 3); // 't' at byte 5 (col 6), QChar 3
 }
 
-void TestCmarkProbe::testLineOffsetTableMultiLine()
-{
+void TestCmarkProbe::testLineOffsetTableMultiLine() {
   // "line1\nline2\n"
   // Line 1: l(0) i(1) n(2) e(3) 1(4) \n(5) — 6 bytes, 6 QChars
   // Line 2: l(6) i(7) n(8) e(9) 2(10) \n(11)
   QByteArray text("line1\nline2\n");
   LineOffsetTable table(text);
 
-  QCOMPARE(table.toDocPosition(1, 1), 0); // 'l' of line1 at QChar 0
-  QCOMPARE(table.toDocPosition(2, 1), 6); // 'l' of line2 at QChar 6
+  QCOMPARE(table.toDocPosition(1, 1), 0);  // 'l' of line1 at QChar 0
+  QCOMPARE(table.toDocPosition(2, 1), 6);  // 'l' of line2 at QChar 6
   QCOMPARE(table.toDocPosition(2, 5), 10); // '2' of line2 at QChar 10
 }
 
-void TestCmarkProbe::testWalkerSimple()
-{
+void TestCmarkProbe::testWalkerSimple() {
   // Parse "# Hello\n\n*world*\n"
   const char *text = "# Hello\n\n*world*\n";
   QByteArray utf8(text);
@@ -705,7 +674,8 @@ void TestCmarkProbe::testWalkerSimple()
   blockStarts.append(0);
   QString qText = QString::fromUtf8(text);
   for (int i = 0; i < qText.size(); ++i) {
-    if (qText[i] == '\n') blockStarts.append(i + 1);
+    if (qText[i] == '\n')
+      blockStarts.append(i + 1);
   }
   bool foundEmph = false;
   for (int blockNum = 0; blockNum < result.blocksHighlights.size(); ++blockNum) {
@@ -723,12 +693,10 @@ void TestCmarkProbe::testWalkerSimple()
   QVERIFY2(foundEmph, "EMPH element not found");
 }
 
-void TestCmarkProbe::testWalkerTable()
-{
-  const char *text =
-      "| h1 | h2 |\n"
-      "|---|---|\n"
-      "| a | b |\n";
+void TestCmarkProbe::testWalkerTable() {
+  const char *text = "| h1 | h2 |\n"
+                     "|---|---|\n"
+                     "| a | b |\n";
 
   QByteArray utf8(text);
   int numBlocks = countBlocks(utf8);
@@ -746,8 +714,7 @@ void TestCmarkProbe::testWalkerTable()
   QVERIFY(!result.tableHeaderRegions.isEmpty());
 }
 
-void TestCmarkProbe::testParseCmark()
-{
+void TestCmarkProbe::testParseCmark() {
   const char *text = "# Hello\n\n*world*\n\n```cpp\ncode\n```\n";
   QByteArray utf8(text);
   int numBlocks = countBlocks(utf8);
@@ -764,8 +731,7 @@ void TestCmarkProbe::testParseCmark()
   QCOMPARE(countElements(result, 23), 3);
 }
 
-void TestCmarkProbe::testWalkerListItemInlines()
-{
+void TestCmarkProbe::testWalkerListItemInlines() {
   // Test inline element positions inside list items.
   // This is TDD RED: tests expose expected positions; failures indicate offset bug.
 
@@ -783,7 +749,8 @@ void TestCmarkProbe::testWalkerListItemInlines()
   };
 
   // Helper lambda to find first HLUnit with given style in a specific block.
-  auto findUnitInBlock = [](const vte::md::ASTWalkResult &r, int block, int style) -> QPair<bool, vte::md::HLUnit> {
+  auto findUnitInBlock = [](const vte::md::ASTWalkResult &r, int block,
+                            int style) -> QPair<bool, vte::md::HLUnit> {
     if (block < 0 || block >= r.blocksHighlights.size()) {
       vte::md::HLUnit empty;
       return qMakePair(false, empty);
@@ -809,8 +776,7 @@ void TestCmarkProbe::testWalkerListItemInlines()
 
     auto pair = findUnit(result, CODE);
     QVERIFY2(pair.first, "Case 1: CODE element not found");
-    qDebug() << "Case 1: CODE start=" << pair.second.start
-             << "length=" << pair.second.length;
+    qDebug() << "Case 1: CODE start=" << pair.second.start << "length=" << pair.second.length;
     // "`code span`" starts at QChar 12 within block 0, length 11
     QCOMPARE((int)pair.second.start, 12);
     QCOMPARE((int)pair.second.length, 11);
@@ -825,8 +791,7 @@ void TestCmarkProbe::testWalkerListItemInlines()
 
     auto pair = findUnit(result, EMPH);
     QVERIFY2(pair.first, "Case 2: EMPH element not found");
-    qDebug() << "Case 2: EMPH start=" << pair.second.start
-             << "length=" << pair.second.length;
+    qDebug() << "Case 2: EMPH start=" << pair.second.start << "length=" << pair.second.length;
     // "*emphasis*" starts at QChar 12 within block 0, length 10
     QCOMPARE((int)pair.second.start, 12);
     QCOMPARE((int)pair.second.length, 10);
@@ -842,8 +807,7 @@ void TestCmarkProbe::testWalkerListItemInlines()
     // CODE is on line 1 (block 1)
     auto pair = findUnitInBlock(result, 1, CODE);
     QVERIFY2(pair.first, "Case 3: CODE element not found in block 1");
-    qDebug() << "Case 3: CODE start=" << pair.second.start
-             << "length=" << pair.second.length;
+    qDebug() << "Case 3: CODE start=" << pair.second.start << "length=" << pair.second.length;
     // "  `code on continuation`" → backtick at QChar 2 within block 1, length 22
     QCOMPARE((int)pair.second.start, 2);
     QCOMPARE((int)pair.second.length, 22);
@@ -859,8 +823,7 @@ void TestCmarkProbe::testWalkerListItemInlines()
 
     auto pair = findUnit(result, CODE);
     QVERIFY2(pair.first, "Case 4: CODE element not found");
-    qDebug() << "Case 4: CODE start=" << pair.second.start
-             << "length=" << pair.second.length;
+    qDebug() << "Case 4: CODE start=" << pair.second.start << "length=" << pair.second.length;
     // "- 你好 `code`" → QChars: '-'(0),' '(1),'你'(2),'好'(3),' '(4),'`'(5)...
     // CODE starts at QChar 5, length 6
     QCOMPARE((int)pair.second.start, 5);
@@ -878,8 +841,7 @@ void TestCmarkProbe::testWalkerListItemInlines()
     // CODE is on line 1 (block 1)
     auto pair = findUnitInBlock(result, 1, CODE);
     QVERIFY2(pair.first, "Case 5: CODE element not found in block 1");
-    qDebug() << "Case 5: CODE start=" << pair.second.start
-             << "length=" << pair.second.length;
+    qDebug() << "Case 5: CODE start=" << pair.second.start << "length=" << pair.second.length;
     // Line 1: "  `code`\n" → backtick at QChar 2, length 6
     QCOMPARE((int)pair.second.start, 2);
     QCOMPARE((int)pair.second.length, 6);
@@ -896,8 +858,7 @@ void TestCmarkProbe::testWalkerListItemInlines()
     // CODE is on line 1 (block 1)
     auto pair = findUnitInBlock(result, 1, CODE);
     QVERIFY2(pair.first, "Case 6: CODE element not found in block 1");
-    qDebug() << "Case 6: CODE start=" << pair.second.start
-             << "length=" << pair.second.length;
+    qDebug() << "Case 6: CODE start=" << pair.second.start << "length=" << pair.second.length;
     // Line 1: "    1. 你好 `code`" → QChars: 7 ASCII + 你(1) + 好(1) + ' '(1) + '`'(1)...
     // CODE "`code`" starts at QChar 10, length 6
     QCOMPARE((int)pair.second.start, 10);
@@ -914,8 +875,7 @@ void TestCmarkProbe::testWalkerListItemInlines()
 
     auto pair = findUnit(result, EMPH);
     QVERIFY2(pair.first, "Case 7: EMPH element not found");
-    qDebug() << "Case 7: EMPH start=" << pair.second.start
-             << "length=" << pair.second.length;
+    qDebug() << "Case 7: EMPH start=" << pair.second.start << "length=" << pair.second.length;
     // "- 你好 *emphasis*" → '-'(0),' '(1),'你'(2),'好'(3),' '(4),'*'(5)...
     // EMPH "*emphasis*" starts at QChar 5, length 10
     QCOMPARE((int)pair.second.start, 5);
@@ -958,30 +918,27 @@ void TestCmarkProbe::testWalkerListItemInlines()
     // Code span crosses lines; check if CODE unit is found in block 0 or 1
     auto pair0 = findUnitInBlock(result, 0, CODE);
     auto pair1 = findUnitInBlock(result, 1, CODE);
-    qDebug() << "Case 9: block0 CODE found=" << pair0.first
-             << "block1 CODE found=" << pair1.first;
+    qDebug() << "Case 9: block0 CODE found=" << pair0.first << "block1 CODE found=" << pair1.first;
     if (pair0.first) {
-      qDebug() << "  block0 CODE start=" << pair0.second.start
-               << "length=" << pair0.second.length;
+      qDebug() << "  block0 CODE start=" << pair0.second.start << "length=" << pair0.second.length;
     }
     if (pair1.first) {
-      qDebug() << "  block1 CODE start=" << pair1.second.start
-               << "length=" << pair1.second.length;
+      qDebug() << "  block1 CODE start=" << pair1.second.start << "length=" << pair1.second.length;
     }
     // At least one block should contain the CODE unit
     QVERIFY2(pair0.first || pair1.first, "Case 9: CODE element not found in any block");
   }
 }
 
-void TestCmarkProbe::testWalkerLazyContinuation()
-{
+void TestCmarkProbe::testWalkerLazyContinuation() {
   // Test inline element positions on LAZY continuation lines in list items.
   // Lazy continuation = no leading indent on continuation line.
   // Bug: cmark adds block_offset to columns on lazy lines where whitespace
   // was never stripped, causing over-reported positions.
 
   // Helper lambda to find first HLUnit with given style in a specific block.
-  auto findUnitInBlock = [](const vte::md::ASTWalkResult &r, int block, int style) -> QPair<bool, vte::md::HLUnit> {
+  auto findUnitInBlock = [](const vte::md::ASTWalkResult &r, int block,
+                            int style) -> QPair<bool, vte::md::HLUnit> {
     if (block < 0 || block >= r.blocksHighlights.size()) {
       vte::md::HLUnit empty;
       return qMakePair(false, empty);
@@ -1008,8 +965,7 @@ void TestCmarkProbe::testWalkerLazyContinuation()
 
     auto pair = findUnitInBlock(result, 1, CODE);
     QVERIFY2(pair.first, "Case L1: CODE element not found in block 1");
-    qDebug() << "Case L1: CODE start=" << pair.second.start
-             << "length=" << pair.second.length;
+    qDebug() << "Case L1: CODE start=" << pair.second.start << "length=" << pair.second.length;
     // Line 1: "`code on lazy`" starts at QChar 0, length 14
     QCOMPARE((int)pair.second.start, 0);
     QCOMPARE((int)pair.second.length, 14);
@@ -1025,8 +981,7 @@ void TestCmarkProbe::testWalkerLazyContinuation()
 
     auto pair = findUnitInBlock(result, 1, CODE);
     QVERIFY2(pair.first, "Case L2: CODE element not found in block 1");
-    qDebug() << "Case L2: CODE start=" << pair.second.start
-             << "length=" << pair.second.length;
+    qDebug() << "Case L2: CODE start=" << pair.second.start << "length=" << pair.second.length;
     // Line 1: "`code`" starts at QChar 0, length 6
     QCOMPARE((int)pair.second.start, 0);
     QCOMPARE((int)pair.second.length, 6);
@@ -1042,8 +997,7 @@ void TestCmarkProbe::testWalkerLazyContinuation()
 
     auto pair = findUnitInBlock(result, 1, CODE);
     QVERIFY2(pair.first, "Case L3: CODE element not found in block 1");
-    qDebug() << "Case L3: CODE start=" << pair.second.start
-             << "length=" << pair.second.length;
+    qDebug() << "Case L3: CODE start=" << pair.second.start << "length=" << pair.second.length;
     // Line 1: "你好 `code` world" → 你(0)好(1)space(2)`(3)c(4)o(5)d(6)e(7)`(8)
     // CODE "`code`" starts at QChar 3, length 6
     QCOMPARE((int)pair.second.start, 3);
@@ -1060,8 +1014,7 @@ void TestCmarkProbe::testWalkerLazyContinuation()
 
     auto pair = findUnitInBlock(result, 1, EMPH);
     QVERIFY2(pair.first, "Case L4: EMPH element not found in block 1");
-    qDebug() << "Case L4: EMPH start=" << pair.second.start
-             << "length=" << pair.second.length;
+    qDebug() << "Case L4: EMPH start=" << pair.second.start << "length=" << pair.second.length;
     // Line 1: "*emphasis on lazy*" starts at QChar 0, length 18
     QCOMPARE((int)pair.second.start, 0);
     QCOMPARE((int)pair.second.length, 18);
@@ -1077,8 +1030,7 @@ void TestCmarkProbe::testWalkerLazyContinuation()
 
     auto pair = findUnitInBlock(result, 1, CODE);
     QVERIFY2(pair.first, "Case L5: CODE element not found in block 1");
-    qDebug() << "Case L5: CODE start=" << pair.second.start
-             << "length=" << pair.second.length;
+    qDebug() << "Case L5: CODE start=" << pair.second.start << "length=" << pair.second.length;
     // Line 1: "lazy `code`" → l(0)a(1)z(2)y(3)space(4)`(5)c(6)o(7)d(8)e(9)`(10)
     // CODE "`code`" starts at QChar 5, length 6
     QCOMPARE((int)pair.second.start, 5);
@@ -1088,15 +1040,15 @@ void TestCmarkProbe::testWalkerLazyContinuation()
   // --- Case L6: User reproduction - CJK first line, lazy with Markdown`code`end ---
   {
     // "- 段落和换行\nMarkdown`code`end\n"
-    const char *text = "- \xe6\xae\xb5\xe8\x90\xbd\xe5\x92\x8c\xe6\x8d\xa2\xe8\xa1\x8c\nMarkdown`code`end\n";
+    const char *text =
+        "- \xe6\xae\xb5\xe8\x90\xbd\xe5\x92\x8c\xe6\x8d\xa2\xe8\xa1\x8c\nMarkdown`code`end\n";
     QByteArray utf8(text);
     int numBlocks = countBlocks(utf8);
     auto result = vte::md::walkAndConvert(utf8, numBlocks);
 
     auto pair = findUnitInBlock(result, 1, CODE);
     QVERIFY2(pair.first, "Case L6: CODE element not found in block 1");
-    qDebug() << "Case L6: CODE start=" << pair.second.start
-             << "length=" << pair.second.length;
+    qDebug() << "Case L6: CODE start=" << pair.second.start << "length=" << pair.second.length;
     // Line 1: "Markdown`code`end" → M(0)a(1)r(2)k(3)d(4)o(5)w(6)n(7)`(8)c(9)o(10)d(11)e(12)`(13)
     // CODE "`code`" starts at QChar 8, length 6
     QCOMPARE((int)pair.second.start, 8);
@@ -1107,14 +1059,13 @@ void TestCmarkProbe::testWalkerLazyContinuation()
   {
     QByteArray probeText("- hello\nworld\n  indented\n");
     LineOffsetTable probeTable(probeText);
-    QCOMPARE(probeTable.lineLeadingSpaces(0), 0);  // '-' not a space
-    QCOMPARE(probeTable.lineLeadingSpaces(1), 0);  // 'w' not a space
-    QCOMPARE(probeTable.lineLeadingSpaces(2), 2);  // 2 spaces
+    QCOMPARE(probeTable.lineLeadingSpaces(0), 0); // '-' not a space
+    QCOMPARE(probeTable.lineLeadingSpaces(1), 0); // 'w' not a space
+    QCOMPARE(probeTable.lineLeadingSpaces(2), 2); // 2 spaces
   }
 }
 
-void TestCmarkProbe::testWalkerBlockquoteInlines()
-{
+void TestCmarkProbe::testWalkerBlockquoteInlines() {
   // Regression: inline elements (code/strong) on block-quote CONTINUATION lines.
   // cmark strips the "> " marker on EVERY line of a block quote and folds its
   // width into block_offset, so the columns it reports are already correct.
@@ -1128,7 +1079,8 @@ void TestCmarkProbe::testWalkerBlockquoteInlines()
     QVector<int> starts;
     starts.append(0);
     for (int i = 0; i < qtext.size(); ++i) {
-      if (qtext[i] == '\n') starts.append(i + 1);
+      if (qtext[i] == '\n')
+        starts.append(i + 1);
     }
     return starts;
   };
@@ -1136,9 +1088,11 @@ void TestCmarkProbe::testWalkerBlockquoteInlines()
   auto findAllInBlock = [](const vte::md::ASTWalkResult &r, int block,
                            int style) -> QVector<vte::md::HLUnit> {
     QVector<vte::md::HLUnit> units;
-    if (block < 0 || block >= r.blocksHighlights.size()) return units;
+    if (block < 0 || block >= r.blocksHighlights.size())
+      return units;
     for (const auto &u : r.blocksHighlights[block]) {
-      if (u.styleIndex == (unsigned int)style) units.append(u);
+      if (u.styleIndex == (unsigned int)style)
+        units.append(u);
     }
     return units;
   };
@@ -1148,9 +1102,8 @@ void TestCmarkProbe::testWalkerBlockquoteInlines()
 
   // --- Case B1: code span on a "> " continuation line (the core regression) ---
   {
-    const char *text =
-        "> first line `codeA` here\n"
-        "> second line `codeB` more\n";
+    const char *text = "> first line `codeA` here\n"
+                       "> second line `codeB` more\n";
     QByteArray utf8(text);
     int numBlocks = countBlocks(utf8);
     auto result = vte::md::walkAndConvert(utf8, numBlocks);
@@ -1160,24 +1113,20 @@ void TestCmarkProbe::testWalkerBlockquoteInlines()
     // Block 0 (paragraph first line): `codeA` — correct even before the fix.
     auto b0 = findAllInBlock(result, 0, CODE);
     QVERIFY2(!b0.isEmpty(), "Case B1: CODE not found in block 0");
-    QCOMPARE(qtext.mid(blockStarts[0] + b0[0].start, b0[0].length),
-             QStringLiteral("`codeA`"));
+    QCOMPARE(qtext.mid(blockStarts[0] + b0[0].start, b0[0].length), QStringLiteral("`codeA`"));
 
     // Block 1 (continuation line, "> " marker): `codeB` — regressed before fix.
     auto b1 = findAllInBlock(result, 1, CODE);
     QVERIFY2(!b1.isEmpty(), "Case B1: CODE not found in block 1");
-    qDebug() << "Case B1: block1 CODE start=" << b1[0].start
-             << "length=" << b1[0].length;
-    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length),
-             QStringLiteral("`codeB`"));
+    qDebug() << "Case B1: block1 CODE start=" << b1[0].start << "length=" << b1[0].length;
+    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length), QStringLiteral("`codeB`"));
   }
 
   // --- Case B2: user reproduction — strong + code on continuation lines ---
   {
-    const char *text =
-        "> **Current as of 2026-07** topology. The old\n"
-        "> **Griffin and the default** `griffinXXXX.org` tenant\n"
-        "> (e.g. the `prime-tsgs/devdocs` page) still stale\n";
+    const char *text = "> **Current as of 2026-07** topology. The old\n"
+                       "> **Griffin and the default** `griffinXXXX.org` tenant\n"
+                       "> (e.g. the `prime-tsgs/devdocs` page) still stale\n";
     QByteArray utf8(text);
     int numBlocks = countBlocks(utf8);
     auto result = vte::md::walkAndConvert(utf8, numBlocks);
@@ -1208,9 +1157,8 @@ void TestCmarkProbe::testWalkerBlockquoteInlines()
     // strips nothing on that line yet still adds block_offset, so it IS
     // over-reported and the correction MUST still apply. Verifies the per-line
     // marker check does not blanket-disable the fix for block quotes.
-    const char *text =
-        "> first `codeA`\n"
-        "lazy `codeB` tail\n";
+    const char *text = "> first `codeA`\n"
+                       "lazy `codeB` tail\n";
     QByteArray utf8(text);
     int numBlocks = countBlocks(utf8);
     auto result = vte::md::walkAndConvert(utf8, numBlocks);
@@ -1219,10 +1167,8 @@ void TestCmarkProbe::testWalkerBlockquoteInlines()
 
     auto b1 = findAllInBlock(result, 1, CODE);
     QVERIFY2(!b1.isEmpty(), "Case B3: CODE not found in block 1");
-    qDebug() << "Case B3: block1 CODE start=" << b1[0].start
-             << "length=" << b1[0].length;
-    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length),
-             QStringLiteral("`codeB`"));
+    qDebug() << "Case B3: block1 CODE start=" << b1[0].start << "length=" << b1[0].length;
+    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length), QStringLiteral("`codeB`"));
   }
 
   // --- Case N1: list-inside-blockquote, LAZY list continuation still marked ">" ---
@@ -1230,9 +1176,8 @@ void TestCmarkProbe::testWalkerBlockquoteInlines()
     // "> - first line\n> lazy `code`" — line 2 carries the outer ">" (stripped)
     // but omits the inner list padding (lazy). block_offset covers both, so only
     // the unstripped list padding must be subtracted: cmark 2:10 -> real 2:8.
-    const char *text =
-        "> - first line\n"
-        "> lazy `code`\n";
+    const char *text = "> - first line\n"
+                       "> lazy `code`\n";
     QByteArray utf8(text);
     int numBlocks = countBlocks(utf8);
     auto result = vte::md::walkAndConvert(utf8, numBlocks);
@@ -1241,19 +1186,16 @@ void TestCmarkProbe::testWalkerBlockquoteInlines()
 
     auto b1 = findAllInBlock(result, 1, CODE);
     QVERIFY2(!b1.isEmpty(), "Case N1: CODE not found in block 1");
-    qDebug() << "Case N1: block1 CODE start=" << b1[0].start
-             << "length=" << b1[0].length;
-    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length),
-             QStringLiteral("`code`"));
+    qDebug() << "Case N1: block1 CODE start=" << b1[0].start << "length=" << b1[0].length;
+    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length), QStringLiteral("`code`"));
   }
 
   // --- Case N2: blockquote-inside-list, 4-space list padding before ">" ---
   {
     // "10. > first line\n    > second `code`" — line 2 strips 4 list-padding
     // spaces + "> " (== block_offset 6), so cmark 2:14 is already correct.
-    const char *text =
-        "10. > first line\n"
-        "    > second `code`\n";
+    const char *text = "10. > first line\n"
+                       "    > second `code`\n";
     QByteArray utf8(text);
     int numBlocks = countBlocks(utf8);
     auto result = vte::md::walkAndConvert(utf8, numBlocks);
@@ -1262,19 +1204,16 @@ void TestCmarkProbe::testWalkerBlockquoteInlines()
 
     auto b1 = findAllInBlock(result, 1, CODE);
     QVERIFY2(!b1.isEmpty(), "Case N2: CODE not found in block 1");
-    qDebug() << "Case N2: block1 CODE start=" << b1[0].start
-             << "length=" << b1[0].length;
-    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length),
-             QStringLiteral("`code`"));
+    qDebug() << "Case N2: block1 CODE start=" << b1[0].start << "length=" << b1[0].length;
+    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length), QStringLiteral("`code`"));
   }
 
   // --- Case N3: nested blockquote, inner ">" omitted lazily on line 2 ---
   {
     // "> > first line\n> lazy `code`" — only the outer ">" is stripped on line 2;
     // the inner ">" is lazy. cmark 2:10 -> real 2:8.
-    const char *text =
-        "> > first line\n"
-        "> lazy `code`\n";
+    const char *text = "> > first line\n"
+                       "> lazy `code`\n";
     QByteArray utf8(text);
     int numBlocks = countBlocks(utf8);
     auto result = vte::md::walkAndConvert(utf8, numBlocks);
@@ -1283,10 +1222,8 @@ void TestCmarkProbe::testWalkerBlockquoteInlines()
 
     auto b1 = findAllInBlock(result, 1, CODE);
     QVERIFY2(!b1.isEmpty(), "Case N3: CODE not found in block 1");
-    qDebug() << "Case N3: block1 CODE start=" << b1[0].start
-             << "length=" << b1[0].length;
-    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length),
-             QStringLiteral("`code`"));
+    qDebug() << "Case N3: block1 CODE start=" << b1[0].start << "length=" << b1[0].length;
+    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length), QStringLiteral("`code`"));
   }
 
   // --- Case R1: block-quote continuation with EXTRA spaces after ">" ---
@@ -1295,9 +1232,8 @@ void TestCmarkProbe::testWalkerBlockquoteInlines()
     // leading spaces during inline parsing, so the full "> + spaces" run (width
     // 5) is prefix. cmark UNDER-reports code at 2:10 while the real backtick is
     // at 2:13; the correction must add (strip 5 - blockOffset 2) = +3.
-    const char *text =
-        "> first\n"
-        ">    second `code`\n";
+    const char *text = "> first\n"
+                       ">    second `code`\n";
     QByteArray utf8(text);
     int numBlocks = countBlocks(utf8);
     auto result = vte::md::walkAndConvert(utf8, numBlocks);
@@ -1306,10 +1242,8 @@ void TestCmarkProbe::testWalkerBlockquoteInlines()
 
     auto b1 = findAllInBlock(result, 1, CODE);
     QVERIFY2(!b1.isEmpty(), "Case R1: CODE not found in block 1");
-    qDebug() << "Case R1: block1 CODE start=" << b1[0].start
-             << "length=" << b1[0].length;
-    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length),
-             QStringLiteral("`code`"));
+    qDebug() << "Case R1: block1 CODE start=" << b1[0].start << "length=" << b1[0].length;
+    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length), QStringLiteral("`code`"));
   }
 
   // --- Case OV1: over-indented list continuation where ">" is CONTENT, not a marker ---
@@ -1319,9 +1253,8 @@ void TestCmarkProbe::testWalkerBlockquoteInlines()
     // as literal text and strips only the 6 leading spaces. cmark reports code at
     // 2:13; real backtick is at 2:17 → correction adds (strip 6 - blockOffset 2)
     // = +4. The ">" must NOT be counted as a stripped marker here.
-    const char *text =
-        "- first\n"
-        "      > literal `code`\n";
+    const char *text = "- first\n"
+                       "      > literal `code`\n";
     QByteArray utf8(text);
     int numBlocks = countBlocks(utf8);
     auto result = vte::md::walkAndConvert(utf8, numBlocks);
@@ -1330,10 +1263,8 @@ void TestCmarkProbe::testWalkerBlockquoteInlines()
 
     auto b1 = findAllInBlock(result, 1, CODE);
     QVERIFY2(!b1.isEmpty(), "Case OV1: CODE not found in block 1");
-    qDebug() << "Case OV1: block1 CODE start=" << b1[0].start
-             << "length=" << b1[0].length;
-    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length),
-             QStringLiteral("`code`"));
+    qDebug() << "Case OV1: block1 CODE start=" << b1[0].start << "length=" << b1[0].length;
+    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length), QStringLiteral("`code`"));
   }
 
   // --- Case USER: code span INSIDE strong on a block-quote continuation line ---
@@ -1342,9 +1273,8 @@ void TestCmarkProbe::testWalkerBlockquoteInlines()
     // shift truncated BOTH ends, dropping the trailing "g" and closing backtick
     // ('".org` tenant" — g should be inline code too'). The whole span, including
     // the final "g", must be highlighted.
-    const char *text =
-        "> Intro line here\n"
-        "> **default `griffinXXXX.org` tenant REMOVED.** end\n";
+    const char *text = "> Intro line here\n"
+                       "> **default `griffinXXXX.org` tenant REMOVED.** end\n";
     QByteArray utf8(text);
     int numBlocks = countBlocks(utf8);
     auto result = vte::md::walkAndConvert(utf8, numBlocks);
@@ -1354,11 +1284,11 @@ void TestCmarkProbe::testWalkerBlockquoteInlines()
     auto code = findAllInBlock(result, 1, CODE);
     QVERIFY2(!code.isEmpty(), "Case USER: CODE not found in block 1");
     QString hl = qtext.mid(blockStarts[1] + code[0].start, code[0].length);
-    qDebug() << "Case USER: CODE" << hl << "start=" << code[0].start
-             << "length=" << code[0].length;
+    qDebug() << "Case USER: CODE" << hl << "start=" << code[0].start << "length=" << code[0].length;
     // Full span incl. both backticks and the trailing "g" of ".org".
     QCOMPARE(hl, QStringLiteral("`griffinXXXX.org`"));
-    QVERIFY2(hl.endsWith("org`"), "Case USER: trailing 'g' + closing backtick must be inside the code span");
+    QVERIFY2(hl.endsWith("org`"),
+             "Case USER: trailing 'g' + closing backtick must be inside the code span");
   }
 
   // --- Case A: indented block-quote continuation marker ("  >", offset == bO) ---
@@ -1366,9 +1296,8 @@ void TestCmarkProbe::testWalkerBlockquoteInlines()
     // "> first\n  > second `code`" — cmark accepts the 2-space-indented ">" as a
     // continuation marker (strip 4), reporting code at 2:10 for a real backtick at
     // 2:12. Requires counting a ">" that begins exactly at blockOffset.
-    const char *text =
-        "> first\n"
-        "  > second `code`\n";
+    const char *text = "> first\n"
+                       "  > second `code`\n";
     QByteArray utf8(text);
     int numBlocks = countBlocks(utf8);
     auto result = vte::md::walkAndConvert(utf8, numBlocks);
@@ -1378,8 +1307,7 @@ void TestCmarkProbe::testWalkerBlockquoteInlines()
     auto b1 = findAllInBlock(result, 1, CODE);
     QVERIFY2(!b1.isEmpty(), "Case A: CODE not found in block 1");
     qDebug() << "Case A: block1 CODE start=" << b1[0].start << "length=" << b1[0].length;
-    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length),
-             QStringLiteral("`code`"));
+    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length), QStringLiteral("`code`"));
   }
 
   // --- Case R4: block-quote nested in list, continuation ">" at offset == bO ---
@@ -1387,9 +1315,8 @@ void TestCmarkProbe::testWalkerBlockquoteInlines()
     // "10. > first\n      > second `code`" — 4-space list padding + 2 more spaces
     // then ">" (a valid marker); strip 8, blockOffset 6. cmark reports 2:14 for a
     // real backtick at 2:16.
-    const char *text =
-        "10. > first\n"
-        "      > second `code`\n";
+    const char *text = "10. > first\n"
+                       "      > second `code`\n";
     QByteArray utf8(text);
     int numBlocks = countBlocks(utf8);
     auto result = vte::md::walkAndConvert(utf8, numBlocks);
@@ -1399,40 +1326,65 @@ void TestCmarkProbe::testWalkerBlockquoteInlines()
     auto b1 = findAllInBlock(result, 1, CODE);
     QVERIFY2(!b1.isEmpty(), "Case R4: CODE not found in block 1");
     qDebug() << "Case R4: block1 CODE start=" << b1[0].start << "length=" << b1[0].length;
-    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length),
-             QStringLiteral("`code`"));
+    QCOMPARE(qtext.mid(blockStarts[1] + b1[0].start, b1[0].length), QStringLiteral("`code`"));
   }
 
   // --- Probe: lineStrippedPrefixWidth utility ---
   {
     QByteArray probeText("> quoted\n  > deep\n    code\n> > x\n>    x\n      > y\n");
     LineOffsetTable t(probeText);
-    QCOMPARE(t.lineStrippedPrefixWidth(0, 2), 2);  // "> "     marker + space
-    QCOMPARE(t.lineStrippedPrefixWidth(1, 4), 4);  // "  > "   2 spaces + marker + space
-    QCOMPARE(t.lineStrippedPrefixWidth(1, 2), 4);  // ">" at offset 2 == blockOffset: counted
-    QCOMPARE(t.lineStrippedPrefixWidth(1, 1), 2);  // ">" at offset 2 > blockOffset 1: rejected
-    QCOMPARE(t.lineStrippedPrefixWidth(2, 8), 4);  // "    "   pure spaces (no marker)
-    QCOMPARE(t.lineStrippedPrefixWidth(3, 4), 4);  // "> > "   two nested markers
-    QCOMPARE(t.lineStrippedPrefixWidth(4, 2), 5);  // "> " + skipped content spaces
-    QCOMPARE(t.lineStrippedPrefixWidth(5, 2), 6);  // over-indented ">" is content: spaces only
+    QCOMPARE(t.lineStrippedPrefixWidth(0, 2), 2); // "> "     marker + space
+    QCOMPARE(t.lineStrippedPrefixWidth(1, 4), 4); // "  > "   2 spaces + marker + space
+    QCOMPARE(t.lineStrippedPrefixWidth(1, 2), 4); // ">" at offset 2 == blockOffset: counted
+    QCOMPARE(t.lineStrippedPrefixWidth(1, 1), 2); // ">" at offset 2 > blockOffset 1: rejected
+    QCOMPARE(t.lineStrippedPrefixWidth(2, 8), 4); // "    "   pure spaces (no marker)
+    QCOMPARE(t.lineStrippedPrefixWidth(3, 4), 4); // "> > "   two nested markers
+    QCOMPARE(t.lineStrippedPrefixWidth(4, 2), 5); // "> " + skipped content spaces
+    QCOMPARE(t.lineStrippedPrefixWidth(5, 2), 6); // over-indented ">" is content: spaces only
   }
 }
 
-void TestCmarkProbe::testWalkerCJKNestedLists()
-{
+void TestCmarkProbe::testWalkerCJKNestedLists() {
   // Validate ALL highlight elements in a CJK markdown document with nested lists.
   // Text-extraction approach: extract highlighted substring, compare to expected content.
   const char *text =
       "# \xe5\xb8\xb8\xe7\x94\xa8\xe8\xaf\xad\xe6\xb3\x95\n"
       "## \xe5\x8c\xba\xe5\x9d\x97\xe5\x85\x83\xe7\xb4\xa0\n"
       "- \xe6\xae\xb5\xe8\x90\xbd\xe5\x92\x8c\xe6\x8d\xa2\xe8\xa1\x8c  \n"
-      "\xe4\xb8\x80\xe4\xb8\xaa\xe6\xae\xb5\xe8\x90\xbd\xe6\x98\xaf\xe7\x94\xb1\xe4\xb8\x80\xe4\xb8\xaa\xe4\xbb\xa5\xe4\xb8\x8a\xe7\x9b\xb8\xe8\xbf\x9e\xe6\x8e\xa5\xe7\x9a\x84\xe8\xa1\x8c\xe5\x8f\xa5\xe7\xbb\x84\xe6\x88\x90\xef\xbc\x8c\xe8\x80\x8c\xe4\xb8\x80\xe4\xb8\xaa\xe4\xbb\xa5\xe4\xb8\x8a\xe7\x9a\x84\xe7\xa9\xba\xe8\xa1\x8c\xe5\x88\x99\xe4\xbc\x9a\xe5\x88\x87\xe5\x88\x86\xe5\x87\xba\xe4\xb8\x8d\xe5\x90\x8c\xe7\x9a\x84\xe6\xae\xb5\xe8\x90\xbd\xe3\x80\x82  \n"
-      "Markdown\xe5\x85\x81\xe8\xae\xb8\xe6\xae\xb5\xe8\x90\xbd\xe5\x86\x85\xe7\x9a\x84\xe5\xbc\xba\xe8\xbf\xab\xe6\x96\xad\xe8\xa1\x8c\xef\xbc\x8c\xe6\x97\xa0\xe9\x9c\x80\xe6\x8f\x92\xe5\x85\xa5`<br/>`\xe6\xa0\x87\xe7\xad\xbe\xef\xbc\x88\xe5\xa6\x82\xe6\x9e\x9c\xe8\xa6\x81\xe6\x8f\x92\xe5\x85\xa5\xe8\xaf\xa5\xe6\xa0\x87\xe7\xad\xbe\xef\xbc\x8c\xe5\x8f\xaf\xe4\xbb\xa5\xe5\x9c\xa8\xe8\xa1\x8c\xe5\xb0\xbe\xe5\x8a\xa0\xe4\xb8\x8a\xe4\xb8\xa4\xe4\xb8\xaa\xe4\xbb\xa5\xe4\xb8\x8a\xe7\x9a\x84\xe7\xa9\xba\xe7\x99\xbd\xef\xbc\x8c\xe7\x84\xb6\xe5\x90\x8e\xe6\x8c\x89`Enter`\xef\xbc\x89\xe3\x80\x82\n"
+      "\xe4\xb8\x80\xe4\xb8\xaa\xe6\xae\xb5\xe8\x90\xbd\xe6\x98\xaf\xe7\x94\xb1\xe4\xb8\x80\xe4\xb8"
+      "\xaa\xe4\xbb\xa5\xe4\xb8\x8a\xe7\x9b\xb8\xe8\xbf\x9e\xe6\x8e\xa5\xe7\x9a\x84\xe8\xa1\x8c\xe5"
+      "\x8f\xa5\xe7\xbb\x84\xe6\x88\x90\xef\xbc\x8c\xe8\x80\x8c\xe4\xb8\x80\xe4\xb8\xaa\xe4\xbb\xa5"
+      "\xe4\xb8\x8a\xe7\x9a\x84\xe7\xa9\xba\xe8\xa1\x8c\xe5\x88\x99\xe4\xbc\x9a\xe5\x88\x87\xe5\x88"
+      "\x86\xe5\x87\xba\xe4\xb8\x8d\xe5\x90\x8c\xe7\x9a\x84\xe6\xae\xb5\xe8\x90\xbd\xe3\x80\x82  \n"
+      "Markdown\xe5\x85\x81\xe8\xae\xb8\xe6\xae\xb5\xe8\x90\xbd\xe5\x86\x85\xe7\x9a\x84\xe5\xbc\xba"
+      "\xe8\xbf\xab\xe6\x96\xad\xe8\xa1\x8c\xef\xbc\x8c\xe6\x97\xa0\xe9\x9c\x80\xe6\x8f\x92\xe5\x85"
+      "\xa5`<br/"
+      ">`"
+      "\xe6\xa0\x87\xe7\xad\xbe\xef\xbc\x88\xe5\xa6\x82\xe6\x9e\x9c\xe8\xa6\x81\xe6\x8f\x92\xe5\x85"
+      "\xa5\xe8\xaf\xa5\xe6\xa0\x87\xe7\xad\xbe\xef\xbc\x8c\xe5\x8f\xaf\xe4\xbb\xa5\xe5\x9c\xa8\xe8"
+      "\xa1\x8c\xe5\xb0\xbe\xe5\x8a\xa0\xe4\xb8\x8a\xe4\xb8\xa4\xe4\xb8\xaa\xe4\xbb\xa5\xe4\xb8\x8a"
+      "\xe7\x9a\x84\xe7\xa9\xba\xe7\x99\xbd\xef\xbc\x8c\xe7\x84\xb6\xe5\x90\x8e\xe6\x8c\x89`Enter`"
+      "\xef\xbc\x89\xe3\x80\x82\n"
       "- \xe6\xa0\x87\xe9\xa2\x98\n"
       "    1. Setext\xe5\xbd\xa2\xe5\xbc\x8f  \n"
-      "        \xe7\x94\xa8\xe5\x9c\xa8\xe6\x96\x87\xe5\xad\x97\xe4\xb8\x8b\xe4\xb8\x80\xe8\xa1\x8c\xe7\xb4\xa7\xe8\xb7\x9f\xe7\x9d\x80\xe5\xba\x95\xe7\xba\xbf\xe7\x9a\x84\xe5\xbd\xa2\xe5\xbc\x8f\xef\xbc\x8c`=`\xe4\xb8\xba\xe4\xb8\x80\xe7\xba\xa7\xe6\xa0\x87\xe9\xa2\x98\xef\xbc\x8c`-`\xe4\xb8\xba\xe4\xba\x8c\xe7\xba\xa7\xe6\xa0\x87\xe9\xa2\x98\xe3\x80\x82\xe6\xa0\x87\xe8\xae\xb0\xe7\x9a\x84\xe6\x95\xb0\xe9\x87\x8f\xe5\x8f\xaf\xe4\xbb\xa5\xe4\xbb\xbb\xe6\x84\x8f\xe3\x80\x82`haha`, `very doddg`\n"
+      "        "
+      "\xe7\x94\xa8\xe5\x9c\xa8\xe6\x96\x87\xe5\xad\x97\xe4\xb8\x8b\xe4\xb8\x80\xe8\xa1\x8c\xe7\xb4"
+      "\xa7\xe8\xb7\x9f\xe7\x9d\x80\xe5\xba\x95\xe7\xba\xbf\xe7\x9a\x84\xe5\xbd\xa2\xe5\xbc\x8f\xef"
+      "\xbc\x8c`=`\xe4\xb8\xba\xe4\xb8\x80\xe7\xba\xa7\xe6\xa0\x87\xe9\xa2\x98\xef\xbc\x8c`-`"
+      "\xe4\xb8\xba\xe4\xba\x8c\xe7\xba\xa7\xe6\xa0\x87\xe9\xa2\x98\xe3\x80\x82\xe6\xa0\x87\xe8\xae"
+      "\xb0\xe7\x9a\x84\xe6\x95\xb0\xe9\x87\x8f\xe5\x8f\xaf\xe4\xbb\xa5\xe4\xbb\xbb\xe6\x84\x8f\xe3"
+      "\x80\x82`haha`, `very doddg`\n"
       "    2. Atx\xe5\xbd\xa2\xe5\xbc\x8f  \n"
-      "        \xe5\x9c\xa8\xe8\xa1\x8c\xe9\xa6\x96\xe6\x8f\x92\xe5\x85\xa5""1\xe5\x88\xb0""6\xe4\xb8\xaa`#`\xef\xbc\x8c\xe5\xaf\xb9\xe5\xba\x94\xe6\xa0\x87\xe9\xa2\x98\xe7\x9a\x84""1\xe5\x88\xb0""6\xe7\xba\xa7\xe3\x80\x82\xe4\xb9\x9f\xe5\x8f\xaf\xe4\xbb\xa5\xe5\x8f\xaf\xe9\x80\x89\xe5\x9c\xb0\xe5\x9c\xa8\xe8\xa1\x8c\xe5\xb0\xbe\xe4\xb9\x9f\xe6\xb7\xbb\xe5\x8a\xa0`#`\xef\xbc\x8c\xe4\xbd\x86\xe7\xba\xaf\xe7\xb2\xb9\xe6\x98\xaf\xe4\xb8\xba\xe4\xba\x86\xe7\xbe\x8e\xe8\xa7\x82\xef\xbc\x8c\xe8\x80\x8c\xe4\xb8\x94\xe6\x95\xb0\xe9\x87\x8f\xe5\xaf\xb9\xe6\xa0\x87\xe9\xa2\x98\xe7\xad\x89\xe7\xba\xa7\xe6\xb2\xa1\xe6\x9c\x89\xe5\xbd\xb1\xe5\x93\x8d\xe3\x80\x82 \n";
+      "        \xe5\x9c\xa8\xe8\xa1\x8c\xe9\xa6\x96\xe6\x8f\x92\xe5\x85\xa5"
+      "1\xe5\x88\xb0"
+      "6\xe4\xb8\xaa`#`\xef\xbc\x8c\xe5\xaf\xb9\xe5\xba\x94\xe6\xa0\x87\xe9\xa2\x98\xe7\x9a\x84"
+      "1\xe5\x88\xb0"
+      "6\xe7\xba\xa7\xe3\x80\x82\xe4\xb9\x9f\xe5\x8f\xaf\xe4\xbb\xa5\xe5\x8f\xaf\xe9\x80\x89\xe5"
+      "\x9c\xb0\xe5\x9c\xa8\xe8\xa1\x8c\xe5\xb0\xbe\xe4\xb9\x9f\xe6\xb7\xbb\xe5\x8a\xa0`#`"
+      "\xef\xbc\x8c\xe4\xbd\x86\xe7\xba\xaf\xe7\xb2\xb9\xe6\x98\xaf\xe4\xb8\xba\xe4\xba\x86\xe7\xbe"
+      "\x8e\xe8\xa7\x82\xef\xbc\x8c\xe8\x80\x8c\xe4\xb8\x94\xe6\x95\xb0\xe9\x87\x8f\xe5\xaf\xb9\xe6"
+      "\xa0\x87\xe9\xa2\x98\xe7\xad\x89\xe7\xba\xa7\xe6\xb2\xa1\xe6\x9c\x89\xe5\xbd\xb1\xe5\x93\x8d"
+      "\xe3\x80\x82 \n";
 
   QByteArray utf8(text);
   int numBlocks = countBlocks(utf8);
@@ -1444,7 +1396,8 @@ void TestCmarkProbe::testWalkerCJKNestedLists()
   QVector<int> blockStarts;
   blockStarts.append(0);
   for (int i = 0; i < qtext.size(); ++i) {
-    if (qtext[i] == '\n') blockStarts.append(i + 1);
+    if (qtext[i] == '\n')
+      blockStarts.append(i + 1);
   }
 
   // Helper: extract highlighted text for a HLUnit in a given block.
@@ -1454,11 +1407,14 @@ void TestCmarkProbe::testWalkerCJKNestedLists()
   };
 
   // Helper: find ALL HLUnits with given style in a block.
-  auto findAllInBlock = [](const vte::md::ASTWalkResult &r, int block, int style) -> QVector<vte::md::HLUnit> {
+  auto findAllInBlock = [](const vte::md::ASTWalkResult &r, int block,
+                           int style) -> QVector<vte::md::HLUnit> {
     QVector<vte::md::HLUnit> units;
-    if (block < 0 || block >= r.blocksHighlights.size()) return units;
+    if (block < 0 || block >= r.blocksHighlights.size())
+      return units;
     for (const auto &u : r.blocksHighlights[block]) {
-      if (u.styleIndex == (unsigned int)style) units.append(u);
+      if (u.styleIndex == (unsigned int)style)
+        units.append(u);
     }
     return units;
   };
@@ -1474,8 +1430,10 @@ void TestCmarkProbe::testWalkerCJKNestedLists()
     auto units = findAllInBlock(result, 0, H1);
     QVERIFY2(!units.isEmpty(), "Block 0: H1 not found");
     QString highlighted = extractText(0, units[0]);
-    qDebug() << "Block 0 H1:" << highlighted << "start=" << units[0].start << "len=" << units[0].length;
-    QVERIFY2(highlighted.startsWith("# "), qPrintable("H1 should start with '# ', got: " + highlighted));
+    qDebug() << "Block 0 H1:" << highlighted << "start=" << units[0].start
+             << "len=" << units[0].length;
+    QVERIFY2(highlighted.startsWith("# "),
+             qPrintable("H1 should start with '# ', got: " + highlighted));
   }
 
   // --- Block 1: H2 "## 区块元素" ---
@@ -1483,8 +1441,10 @@ void TestCmarkProbe::testWalkerCJKNestedLists()
     auto units = findAllInBlock(result, 1, H2);
     QVERIFY2(!units.isEmpty(), "Block 1: H2 not found");
     QString highlighted = extractText(1, units[0]);
-    qDebug() << "Block 1 H2:" << highlighted << "start=" << units[0].start << "len=" << units[0].length;
-    QVERIFY2(highlighted.startsWith("## "), qPrintable("H2 should start with '## ', got: " + highlighted));
+    qDebug() << "Block 1 H2:" << highlighted << "start=" << units[0].start
+             << "len=" << units[0].length;
+    QVERIFY2(highlighted.startsWith("## "),
+             qPrintable("H2 should start with '## ', got: " + highlighted));
   }
 
   // --- Block 2: LIST_BULLET for "- 段落和换行" ---
@@ -1492,18 +1452,22 @@ void TestCmarkProbe::testWalkerCJKNestedLists()
     auto units = findAllInBlock(result, 2, LIST_BULLET);
     QVERIFY2(!units.isEmpty(), "Block 2: LIST_BULLET not found");
     QString highlighted = extractText(2, units[0]);
-    qDebug() << "Block 2 LIST_BULLET:" << highlighted << "start=" << units[0].start << "len=" << units[0].length;
+    qDebug() << "Block 2 LIST_BULLET:" << highlighted << "start=" << units[0].start
+             << "len=" << units[0].length;
     QCOMPARE(highlighted, QStringLiteral("-"));
   }
 
   // --- Block 4: CODE spans "`<br/>`" and "`Enter`" (lazy continuation) ---
   {
     auto units = findAllInBlock(result, 4, CODE);
-    QVERIFY2(units.size() >= 2, qPrintable(QString("Block 4: expected 2 CODE spans, found %1").arg(units.size())));
+    QVERIFY2(units.size() >= 2,
+             qPrintable(QString("Block 4: expected 2 CODE spans, found %1").arg(units.size())));
     QString code1 = extractText(4, units[0]);
     QString code2 = extractText(4, units[1]);
-    qDebug() << "Block 4 CODE[0]:" << code1 << "start=" << units[0].start << "len=" << units[0].length;
-    qDebug() << "Block 4 CODE[1]:" << code2 << "start=" << units[1].start << "len=" << units[1].length;
+    qDebug() << "Block 4 CODE[0]:" << code1 << "start=" << units[0].start
+             << "len=" << units[0].length;
+    qDebug() << "Block 4 CODE[1]:" << code2 << "start=" << units[1].start
+             << "len=" << units[1].length;
     QCOMPARE(code1, QStringLiteral("`<br/>`"));
     QCOMPARE(code2, QStringLiteral("`Enter`"));
   }
@@ -1513,7 +1477,8 @@ void TestCmarkProbe::testWalkerCJKNestedLists()
     auto units = findAllInBlock(result, 5, LIST_BULLET);
     QVERIFY2(!units.isEmpty(), "Block 5: LIST_BULLET not found");
     QString highlighted = extractText(5, units[0]);
-    qDebug() << "Block 5 LIST_BULLET:" << highlighted << "start=" << units[0].start << "len=" << units[0].length;
+    qDebug() << "Block 5 LIST_BULLET:" << highlighted << "start=" << units[0].start
+             << "len=" << units[0].length;
     QCOMPARE(highlighted, QStringLiteral("-"));
   }
 
@@ -1522,22 +1487,28 @@ void TestCmarkProbe::testWalkerCJKNestedLists()
     auto units = findAllInBlock(result, 6, LIST_ENUMERATOR);
     QVERIFY2(!units.isEmpty(), "Block 6: LIST_ENUMERATOR not found");
     QString highlighted = extractText(6, units[0]);
-    qDebug() << "Block 6 LIST_ENUMERATOR:" << highlighted << "start=" << units[0].start << "len=" << units[0].length;
+    qDebug() << "Block 6 LIST_ENUMERATOR:" << highlighted << "start=" << units[0].start
+             << "len=" << units[0].length;
     QCOMPARE(highlighted, QStringLiteral("1."));
   }
 
   // --- Block 7: CODE spans "`=`", "`-`", "`haha`", "`very doddg`" (indented continuation) ---
   {
     auto units = findAllInBlock(result, 7, CODE);
-    QVERIFY2(units.size() >= 4, qPrintable(QString("Block 7: expected 4 CODE spans, found %1").arg(units.size())));
+    QVERIFY2(units.size() >= 4,
+             qPrintable(QString("Block 7: expected 4 CODE spans, found %1").arg(units.size())));
     QString code1 = extractText(7, units[0]);
     QString code2 = extractText(7, units[1]);
     QString code3 = extractText(7, units[2]);
     QString code4 = extractText(7, units[3]);
-    qDebug() << "Block 7 CODE[0]:" << code1 << "start=" << units[0].start << "len=" << units[0].length;
-    qDebug() << "Block 7 CODE[1]:" << code2 << "start=" << units[1].start << "len=" << units[1].length;
-    qDebug() << "Block 7 CODE[2]:" << code3 << "start=" << units[2].start << "len=" << units[2].length;
-    qDebug() << "Block 7 CODE[3]:" << code4 << "start=" << units[3].start << "len=" << units[3].length;
+    qDebug() << "Block 7 CODE[0]:" << code1 << "start=" << units[0].start
+             << "len=" << units[0].length;
+    qDebug() << "Block 7 CODE[1]:" << code2 << "start=" << units[1].start
+             << "len=" << units[1].length;
+    qDebug() << "Block 7 CODE[2]:" << code3 << "start=" << units[2].start
+             << "len=" << units[2].length;
+    qDebug() << "Block 7 CODE[3]:" << code4 << "start=" << units[3].start
+             << "len=" << units[3].length;
     QCOMPARE(code1, QStringLiteral("`=`"));
     QCOMPARE(code2, QStringLiteral("`-`"));
     QCOMPARE(code3, QStringLiteral("`haha`"));
@@ -1549,20 +1520,141 @@ void TestCmarkProbe::testWalkerCJKNestedLists()
     auto units = findAllInBlock(result, 8, LIST_ENUMERATOR);
     QVERIFY2(!units.isEmpty(), "Block 8: LIST_ENUMERATOR not found");
     QString highlighted = extractText(8, units[0]);
-    qDebug() << "Block 8 LIST_ENUMERATOR:" << highlighted << "start=" << units[0].start << "len=" << units[0].length;
+    qDebug() << "Block 8 LIST_ENUMERATOR:" << highlighted << "start=" << units[0].start
+             << "len=" << units[0].length;
     QCOMPARE(highlighted, QStringLiteral("2."));
   }
 
   // --- Block 9: CODE spans "`#`" (x2) (indented continuation) ---
   {
     auto units = findAllInBlock(result, 9, CODE);
-    QVERIFY2(units.size() >= 2, qPrintable(QString("Block 9: expected 2 CODE spans, found %1").arg(units.size())));
+    QVERIFY2(units.size() >= 2,
+             qPrintable(QString("Block 9: expected 2 CODE spans, found %1").arg(units.size())));
     QString code1 = extractText(9, units[0]);
     QString code2 = extractText(9, units[1]);
-    qDebug() << "Block 9 CODE[0]:" << code1 << "start=" << units[0].start << "len=" << units[0].length;
-    qDebug() << "Block 9 CODE[1]:" << code2 << "start=" << units[1].start << "len=" << units[1].length;
+    qDebug() << "Block 9 CODE[0]:" << code1 << "start=" << units[0].start
+             << "len=" << units[0].length;
+    qDebug() << "Block 9 CODE[1]:" << code2 << "start=" << units[1].start
+             << "len=" << units[1].length;
     QCOMPARE(code1, QStringLiteral("`#`"));
     QCOMPARE(code2, QStringLiteral("`#`"));
+  }
+}
+
+// ============================================================================
+// Fork patch survival
+//
+// The vendored cmark is a fork carrying local patches. Nothing else in the
+// build notices if an upstream merge drops one: the API still compiles, the
+// parse still succeeds, and the only symptom is a span that is quietly wrong
+// somewhere downstream. These three probes assert each patch directly.
+// ============================================================================
+
+// Patch: the `=WxH` image size extension, and its public accessors.
+void TestCmarkProbe::testForkPatchImageSize() {
+  struct {
+    const char *text;
+    int width;
+    int height;
+  } cases[] = {
+      {"![a](i.png)\n", 0, 0},
+      {"![a](i.png =500x)\n", 500, 0},
+      {"![a](i.png =500x300)\n", 500, 300},
+      {"![a](i.png =x300)\n", 0, 300},
+  };
+
+  for (const auto &c : cases) {
+    cmark_node *doc = parseDoc(c.text);
+    QVERIFY(doc != nullptr);
+
+    cmark_iter *iter = cmark_iter_new(doc);
+    cmark_event_type ev;
+    bool found = false;
+    while ((ev = cmark_iter_next(iter)) != CMARK_EVENT_DONE) {
+      cmark_node *node = cmark_iter_get_node(iter);
+      if (ev != CMARK_EVENT_ENTER || cmark_node_get_type(node) != CMARK_NODE_IMAGE) {
+        continue;
+      }
+      found = true;
+      QCOMPARE(cmark_node_get_image_width(node), c.width);
+      QCOMPARE(cmark_node_get_image_height(node), c.height);
+      // The size token is never part of the destination.
+      QCOMPARE(QString(cmark_node_get_url(node)), QStringLiteral("i.png"));
+    }
+    cmark_iter_free(iter);
+    cmark_node_free(doc);
+    QVERIFY2(found, c.text);
+  }
+}
+
+// Patch: a link or image spans every line it occupies. Upstream collapses both
+// onto the line where parsing finished.
+void TestCmarkProbe::testForkPatchMultiLineSpans() {
+  const char *text = "![alt\ntext](i.png)\n";
+
+  cmark_node *doc = parseDoc(text);
+  QVERIFY(doc != nullptr);
+
+  cmark_iter *iter = cmark_iter_new(doc);
+  cmark_event_type ev;
+  bool found = false;
+  while ((ev = cmark_iter_next(iter)) != CMARK_EVENT_DONE) {
+    cmark_node *node = cmark_iter_get_node(iter);
+    if (ev != CMARK_EVENT_ENTER || cmark_node_get_type(node) != CMARK_NODE_IMAGE) {
+      continue;
+    }
+    found = true;
+    QCOMPARE(cmark_node_get_start_line(node), 1);
+    // Starts at the `!`, not the `[`.
+    QCOMPARE(cmark_node_get_start_column(node), 1);
+    QVERIFY2(cmark_node_get_end_line(node) == 2,
+             "a multiline image must not be collapsed onto its last line");
+    QCOMPARE(cmark_node_get_end_column(node), 12);
+  }
+  cmark_iter_free(iter);
+  cmark_node_free(doc);
+  QVERIFY(found);
+}
+
+// Patch: the source position of the RAW destination. This is what makes a
+// destination locatable without searching the text for its cleaned value.
+void TestCmarkProbe::testForkPatchUrlPosition() {
+  struct {
+    const char *text;
+    int startColumn; // 0 when the image has no inline destination
+    int endColumn;
+  } cases[] = {
+      {"![a](i.png)\n", 6, 10},
+      // The raw span keeps the escape, the brackets and the entity.
+      {"![a](a\\_b.png)\n", 6, 13},
+      {"![a](<a b.png>)\n", 6, 14},
+      {"![a](a&amp;b.png)\n", 6, 16},
+      // No inline destination at all.
+      {"![a][r]\n\n[r]: i.png\n", 0, 0},
+      {"![a]()\n", 0, 0},
+  };
+
+  for (const auto &c : cases) {
+    cmark_node *doc = parseDoc(c.text);
+    QVERIFY(doc != nullptr);
+
+    cmark_iter *iter = cmark_iter_new(doc);
+    cmark_event_type ev;
+    bool found = false;
+    while ((ev = cmark_iter_next(iter)) != CMARK_EVENT_DONE) {
+      cmark_node *node = cmark_iter_get_node(iter);
+      if (ev != CMARK_EVENT_ENTER || cmark_node_get_type(node) != CMARK_NODE_IMAGE) {
+        continue;
+      }
+      found = true;
+      QCOMPARE(cmark_node_get_url_start_column(node), c.startColumn);
+      QCOMPARE(cmark_node_get_url_end_column(node), c.endColumn);
+      QCOMPARE(cmark_node_get_url_start_line(node), c.startColumn ? 1 : 0);
+      QCOMPARE(cmark_node_get_url_end_line(node), c.endColumn ? 1 : 0);
+    }
+    cmark_iter_free(iter);
+    cmark_node_free(doc);
+    QVERIFY2(found, c.text);
   }
 }
 

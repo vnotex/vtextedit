@@ -114,6 +114,15 @@ static QString readGoldenFile(const QString &p_path) {
 }
 
 void TestGoldenMaster::generateGolden() {
+  // Opt-in. QtTest runs every private slot, so an unguarded generator would
+  // overwrite the goldens on every run and verifyGolden() would then compare
+  // the parser against output it had just produced -- passing unconditionally,
+  // including for a real regression. Regenerate deliberately with
+  // VTE_UPDATE_GOLDEN=1 and review the resulting diff; that diff IS the test.
+  if (qEnvironmentVariableIsEmpty("VTE_UPDATE_GOLDEN")) {
+    QSKIP("set VTE_UPDATE_GOLDEN=1 to regenerate the golden files");
+  }
+
   QDir goldenDir(QStringLiteral(GOLDEN_DIR));
   QVERIFY(goldenDir.exists());
 

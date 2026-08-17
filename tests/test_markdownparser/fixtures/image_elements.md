@@ -26,6 +26,9 @@ Reference-style: ![p][ref]
 
 Nested and escaped brackets in the alt text: ![q\[x\]y](img.png) ![r *em* s](img.png)
 
+An image inside another image's description: regions nest, destination spans do
+not. ![outer ![inner](inner.png)](outer.png)
+
 A multiline image whose alt text wraps:
 
 ![multi

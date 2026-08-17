@@ -1,17 +1,21 @@
 #include "test_markdownparser.h"
 
 #include <QApplication>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QHash>
 #include <QPaintEvent>
 #include <QRegion>
 #include <QSignalSpy>
+#include <QTemporaryDir>
 #include <QTextBlock>
 #include <QTextLayout>
 #include <algorithm>
 
 #include <vtextedit/markdowneditorconfig.h>
 #include <vtextedit/markdownhighlighter.h>
+#include <vtextedit/markdownutils.h>
 #include <vtextedit/texteditorconfig.h>
 #include <vtextedit/theme.h>
 #include <vtextedit/vmarkdowneditor.h>
@@ -21,6 +25,8 @@
 #include "markdownastwalker.h"
 
 using namespace tests;
+using vte::MarkdownLink;
+using vte::MarkdownUtils;
 
 // Highlight type ordinals (matching pmh_element_type / MarkdownSyntaxStyle values
 // used by the cmark adapter).
@@ -1258,6 +1264,378 @@ void TestMarkdownParser::testImageSizeElements() {
       QCOMPARE(links[i].m_width, i + 1);
     }
   }
+}
+
+namespace {
+// Every fixture that contains image links, for the corpus-wide gates.
+const QStringList &imageFixtures() {
+  static const QStringList names{QStringLiteral("image_elements.md"),
+                                 QStringLiteral("inline_elements.md")};
+  return names;
+}
+
+MarkdownLink::TypeFlags allTypes() {
+  return MarkdownLink::TypeFlag::LocalRelativeInternal |
+         MarkdownLink::TypeFlag::LocalRelativeExternal | MarkdownLink::TypeFlag::LocalAbsolute |
+         MarkdownLink::TypeFlag::QtResource | MarkdownLink::TypeFlag::Remote;
+}
+} // namespace
+
+// P3.1/P3.3: exact region and RAW destination spans, across the destination
+// spellings where the cleaned value differs from the source text. The old
+// implementation searched the content for the CLEANED url, so these were either
+// dropped outright or matched against an unrelated earlier occurrence.
+void TestMarkdownParser::testFetchImageLinksSpans() {
+  struct Case {
+    const char *markdown;
+    const char *region;
+    const char *rawUrl; // "" when the image has no destination span
+    const char *cleanUrl;
+  };
+
+  const QVector<Case> cases{
+      {"![a](i.png)\n", "![a](i.png)", "i.png", "i.png"},
+      {"![a](i.png =500x300)\n", "![a](i.png =500x300)", "i.png", "i.png"},
+      // The three spellings that break a text search for the cleaned value.
+      {"![a](a\\_b.png)\n", "![a](a\\_b.png)", "a\\_b.png", "a_b.png"},
+      {"![a](<a b.png>)\n", "![a](<a b.png>)", "<a b.png>", "a b.png"},
+      {"![a](a&amp;b.png)\n", "![a](a&amp;b.png)", "a&amp;b.png", "a&b.png"},
+      {"![a](a%20b.png)\n", "![a](a%20b.png)", "a%20b.png", "a%20b.png"},
+      // A title containing `](` defeats any scan for the last `](`.
+      {"![a](i.png \"x](y\")\n", "![a](i.png \"x](y\")", "i.png", "i.png"},
+      {"![a](a(b)c.png)\n", "![a](a(b)c.png)", "a(b)c.png", "a(b)c.png"},
+      // Containers and continuations.
+      {"> ![a](i.png)\n", "![a](i.png)", "i.png", "i.png"},
+      {"- lead\n  ![a](i.png)\n", "![a](i.png)", "i.png", "i.png"},
+      {"![a\nb](i.png)\n", "![a\nb](i.png)", "i.png", "i.png"},
+      {"![a](\ni.png)\n", "![a](\ni.png)", "i.png", "i.png"},
+      {"> ![a](\n> i.png)\n", "![a](\n> i.png)", "i.png", "i.png"},
+  };
+
+  for (const auto &c : cases) {
+    const QString content = QString::fromUtf8(c.markdown);
+    const auto links = MarkdownUtils::fetchImageLinks(content, QStringLiteral("/base"), allTypes());
+    QVERIFY2(links.size() == 1, c.markdown);
+
+    const auto &link = links.first();
+    QCOMPARE(link.m_urlInLink, QString::fromUtf8(c.cleanUrl));
+    QCOMPARE(content.mid(link.m_regionStart, link.m_regionEnd - link.m_regionStart),
+             QString::fromUtf8(c.region));
+    QVERIFY2(link.hasUrlSpan(), c.markdown);
+    QCOMPARE(content.mid(link.m_urlStart, link.m_urlEnd - link.m_urlStart),
+             QString::fromUtf8(c.rawUrl));
+  }
+}
+
+// P3.2: a reference-style image and an empty destination have a valid region
+// but no destination span. The old implementation dropped reference-style
+// images entirely, which is why a reference-style local image was silently
+// omitted from an export bundle.
+void TestMarkdownParser::testFetchImageLinksWithoutUrlSpan() {
+  {
+    const QString content = QStringLiteral("![a][r]\n\n[r]: p.png\n");
+    const auto links = MarkdownUtils::fetchImageLinks(content, QStringLiteral("/base"), allTypes());
+    QCOMPARE(links.size(), 1);
+    QCOMPARE(links.first().m_urlInLink, QStringLiteral("p.png"));
+    QVERIFY(!links.first().hasUrlSpan());
+    QCOMPARE(links.first().m_urlStart, -1);
+    QCOMPARE(content.mid(links.first().m_regionStart,
+                         links.first().m_regionEnd - links.first().m_regionStart),
+             QStringLiteral("![a][r]"));
+  }
+
+  {
+    // An empty destination points at nothing at all, so it is not an image link
+    // any caller can act on.
+    const auto links = MarkdownUtils::fetchImageLinks(QStringLiteral("![a]()\n"),
+                                                      QStringLiteral("/base"), allTypes());
+    QCOMPARE(links.size(), 0);
+  }
+}
+
+// P3.4: classification is syntactic. A relative link to a missing file stays
+// LocalRelative* with exists == false; it used to be classified Remote purely
+// because the file was not there, so a caller asking for local images skipped
+// exactly the broken links a user would want repaired.
+void TestMarkdownParser::testFetchImageLinksClassification() {
+  QTemporaryDir dir;
+  QVERIFY(dir.isValid());
+  QVERIFY(QDir(dir.path()).mkpath(QStringLiteral("vx_images")));
+  QFile present(QDir(dir.path()).filePath(QStringLiteral("vx_images/here.png")));
+  QVERIFY(present.open(QIODevice::WriteOnly));
+  present.write("x");
+  present.close();
+
+  const QString content = QStringLiteral("![a](vx_images/here.png)\n"
+                                         "![b](vx_images/missing.png)\n"
+                                         "![c](https://example.com/x.png)\n"
+                                         "![d](qrc:/icons/x.png)\n"
+                                         "![e](../outside.png)\n");
+  const auto links = MarkdownUtils::fetchImageLinks(content, dir.path(), allTypes());
+  QCOMPARE(links.size(), 5);
+
+  QHash<QString, MarkdownLink> byAlt;
+  for (const auto &l : links) {
+    byAlt.insert(l.m_alt, l);
+  }
+
+  QVERIFY(byAlt[QStringLiteral("a")].m_type & MarkdownLink::TypeFlag::LocalRelativeInternal);
+  QVERIFY(byAlt[QStringLiteral("a")].m_exists);
+
+  // The one that matters: present-tense classification, absent file.
+  QVERIFY(byAlt[QStringLiteral("b")].m_type & MarkdownLink::TypeFlag::LocalRelativeInternal);
+  QVERIFY(!byAlt[QStringLiteral("b")].m_exists);
+  QVERIFY(!(byAlt[QStringLiteral("b")].m_type & MarkdownLink::TypeFlag::Remote));
+
+  QVERIFY(byAlt[QStringLiteral("c")].m_type & MarkdownLink::TypeFlag::Remote);
+  QVERIFY(byAlt[QStringLiteral("d")].m_type & MarkdownLink::TypeFlag::QtResource);
+  QVERIFY(byAlt[QStringLiteral("e")].m_type & MarkdownLink::TypeFlag::LocalRelativeExternal);
+
+  // The filter selects on those same syntactic flags.
+  const auto localOnly =
+      MarkdownUtils::fetchImageLinks(content, dir.path(),
+                                     MarkdownLink::TypeFlag::LocalRelativeInternal |
+                                         MarkdownLink::TypeFlag::LocalRelativeExternal);
+  QCOMPARE(localOnly.size(), 3);
+}
+
+// P3.5: the sort contract rewriting callers depend on.
+void TestMarkdownParser::testFetchImageLinksSortContract() {
+  const QString content = QStringLiteral("![a](one.png) ![b][r] ![c](two.png) ![d][r]\n"
+                                         "![e](one.png)\n\n[r]: ref.png\n");
+  const auto links = MarkdownUtils::fetchImageLinks(content, QStringLiteral("/base"), allTypes());
+  QCOMPARE(links.size(), 5);
+
+  // Spanned entries first, strictly descending by raw destination start.
+  int spanned = 0;
+  for (const auto &l : links) {
+    if (!l.hasUrlSpan()) {
+      break;
+    }
+    ++spanned;
+  }
+  QCOMPARE(spanned, 3);
+  for (int i = 1; i < spanned; ++i) {
+    QVERIFY(links[i - 1].m_urlStart > links[i].m_urlStart);
+  }
+
+  // Spanless entries last, and in document order (the sort is stable).
+  for (int i = spanned; i < links.size(); ++i) {
+    QVERIFY(!links[i].hasUrlSpan());
+  }
+  QCOMPARE(links[spanned].m_alt, QStringLiteral("b"));
+  QCOMPARE(links[spanned + 1].m_alt, QStringLiteral("d"));
+
+  // No deduplication: one.png appears twice and both must be rewritable.
+  int oneCount = 0;
+  for (const auto &l : links) {
+    if (l.m_urlInLink == QStringLiteral("one.png")) {
+      ++oneCount;
+    }
+  }
+  QCOMPARE(oneCount, 2);
+}
+
+// G2: the walker and the snapshot API must report the same image regions, in
+// the same order, for the same content. They are two consumers of one mapping;
+// a divergence means one of them grew its own.
+void TestMarkdownParser::testWalkerAndSnapshotAgreeOnRegions() {
+  for (const auto &name : imageFixtures()) {
+    const QString content = readFixture(name);
+    QVERIFY2(!content.isEmpty(), qPrintable(name));
+
+    const auto walked = parse(content).imageElements;
+    const auto links = MarkdownUtils::fetchImageLinks(content, QStringLiteral("/base"), allTypes());
+
+    // The snapshot API drops images with an empty destination; the walker keeps
+    // them. Compare against the walker's list filtered the same way.
+    QVector<vte::md::ImageElement> comparable;
+    for (const auto &e : walked) {
+      if (!e.m_destination.isEmpty()) {
+        comparable.append(e);
+      }
+    }
+
+    QCOMPARE(links.size(), comparable.size());
+
+    // fetchImageLinks() sorts for rewriting; compare as sets of regions.
+    QVector<QPair<int, int>> fromWalker;
+    QVector<QPair<int, int>> fromSnapshot;
+    for (const auto &e : comparable) {
+      fromWalker.append(qMakePair(e.m_startPos, e.m_endPos));
+    }
+    for (const auto &l : links) {
+      fromSnapshot.append(qMakePair(l.m_regionStart, l.m_regionEnd));
+    }
+    std::sort(fromWalker.begin(), fromWalker.end());
+    std::sort(fromSnapshot.begin(), fromSnapshot.end());
+    QCOMPARE(fromSnapshot, fromWalker);
+  }
+}
+
+// G3: properties, checked for EVERY image in every fixture. Hand-enumerated
+// cases only guard what someone thought of; these scale to grammar nobody
+// anticipated.
+void TestMarkdownParser::testImageLinkInvariants() {
+  for (const auto &name : imageFixtures()) {
+    const QString content = readFixture(name);
+    QVERIFY2(!content.isEmpty(), qPrintable(name));
+
+    const auto links = MarkdownUtils::fetchImageLinks(content, QStringLiteral("/base"), allTypes());
+    QVERIFY2(!links.isEmpty(), qPrintable(name));
+
+    for (const auto &link : links) {
+      const QString where = QStringLiteral("%1: %2").arg(name, content.mid(link.m_regionStart, 40));
+
+      // Every span lies inside the content. This is the class of bug the old
+      // indexOf-based location produced when it matched the wrong occurrence.
+      QVERIFY2(link.m_regionStart >= 0 && link.m_regionStart < link.m_regionEnd &&
+                   link.m_regionEnd <= content.size(),
+               qPrintable(where));
+
+      if (!link.hasUrlSpan()) {
+        continue;
+      }
+
+      QVERIFY2(link.m_regionStart <= link.m_urlStart && link.m_urlStart < link.m_urlEnd &&
+                   link.m_urlEnd <= link.m_regionEnd,
+               qPrintable(where));
+
+      // THE invariant, checked against an INDEPENDENT oracle: feed the raw
+      // span back through cmark as the destination of a fresh image and the
+      // parser must resolve it to the same cleaned value. A span that is
+      // off by one, or that points at the wrong occurrence, produces a
+      // different destination here. Comparing the raw text to itself would
+      // prove nothing -- replacing any in-bounds span with its own contents is
+      // a no-op for every span, right or wrong.
+      const QString raw = content.mid(link.m_urlStart, link.m_urlEnd - link.m_urlStart);
+      {
+        const QString probeMd = QStringLiteral("![](") + raw + QStringLiteral(")\n");
+        const QByteArray probeUtf8 = probeMd.toUtf8();
+        cmark_node *probeDoc =
+            cmark_parse_document(probeUtf8.constData(), probeUtf8.size(), CMARK_OPT_DEFAULT);
+        QVERIFY(probeDoc);
+        cmark_iter *probeIter = cmark_iter_new(probeDoc);
+        QString reparsed;
+        bool sawImage = false;
+        cmark_event_type pev;
+        while ((pev = cmark_iter_next(probeIter)) != CMARK_EVENT_DONE) {
+          cmark_node *cur = cmark_iter_get_node(probeIter);
+          if (pev == CMARK_EVENT_ENTER && cmark_node_get_type(cur) == CMARK_NODE_IMAGE) {
+            sawImage = true;
+            const char *u = cmark_node_get_url(cur);
+            reparsed = u ? QString::fromUtf8(u) : QString();
+            break;
+          }
+        }
+        cmark_iter_free(probeIter);
+        cmark_node_free(probeDoc);
+        QVERIFY2(sawImage, qPrintable(where + QStringLiteral(" raw=") + raw));
+        QCOMPARE(reparsed, link.m_urlInLink);
+      }
+
+      // The region begins at the `!` of `![`.
+      QCOMPARE(content.mid(link.m_regionStart, 2), QStringLiteral("!["));
+    }
+
+    // Regions are properly nested: any two are either disjoint or one wholly
+    // contains the other. CommonMark permits an image inside another image's
+    // description, so plain disjointness is NOT an invariant -- asserting it
+    // would encode a false grammar rule and give whole-region rewriting
+    // callers a guarantee the parser does not make.
+    for (int i = 0; i < links.size(); ++i) {
+      for (int j = i + 1; j < links.size(); ++j) {
+        const auto &a = links[i];
+        const auto &b = links[j];
+        const bool disjoint = a.m_regionEnd <= b.m_regionStart || b.m_regionEnd <= a.m_regionStart;
+        const bool aInB = b.m_regionStart <= a.m_regionStart && a.m_regionEnd <= b.m_regionEnd;
+        const bool bInA = a.m_regionStart <= b.m_regionStart && b.m_regionEnd <= a.m_regionEnd;
+        QVERIFY2(disjoint || aInB || bInA, qPrintable(name));
+      }
+    }
+
+    // Destination spans, unlike regions, NEVER overlap -- which is what makes
+    // destination-only rewriting safe even across nested images.
+    QVector<QPair<int, int>> urlSpans;
+    for (const auto &l : links) {
+      if (l.hasUrlSpan()) {
+        urlSpans.append(qMakePair(l.m_urlStart, l.m_urlEnd));
+      }
+    }
+    std::sort(urlSpans.begin(), urlSpans.end());
+    for (int i = 1; i < urlSpans.size(); ++i) {
+      QVERIFY2(urlSpans[i - 1].second <= urlSpans[i].first, qPrintable(name));
+    }
+  }
+}
+
+// CommonMark allows an image inside another image's description. Both are
+// reported, their regions nest, and -- crucially -- their destination spans do
+// not overlap, so destination rewriting stays safe.
+void TestMarkdownParser::testNestedImages() {
+  const QString content = QStringLiteral("![foo ![bar](/a.png)](/b.png) tail\n");
+  const auto links = MarkdownUtils::fetchImageLinks(content, QStringLiteral("/base"), allTypes());
+  QCOMPARE(links.size(), 2);
+
+  const auto *outer = &links[0];
+  const auto *inner = &links[1];
+  if (outer->m_urlInLink != QStringLiteral("/b.png")) {
+    std::swap(outer, inner);
+  }
+  QCOMPARE(outer->m_urlInLink, QStringLiteral("/b.png"));
+  QCOMPARE(inner->m_urlInLink, QStringLiteral("/a.png"));
+
+  QCOMPARE(content.mid(outer->m_regionStart, outer->m_regionEnd - outer->m_regionStart),
+           QStringLiteral("![foo ![bar](/a.png)](/b.png)"));
+  QCOMPARE(content.mid(inner->m_regionStart, inner->m_regionEnd - inner->m_regionStart),
+           QStringLiteral("![bar](/a.png)"));
+
+  // Regions nest.
+  QVERIFY(outer->m_regionStart <= inner->m_regionStart);
+  QVERIFY(inner->m_regionEnd <= outer->m_regionEnd);
+
+  // Destination spans do not.
+  QVERIFY(inner->m_urlEnd <= outer->m_urlStart || outer->m_urlEnd <= inner->m_urlStart);
+  QCOMPARE(content.mid(inner->m_urlStart, inner->m_urlEnd - inner->m_urlStart),
+           QStringLiteral("/a.png"));
+  QCOMPARE(content.mid(outer->m_urlStart, outer->m_urlEnd - outer->m_urlStart),
+           QStringLiteral("/b.png"));
+}
+
+// A `file:` URL names an absolute location. Letting it fall through to the
+// relative branch would put it in front of consumers that copy or migrate
+// notebook-relative assets.
+void TestMarkdownParser::testFileUrlClassification() {
+  const QString content = QStringLiteral("![a](file:///tmp/notes/x.png)\n"
+                                         "![b](/abs/x.png)\n"
+                                         "![c](x:/drive-or-scheme.png)\n"
+                                         "![d](ftp://host/x.png)\n");
+  const auto links =
+      MarkdownUtils::fetchImageLinks(content, QStringLiteral("/tmp/notes"), allTypes());
+  QCOMPARE(links.size(), 4);
+
+  QHash<QString, MarkdownLink> byAlt;
+  for (const auto &l : links) {
+    byAlt.insert(l.m_alt, l);
+  }
+
+  QVERIFY2(byAlt[QStringLiteral("a")].m_type & MarkdownLink::TypeFlag::LocalAbsolute,
+           "a file: URL is absolute, not relative");
+  QVERIFY(!(byAlt[QStringLiteral("a")].m_type & (MarkdownLink::TypeFlag::LocalRelativeInternal |
+                                                 MarkdownLink::TypeFlag::LocalRelativeExternal)));
+  QVERIFY(byAlt[QStringLiteral("b")].m_type & MarkdownLink::TypeFlag::LocalAbsolute);
+  // `x:/...` is inherently ambiguous -- a Windows drive path and a legal
+  // one-character URI scheme are spelled identically. VNote resolves it as a
+  // drive path, which is what a user writing it means in practice.
+  QVERIFY(byAlt[QStringLiteral("c")].m_type & MarkdownLink::TypeFlag::LocalAbsolute);
+  QVERIFY(byAlt[QStringLiteral("d")].m_type & MarkdownLink::TypeFlag::Remote);
+
+  // A relative-only request must not see the absolute ones at all.
+  const auto relative =
+      MarkdownUtils::fetchImageLinks(content, QStringLiteral("/tmp/notes"),
+                                     MarkdownLink::TypeFlag::LocalRelativeInternal |
+                                         MarkdownLink::TypeFlag::LocalRelativeExternal);
+  QCOMPARE(relative.size(), 0);
 }
 
 QTEST_MAIN(tests::TestMarkdownParser)

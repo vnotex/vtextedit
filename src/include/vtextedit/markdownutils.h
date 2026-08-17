@@ -15,15 +15,9 @@ class QTextBlock;
 namespace vte {
 class VTextEdit;
 
-struct VTEXTEDIT_EXPORT MarkdownImageInfo {
-  QString m_url;          // URL from cmark_node_get_url() (clean, no =WxH)
-  QString m_alt;          // Alt text from IMAGE node child text nodes
-  QString m_title;        // Title from cmark_node_get_title()
-  int m_urlPos = -1;      // QChar position of URL in source text (-1 if not found)
-  int m_regionStart = -1; // QChar position of start of ![
-  int m_regionEnd = -1;   // QChar position past closing )
-};
-
+// One image link found in a Markdown document, with everything the callers
+// need: where it is, what it points at, and where its destination may be
+// rewritten.
 struct VTEXTEDIT_EXPORT MarkdownLink {
   enum TypeFlag {
     None = 0x0,
@@ -36,17 +30,63 @@ struct VTEXTEDIT_EXPORT MarkdownLink {
   Q_DECLARE_FLAGS(TypeFlags, TypeFlag);
 
   QString toString() const {
-    return QStringLiteral("path (%1) urlInLink (%2)").arg(m_path, m_urlInLink);
+    return QStringLiteral("path (%1) urlInLink (%2) raw [%3, %4)")
+        .arg(m_path, m_urlInLink)
+        .arg(m_urlStart)
+        .arg(m_urlEnd);
   }
 
+  // Whether the destination occupies a span of source text that may be
+  // rewritten. False for a reference-style image (`![a][r]`) and for an empty
+  // destination (`![a]()`), neither of which spells a destination inside the
+  // construct. The region is still valid in both cases.
+  bool hasUrlSpan() const { return m_urlStart >= 0 && m_urlEnd > m_urlStart; }
+
+  // The destination as cmark resolved it: backslash escapes and entities are
+  // decoded and any angle brackets stripped.
+  //
+  // NEVER use this to compute a replacement length. `a\_b.png` occupies 8
+  // source characters and resolves to 7; `<a b.png>` occupies 9 and resolves to
+  // 7. Use `m_urlEnd - m_urlStart`.
   QString m_urlInLink;
 
   QString m_path;
 
-  // Global position of m_urlInLink.
-  int m_urlInLinkPos = -1;
+  // Half-open span of the RAW destination in the source, exactly as spelled --
+  // escapes, entities and angle brackets all still present. -1 when absent; see
+  // hasUrlSpan().
+  int m_urlStart = -1;
+  int m_urlEnd = -1;
 
+  // Half-open span of the whole `![alt](dest "title" =WxH)` construct. Always
+  // valid for every image returned.
+  //
+  // Regions may NEST: CommonMark allows an image inside another image's
+  // description (`![foo ![bar](/a)](/b)`), and both are reported. Destination
+  // spans never overlap, so destination-only rewriting is always safe; a caller
+  // that replaces whole REGIONS must skip images contained in another's region,
+  // as MarkdownEditor::fetchImagesToLocalAndReplace() does.
+  int m_regionStart = -1;
+  int m_regionEnd = -1;
+
+  QString m_alt;
+
+  QString m_title;
+
+  // Declared size from the `=WxH` extension; 0 means unspecified for that axis.
+  int m_width = 0;
+  int m_height = 0;
+
+  // SYNTACTIC classification, derived from the shape of the destination alone.
+  //
+  // Deliberately independent of whether the file is there: a relative link to a
+  // missing file is a broken LocalRelative* link, not a Remote one. Classifying
+  // by existence made every typo'd path look remote, so a caller asking for
+  // local images silently skipped exactly the images a user would want repaired.
   TypeFlags m_type = TypeFlag::None;
+
+  // Whether m_path exists on disk. Only meaningful for the local flavors.
+  bool m_exists = false;
 };
 
 class VTEXTEDIT_EXPORT MarkdownUtils {
@@ -95,17 +135,25 @@ public:
   static QString generateImageLink(const QString &p_title, const QString &p_url,
                                    const QString &p_altText);
 
-  // @p_content: Markdwon text content.
-  // @p_contentBasePath: base path used to resolve image link and check if it is
-  // internal image.
-  // @p_flags: type of images want to fetch.
-  // @Return: descending ordered by m_urlInLinkPos, without deduplication of
-  // image path.
-  static QVector<MarkdownLink> fetchImagesFromMarkdownText(const QString &p_content,
-                                                           const QString &p_contentBasePath,
-                                                           MarkdownLink::TypeFlags p_flags);
-
-  static QVector<MarkdownImageInfo> fetchImageInfoViaCmark(const QString &p_content);
+  // Every image link in @p_content, straight from cmark's AST.
+  //
+  // @p_contentBasePath: base path used to resolve a relative destination and to
+  //   decide internal vs external.
+  // @p_flags: which syntactic kinds to return. Pass every flag to get them all.
+  //
+  // An image whose resolved destination is empty (`![a]()`) is omitted: it
+  // points at nothing, so there is no path, no type and nothing to act on. An
+  // image nested in another image's description IS included; see m_regionStart.
+  //
+  // Returned DESCENDING by m_urlStart, so a caller may rewrite destinations in
+  // order without invalidating the spans it has not reached yet. Entries with
+  // no destination span (reference-style) sort LAST, since they cannot be
+  // rewritten at all; the sort is stable, so their relative document order is
+  // preserved. No deduplication: one file referenced twice yields two entries,
+  // and both must be rewritten.
+  static QVector<MarkdownLink> fetchImageLinks(const QString &p_content,
+                                               const QString &p_contentBasePath,
+                                               MarkdownLink::TypeFlags p_flags);
 
   struct HeaderMatch {
     bool m_matched = false;

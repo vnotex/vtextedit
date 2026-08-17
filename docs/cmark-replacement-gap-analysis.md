@@ -76,7 +76,7 @@ Set in `pegmarkdownhighlighter.cpp:30-35`:
 | pmh Type | vtextedit Usage | cmark Equivalent | Gap? |
 |----------|----------------|------------------|------|
 | `pmh_H1`–`pmh_H6` | Header region extraction (`m_headerRegions`) | `CMARK_NODE_HEADING` + `cmark_node_get_heading_level()` | ✅ Direct mapping. One node type with level accessor instead of 6 separate types. |
-| `pmh_IMAGE` | Image region extraction (`m_imageRegions`) | `CMARK_NODE_IMAGE` | ✅ Direct. |
+| `pmh_IMAGE` | Image links (`m_imageLinks`, carrying region + destination + `=WxH` size) | `CMARK_NODE_IMAGE` | ✅ Direct. |
 | `pmh_FENCEDCODEBLOCK` | Code block extraction (`m_codeBlockRegions`), regex post-processing for lang/markers | `CMARK_NODE_CODE_BLOCK` + `cmark_node_get_fence_info()` | ⚠️ cmark uses one type for both fenced and indented code blocks. Need `get_fence_info()` to distinguish. Lang string available natively (no regex needed). |
 | `pmh_INLINEEQUATION` | Inline math regions | `CMARK_NODE_FORMULA_INLINE` | ✅ Direct (vnotex extension). |
 | `pmh_DISPLAYFORMULA` | Display math regions, `$$`/`\begin{}` marker detection | `CMARK_NODE_FORMULA_BLOCK` | ✅ Direct (vnotex extension). |

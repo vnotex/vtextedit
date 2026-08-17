@@ -66,6 +66,16 @@ private slots:
   void testCmarkNodeSpans();
   void testImageSizeElements();
 
+  // The unified snapshot API.
+  void testFetchImageLinksSpans();
+  void testFetchImageLinksWithoutUrlSpan();
+  void testFetchImageLinksClassification();
+  void testFetchImageLinksSortContract();
+  void testWalkerAndSnapshotAgreeOnRegions();
+  void testImageLinkInvariants();
+  void testNestedImages();
+  void testFileUrlClassification();
+
   // Extra selection invalidation
   void testCursorLineInvalidationExpanded_data();
   void testCursorLineInvalidationExpanded();

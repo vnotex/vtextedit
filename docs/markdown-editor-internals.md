@@ -175,17 +175,28 @@ are expected.
 
 ### Region to resource
 
-`PreviewMgr::fetchImageLinksFromRegions()` reconstructs source text from each parser region.
-For a multiline image construct, preview metadata is attached to the final `QTextBlock`; its
-start is clamped to that block, while indentation padding is calculated from the first block.
-The whole construct is blockwise only when everything before it on the first block and after it
-on the last block is whitespace. Otherwise it is inline.
+`PreviewMgr::buildImageLinksForLayout()` joins the parsed image links with the layout
+information only the live document supplies. For a multiline image construct, preview metadata
+is attached to the final `QTextBlock`; its start is clamped to that block, while indentation
+padding is calculated from the first block. The whole construct is blockwise only when
+everything before it on the first block and after it on the last block is whitespace. Otherwise
+it is inline.
 
-The parser can identify image regions that the preview loader cannot consume. `PreviewMgr`
-re-extracts the destination using `MarkdownUtils::fetchImageLinkUrl()`, whose regular expression
-expects one direct `![alt](url)` form. Reference-style destinations, destinations containing
-whitespace, and regions containing multiple direct image matches do not pass this extraction.
-Backslash-containing destinations are explicitly rejected; use `/` for local paths.
+The destination is not re-extracted from the source text. The highlighter publishes
+`md::ImageLinkInfo` — region, cmark-resolved destination, and the declared `=WxH` size — and
+`PreviewMgr` consumes that directly, so escaped (`a\_b.png`), angle-bracketed (`<a b.png>`) and
+entity-encoded (`a&amp;b.png`) destinations all resolve. Backslash-containing destinations are
+still explicitly rejected after cmark's unescaping, which leaves Windows-style
+`vx_images\a.png` rejected while `a\_b.png` resolves to `a_b.png`; use `/` for local paths.
+
+A destination whose resolved value is empty is skipped. A reference-style image has no
+destination span, but its resolved destination is known, so it previews like any other.
+
+> This used to be a regex re-extraction via `MarkdownUtils::fetchImageLinkUrl()`. Removing the
+> `=WxH` group from that expression did not make it ignore the size token — it made it fail to
+> match, and every sized image silently lost its preview for three and a half months.
+> `tests/utils/test_image_parser_drift.cpp` in vnote now fails the build on any string literal
+> that looks like an image-link regular expression.
 
 `MarkdownUtils::linkUrlToPath()` checks encoded and decoded base-path-relative candidates. It
 returns a base-path-qualified local path only when one of those candidates already exists. If

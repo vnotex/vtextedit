@@ -15,6 +15,10 @@
 #include <vtextedit/textutils.h>
 #include <vtextedit/vtextedit.h>
 
+// CMAKE_INCLUDE_CURRENT_DIR puts `src` on the include path, not
+// `src/markdowneditor`, so the directory has to be spelled out.
+#include "markdowneditor/cmarkadapter.h"
+
 using namespace vte;
 
 const QString MarkdownUtils::c_fencedCodeBlockStartRegExp =
@@ -1053,30 +1057,78 @@ QString MarkdownUtils::generateImageLink(const QString &p_title, const QString &
   return QStringLiteral("![%1](%2%3)").arg(p_title, p_url, altText);
 }
 
+// Descending by raw destination start, with spanless entries last.
+//
+// Rewriting callers walk the result in order and replace destinations in place;
+// taking the latest span first keeps every span they have not reached yet
+// valid. An entry with no span cannot be rewritten, so it carries no ordering
+// constraint -- but it must not be allowed to sort BEFORE a real span, or a
+// caller asserting strict descent would trip on it.
 static bool markdownLinkCmp(const MarkdownLink &p_a, const MarkdownLink &p_b) {
-  return p_a.m_urlInLinkPos > p_b.m_urlInLinkPos;
+  if (p_a.hasUrlSpan() != p_b.hasUrlSpan()) {
+    return p_a.hasUrlSpan();
+  }
+  if (!p_a.hasUrlSpan()) {
+    // std::stable_sort keeps these in document order.
+    return false;
+  }
+  return p_a.m_urlStart > p_b.m_urlStart;
 }
 
-QVector<MarkdownImageInfo> MarkdownUtils::fetchImageInfoViaCmark(const QString &p_content) {
-  QVector<MarkdownImageInfo> results;
-  if (p_content.isEmpty()) {
-    return results;
+// Classify a destination by its SHAPE alone, never by whether the file is
+// there. See MarkdownLink::m_type.
+static MarkdownLink::TypeFlags classifyUrl(const QString &p_url, bool p_isInternal) {
+  if (p_url.startsWith(QStringLiteral("qrc:/")) || p_url.startsWith(QStringLiteral(":/"))) {
+    return MarkdownLink::TypeFlag::QtResource;
   }
 
-  // Parse markdown via cmark.
-  QByteArray utf8 = p_content.toUtf8();
+  const QUrl url(p_url);
+  // A `file:` URL names an absolute location, and must not fall through to the
+  // relative branch: consumers that ask for the relative flavors would then
+  // copy or migrate it as though it were a notebook-relative asset.
+  if (url.isLocalFile()) {
+    return MarkdownLink::TypeFlag::LocalAbsolute;
+  }
+
+  if (url.isValid() && !url.scheme().isEmpty()) {
+    // A Windows drive letter parses as a one-character scheme, and `x:/foo` is
+    // spelled identically to a legal one-character URI scheme. Resolve the
+    // ambiguity as a drive path, which is what someone writing it means.
+    const bool driveLetter = p_url.size() > 2 && p_url.at(0).isLetter() &&
+                             p_url.at(1) == QLatin1Char(':') &&
+                             (p_url.at(2) == QLatin1Char('/') || p_url.at(2) == QLatin1Char('\\'));
+    if (!driveLetter) {
+      return MarkdownLink::TypeFlag::Remote;
+    }
+  }
+
+  if (!QDir::isRelativePath(p_url)) {
+    return MarkdownLink::TypeFlag::LocalAbsolute;
+  }
+
+  return p_isInternal ? MarkdownLink::TypeFlag::LocalRelativeInternal
+                      : MarkdownLink::TypeFlag::LocalRelativeExternal;
+}
+
+QVector<MarkdownLink> MarkdownUtils::fetchImageLinks(const QString &p_content,
+                                                     const QString &p_contentBasePath,
+                                                     MarkdownLink::TypeFlags p_flags) {
+  QVector<MarkdownLink> images;
+  if (p_content.isEmpty()) {
+    return images;
+  }
+
+  const QByteArray utf8 = p_content.toUtf8();
   cmark_node *doc = cmark_parse_document(utf8.constData(), utf8.size(), CMARK_OPT_DEFAULT);
   if (!doc) {
-    return results;
+    return images;
   }
 
-  // Collect IMAGE nodes from AST.
-  struct AstImage {
-    QString url;
-    QString alt;
-    QString title;
-  };
-  QVector<AstImage> astImages;
+  // Coordinates come from cmark and are mapped by the same helpers the editor's
+  // walker uses, so a span reported here is the span the editor highlights.
+  // There is no text search: the raw destination is located by the parser,
+  // which is what makes `a\_b.png`, `<a b.png>` and `a&amp;b.png` work.
+  const LineOffsetTable offsets(utf8);
 
   cmark_iter *iter = cmark_iter_new(doc);
   cmark_event_type ev;
@@ -1089,145 +1141,60 @@ QVector<MarkdownImageInfo> MarkdownUtils::fetchImageInfoViaCmark(const QString &
       continue;
     }
 
-    AstImage img;
-    const char *url = cmark_node_get_url(node);
-    if (url) {
-      img.url = QString::fromUtf8(url);
-    }
-    const char *title = cmark_node_get_title(node);
-    if (title) {
-      img.title = QString::fromUtf8(title);
+    MarkdownLink link;
+    if (!cmarkNodeSpan(node, offsets, link.m_regionStart, link.m_regionEnd)) {
+      // No source position at all: nothing a caller could do with it.
+      continue;
     }
 
-    // Collect alt text from child TEXT nodes.
+    int urlStart = -1;
+    int urlEnd = -1;
+    if (cmarkNodeUrlSpan(node, offsets, urlStart, urlEnd)) {
+      link.m_urlStart = urlStart;
+      link.m_urlEnd = urlEnd;
+    }
+
+    const char *url = cmark_node_get_url(node);
+    link.m_urlInLink = url ? QString::fromUtf8(url) : QString();
+    const char *title = cmark_node_get_title(node);
+    link.m_title = title ? QString::fromUtf8(title) : QString();
+    link.m_width = cmark_node_get_image_width(node);
+    link.m_height = cmark_node_get_image_height(node);
+
     for (cmark_node *child = cmark_node_first_child(node); child; child = cmark_node_next(child)) {
       if (cmark_node_get_type(child) == CMARK_NODE_TEXT) {
         const char *literal = cmark_node_get_literal(child);
         if (literal) {
-          img.alt += QString::fromUtf8(literal);
+          link.m_alt += QString::fromUtf8(literal);
         }
       }
     }
 
-    astImages.push_back(img);
-  }
-  cmark_iter_free(iter);
-  cmark_node_free(doc);
-
-  // Scan p_content (QString) to find QChar positions for each URL.
-  int searchStart = 0;
-  for (const auto &img : astImages) {
-    MarkdownImageInfo info;
-    info.m_url = img.url;
-    info.m_alt = img.alt;
-    info.m_title = img.title;
-    info.m_urlPos = -1;
-
-    if (img.url.isEmpty()) {
-      results.push_back(info);
+    if (link.m_urlInLink.isEmpty()) {
+      // `![a]()` points at nothing; it has no type and no path.
       continue;
     }
 
-    bool found = false;
-    int pos = searchStart;
-    while (true) {
-      pos = p_content.indexOf(img.url, pos);
-      if (pos < 0) {
-        break;
+    const QString resolved = linkUrlToPath(p_contentBasePath, link.m_urlInLink);
+    link.m_type =
+        classifyUrl(link.m_urlInLink, pathContains(p_contentBasePath, QDir::cleanPath(resolved)));
+    if (link.m_type & MarkdownLink::TypeFlag::Remote) {
+      link.m_path = QUrl(link.m_urlInLink).toString();
+      link.m_exists = false;
+    } else if (link.m_type & MarkdownLink::TypeFlag::QtResource) {
+      link.m_path = link.m_urlInLink;
+      // Qt's filesystem spelling of a resource is `:/foo`, not `qrc:/foo`.
+      QString probe = link.m_urlInLink;
+      if (probe.startsWith(QStringLiteral("qrc:/"))) {
+        probe = probe.mid(4);
       }
-      // Validate: preceded by '('.
-      if (pos > 0 && p_content[pos - 1] == QLatin1Char('(')) {
-        info.m_urlPos = pos;
-        searchStart = pos + img.url.size();
-        found = true;
-        break;
-      }
-      pos += 1;
-    }
-
-    // Fallback: try percent-decoded URL if original not found.
-    if (!found && img.url.contains(QLatin1Char('%'))) {
-      QString decoded = QUrl::fromPercentEncoding(img.url.toUtf8());
-      pos = searchStart;
-      while (true) {
-        pos = p_content.indexOf(decoded, pos);
-        if (pos < 0) {
-          break;
-        }
-        if (pos > 0 && p_content[pos - 1] == QLatin1Char('(')) {
-          info.m_urlPos = pos;
-          searchStart = pos + decoded.size();
-          found = true;
-          break;
-        }
-        pos += 1;
-      }
-    }
-
-    // Find m_regionStart: search backward from URL pos for "![".
-    if (info.m_urlPos >= 0) {
-      int searchFrom = info.m_urlPos - 1;
-      while (searchFrom > 0) {
-        if (p_content[searchFrom] == QLatin1Char('[') &&
-            p_content[searchFrom - 1] == QLatin1Char('!')) {
-          info.m_regionStart = searchFrom - 1;
-          break;
-        }
-        --searchFrom;
-      }
-
-      // Find m_regionEnd: search forward from URL pos for ')'.
-      int endSearch = info.m_urlPos + img.url.size();
-      while (endSearch < p_content.size()) {
-        if (p_content[endSearch] == QLatin1Char(')')) {
-          info.m_regionEnd = endSearch + 1;
-          break;
-        }
-        ++endSearch;
-      }
-    }
-
-    results.push_back(info);
-  }
-
-  return results;
-}
-
-QVector<MarkdownLink> MarkdownUtils::fetchImagesFromMarkdownText(const QString &p_content,
-                                                                 const QString &p_contentBasePath,
-                                                                 MarkdownLink::TypeFlags p_flags) {
-  QVector<MarkdownLink> images;
-  const auto infos = fetchImageInfoViaCmark(p_content);
-  for (const auto &info : infos) {
-    if (info.m_urlPos < 0) {
-      continue;
-    }
-
-    MarkdownLink link;
-    link.m_urlInLink = info.m_url;
-    link.m_urlInLinkPos = info.m_urlPos;
-
-    QFileInfo fileInfo(linkUrlToPath(p_contentBasePath, link.m_urlInLink));
-    if (fileInfo.exists()) {
-      if (fileInfo.isNativePath()) {
-        link.m_path = QDir::cleanPath(fileInfo.absoluteFilePath());
-        if (QDir::isRelativePath(link.m_urlInLink)) {
-          if (pathContains(p_contentBasePath, link.m_path)) {
-            link.m_type |= MarkdownLink::TypeFlag::LocalRelativeInternal;
-          } else {
-            link.m_type |= MarkdownLink::TypeFlag::LocalRelativeExternal;
-          }
-        } else {
-          link.m_type |= MarkdownLink::TypeFlag::LocalAbsolute;
-        }
-      } else {
-        link.m_type |= MarkdownLink::TypeFlag::QtResource;
-        link.m_path = link.m_urlInLink;
-      }
+      link.m_exists = QFileInfo::exists(probe);
+    } else if (QUrl(link.m_urlInLink).isLocalFile()) {
+      link.m_path = QDir::cleanPath(QUrl(link.m_urlInLink).toLocalFile());
+      link.m_exists = QFileInfo::exists(link.m_path);
     } else {
-      QUrl url(link.m_urlInLink);
-      link.m_path = url.toString();
-      link.m_type |= MarkdownLink::TypeFlag::Remote;
+      link.m_path = QDir::cleanPath(resolved);
+      link.m_exists = QFileInfo::exists(link.m_path);
     }
 
     if (link.m_type & p_flags) {
@@ -1235,7 +1202,10 @@ QVector<MarkdownLink> MarkdownUtils::fetchImagesFromMarkdownText(const QString &
     }
   }
 
-  std::sort(images.begin(), images.end(), markdownLinkCmp);
+  cmark_iter_free(iter);
+  cmark_node_free(doc);
+
+  std::stable_sort(images.begin(), images.end(), markdownLinkCmp);
   return images;
 }
 
