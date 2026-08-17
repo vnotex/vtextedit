@@ -13,14 +13,14 @@
 #include <vtextedit/textutils.h>
 #include <vtextedit/theme.h>
 
-#include "markdownastwalker.h"
 #include "hlformatresolver.h"
+#include "interactivepreviewhost.h"
+#include "markdownastwalker.h"
 #include "markdownhighlightblockdata.h"
 #include "markdownhighlighterresult.h"
 #include "markdownparser.h"
 #include "markdownsyntaxstyles.h"
 #include "mathblockhighlighter.h"
-#include "interactivepreviewhost.h"
 
 // Extension flags (replacing pmh_EXT_* constants).
 // These are kept for config compatibility but cmark enables all extensions by default.
@@ -39,16 +39,15 @@ enum {
 
 using namespace vte;
 
-MarkdownHighlighter::MarkdownHighlighter(
-    MarkdownHighlighterInterface *p_interface, QTextDocument *p_doc,
-    const QSharedPointer<Theme> &p_theme, CodeBlockHighlighter *p_codeBlockHighlighter,
-    const QSharedPointer<md::HighlighterConfig> &p_config,
-    MathBlockHighlighter *p_mathBlockHighlighter)
+MarkdownHighlighter::MarkdownHighlighter(MarkdownHighlighterInterface *p_interface,
+                                         QTextDocument *p_doc, const QSharedPointer<Theme> &p_theme,
+                                         CodeBlockHighlighter *p_codeBlockHighlighter,
+                                         const QSharedPointer<md::HighlighterConfig> &p_config,
+                                         MathBlockHighlighter *p_mathBlockHighlighter)
     : VSyntaxHighlighter(p_doc), m_interface(p_interface), m_config(p_config),
       m_codeBlockHighlighter(p_codeBlockHighlighter),
       m_mathBlockHighlighter(p_mathBlockHighlighter),
-      m_parserExts(EXT_NOTES | EXT_STRIKE | EXT_FRONTMATTER | EXT_MARK |
-                   EXT_TABLE) {
+      m_parserExts(EXT_NOTES | EXT_STRIKE | EXT_FRONTMATTER | EXT_MARK | EXT_TABLE) {
   setTheme(p_theme);
 
   if (p_config->m_mathExtEnabled) {
@@ -248,7 +247,7 @@ bool MarkdownHighlighter::preHighlightSingleFormatBlock(
 }
 
 void MarkdownHighlighter::highlightBlockOne(const QVector<QVector<md::HLUnit>> &p_highlights,
-                                               int p_blockNum, QVector<md::HLUnit> &p_cache) {
+                                            int p_blockNum, QVector<md::HLUnit> &p_cache) {
   p_cache.clear();
   if (p_highlights.size() > p_blockNum) {
     // units are sorted by start position and length.
@@ -273,7 +272,7 @@ void MarkdownHighlighter::highlightBlockOne(const QVector<md::HLUnit> &p_units) 
 
 // highlightBlock() will be called before this function.
 void MarkdownHighlighter::handleContentsChange(int p_position, int p_charsRemoved,
-                                                  int p_charsAdded) {
+                                               int p_charsAdded) {
   Q_UNUSED(p_position);
 
   int interval = m_contentChangeTime.restart();
@@ -802,7 +801,7 @@ void MarkdownHighlighter::completeHighlight(QSharedPointer<MarkdownHighlighterRe
 
   emit tableBlocksUpdated(p_result->m_tableBlocks);
 
-  emit imageLinksUpdated(p_result->m_imageRegions);
+  emit imageLinksUpdated(md::buildImageLinks(p_result->m_imageElements));
   emit headersUpdated(p_result->m_headerRegions);
   emit foldingRegionsUpdated(p_result->m_foldingRegions);
 
@@ -837,7 +836,6 @@ void MarkdownHighlighter::republishPreviewElements() {
   emit previewElementsUpdated(static_cast<quint64>(m_result->m_timeStamp),
                               m_result->buildPreviews(document(), typeMask, m_styles));
 }
-
 
 void MarkdownHighlighter::rehighlightSensitiveBlocks() {
   QTextBlock cb = m_interface->textCursor().block();
@@ -874,8 +872,8 @@ void MarkdownHighlighter::addPossiblePreviewBlock(int p_blockNumber) {
 }
 
 void MarkdownHighlighter::getFastParseBlockRange(int p_position, int p_charsRemoved,
-                                                    int p_charsAdded, int &p_firstBlock,
-                                                    int &p_lastBlock) const {
+                                                 int p_charsAdded, int &p_firstBlock,
+                                                 int &p_lastBlock) const {
   const int maxNumOfBlocks = 15;
 
   int charsChanged = p_charsRemoved + p_charsAdded;
@@ -981,8 +979,8 @@ const QVector<md::ElementRegion> &MarkdownHighlighter::getHeaderRegions() const 
   return m_result->m_headerRegions;
 }
 
-const QVector<md::ElementRegion> &MarkdownHighlighter::getImageRegions() const {
-  return m_result->m_imageRegions;
+const QVector<md::ImageLinkInfo> &MarkdownHighlighter::getImageLinks() const {
+  return m_result->m_imageLinks;
 }
 
 const QVector<md::FencedCodeBlock> &MarkdownHighlighter::getCodeBlocks() const {

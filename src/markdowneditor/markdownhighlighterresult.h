@@ -22,7 +22,7 @@ public:
   MarkdownHighlighterFastResult() = default;
 
   MarkdownHighlighterFastResult(const MarkdownHighlighter *p_peg,
-                           const QSharedPointer<md::MarkdownParseResult> &p_result);
+                                const QSharedPointer<md::MarkdownParseResult> &p_result);
 
   bool matched(TimeStamp p_timeStamp) const { return m_timeStamp == p_timeStamp; }
 
@@ -40,8 +40,8 @@ public:
 
   // TODO: handle p_result->m_offset which is 0 for now.
   MarkdownHighlighterResult(const MarkdownHighlighter *p_peg,
-                       const QSharedPointer<md::MarkdownParseResult> &p_result,
-                       TimeStamp p_curTimeStamp, const ContentsChange &p_lastContentsChange);
+                            const QSharedPointer<md::MarkdownParseResult> &p_result,
+                            TimeStamp p_curTimeStamp, const ContentsChange &p_lastContentsChange);
 
   bool matched(TimeStamp p_timeStamp) const { return m_timeStamp == p_timeStamp; }
 
@@ -65,8 +65,9 @@ public:
   // Whether the code block highlight results of this result have been received.
   bool m_codeBlockHighlightReceived = false;
 
-  // All image link regions.
-  QVector<md::ElementRegion> m_imageRegions;
+  // All image links, with their declared `=WxH` size. Order follows the
+  // walker's sorted image elements.
+  QVector<md::ImageLinkInfo> m_imageLinks;
 
   // All header regions.
   // Sorted by start position.

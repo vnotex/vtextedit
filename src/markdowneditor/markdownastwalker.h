@@ -24,6 +24,10 @@ struct ImageElement : public TypedPreviewElement {
   QString m_alternateText;
   QString m_title;
 
+  // Declared size from the `=WxH` extension. 0 means unspecified for that axis.
+  int m_width = 0;
+  int m_height = 0;
+
   // Whether the image is the sole content of its source line.
   bool m_standalone = false;
 };
@@ -93,15 +97,19 @@ struct ASTWalkResult {
   QVector<TableElement> tableElements;
 };
 
-
 // Single-pass AST walker. Parses markdown with cmark, walks AST once,
 // produces per-block HLUnits and region vectors directly.
 // p_numBlocks: total blocks in document (sizes blocksHighlights vector)
 // p_offset: QChar offset of text start in document (for region positions)
-// p_startBlock: first block number of the sliced text (maps local line 0 -> global block p_startBlock)
-// p_fast: if true, skip region collection (only produce blocksHighlights)
-ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks,
-                             int p_offset = 0, int p_startBlock = 0, bool p_fast = false);
+// p_startBlock: first block number of the sliced text (maps local line 0 -> global block
+// p_startBlock) p_fast: if true, skip region collection (only produce blocksHighlights)
+ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int p_offset = 0,
+                             int p_startBlock = 0, bool p_fast = false);
+
+// Project the walker's image elements onto what the highlighter publishes:
+// region, destination and declared size. Order is preserved, one entry per
+// element.
+QVector<ImageLinkInfo> buildImageLinks(const QVector<ImageElement> &p_elements);
 
 } // namespace md
 } // namespace vte

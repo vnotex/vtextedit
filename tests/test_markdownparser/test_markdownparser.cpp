@@ -1199,4 +1199,65 @@ void TestMarkdownParser::testCmarkNodeSpans() {
   }
 }
 
+// The `=WxH` size extension, all the way to the ImageElement, and the
+// projection onto what the highlighter publishes.
+void TestMarkdownParser::testImageSizeElements() {
+  struct Case {
+    const char *markdown;
+    const char *destination;
+    int width;
+    int height;
+    const char *title;
+  };
+
+  const QVector<Case> cases{
+      {"![](a.png)\n", "a.png", 0, 0, ""},
+      {"![](a.png =500x)\n", "a.png", 500, 0, ""},
+      {"![](a.png =500x300)\n", "a.png", 500, 300, ""},
+      {"![](a.png =x300)\n", "a.png", 0, 300, ""},
+      {"![](a.png \"the title\" =500x)\n", "a.png", 500, 0, "the title"},
+      // Without a separating space the token is part of the destination.
+      {"![](a.png=500x)\n", "a.png=500x", 0, 0, ""},
+      // The escape is resolved; the size is still parsed off the end.
+      {"![](a\\_b.png =500x)\n", "a_b.png", 500, 0, ""},
+      // A link is not an image, so no size is ever parsed for one.
+      {"![](<a b.png> =64x64)\n", "a b.png", 64, 64, ""},
+  };
+
+  for (const auto &c : cases) {
+    const QString input = QString::fromUtf8(c.markdown);
+    auto result = parse(input);
+    QCOMPARE(result.imageElements.size(), 1);
+
+    const auto &image = result.imageElements.first();
+    QCOMPARE(image.m_destination, QString::fromUtf8(c.destination));
+    QCOMPARE(image.m_width, c.width);
+    QCOMPARE(image.m_height, c.height);
+    QCOMPARE(image.m_title, QString::fromUtf8(c.title));
+    // The size token is never part of the destination.
+    QVERIFY2(!image.m_destination.contains(QStringLiteral(" =")), c.markdown);
+
+    // buildImageLinks() is a 1:1, order-preserving projection.
+    const auto links = vte::md::buildImageLinks(result.imageElements);
+    QCOMPARE(links.size(), 1);
+    QCOMPARE(links.first().m_destination, image.m_destination);
+    QCOMPARE(links.first().m_width, image.m_width);
+    QCOMPARE(links.first().m_height, image.m_height);
+    QCOMPARE(links.first().m_region.m_startPos, image.m_startPos);
+    QCOMPARE(links.first().m_region.m_endPos, image.m_endPos);
+  }
+
+  // Order is preserved across several images.
+  {
+    auto result = parse(QStringLiteral("![](a.png =1x) ![](b.png =2x) ![](c.png =3x)\n"));
+    QCOMPARE(result.imageElements.size(), 3);
+    const auto links = vte::md::buildImageLinks(result.imageElements);
+    QCOMPARE(links.size(), 3);
+    for (int i = 0; i < 3; ++i) {
+      QCOMPARE(links[i].m_destination, result.imageElements[i].m_destination);
+      QCOMPARE(links[i].m_width, i + 1);
+    }
+  }
+}
+
 QTEST_MAIN(tests::TestMarkdownParser)

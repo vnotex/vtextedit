@@ -57,6 +57,15 @@ private slots:
   void testRepeatedReturnDoesNotLeakContext();
 
   void testUndoIsASingleStep();
+
+  // Image previews and the `=WxH` size extension.
+  void testImageLinksArePublished();
+
+  void testSizedImagePreviewIsScaled();
+
+  void testOneUrlAtTwoSizesGetsTwoResources();
+
+  void testOversizedImageIsClamped();
 };
 } // namespace tests
 

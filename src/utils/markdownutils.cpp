@@ -74,31 +74,6 @@ bool MarkdownUtils::isFencedCodeBlockStartMark(const QString &p_text) {
   return text.startsWith(QStringLiteral("```")) || text.startsWith(QStringLiteral("~~~"));
 }
 
-bool MarkdownUtils::hasImageLink(const QString &p_text) {
-  return p_text.contains(QStringLiteral("!["));
-}
-
-QString MarkdownUtils::fetchImageLinkUrl(const QString &p_text) {
-  QRegularExpression regExp(QStringLiteral("\\!\\[([^\\[\\]]*)\\]"
-                                           "\\(\\s*"
-                                           "([^\\)\"'\\s]+)"
-                                           "(\\s*(\"[^\"\\)\\n\\r]*\")|('[^'\\)\\n\\r]*'))?"
-                                           "\\s*\\)"));
-
-  int index = p_text.indexOf(regExp);
-  if (index == -1) {
-    return QString();
-  }
-
-  QRegularExpressionMatch match;
-  int lastIndex = p_text.lastIndexOf(regExp, -1, &match);
-  if (lastIndex != index) {
-    return QString();
-  }
-
-  return match.captured(2).trimmed();
-}
-
 QString MarkdownUtils::linkUrlToPath(const QString &p_basePath, const QString &p_url) {
   QString fullPath;
   QFileInfo info(p_basePath, TextUtils::purifyUrl(p_url));
@@ -938,8 +913,7 @@ QVector<MarkdownImageInfo> MarkdownUtils::fetchImageInfoViaCmark(const QString &
     }
 
     // Collect alt text from child TEXT nodes.
-    for (cmark_node *child = cmark_node_first_child(node); child;
-         child = cmark_node_next(child)) {
+    for (cmark_node *child = cmark_node_first_child(node); child; child = cmark_node_next(child)) {
       if (cmark_node_get_type(child) == CMARK_NODE_TEXT) {
         const char *literal = cmark_node_get_literal(child);
         if (literal) {
@@ -1007,8 +981,8 @@ QVector<MarkdownImageInfo> MarkdownUtils::fetchImageInfoViaCmark(const QString &
     if (info.m_urlPos >= 0) {
       int searchFrom = info.m_urlPos - 1;
       while (searchFrom > 0) {
-        if (p_content[searchFrom] == QLatin1Char('[')
-            && p_content[searchFrom - 1] == QLatin1Char('!')) {
+        if (p_content[searchFrom] == QLatin1Char('[') &&
+            p_content[searchFrom - 1] == QLatin1Char('!')) {
           info.m_regionStart = searchFrom - 1;
           break;
         }
@@ -1033,8 +1007,8 @@ QVector<MarkdownImageInfo> MarkdownUtils::fetchImageInfoViaCmark(const QString &
 }
 
 QVector<MarkdownLink> MarkdownUtils::fetchImagesFromMarkdownText(const QString &p_content,
-                                                                  const QString &p_contentBasePath,
-                                                                  MarkdownLink::TypeFlags p_flags) {
+                                                                 const QString &p_contentBasePath,
+                                                                 MarkdownLink::TypeFlags p_flags) {
   QVector<MarkdownLink> images;
   const auto infos = fetchImageInfoViaCmark(p_content);
   for (const auto &info : infos) {

@@ -47,10 +47,10 @@ class VTEXTEDIT_EXPORT MarkdownHighlighter : public VSyntaxHighlighter {
   Q_OBJECT
 public:
   MarkdownHighlighter(MarkdownHighlighterInterface *p_interface, QTextDocument *p_doc,
-                         const QSharedPointer<Theme> &p_theme,
-                         CodeBlockHighlighter *p_codeBlockHighlighter,
-                         const QSharedPointer<md::HighlighterConfig> &p_config,
-                         MathBlockHighlighter *p_mathBlockHighlighter = nullptr);
+                      const QSharedPointer<Theme> &p_theme,
+                      CodeBlockHighlighter *p_codeBlockHighlighter,
+                      const QSharedPointer<md::HighlighterConfig> &p_config,
+                      MathBlockHighlighter *p_mathBlockHighlighter = nullptr);
 
   void setTheme(const QSharedPointer<Theme> &p_theme);
 
@@ -62,7 +62,9 @@ public:
 
   const QVector<md::ElementRegion> &getHeaderRegions() const;
 
-  const QVector<md::ElementRegion> &getImageRegions() const;
+  // The image links found by the parse behind the current highlighting,
+  // carrying each link's region, resolved destination and declared `=WxH` size.
+  const QVector<md::ImageLinkInfo> &getImageLinks() const;
 
   const QVector<md::FencedCodeBlock> &getCodeBlocks() const;
 
@@ -89,8 +91,8 @@ signals:
   // QVector is implicitly shared.
   void codeBlocksUpdated(TimeStamp p_timeStamp, const QVector<md::FencedCodeBlock> &p_codeBlocks);
 
-  // Emitted when image regions have been fetched from a new parsing result.
-  void imageLinksUpdated(const QVector<md::ElementRegion> &p_imageRegions);
+  // Emitted when image links have been fetched from a new parsing result.
+  void imageLinksUpdated(const QVector<md::ImageLinkInfo> &p_imageLinks);
 
   // Emitted when header regions have been fetched from a new parsing result.
   void headersUpdated(const QVector<md::ElementRegion> &p_headerRegions);

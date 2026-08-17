@@ -134,6 +134,34 @@ struct ElementRegion {
   int m_endPos = 0;
 };
 
+// One image link found by the parse that produced the current highlighting,
+// carrying exactly what the two consumers of the highlighter's image channel
+// need: PreviewMgr, to fetch and scale the preview, and VNote's context menu,
+// to answer "is there an image under the cursor?".
+//
+// Deliberately NOT unified with the snapshot-side image struct: that one is
+// content-oriented and needs alt text, title, resolved path and existence
+// flags, none of which matter here. They share machinery, not a data type.
+struct ImageLinkInfo {
+  ImageLinkInfo() = default;
+
+  ImageLinkInfo(const ElementRegion &p_region, const QString &p_destination, int p_width,
+                int p_height)
+      : m_region(p_region), m_destination(p_destination), m_width(p_width), m_height(p_height) {}
+
+  // The whole `![alt](dest)` construct, in document positions.
+  ElementRegion m_region;
+
+  // cmark-resolved destination: entities and backslash escapes are already
+  // unescaped and any angle brackets stripped. NOT the raw source spelling, so
+  // it must never be used to compute a replacement length.
+  QString m_destination;
+
+  // Declared size from the `=WxH` extension. 0 means unspecified for that axis.
+  int m_width = 0;
+  int m_height = 0;
+};
+
 // Fenced code block only.
 struct VTEXTEDIT_EXPORT FencedCodeBlock {
   bool equalContent(const FencedCodeBlock &p_block) const {

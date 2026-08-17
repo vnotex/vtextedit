@@ -18,6 +18,31 @@ using namespace vte;
 
 typedef PreviewData::Source Source;
 
+// An upper bound on a declared `=WxH` size, in logical pixels per axis.
+//
+// The declared size is attacker-supplied in the sense that it comes from the
+// document, and it is multiplied again by the device pixel ratio before
+// allocation: `![](a.png =99999x)` at a scale factor of 2 would ask for a
+// ~200000px-wide pixmap. v3 honored the size without a bound; we do not.
+static const int c_maxPreviewImageDimension = 4096;
+
+static int clampPreviewDimension(int p_value) {
+  return qBound(0, p_value, c_maxPreviewImageDimension);
+}
+
+// Identity of a preview resource: the destination plus the declared size.
+//
+// Built by plain concatenation rather than chained QString::arg(). A
+// destination keeps its percent-encoding, so `a%2F.png` contains what arg()
+// reads as the `%2` placeholder, and a second arg() would substitute into it --
+// making the composition non-injective and letting two distinct images share
+// one cached pixmap. The URL is length-prefixed so that no destination
+// containing `_` can imitate the size suffix either.
+static QString previewResourceName(const QString &p_shortUrl, int p_width, int p_height) {
+  return QString::number(p_shortUrl.size()) + QLatin1Char(':') + p_shortUrl + QLatin1Char('_') +
+         QString::number(p_width) + QLatin1Char('_') + QString::number(p_height);
+}
+
 PreviewMgr::PreviewMgr(PreviewMgrInterface *p_interface, QObject *p_parent)
     : QObject(p_parent), m_interface(p_interface), m_previewData(Source::MaxSource) {}
 
@@ -53,20 +78,20 @@ void PreviewMgr::setPreviewEnabled(bool p_enabled) {
   }
 }
 
-void PreviewMgr::updateImageLinks(const QVector<md::ElementRegion> &p_regions) {
+void PreviewMgr::updateImageLinks(const QVector<md::ImageLinkInfo> &p_links) {
   auto &data = m_previewData[Source::ImageLink];
   if (!data.m_enabled) {
     return;
   }
 
   auto ts = ++data.m_timeStamp;
-  previewImageLinks(ts, p_regions);
+  previewImageLinks(ts, p_links);
 }
 
 void PreviewMgr::previewImageLinks(TimeStamp p_timeStamp,
-                                   const QVector<md::ElementRegion> &p_regions) {
+                                   const QVector<md::ImageLinkInfo> &p_links) {
   QVector<ImageLink> imageLinks;
-  fetchImageLinksFromRegions(p_regions, imageLinks);
+  buildImageLinksForLayout(p_links, imageLinks);
 
   OrderedIntSet affectedBlocks;
 
@@ -79,16 +104,17 @@ void PreviewMgr::previewImageLinks(TimeStamp p_timeStamp,
   relayout(affectedBlocks);
 }
 
-void PreviewMgr::fetchImageLinksFromRegions(const QVector<md::ElementRegion> &p_regions,
-                                            QVector<ImageLink> &p_imageLinks) {
+void PreviewMgr::buildImageLinksForLayout(const QVector<md::ImageLinkInfo> &p_links,
+                                          QVector<ImageLink> &p_imageLinks) {
   p_imageLinks.clear();
-  if (p_regions.isEmpty()) {
+  if (p_links.isEmpty()) {
     return;
   }
 
-  p_imageLinks.reserve(p_regions.size());
+  p_imageLinks.reserve(p_links.size());
   auto doc = document();
-  for (const auto &reg : p_regions) {
+  for (const auto &info : p_links) {
+    const auto &reg = info.m_region;
     QTextBlock firstBlock = doc->findBlock(reg.m_startPos);
     if (!firstBlock.isValid()) {
       continue;
@@ -103,21 +129,6 @@ void PreviewMgr::fetchImageLinksFromRegions(const QVector<md::ElementRegion> &p_
     int firstBlockStart = firstBlock.position();
     int lastBlockStart = lastBlock.position();
     int lastBlockEnd = lastBlockStart + lastBlock.length() - 1;
-
-    QString text;
-    if (firstBlock.blockNumber() == lastBlock.blockNumber()) {
-      text = firstBlock.text().mid(reg.m_startPos - firstBlockStart, reg.m_endPos - reg.m_startPos);
-    } else {
-      text = firstBlock.text().mid(reg.m_startPos - firstBlockStart);
-
-      QTextBlock block = firstBlock.next();
-      while (block.isValid() && block.blockNumber() < lastBlock.blockNumber()) {
-        text += "\n" + block.text();
-        block = block.next();
-      }
-
-      text += "\n" + lastBlock.text().left(reg.m_endPos - lastBlockStart);
-    }
 
     // Preview the image at the last block.
     ImageLink link(qMax(reg.m_startPos, lastBlockStart), reg.m_endPos, lastBlockStart,
@@ -135,9 +146,25 @@ void PreviewMgr::fetchImageLinksFromRegions(const QVector<md::ElementRegion> &p_
       link.m_isBlockwise = false;
     }
 
-    fetchImageLink(text, link);
+    // The destination arrives already resolved by cmark, so there is nothing
+    // left to parse here. If it is spelled with `\` instead of `/`, skip it to
+    // align with read mode -- a letter is not escapable in a Markdown
+    // destination, so `vx_images\a.png` really does still contain a backslash
+    // after cmark's unescaping, while `a\_b.png` correctly resolves to
+    // `a_b.png` and is previewed.
+    if (info.m_destination.isEmpty()) {
+      continue;
+    }
+    if (info.m_destination.contains(QLatin1Char('\\'))) {
+      qWarning() << "skipped local image with `\\` in path (use `/` instead)" << info.m_destination;
+      continue;
+    }
 
-    if (link.m_linkUrl.isEmpty() || link.m_linkShortUrl.isEmpty()) {
+    link.m_linkShortUrl = info.m_destination;
+    link.m_linkUrl = MarkdownUtils::linkUrlToPath(m_interface->basePath(), info.m_destination);
+    link.m_width = clampPreviewDimension(info.m_width);
+    link.m_height = clampPreviewDimension(info.m_height);
+    if (link.m_linkUrl.isEmpty()) {
       continue;
     }
 
@@ -146,24 +173,6 @@ void PreviewMgr::fetchImageLinksFromRegions(const QVector<md::ElementRegion> &p_
 }
 
 QTextDocument *PreviewMgr::document() const { return m_interface->document(); }
-
-void PreviewMgr::fetchImageLink(const QString &p_text, ImageLink &p_info) {
-  QString shortUrl = MarkdownUtils::fetchImageLinkUrl(p_text);
-
-  // If it is using `\` instead of `/`, skip it to align with read mode.
-  if (shortUrl.contains(QLatin1Char('\\'))) {
-    qWarning() << "skipped local image with `\\` in path (use `/` instead)" << shortUrl;
-    p_info.m_linkShortUrl = p_info.m_linkUrl = QString();
-    return;
-  }
-
-  p_info.m_linkShortUrl = shortUrl;
-  if (shortUrl.isEmpty()) {
-    p_info.m_linkUrl = shortUrl;
-  } else {
-    p_info.m_linkUrl = MarkdownUtils::linkUrlToPath(m_interface->basePath(), shortUrl);
-  }
-}
 
 QSize PreviewMgr::imageResourceSize(const QString &p_name) {
   auto resourceMgr = m_interface->documentResourceMgr();
@@ -210,8 +219,10 @@ void PreviewMgr::updateBlockPreview(TimeStamp p_timeStamp, const QVector<ImageLi
 }
 
 QString PreviewMgr::imageResourceName(const ImageLink &p_link) {
-  // Add size info to the name.
-  QString name = p_link.m_linkShortUrl;
+  // The declared size is part of the resource identity: the same file at
+  // `=500x` and at `=250x` are two different pixmaps, and keying on the URL
+  // alone would make whichever was rendered first win for both.
+  QString name = previewResourceName(p_link.m_linkShortUrl, p_link.m_width, p_link.m_height);
   auto resourceMgr = m_interface->documentResourceMgr();
   if (resourceMgr->containsImage(name)) {
     return name;
@@ -238,15 +249,29 @@ QString PreviewMgr::imageResourceName(const ImageLink &p_link) {
   } else {
     // URL. Try to download it.
     // qrc:// files will touch this path.
-    downloader()->requestAsync(imgPath);
-
-    QSharedPointer<UrlImageData> urlData(new UrlImageData(name));
-    m_urlMap.insert(imgPath, urlData);
+    auto &pending = m_urlMap[imgPath];
+    // Only the first pending entry for a URL issues a request; the rest ride
+    // along on the same download and are all served when it completes.
+    const bool alreadyRequested = !pending.isEmpty();
+    bool known = false;
+    for (const auto &entry : pending) {
+      if (entry->m_name == name) {
+        known = true;
+        break;
+      }
+    }
+    if (!known) {
+      pending.append(
+          QSharedPointer<UrlImageData>(new UrlImageData(name, p_link.m_width, p_link.m_height)));
+    }
+    if (!alreadyRequested) {
+      downloader()->requestAsync(imgPath);
+    }
     return QString();
   }
 
-  resourceMgr->addImage(name, MarkdownUtils::scaleImage(image, 0, 0,
-                                                         m_interface->scaleFactor()));
+  resourceMgr->addImage(name, MarkdownUtils::scaleImage(image, p_link.m_width, p_link.m_height,
+                                                        m_interface->scaleFactor()));
   return name;
 }
 
@@ -325,30 +350,44 @@ NetworkAccess *PreviewMgr::downloader() {
 }
 
 void PreviewMgr::imageDownloaded(const NetworkReply &p_data, const QString &p_url) {
-  // Mainly used for image link preview.
-  if (!m_previewData[Source::ImageLink].m_enabled) {
-    return;
-  }
-
+  // Retire the pending entry FIRST, whatever happens next. `imageResourceName()`
+  // treats a non-empty pending vector as "a request is already in flight" and
+  // issues no new one, so bailing out before the erase would strand this URL
+  // for the lifetime of the editor: previews disabled mid-download would mean
+  // the image never appears again, even after they are re-enabled.
   auto it = m_urlMap.find(p_url);
   if (it == m_urlMap.end()) {
     return;
   }
 
-  auto data = it.value();
+  const auto pending = it.value();
   m_urlMap.erase(it);
 
-  auto resourceMgr = m_interface->documentResourceMgr();
-  if (resourceMgr->containsImage(data->m_name) || data->m_name.isEmpty()) {
+  // Mainly used for image link preview.
+  if (!m_previewData[Source::ImageLink].m_enabled) {
     return;
   }
 
   QPixmap image;
   image.loadFromData(p_data.m_data);
-  if (!image.isNull()) {
+  if (image.isNull()) {
+    return;
+  }
+
+  auto resourceMgr = m_interface->documentResourceMgr();
+  bool added = false;
+  // One download may serve several declared sizes of the same URL.
+  for (const auto &data : pending) {
+    if (data->m_name.isEmpty() || resourceMgr->containsImage(data->m_name)) {
+      continue;
+    }
     resourceMgr->addImage(data->m_name,
-                          MarkdownUtils::scaleImage(image, 0, 0,
+                          MarkdownUtils::scaleImage(image, data->m_width, data->m_height,
                                                     m_interface->scaleFactor()));
+    added = true;
+  }
+
+  if (added) {
     emit requestUpdateImageLinks();
   }
 }

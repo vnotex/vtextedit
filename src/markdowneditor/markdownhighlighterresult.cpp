@@ -10,8 +10,8 @@
 #include <QTextBlock>
 #include <QTextDocument>
 
-#include <vtextedit/markdownutils.h>
 #include <vtextedit/markdownhighlighter.h>
+#include <vtextedit/markdownutils.h>
 
 using namespace vte;
 
@@ -22,10 +22,9 @@ MarkdownHighlighterFastResult::MarkdownHighlighterFastResult(
   m_blocksHighlights = p_result->m_blocksHighlights;
 }
 
-MarkdownHighlighterResult::MarkdownHighlighterResult(const MarkdownHighlighter *p_peg,
-                                           const QSharedPointer<md::MarkdownParseResult> &p_result,
-                                           TimeStamp p_curTimeStamp,
-                                           const ContentsChange &p_lastContentsChange)
+MarkdownHighlighterResult::MarkdownHighlighterResult(
+    const MarkdownHighlighter *p_peg, const QSharedPointer<md::MarkdownParseResult> &p_result,
+    TimeStamp p_curTimeStamp, const ContentsChange &p_lastContentsChange)
     : m_timeStamp(p_result->m_timeStamp), m_numOfBlocks(p_result->m_numOfBlocks) {
   // TODO: use @p_curTimeStamp and @p_lastContentsChange to fix the position of
   // results. Now we will ignore unmatched results in MarkdownHighlighter to
@@ -36,7 +35,6 @@ MarkdownHighlighterResult::MarkdownHighlighterResult(const MarkdownHighlighter *
   m_blocksHighlights = p_result->m_blocksHighlights;
 
   // Implicit sharing.
-  m_imageRegions = p_result->m_imageRegions;
   m_headerRegions = p_result->m_headerRegions;
   m_foldingRegions = p_result->m_foldingRegions;
 
@@ -57,6 +55,14 @@ MarkdownHighlighterResult::MarkdownHighlighterResult(const MarkdownHighlighter *
   m_codeElements = p_result->m_codeElements;
   m_mathElements = p_result->m_mathElements;
   m_tableElements = p_result->m_tableElements;
+
+  // ATTENTION: build this from p_result, never from a member. The old
+  // `m_imageRegions = p_result->m_imageRegions;` sat near the TOP of this
+  // constructor, where `m_imageElements` is still empty; transcribing it there
+  // against the member would have published an empty list on every parse and
+  // the editor would show no image previews at all. Sourcing straight from
+  // p_result makes publication independent of member assignment order.
+  m_imageLinks = md::buildImageLinks(p_result->m_imageElements);
 }
 
 QVector<QSharedPointer<const Preview>>
@@ -89,11 +95,11 @@ MarkdownHighlighterResult::buildPreviews(const QTextDocument *p_doc, int p_typeM
                                     << image.m_startPos << "," << image.m_endPos << ")";
         continue;
       }
-      previews.append(PreviewBuilder::createImage(
-          revision, image.m_startPos, image.m_endPos, source,
-          image.m_standalone ? PreviewPlacement::BlockAfterSource
-                             : PreviewPlacement::InlineAboveLine,
-          image.m_destination, image.m_alternateText, image.m_title));
+      previews.append(
+          PreviewBuilder::createImage(revision, image.m_startPos, image.m_endPos, source,
+                                      image.m_standalone ? PreviewPlacement::BlockAfterSource
+                                                         : PreviewPlacement::InlineAboveLine,
+                                      image.m_destination, image.m_alternateText, image.m_title));
     }
   }
 
@@ -151,18 +157,19 @@ MarkdownHighlighterResult::buildPreviews(const QTextDocument *p_doc, int p_typeM
       ++counts[static_cast<int>(preview->type())];
     }
 
-    qCDebug(previewSnapshotLog)
-        << "built" << previews.size() << "snapshot(s) for revision" << revision
-        << "typeMask" << Qt::hex << p_typeMask << Qt::dec << "- image" << counts[0] << "code"
-        << counts[1] << "math" << counts[2] << "table" << counts[3] << "(source elements: image"
-        << m_imageElements.size() << "code" << m_codeElements.size() << "math"
-        << m_mathElements.size() << "table" << m_tableElements.size() << ")";
+    qCDebug(previewSnapshotLog) << "built" << previews.size() << "snapshot(s) for revision"
+                                << revision << "typeMask" << Qt::hex << p_typeMask << Qt::dec
+                                << "- image" << counts[0] << "code" << counts[1] << "math"
+                                << counts[2] << "table" << counts[3] << "(source elements: image"
+                                << m_imageElements.size() << "code" << m_codeElements.size()
+                                << "math" << m_mathElements.size() << "table"
+                                << m_tableElements.size() << ")";
 
     for (const auto &preview : previews) {
-      qCDebug(previewSnapshotLog)
-          << "  " << previewTypeName(preview->type()) << "at [" << preview->startPos() << ","
-          << preview->endPos() << ") placement" << previewPlacementName(preview->placement())
-          << "source" << preview->sourceMarkdown().left(60);
+      qCDebug(previewSnapshotLog) << "  " << previewTypeName(preview->type()) << "at ["
+                                  << preview->startPos() << "," << preview->endPos()
+                                  << ") placement" << previewPlacementName(preview->placement())
+                                  << "source" << preview->sourceMarkdown().left(60);
     }
   }
 
@@ -281,7 +288,8 @@ void MarkdownHighlighterResult::parseFencedCodeBlocks(
   }
 }
 
-void MarkdownHighlighterResult::parseTableBlocks(const QSharedPointer<md::MarkdownParseResult> &p_result) {
+void MarkdownHighlighterResult::parseTableBlocks(
+    const QSharedPointer<md::MarkdownParseResult> &p_result) {
   const auto &tableRegs = p_result->m_tableRegions;
   const auto &headerRegs = p_result->m_tableHeaderRegions;
   const auto &borderRegs = p_result->m_tableBorderRegions;
@@ -348,8 +356,8 @@ static bool isDisplayFormulaRawEnd(const QString &p_text) {
   return false;
 }
 
-void MarkdownHighlighterResult::parseMathBlock(const MarkdownHighlighter *p_peg,
-                                          const QSharedPointer<md::MarkdownParseResult> &p_result) {
+void MarkdownHighlighterResult::parseMathBlock(
+    const MarkdownHighlighter *p_peg, const QSharedPointer<md::MarkdownParseResult> &p_result) {
   const QTextDocument *doc = p_peg->document();
 
   // Inline equations.
@@ -436,8 +444,8 @@ void MarkdownHighlighterResult::parseMathBlock(const MarkdownHighlighter *p_peg,
   }
 }
 
-void MarkdownHighlighterResult::parseHRuleBlocks(const MarkdownHighlighter *p_peg,
-                                            const QSharedPointer<md::MarkdownParseResult> &p_result) {
+void MarkdownHighlighterResult::parseHRuleBlocks(
+    const MarkdownHighlighter *p_peg, const QSharedPointer<md::MarkdownParseResult> &p_result) {
   const QTextDocument *doc = p_peg->document();
   const auto &regs = p_result->m_hruleRegions;
 

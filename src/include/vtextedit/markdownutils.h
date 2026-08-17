@@ -57,11 +57,6 @@ public:
 
   static bool isFencedCodeBlockStartMark(const QString &p_text);
 
-  static bool hasImageLink(const QString &p_text);
-
-  // Fetch the image link's URL if there is only one link.
-  static QString fetchImageLinkUrl(const QString &p_text);
-
   // Return the absolute path of @p_url according to @p_basePath.
   static QString linkUrlToPath(const QString &p_basePath, const QString &p_url);
 

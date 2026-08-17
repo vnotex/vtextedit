@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(VTextEdit VERSION 2.0.0 LANGUAGES C CXX)
+project(VTextEdit VERSION 4.0.0 LANGUAGES C CXX)
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
@@ -185,6 +185,14 @@ endif()
 # allocate that struct themselves, so its layout is part of the ABI; and the new
 # member defaults to true, which changes what an unmodified application does.
 # Both failures are silent without a SOVERSION bump.
+#
+# 4.0: the image channel changed shape. MarkdownUtils::hasImageLink() and
+# fetchImageLinkUrl() were removed (their regular expression could not match an
+# `=WxH` size and silently dropped every sized image);
+# MarkdownHighlighter::getImageRegions() became getImageLinks() and
+# imageLinksUpdated() / PreviewMgr::updateImageLinks() now carry
+# md::ImageLinkInfo rather than md::ElementRegion. An already-linked consumer
+# would otherwise resolve against a signature that no longer exists.
 set_target_properties(VTextEdit PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION ${PROJECT_VERSION_MAJOR}

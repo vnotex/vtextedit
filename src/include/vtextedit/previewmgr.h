@@ -12,8 +12,8 @@
 #include "vtextedit_export.h"
 
 #include <vtextedit/global.h>
-#include <vtextedit/orderedintset.h>
 #include <vtextedit/markdownhighlighterdata.h>
+#include <vtextedit/orderedintset.h>
 #include <vtextedit/previewdata.h>
 
 class QTextDocument;
@@ -103,7 +103,7 @@ public:
   static int calculateBlockMargin(const QTextBlock &p_block, int p_tabStopDistance);
 
 public slots:
-  void updateImageLinks(const QVector<md::ElementRegion> &p_regions);
+  void updateImageLinks(const QVector<md::ImageLinkInfo> &p_links);
 
   void updateCodeBlocks(const QVector<QSharedPointer<PreviewItem>> &p_items);
 
@@ -145,7 +145,8 @@ private:
 
     friend QDebug operator<<(QDebug p_debug, const ImageLink &p_link) {
       p_debug << "ImageLink [" << p_link.m_startPos << p_link.m_endPos << ")"
-              << "shortUrl" << p_link.m_linkShortUrl << "url" << p_link.m_linkUrl;
+              << "shortUrl" << p_link.m_linkShortUrl << "url" << p_link.m_linkUrl << "size"
+              << p_link.m_width << "x" << p_link.m_height;
       return p_debug;
     }
 
@@ -168,24 +169,39 @@ private:
     // Full URL of the link.
     QString m_linkUrl;
 
+    // Declared size from the `=WxH` extension. 0 means unspecified for that
+    // axis, in which case MarkdownUtils::scaleImage() keeps the aspect ratio.
+    int m_width = 0;
+
+    int m_height = 0;
+
     // Whether it is an image block.
+    //
+    // Deliberately computed here rather than taken from the walker's
+    // m_standalone: this needs the live QTextDocument, its font metrics and the
+    // tab stop distance, none of which the walker has. The two are kept
+    // equivalent by testImageStandaloneMatchesPaintedPath().
     bool m_isBlockwise = false;
   };
 
   struct UrlImageData {
-    UrlImageData(const QString &p_name) : m_name(p_name) {}
+    UrlImageData(const QString &p_name, int p_width, int p_height)
+        : m_name(p_name), m_width(p_width), m_height(p_height) {}
 
     QString m_name;
+
+    int m_width = 0;
+
+    int m_height = 0;
   };
 
-  void previewImageLinks(TimeStamp p_timeStamp, const QVector<md::ElementRegion> &p_regions);
+  void previewImageLinks(TimeStamp p_timeStamp, const QVector<md::ImageLinkInfo> &p_links);
 
-  // According to @p_regions, fetch the image link Url.
-  void fetchImageLinksFromRegions(const QVector<md::ElementRegion> &p_regions,
-                                  QVector<ImageLink> &p_imageLinks);
-
-  // Fetch the image's full path and size.
-  void fetchImageLink(const QString &p_text, ImageLink &p_info);
+  // Join the parsed image links with the layout information only the live
+  // document can supply: which blocks they occupy, the block's left padding,
+  // and whether they stand alone on their line.
+  void buildImageLinksForLayout(const QVector<md::ImageLinkInfo> &p_links,
+                                QVector<ImageLink> &p_imageLinks);
 
   void updateBlockPreview(TimeStamp p_timeStamp, const QVector<ImageLink> &p_imageLinks,
                           OrderedIntSet &p_affectedBlocks);
@@ -226,9 +242,14 @@ private:
   // Managed by QObject.
   NetworkAccess *m_downloader = nullptr;
 
-  // Map from URL to name in the resource manager.
+  // Map from URL to the pending resource entries for that URL.
   // Used for downloading images.
-  QHash<QString, QSharedPointer<UrlImageData>> m_urlMap;
+  //
+  // One URL may be pending at several declared sizes at once (`=500x` and
+  // `=250x` in the same document), and each of those is a separate resource. A
+  // single-value map would let the second insert overwrite the first, and the
+  // erase on completion would then discard the survivor.
+  QHash<QString, QVector<QSharedPointer<UrlImageData>>> m_urlMap;
 };
 } // namespace vte
 #endif // PREVIEWMGR_H

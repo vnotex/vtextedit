@@ -1,6 +1,10 @@
 #include "test_markdowneditor.h"
 
+#include <QDir>
+#include <QImage>
+#include <QPixmap>
 #include <QSharedPointer>
+#include <QTemporaryDir>
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
@@ -505,6 +509,116 @@ void TestMarkdownEditor::testUndoIsASingleStep() {
 
   fixture.edit()->undo();
   QCOMPARE(fixture.text(), before);
+}
+
+namespace {
+// Write a solid p_width x p_height PNG into p_dir and return its file name.
+QString writeTestImage(const QTemporaryDir &p_dir, const QString &p_name, int p_width,
+                       int p_height) {
+  QImage img(p_width, p_height, QImage::Format_ARGB32);
+  img.fill(Qt::red);
+  const bool ok = img.save(QDir(p_dir.path()).filePath(p_name), "PNG");
+  return ok ? p_name : QString();
+}
+
+// The resource name PreviewMgr composes for a link. The declared size is part
+// of the key, which is what keeps two sizes of one file apart, and the
+// destination is length-prefixed rather than fed through QString::arg() --
+// a percent-encoded destination such as `a%2F.png` contains what arg() would
+// read as a placeholder, which would make the key non-injective.
+QString resourceName(const QString &p_shortUrl, int p_width, int p_height) {
+  return QString::number(p_shortUrl.size()) + QLatin1Char(':') + p_shortUrl + QLatin1Char('_') +
+         QString::number(p_width) + QLatin1Char('_') + QString::number(p_height);
+}
+
+// Drive an editor over a local image directory until its previews settle, then
+// hand it to p_check.
+template <typename Check>
+void withImageEditor(const QString &p_markdown, const QString &p_basePath, Check p_check) {
+  Fixture fixture(p_markdown, 0);
+  fixture.editor()->setBasePath(p_basePath);
+  // The base path changed after the first parse, so redo the preview pass.
+  fixture.editor()->getHighlighter()->updateHighlight();
+  fixture.waitForFreshAst(0);
+  p_check(fixture);
+}
+} // namespace
+
+// The image links must actually reach the highlighter's public channel.
+//
+// This is the one assertion that catches the construction-order trap in
+// MarkdownHighlighterResult: every element-level test can pass while this is
+// empty, and then the editor shows no previews at all.
+void TestMarkdownEditor::testImageLinksArePublished() {
+  Fixture fixture(QStringLiteral("![alt](a.png =500x300)\n"), 0);
+  fixture.waitForFreshAst(0);
+
+  const auto &links = fixture.editor()->getHighlighter()->getImageLinks();
+  QCOMPARE(links.size(), 1);
+  QCOMPARE(links.first().m_destination, QStringLiteral("a.png"));
+  QCOMPARE(links.first().m_width, 500);
+  QCOMPARE(links.first().m_height, 300);
+  QVERIFY(links.first().m_region.m_startPos < links.first().m_region.m_endPos);
+}
+
+// The declared width is honored. Before this, `=500x` made the whole link fail
+// to match the preview path's regular expression, so nothing was rendered at
+// all; and even the matched case hardcoded a 0x0 (natural size) scale.
+void TestMarkdownEditor::testSizedImagePreviewIsScaled() {
+  QTemporaryDir dir;
+  QVERIFY(dir.isValid());
+  QVERIFY(!writeTestImage(dir, QStringLiteral("local.png"), 40, 20).isEmpty());
+
+  withImageEditor(QStringLiteral("![](local.png =500x)\n"), dir.path(), [](Fixture &fixture) {
+    const QPixmap *img = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT((img = fixture.editor()->findImageFromDocumentResourceMgr(
+                                  resourceName(QStringLiteral("local.png"), 500, 0))) != nullptr,
+                             5000);
+    // Width honored, aspect ratio preserved because the height is unspecified.
+    QCOMPARE(img->width(), 500);
+    QCOMPARE(img->height(), 250);
+  });
+}
+
+// One destination at two declared sizes is two resources. Keying the cache on
+// the URL alone would let whichever rendered first win for both.
+void TestMarkdownEditor::testOneUrlAtTwoSizesGetsTwoResources() {
+  QTemporaryDir dir;
+  QVERIFY(dir.isValid());
+  QVERIFY(!writeTestImage(dir, QStringLiteral("local.png"), 40, 20).isEmpty());
+
+  withImageEditor(QStringLiteral("![](local.png =500x)\n\n![](local.png =250x)\n"), dir.path(),
+                  [](Fixture &fixture) {
+                    const QPixmap *big = nullptr;
+                    const QPixmap *small = nullptr;
+                    QTRY_VERIFY_WITH_TIMEOUT(
+                        (big = fixture.editor()->findImageFromDocumentResourceMgr(
+                             resourceName(QStringLiteral("local.png"), 500, 0))) != nullptr &&
+                            (small = fixture.editor()->findImageFromDocumentResourceMgr(
+                                 resourceName(QStringLiteral("local.png"), 250, 0))) != nullptr,
+                        5000);
+                    QCOMPARE(big->width(), 500);
+                    QCOMPARE(small->width(), 250);
+                  });
+}
+
+// A declared size is document-supplied and is multiplied again by the scale
+// factor before allocation, so it is clamped.
+void TestMarkdownEditor::testOversizedImageIsClamped() {
+  QTemporaryDir dir;
+  QVERIFY(dir.isValid());
+  QVERIFY(!writeTestImage(dir, QStringLiteral("local.png"), 40, 20).isEmpty());
+
+  withImageEditor(QStringLiteral("![](local.png =99999x)\n"), dir.path(), [](Fixture &fixture) {
+    const QPixmap *img = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT((img = fixture.editor()->findImageFromDocumentResourceMgr(
+                                  resourceName(QStringLiteral("local.png"), 4096, 0))) != nullptr,
+                             5000);
+    QCOMPARE(img->width(), 4096);
+    // The unclamped resource must not exist under any name.
+    QVERIFY(!fixture.editor()->findImageFromDocumentResourceMgr(
+        resourceName(QStringLiteral("local.png"), 99999, 0)));
+  });
 }
 
 QTEST_MAIN(tests::TestMarkdownEditor)

@@ -314,23 +314,17 @@ static QString collectLiteralText(cmark_node *p_node) {
 
 // Whether [p_docStart, p_docEnd) is the only non-whitespace content of its line.
 //
-// This has to agree with PreviewMgr::fetchImageLinksFromRegions(), which makes
-// the same block-vs-inline decision for the painted preview path; the two
-// classifications must not drift apart. PreviewMgr evaluates the whole
-// first-block-to-last-block span, whereas this only accepts a single-line
-// element. That is currently equivalent: cmark reports a multi-line inline
-// image construct at the position of its last line, so an element which spans
-// two source lines never reaches here with p_startLine != p_endLine (see the
-// image span cases in tests/test_astwalker). Revisit both together if cmark's
-// inline source positions ever change.
 // True when nothing but whitespace precedes the span on its first line and
 // nothing but whitespace follows it on its last line -- the same rule
-// PreviewMgr applies when deciding to paint a block-wise preview.
+// PreviewMgr::buildImageLinksForLayout() applies when deciding to paint a
+// block-wise preview. The two classifications must not drift apart, or an
+// image would render as a block preview in one path and an inline one in the
+// other; testImageStandaloneMatchesPaintedPath() is the gate.
 //
 // This used to be restricted to single-line spans, because cmark collapsed a
 // multiline link or image onto the line where parsing finished, making its
 // reported start and end mutually inconsistent. cmark now reports the true
-// span, so the rule applies to multiline constructs as well.
+// span, so the whole-span rule applies to multiline constructs too.
 static bool isStandaloneSpan(const QByteArray &p_utf8Text, const LineOffsetTable &p_offsets,
                              int p_startLine, int p_endLine, int p_docStart, int p_docEnd) {
   const int startLineIdx = p_startLine - 1;
@@ -446,6 +440,8 @@ static void extractTypedElement(cmark_node *p_node, cmark_node_type p_type, int 
     image.m_destination = url ? QString::fromUtf8(url) : QString();
     const char *title = cmark_node_get_title(p_node);
     image.m_title = title ? QString::fromUtf8(title) : QString();
+    image.m_width = cmark_node_get_image_width(p_node);
+    image.m_height = cmark_node_get_image_height(p_node);
     image.m_alternateText = collectLiteralText(p_node);
     image.m_standalone =
         isStandaloneSpan(p_utf8Text, p_offsets, p_startLine, p_endLine, p_docStart, p_docEnd);
@@ -683,6 +679,16 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
 
   cmark_node_free(doc);
   return result;
+}
+
+QVector<ImageLinkInfo> buildImageLinks(const QVector<ImageElement> &p_elements) {
+  QVector<ImageLinkInfo> links;
+  links.reserve(p_elements.size());
+  for (const auto &element : p_elements) {
+    links.append(ImageLinkInfo(ElementRegion(element.m_startPos, element.m_endPos),
+                               element.m_destination, element.m_width, element.m_height));
+  }
+  return links;
 }
 
 } // namespace md
