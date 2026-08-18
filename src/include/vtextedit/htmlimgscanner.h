@@ -31,11 +31,10 @@ struct VTEXTEDIT_EXPORT HtmlImgAttr {
   // replacement span; use m_valueEnd - m_valueStart (or the whole attribute
   // span), exactly as for MarkdownLink::m_urlInLink.
   //
-  // Numeric references (`&#38;` / `&#x26;`) are decoded in full. NAMED
-  // references are limited to the six this tree's own generator can emit
-  // (`amp lt gt quot apos nbsp`), matched case sensitively as HTML requires;
-  // anything else is left literal, so an exotic reference makes a destination
-  // fail to resolve rather than resolve to the wrong file.
+  // Decoded with cmark's decoder and its complete HTML5 named-reference table,
+  // so the value agrees with what the renderer resolves. That agreement is
+  // load-bearing: obsolete-image cleanup compares decoded destinations before
+  // DELETING assets.
   QString m_value;
 };
 

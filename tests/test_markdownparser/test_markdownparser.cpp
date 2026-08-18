@@ -1714,6 +1714,41 @@ void TestMarkdownParser::testHtmlImgScannerQuoting() {
              text);
   }
 
+  // Entity decoding uses cmark''s decoder and its complete HTML5 named-reference
+  // table, so a decoded destination agrees with what the RENDERER resolves. That
+  // agreement is load-bearing: obsolete-image cleanup compares decoded
+  // destinations before DELETING assets, so a subset table would let a
+  // still-rendered `a&copy;.png` be classified as obsolete.
+  {
+    struct EntityCase {
+      const char *src;
+      const char *decoded;
+    };
+    const QVector<EntityCase> entities{
+        {"a&amp;b.png", "a&b.png"},
+        {"a&copy;b.png", "a\xC2\xA9"
+                         "b.png"}, // outside any hand-written subset
+        {"a&AElig;b.png", "a\xC3\x86"
+                          "b.png"},                         // upper-case name, a REAL reference
+        {"a&#38;b.png", "a&b.png"},                         // decimal
+        {"a&#x26;b.png", "a&b.png"},                        // hex
+        {"a&notareference;b.png", "a&notareference;b.png"}, // left literal
+    };
+
+    for (const auto &c : entities) {
+      const QString text = QStringLiteral("<img src=\"%1\">").arg(QString::fromUtf8(c.src));
+      vte::RawTextState state;
+      const auto tags = vte::scanHtmlImgTags(text, 0, &state);
+      QVERIFY2(tags.size() == 1, c.src);
+      QCOMPARE(tags.first().src(), QString::fromUtf8(c.decoded));
+      // The SPAN still measures the source spelling, never the decoded value.
+      const auto *srcAttr = tags.first().attr("src");
+      QVERIFY(srcAttr);
+      QCOMPARE(text.mid(srcAttr->m_valueStart, srcAttr->m_valueEnd - srcAttr->m_valueStart),
+               QString::fromUtf8(c.src));
+    }
+  }
+
   // The first occurrence wins for reads, and the duplicate is still reported.
   {
     vte::RawTextState state;

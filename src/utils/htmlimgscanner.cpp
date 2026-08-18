@@ -1,6 +1,18 @@
 #include <vtextedit/htmlimgscanner.h>
 
-#include <QHash>
+#include <QByteArray>
+
+// cmark's HTML entity decoder, and the complete named-reference table it comes
+// with. Reaching into cmark's internal headers is already established practice
+// in this library (markdowneditor/cmarkadapter.cpp includes <node.h>), and the
+// alternative -- a hand-maintained subset -- is what this replaced: a
+// destination the renderer decodes but the scanner does not is not merely a
+// cosmetic difference. It feeds obsolete-image cleanup, which DELETES assets.
+extern "C" {
+#include <buffer.h>
+#include <cmark.h>
+#include <houdini.h>
+}
 
 using namespace vte;
 
@@ -22,94 +34,27 @@ bool isRawTextElement(const QString &p_lowerName) {
          p_lowerName == QStringLiteral("textarea") || p_lowerName == QStringLiteral("title");
 }
 
-// The named entities that can legally appear in an attribute value spelled by
-// this tree's own generators (htmlEscapeAttrValue()), plus the two an author is
-// most likely to type by hand.
+// Decode HTML character references, with the SAME table and the same rules the
+// renderer uses: cmark's houdini decoder plus its complete HTML5 named-
+// reference table.
 //
-// This is deliberately NOT the full HTML named-reference table. An unrecognized
-// `&foo;` is left LITERAL, which is the fail-safe direction: the destination
-// then simply does not resolve to a file, rather than resolving to the wrong
-// one. Names are matched EXACTLY -- HTML named references are case sensitive
-// (`&Amp;` is not `&amp;`), so case folding here would decode references a real
-// HTML parser would not.
-const QHash<QString, QChar> &namedEntities() {
-  static const QHash<QString, QChar> s_entities{
-      {QStringLiteral("amp"), QLatin1Char('&')},   {QStringLiteral("lt"), QLatin1Char('<')},
-      {QStringLiteral("gt"), QLatin1Char('>')},    {QStringLiteral("quot"), QLatin1Char('"')},
-      {QStringLiteral("apos"), QLatin1Char('\'')}, {QStringLiteral("nbsp"), QChar(0x00A0)}};
-  return s_entities;
-}
-
+// This must not be a hand-maintained subset. A destination the renderer decodes
+// but the scanner does not is not a cosmetic difference: `clearObsoleteImages()`
+// compares decoded destinations before DELETING assets, so a scanner that
+// reported `a&copy;.png` where the browser renders `a(c).png` would classify a
+// still-referenced file as obsolete and delete it.
 QString decodeEntities(const QString &p_text) {
   if (!p_text.contains(QLatin1Char('&'))) {
     return p_text;
   }
 
-  QString out;
-  out.reserve(p_text.size());
-  int i = 0;
-  while (i < p_text.size()) {
-    const QChar ch = p_text.at(i);
-    if (ch != QLatin1Char('&')) {
-      out.append(ch);
-      ++i;
-      continue;
-    }
-
-    const int semi = p_text.indexOf(QLatin1Char(';'), i + 1);
-    // A reference is short; a distant `;` is punctuation, not a terminator.
-    if (semi < 0 || semi - i > 12) {
-      out.append(ch);
-      ++i;
-      continue;
-    }
-
-    const QString body = p_text.mid(i + 1, semi - i - 1);
-    if (body.isEmpty()) {
-      out.append(ch);
-      ++i;
-      continue;
-    }
-
-    if (body.at(0) == QLatin1Char('#')) {
-      if (body.size() < 2) {
-        out.append(ch);
-        ++i;
-        continue;
-      }
-      bool ok = false;
-      const uint code = body.at(1) == QLatin1Char('x') || body.at(1) == QLatin1Char('X')
-                            ? body.mid(2).toUInt(&ok, 16)
-                            : body.mid(1).toUInt(&ok, 10);
-      if (ok && code > 0 && code <= 0x10FFFF) {
-        if (code <= 0xFFFF) {
-          out.append(QChar(static_cast<ushort>(code)));
-        } else {
-          out.append(QChar(QChar::highSurrogate(code)));
-          out.append(QChar(QChar::lowSurrogate(code)));
-        }
-        i = semi + 1;
-        continue;
-      }
-      out.append(ch);
-      ++i;
-      continue;
-    }
-
-    const auto it = namedEntities().constFind(body);
-    if (it != namedEntities().constEnd()) {
-      out.append(it.value());
-      i = semi + 1;
-      continue;
-    }
-
-    out.append(ch);
-    ++i;
-  }
-
-  return out;
+  const QByteArray utf8 = p_text.toUtf8();
+  cmark_strbuf buf = CMARK_BUF_INIT(cmark_get_default_mem_allocator());
+  houdini_unescape_html_f(&buf, reinterpret_cast<const uint8_t *>(utf8.constData()), utf8.size());
+  const QString decoded = QString::fromUtf8(reinterpret_cast<const char *>(buf.ptr), buf.size);
+  cmark_strbuf_free(&buf);
+  return decoded;
 }
-
 // Skip past the end of a tag that started at p_idx (which points at '<'),
 // honoring quoted attribute values so a '>' inside `alt="a>b"` does not
 // terminate it. Returns the index just past the closing '>', or -1 when the tag
