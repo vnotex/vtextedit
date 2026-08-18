@@ -7,6 +7,7 @@ find_package(Qt${QT_DEFAULT_MAJOR_VERSION} REQUIRED COMPONENTS Core Gui Widgets 
 
 set(SRC_FOLDER ../../src)
 set(MDEDITOR_FOLDER ${SRC_FOLDER}/markdowneditor)
+set(LIBS_FOLDER ../../libs)
 
 add_executable(test_tablepreview
     ${SRC_FOLDER}/include/vtextedit/preview.h
@@ -23,6 +24,8 @@ target_include_directories(test_tablepreview PRIVATE
     ${SRC_FOLDER}
     ${SRC_FOLDER}/include
     ${MDEDITOR_FOLDER}
+    ${LIBS_FOLDER}/cmark/src
+    ${CMAKE_BINARY_DIR}/libs/cmark/src
 )
 
 target_compile_definitions(test_tablepreview PRIVATE
@@ -34,5 +37,6 @@ target_link_libraries(test_tablepreview PRIVATE
     Qt::Gui
     Qt::Test
     Qt::Widgets
+    cmark
 )
 add_test(NAME test_tablepreview COMMAND test_tablepreview)

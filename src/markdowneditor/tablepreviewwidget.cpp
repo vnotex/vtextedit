@@ -4,6 +4,7 @@
 #include <QAbstractTextDocumentLayout>
 #include <QAction>
 #include <QActionGroup>
+#include <QClipboard>
 #include <QContextMenuEvent>
 #include <QFocusEvent>
 #include <QFont>
@@ -30,7 +31,11 @@
 #include <QWheelEvent>
 #include <QtMath>
 
+#include <cstdlib>
 #include <functional>
+#include <memory>
+
+#include <cmark.h>
 
 #include "previewlogging.h"
 
@@ -505,6 +510,51 @@ QString TablePreviewDocument::toMarkdown() const {
 
   return TablePreviewSerializer::serialize(cells(), m_alignments, m_rowPrefixes,
                                            m_delimiterPrefix);
+}
+
+QString TablePreviewDocument::toStandaloneMarkdown() const {
+  // Guarded exactly as toMarkdown() is, because cells() reads the cached
+  // m_table - but without the round-trippability requirement: widening a
+  // ragged sheet only affects the copy, which is never written back.
+  if (!isIntact()) {
+    return QString();
+  }
+
+  const QVector<QVector<QString>> matrix = cells();
+  // One empty prefix per row, and an empty delimiter prefix: the copy is meant
+  // to stand on its own, so the blockquote or list indent the binding carried
+  // is deliberately dropped. Sized from the matrix rather than m_rowCount, so
+  // the serializer's size check cannot fail on a drift between the two.
+  return TablePreviewSerializer::serialize(matrix, m_alignments,
+                                           QVector<QString>(matrix.size()), QString());
+}
+
+QString TablePreviewDocument::toHtml() const {
+  const QString markdown = toStandaloneMarkdown();
+  if (markdown.isEmpty()) {
+    return QString();
+  }
+
+  const QByteArray utf8 = markdown.toUtf8();
+  // CMARK_OPT_DEFAULT is the safe mode: raw inline HTML inside a cell is
+  // replaced with an "omitted" comment rather than passed through into a
+  // payload which lands in another application.
+  std::unique_ptr<char, decltype(&std::free)> rendered(
+      cmark_markdown_to_html(utf8.constData(), static_cast<size_t>(utf8.size()), CMARK_OPT_DEFAULT),
+      &std::free);
+  if (!rendered) {
+    return QString();
+  }
+
+  QString html = QString::fromUtf8(rendered.get());
+  // Exactly one trailing newline, which cmark always terminates the rendered
+  // table with. Not trimmed(): that would eat whitespace which is meaningful
+  // inside a <pre> a cell could carry.
+  if (html.endsWith(QLatin1Char('\n'))) {
+    html.chop(1);
+  }
+
+  return html;
 }
 
 QTextCharFormat TablePreviewDocument::baselineCellFormat(int p_row) const {
@@ -1591,7 +1641,7 @@ void TablePreviewSheet::focusCell(int p_row, int p_column) {
   clampSelectionIntoOneCell();
 }
 
-QMenu *TablePreviewSheet::buildTableMenu(QMenu *p_parent) {
+QMenu *TablePreviewSheet::buildTableMenu(QMenu *p_parent, bool p_offerMutations) {
   QTextTable *table = m_document ? m_document->table() : nullptr;
   if (!table) {
     return nullptr;
@@ -1613,95 +1663,128 @@ QMenu *TablePreviewSheet::buildTableMenu(QMenu *p_parent) {
   auto menu = new QMenu(tr("Table"), p_parent);
   menu->setObjectName(QStringLiteral("TablePreviewTableMenu"));
 
-  auto addOperation = [this, menu, writable](const QString &p_text, const QString &p_name,
-                                             bool p_allowed, std::function<void()> p_operation) {
-    QAction *action = menu->addAction(p_text);
-    action->setObjectName(p_name);
-    action->setEnabled(writable && p_allowed);
-    connect(action, &QAction::triggered, this, p_operation);
-    return action;
-  };
+  if (p_offerMutations) {
+    auto addOperation = [this, menu, writable](const QString &p_text, const QString &p_name,
+                                               bool p_allowed, std::function<void()> p_operation) {
+      QAction *action = menu->addAction(p_text);
+      action->setObjectName(p_name);
+      action->setEnabled(writable && p_allowed);
+      connect(action, &QAction::triggered, this, p_operation);
+      return action;
+    };
 
-  addOperation(tr("Insert Row Above"), QStringLiteral("InsertRowAbove"),
-               row > 0 && m_document->canInsertRow(), [this, row, column]() {
-                 if (m_document->insertRow(row)) {
-                   focusCell(row, column);
-                 }
-               });
+    addOperation(tr("Insert Row Above"), QStringLiteral("InsertRowAbove"),
+                 row > 0 && m_document->canInsertRow(), [this, row, column]() {
+                   if (m_document->insertRow(row)) {
+                     focusCell(row, column);
+                   }
+                 });
 
-  addOperation(tr("Insert Row Below"), QStringLiteral("InsertRowBelow"),
-               m_document->canInsertRow(), [this, row, column]() {
-                 if (m_document->insertRow(row + 1)) {
-                   focusCell(row + 1, column);
-                 }
-               });
+    addOperation(tr("Insert Row Below"), QStringLiteral("InsertRowBelow"),
+                 m_document->canInsertRow(), [this, row, column]() {
+                   if (m_document->insertRow(row + 1)) {
+                     focusCell(row + 1, column);
+                   }
+                 });
 
-  addOperation(tr("Delete Row"), QStringLiteral("DeleteRow"), m_document->canDeleteRow(row),
-               [this, row, column]() {
-                 if (m_document->removeRow(row)) {
-                   focusCell(row, column);
-                 }
-               });
+    addOperation(tr("Delete Row"), QStringLiteral("DeleteRow"), m_document->canDeleteRow(row),
+                 [this, row, column]() {
+                   if (m_document->removeRow(row)) {
+                     focusCell(row, column);
+                   }
+                 });
 
-  menu->addSeparator();
+    menu->addSeparator();
 
-  addOperation(tr("Insert Column Left"), QStringLiteral("InsertColumnLeft"),
-               m_document->canInsertColumn(), [this, row, column]() {
-                 if (m_document->insertColumn(column)) {
-                   focusCell(row, column);
-                 }
-               });
+    addOperation(tr("Insert Column Left"), QStringLiteral("InsertColumnLeft"),
+                 m_document->canInsertColumn(), [this, row, column]() {
+                   if (m_document->insertColumn(column)) {
+                     focusCell(row, column);
+                   }
+                 });
 
-  addOperation(tr("Insert Column Right"), QStringLiteral("InsertColumnRight"),
-               m_document->canInsertColumn(), [this, row, column]() {
-                 if (m_document->insertColumn(column + 1)) {
-                   focusCell(row, column + 1);
-                 }
-               });
+    addOperation(tr("Insert Column Right"), QStringLiteral("InsertColumnRight"),
+                 m_document->canInsertColumn(), [this, row, column]() {
+                   if (m_document->insertColumn(column + 1)) {
+                     focusCell(row, column + 1);
+                   }
+                 });
 
-  addOperation(tr("Delete Column"), QStringLiteral("DeleteColumn"),
-               m_document->canDeleteColumn(column), [this, row, column]() {
-                 if (m_document->removeColumn(column)) {
-                   focusCell(row, column);
-                 }
-               });
+    addOperation(tr("Delete Column"), QStringLiteral("DeleteColumn"),
+                 m_document->canDeleteColumn(column), [this, row, column]() {
+                   if (m_document->removeColumn(column)) {
+                     focusCell(row, column);
+                   }
+                 });
 
-  menu->addSeparator();
+    menu->addSeparator();
 
-  auto alignmentMenu = menu->addMenu(tr("Alignment"));
-  alignmentMenu->setObjectName(QStringLiteral("TablePreviewAlignmentMenu"));
-  auto group = new QActionGroup(alignmentMenu);
-  group->setExclusive(true);
+    auto alignmentMenu = menu->addMenu(tr("Alignment"));
+    alignmentMenu->setObjectName(QStringLiteral("TablePreviewAlignmentMenu"));
+    auto group = new QActionGroup(alignmentMenu);
+    group->setExclusive(true);
 
-  const PreviewTableAlignment current = m_document->columnAlignment(column);
-  const struct {
-    PreviewTableAlignment m_alignment;
-    const char *m_name;
-    QString m_text;
-  } entries[] = {
-      {PreviewTableAlignment::None, "AlignmentDefault", tr("Default")},
-      {PreviewTableAlignment::Left, "AlignmentLeft", tr("Left")},
-      {PreviewTableAlignment::Center, "AlignmentCenter", tr("Center")},
-      {PreviewTableAlignment::Right, "AlignmentRight", tr("Right")},
-  };
+    const PreviewTableAlignment current = m_document->columnAlignment(column);
+    const struct {
+      PreviewTableAlignment m_alignment;
+      const char *m_name;
+      QString m_text;
+    } entries[] = {
+        {PreviewTableAlignment::None, "AlignmentDefault", tr("Default")},
+        {PreviewTableAlignment::Left, "AlignmentLeft", tr("Left")},
+        {PreviewTableAlignment::Center, "AlignmentCenter", tr("Center")},
+        {PreviewTableAlignment::Right, "AlignmentRight", tr("Right")},
+    };
 
-  for (const auto &entry : entries) {
-    QAction *action = alignmentMenu->addAction(entry.m_text);
-    action->setObjectName(QString::fromLatin1(entry.m_name));
-    action->setCheckable(true);
-    action->setChecked(entry.m_alignment == current);
-    action->setEnabled(writable);
-    group->addAction(action);
+    for (const auto &entry : entries) {
+      QAction *action = alignmentMenu->addAction(entry.m_text);
+      action->setObjectName(QString::fromLatin1(entry.m_name));
+      action->setCheckable(true);
+      action->setChecked(entry.m_alignment == current);
+      action->setEnabled(writable);
+      group->addAction(action);
 
-    const PreviewTableAlignment alignment = entry.m_alignment;
-    connect(action, &QAction::triggered, this, [this, row, column, alignment]() {
-      // A no-op returns false and arms nothing; a real change reaches the
-      // commit machinery as the document change the re-formatting is.
-      if (m_document->setColumnAlignment(column, alignment)) {
-        focusCell(row, column);
-      }
-    });
+      const PreviewTableAlignment alignment = entry.m_alignment;
+      connect(action, &QAction::triggered, this, [this, row, column, alignment]() {
+        // A no-op returns false and arms nothing; a real change reaches the
+        // commit machinery as the document change the re-formatting is.
+        if (m_document->setColumnAlignment(column, alignment)) {
+          focusCell(row, column);
+        }
+      });
+    }
+
+    // Only after entries were actually emitted: without them the submenu would
+    // otherwise open with a leading separator.
+    menu->addSeparator();
   }
+
+  // Deliberately not routed through addOperation(): copying is a read, so it
+  // must not be gated by writable. The payloads are computed once, here, so
+  // the enabled state and what lands on the clipboard cannot disagree - the
+  // serializer returns an empty string for contents it cannot represent (an
+  // empty matrix, a zero width, a cell holding a line separator).
+  const QString markdown = m_document->toStandaloneMarkdown();
+  const QString html = m_document->toHtml();
+
+  QAction *copyMarkdown = menu->addAction(tr("Copy as Markdown"));
+  copyMarkdown->setObjectName(QStringLiteral("CopyAsMarkdown"));
+  copyMarkdown->setEnabled(!markdown.isEmpty());
+  connect(copyMarkdown, &QAction::triggered, this,
+          [markdown]() { QGuiApplication::clipboard()->setText(markdown); });
+
+  QAction *copyHtml = menu->addAction(tr("Copy as HTML"));
+  copyHtml->setObjectName(QStringLiteral("CopyAsHtml"));
+  copyHtml->setEnabled(!html.isEmpty());
+  connect(copyHtml, &QAction::triggered, this, [html]() {
+    // Both flavours on purpose: a rich target pastes the rendered table, and a
+    // plain-text target gets the markup rather than nothing.
+    auto mime = new QMimeData();
+    mime->setHtml(html);
+    mime->setText(html);
+    // The clipboard takes ownership.
+    QGuiApplication::clipboard()->setMimeData(mime);
+  });
 
   return menu;
 }
@@ -1732,10 +1815,11 @@ QMenu *TablePreviewSheet::createContextMenu(const QPoint &p_viewportPos) {
 
   // A surviving selection means the right click was aimed at the text, not at
   // the table: the standard menu's Cut, Copy and Delete are what it is for,
-  // and a row or column operation would silently act on something else. Read
-  // after the retargeting above, which collapses the selection whenever the
-  // click landed outside it.
-  const bool offerTableOperations = hitACell && !textCursor().hasSelection();
+  // and a row or column operation would silently act on something else. The
+  // whole-table copies are a read and stay offered either way. Read after the
+  // retargeting above, which collapses the selection whenever the click landed
+  // outside it.
+  const bool offerMutations = !textCursor().hasSelection();
 
   // Null for a document which cannot offer one at all; the caller still gets a
   // menu, because the table operations below are appended to it.
@@ -1744,8 +1828,8 @@ QMenu *TablePreviewSheet::createContextMenu(const QPoint &p_viewportPos) {
     menu = new QMenu(this);
   }
 
-  if (offerTableOperations) {
-    if (QMenu *tableMenu = buildTableMenu(menu)) {
+  if (hitACell) {
+    if (QMenu *tableMenu = buildTableMenu(menu, offerMutations)) {
       // At the front, not appended: the table operations are what the sheet is
       // right-clicked for, and QTextEdit's standard menu ends with entries -
       // Select All among them - which would otherwise bury them.

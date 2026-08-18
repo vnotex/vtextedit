@@ -3341,8 +3341,9 @@ void TestTablePreview::testTheContextMenuReflectsWhereItWasOpened() {
 
   // One inside a selection leaves it alone: the standard menu's Cut and Copy
   // are relative to it, and a row or column operation would act on something
-  // the user is not pointing at - so the table operations are not offered at
-  // all while a selection survives.
+  // the user is not pointing at - so the mutating entries are not offered at
+  // all while a selection survives. Copying the whole table is a read, so the
+  // submenu is still built and carries exactly the two copy entries.
   {
     const QTextTableCell cell = table->cellAt(1, 0);
     QTextCursor selection = cell.firstCursorPosition();
@@ -3359,8 +3360,14 @@ void TestTablePreview::testTheContextMenuReflectsWhereItWasOpened() {
     QScopedPointer<QMenu> selectionMenu(sheet->createContextMenu(onSelection));
     QVERIFY(selectionMenu);
     QCOMPARE(sheet->textCursor().selectedText(), selected);
-    QVERIFY(!selectionMenu->findChild<QMenu *>(QStringLiteral("TablePreviewTableMenu")));
-    QVERIFY(!actionNamed(selectionMenu.data(), "InsertRowBelow"));
+    QVERIFY(selectionMenu->findChild<QMenu *>(QStringLiteral("TablePreviewTableMenu")));
+    QVERIFY(actionNamed(selectionMenu.data(), "CopyAsMarkdown"));
+    QVERIFY(actionNamed(selectionMenu.data(), "CopyAsHtml"));
+    for (const char *name : {"InsertRowAbove", "InsertRowBelow", "DeleteRow", "InsertColumnLeft",
+                             "InsertColumnRight", "DeleteColumn", "AlignmentRight"}) {
+      QVERIFY2(!actionNamed(selectionMenu.data(), name), name);
+    }
+    QVERIFY(!selectionMenu->findChild<QMenu *>(QStringLiteral("TablePreviewAlignmentMenu")));
   }
 
   // A click outside it collapses the selection onto the clicked cell, and the
@@ -3386,7 +3393,7 @@ void TestTablePreview::testTheContextMenuReflectsWhereItWasOpened() {
   QCOMPARE(sheet->textCursor().position(), caretBefore);
 }
 
-void TestTablePreview::testAReadOnlySheetDisablesEveryTableAction() {
+void TestTablePreview::testAReadOnlySheetDisablesTableMutations() {
   QScopedPointer<TablePreviewWidget> holder;
   auto widget = buildEditableSheet(holder);
   QVERIFY(widget);
@@ -3406,7 +3413,7 @@ void TestTablePreview::testAReadOnlySheetDisablesEveryTableAction() {
   }
 }
 
-void TestTablePreview::testANonRoundTrippableSheetDisablesEveryTableAction() {
+void TestTablePreview::testANonRoundTrippableSheetDisablesTableMutations() {
   // A body row wider than the header declares: writing it back would promote
   // its excess cell into the header and the delimiter row.
   QVector<QVector<QString>> cells;
@@ -3427,6 +3434,161 @@ void TestTablePreview::testANonRoundTrippableSheetDisablesEveryTableAction() {
   QVERIFY(!actionNamed(menu.data(), "InsertRowBelow")->isEnabled());
   QVERIFY(!actionNamed(menu.data(), "InsertColumnLeft")->isEnabled());
   QVERIFY(!actionNamed(menu.data(), "AlignmentRight")->isEnabled());
+
+  // Copying is unaffected: nothing is written back, so widening the header to
+  // the widest row is harmless and the table can still be taken away whole.
+  QVERIFY(actionNamed(menu.data(), "CopyAsMarkdown")->isEnabled());
+  QVERIFY(actionNamed(menu.data(), "CopyAsHtml")->isEnabled());
+
+  // The same contents through the document, where both flavours are visible:
+  // toMarkdown() refuses, the copy widens.
+  TablePreviewDocument document;
+  document.setTable(makeTable(cells, {PreviewTableAlignment::None, PreviewTableAlignment::None}));
+  QVERIFY(document.toMarkdown().isEmpty());
+  const QString standalone = document.toStandaloneMarkdown();
+  QVERIFY2(standalone.contains(QStringLiteral("| a | b | c |")), qPrintable(standalone));
+  QCOMPARE(standalone.count(QLatin1Char('\n')), 2);
+}
+
+// The copy-oriented Markdown is the same table without the block container
+// prefixes the binding carried: a copy is meant to stand on its own, while
+// toMarkdown() - what the commit path writes back - must keep them.
+void TestTablePreview::testStandaloneMarkdownDropsThePrefixes() {
+  QVector<QVector<QString>> cells;
+  cells.append({QStringLiteral("h1"), QStringLiteral("h2")});
+  cells.append({QStringLiteral("a"), QStringLiteral("b")});
+
+  TablePreviewDocument document;
+  document.setTable(makeTable(cells, {PreviewTableAlignment::None, PreviewTableAlignment::None},
+                              {QStringLiteral("> "), QStringLiteral("> ")}, QStringLiteral("> ")));
+
+  QVERIFY(document.toMarkdown().contains(QStringLiteral("> | h1 | h2 |")));
+  QCOMPARE(document.toStandaloneMarkdown(),
+           QStringLiteral("| h1 | h2 |\n| --- | --- |\n| a | b |"));
+}
+
+// The alignments reach the rendered table as the inline styles cmark emits for
+// the delimiter row the serializer wrote.
+void TestTablePreview::testHtmlCarriesTheColumnAlignments() {
+  QVector<QVector<QString>> cells;
+  cells.append({QStringLiteral("l"), QStringLiteral("c"), QStringLiteral("r")});
+  cells.append({QStringLiteral("1"), QStringLiteral("2"), QStringLiteral("3")});
+
+  TablePreviewDocument document;
+  document.setTable(makeTable(cells, {PreviewTableAlignment::Left, PreviewTableAlignment::Center,
+                                      PreviewTableAlignment::Right}));
+
+  const QString html = document.toHtml();
+  QVERIFY2(html.contains(QStringLiteral("<table>")), qPrintable(html));
+  QVERIFY2(html.contains(QStringLiteral("text-align: left")), qPrintable(html));
+  QVERIFY2(html.contains(QStringLiteral("text-align: center")), qPrintable(html));
+  QVERIFY2(html.contains(QStringLiteral("text-align: right")), qPrintable(html));
+  // cmark terminates the table with a newline; exactly that one is stripped.
+  QVERIFY(!html.endsWith(QLatin1Char('\n')));
+}
+
+// The cells hold raw Markdown, so the HTML flavour is what makes the inline
+// markup visible - that is the whole point of rendering rather than escaping.
+void TestTablePreview::testHtmlRendersInlineMarkdown() {
+  QVector<QVector<QString>> cells;
+  cells.append({QStringLiteral("h1"), QStringLiteral("h2")});
+  cells.append({QStringLiteral("**bold**"), QStringLiteral("b")});
+
+  TablePreviewDocument document;
+  document.setTable(makeTable(cells, {PreviewTableAlignment::None, PreviewTableAlignment::None}));
+
+  const QString html = document.toHtml();
+  QVERIFY2(html.contains(QStringLiteral("<strong>bold</strong>")), qPrintable(html));
+}
+
+// CMARK_OPT_DEFAULT is the safe mode: raw HTML typed into a cell must not be
+// passed through into a payload which lands in another application.
+void TestTablePreview::testHtmlOmitsRawHtmlCells() {
+  QVector<QVector<QString>> cells;
+  cells.append({QStringLiteral("h1"), QStringLiteral("h2")});
+  cells.append({QStringLiteral("<script>x</script>"), QStringLiteral("b")});
+
+  TablePreviewDocument document;
+  document.setTable(makeTable(cells, {PreviewTableAlignment::None, PreviewTableAlignment::None}));
+
+  const QString html = document.toHtml();
+  QVERIFY2(html.contains(QStringLiteral("<!-- raw HTML omitted -->")), qPrintable(html));
+  QVERIFY2(!html.contains(QStringLiteral("<script>")), qPrintable(html));
+}
+
+// A pipe inside a cell is escaped on the way out and unescaped by the parser,
+// so it stays one cell rather than splitting the row.
+void TestTablePreview::testHtmlKeepsAnEscapedPipeInOneCell() {
+  QVector<QVector<QString>> cells;
+  cells.append({QStringLiteral("h1"), QStringLiteral("h2")});
+  cells.append({QStringLiteral("a|b"), QStringLiteral("b")});
+
+  TablePreviewDocument document;
+  document.setTable(makeTable(cells, {PreviewTableAlignment::None, PreviewTableAlignment::None}));
+
+  QVERIFY(document.toStandaloneMarkdown().contains(QStringLiteral("a\\|b")));
+  const QString html = document.toHtml();
+  QVERIFY2(html.contains(QStringLiteral("a|b")), qPrintable(html));
+  // Two body cells, not three: the escape survived the round trip.
+  QCOMPARE(html.count(QStringLiteral("<td")), 2);
+}
+
+// Copying is a read, so the two entries ignore the flag which disables every
+// mutating one - a viewer must still be able to take the table with it.
+void TestTablePreview::testCopyActionsStayEnabledOnAReadOnlySheet() {
+  QScopedPointer<TablePreviewWidget> holder;
+  auto widget = buildEditableSheet(holder);
+  QVERIFY(widget);
+  auto sheet = sheetOf(*widget);
+  QVERIFY(sheet);
+
+  widget->setReadOnly(true);
+  QVERIFY(sheet->isReadOnly());
+
+  QScopedPointer<QMenu> menu(menuForCell(sheet, 1, 1));
+  QVERIFY(!actionNamed(menu.data(), "InsertRowBelow")->isEnabled());
+
+  for (const char *name : {"CopyAsMarkdown", "CopyAsHtml"}) {
+    QAction *action = actionNamed(menu.data(), name);
+    QVERIFY2(action, name);
+    QVERIFY2(action->isEnabled(), name);
+  }
+}
+
+void TestTablePreview::testCopyActionsPutThePayloadOnTheClipboard() {
+  QScopedPointer<TablePreviewWidget> holder;
+  auto widget = buildEditableSheet(holder);
+  QVERIFY(widget);
+  auto sheet = sheetOf(*widget);
+  QVERIFY(sheet);
+
+  QString markdown;
+  {
+    QScopedPointer<QMenu> menu(menuForCell(sheet, 1, 1));
+    QApplication::clipboard()->clear();
+    actionNamed(menu.data(), "CopyAsMarkdown")->trigger();
+    markdown = QApplication::clipboard()->text();
+  }
+  QVERIFY2(markdown.startsWith(QStringLiteral("| ")), qPrintable(markdown));
+  QCOMPARE(markdown.count(QLatin1Char('\n')), 2);
+  // Prefix-free, whatever the binding carried.
+  QVERIFY(!markdown.contains(QStringLiteral("> ")));
+
+  {
+    QScopedPointer<QMenu> menu(menuForCell(sheet, 1, 1));
+    QApplication::clipboard()->clear();
+    actionNamed(menu.data(), "CopyAsHtml")->trigger();
+  }
+  const QMimeData *mime = QApplication::clipboard()->mimeData();
+  QVERIFY(mime);
+  QVERIFY(mime->hasHtml());
+  // Qt wraps the HTML flavour in a platform fragment header, so the payload is
+  // asserted on through html()/text() rather than the raw clipboard bytes.
+  QVERIFY2(mime->html().contains(QStringLiteral("<table>")), qPrintable(mime->html()));
+  // The plain alternative carries the markup, so a plain-text target gets
+  // something rather than nothing.
+  QVERIFY2(QApplication::clipboard()->text().contains(QStringLiteral("<table>")),
+           qPrintable(QApplication::clipboard()->text()));
 }
 
 void TestTablePreview::testTheMenuActionsMutateTheTable() {

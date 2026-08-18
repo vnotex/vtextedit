@@ -157,6 +157,24 @@ public:
   // Canonical Markdown of the current document contents.
   QString toMarkdown() const;
 
+  // Copy-oriented Markdown of the current contents: the same table as
+  // toMarkdown(), but deliberately without the row/delimiter prefixes the
+  // binding carried (a blockquote's "> ", a list item's indent). The two are
+  // not interchangeable - toMarkdown() is what the commit path writes back,
+  // and dropping the prefixes there would tear the table out of its block.
+  //
+  // isRoundTrippable() is deliberately not required here: a ragged sheet is
+  // widened by the serializer, which is harmless because nothing is written
+  // back from this. Empty when the contents cannot be serialized safely (no
+  // cells, zero width, or a cell holding a line separator).
+  QString toStandaloneMarkdown() const;
+
+  // HTML rendered from toStandaloneMarkdown() by cmark, so inline Markdown
+  // inside the cells is rendered too. Copy-oriented like its source: it also
+  // drops the row prefixes and is never fed back into the document. Empty
+  // whenever toStandaloneMarkdown() is empty.
+  QString toHtml() const;
+
   // Whether one more row would still fit inside the cell bound.
   //
   // Growth by keystroke is the one path which is not covered by
@@ -541,7 +559,13 @@ private:
 
   // The Table submenu, parented to @p_parent. Returns null when the caret is
   // not in a valid cell, in which case the standard menu is shown unchanged.
-  QMenu *buildTableMenu(QMenu *p_parent);
+  //
+  // With @p_offerMutations false only the copy entries are emitted: the row,
+  // column and alignment operations are relative to one cell, and the caller
+  // suppresses them when a selection survived the click - a mutation would
+  // then act on a cell other than the one the selection covers. Copying the
+  // whole table is a read, so it stays reachable in that case.
+  QMenu *buildTableMenu(QMenu *p_parent, bool p_offerMutations);
 
   // Put the caret in @p_row/@p_column, clamped to the table's current bounds,
   // and re-establish both frame invariants. Called after every mutation: Qt

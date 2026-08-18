@@ -122,8 +122,15 @@ private slots:
   // Context menu.
   void testTheContextMenuOffersTheTableOperations();
   void testTheContextMenuReflectsWhereItWasOpened();
-  void testAReadOnlySheetDisablesEveryTableAction();
-  void testANonRoundTrippableSheetDisablesEveryTableAction();
+  void testAReadOnlySheetDisablesTableMutations();
+  void testANonRoundTrippableSheetDisablesTableMutations();
+  void testStandaloneMarkdownDropsThePrefixes();
+  void testHtmlCarriesTheColumnAlignments();
+  void testHtmlRendersInlineMarkdown();
+  void testHtmlOmitsRawHtmlCells();
+  void testHtmlKeepsAnEscapedPipeInOneCell();
+  void testCopyActionsStayEnabledOnAReadOnlySheet();
+  void testCopyActionsPutThePayloadOnTheClipboard();
   void testTheMenuActionsMutateTheTable();
   void testAnAlignmentOnlyChangeIsCommitted();
 
