@@ -32,9 +32,16 @@ struct VTEXTEDIT_EXPORT HtmlImgAttr {
   // span), exactly as for MarkdownLink::m_urlInLink.
   //
   // Decoded with cmark's decoder and its complete HTML5 named-reference table,
-  // so the value agrees with what the renderer resolves. That agreement is
-  // load-bearing: obsolete-image cleanup compares decoded destinations before
-  // DELETING assets.
+  // so the value agrees with what the renderer resolves for every reference
+  // this tree's generators emit and for every well-formed one an author writes.
+  //
+  // KNOWN DIVERGENCE: cmark requires the terminating semicolon and applies
+  // CommonMark's numeric rules, while an HTML *attribute* parser also accepts
+  // semicolon-less legacy names (`&copy.png`) and remaps C1 numeric references
+  // (`&#128;` -> U+20AC). Such a value is left with its `&` intact, so it
+  // simply fails to resolve rather than resolving to the wrong file. Callers
+  // that DELETE must treat a decoded value still containing `&` as ambiguous;
+  // MarkdownViewWindow2::clearObsoleteImages() disarms itself on one.
   QString m_value;
 };
 
