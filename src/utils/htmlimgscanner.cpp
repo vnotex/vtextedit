@@ -22,10 +22,16 @@ bool isRawTextElement(const QString &p_lowerName) {
          p_lowerName == QStringLiteral("textarea") || p_lowerName == QStringLiteral("title");
 }
 
-// The handful of named entities that can legally appear in an attribute value
-// spelled by a human or by any generator in this tree. Anything else is left
-// alone rather than guessed at: an unrecognized `&foo;` is far more likely to be
-// a literal ampersand in a query string than an entity.
+// The named entities that can legally appear in an attribute value spelled by
+// this tree's own generators (htmlEscapeAttrValue()), plus the two an author is
+// most likely to type by hand.
+//
+// This is deliberately NOT the full HTML named-reference table. An unrecognized
+// `&foo;` is left LITERAL, which is the fail-safe direction: the destination
+// then simply does not resolve to a file, rather than resolving to the wrong
+// one. Names are matched EXACTLY -- HTML named references are case sensitive
+// (`&Amp;` is not `&amp;`), so case folding here would decode references a real
+// HTML parser would not.
 const QHash<QString, QChar> &namedEntities() {
   static const QHash<QString, QChar> s_entities{
       {QStringLiteral("amp"), QLatin1Char('&')},   {QStringLiteral("lt"), QLatin1Char('<')},
@@ -90,7 +96,7 @@ QString decodeEntities(const QString &p_text) {
       continue;
     }
 
-    const auto it = namedEntities().constFind(body.toLower());
+    const auto it = namedEntities().constFind(body);
     if (it != namedEntities().constEnd()) {
       out.append(it.value());
       i = semi + 1;
