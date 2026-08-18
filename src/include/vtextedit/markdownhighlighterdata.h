@@ -143,13 +143,18 @@ struct ElementRegion {
 // content-oriented and needs alt text, title, resolved path and existence
 // flags, none of which matter here. They share machinery, not a data type.
 struct ImageLinkInfo {
+  // How the image is spelled in the source. VNote's `Image > Set Size…` action
+  // branches on it, and must never regenerate an HTML tag it did not author.
+  enum class Syntax { Markdown, Html };
+
   ImageLinkInfo() = default;
 
   ImageLinkInfo(const ElementRegion &p_region, const QString &p_destination, int p_width,
                 int p_height)
       : m_region(p_region), m_destination(p_destination), m_width(p_width), m_height(p_height) {}
 
-  // The whole `![alt](dest)` construct, in document positions.
+  // The whole `![alt](dest)` construct, or the whole `<img …>` tag, in document
+  // positions.
   ElementRegion m_region;
 
   // cmark-resolved destination: entities and backslash escapes are already
@@ -157,9 +162,17 @@ struct ImageLinkInfo {
   // it must never be used to compute a replacement length.
   QString m_destination;
 
-  // Declared size from the `=WxH` extension. 0 means unspecified for that axis.
+  // Declared size: from the `=WxH` extension for Markdown, from the `width` /
+  // `height` attributes for HTML. 0 means unspecified for that axis.
   int m_width = 0;
   int m_height = 0;
+
+  Syntax m_syntax = Syntax::Markdown;
+
+  // Carried so a Markdown -> HTML size conversion can spell `alt` and `title`
+  // without re-parsing the document. Decoded, like m_destination.
+  QString m_alt;
+  QString m_title;
 };
 
 // Fenced code block only.

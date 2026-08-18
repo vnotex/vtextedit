@@ -13,6 +13,7 @@ add_executable(test_benchmark
     ${MARKDOWNEDITOR_FOLDER}/markdownparser.cpp ${MARKDOWNEDITOR_FOLDER}/markdownparser.h
     ${MARKDOWNEDITOR_FOLDER}/markdownastwalker.cpp ${MARKDOWNEDITOR_FOLDER}/markdownastwalker.h
     ${MARKDOWNEDITOR_FOLDER}/cmarkadapter.cpp ${MARKDOWNEDITOR_FOLDER}/cmarkadapter.h
+    ${SRC_FOLDER}/utils/htmlimgscanner.cpp ${SRC_FOLDER}/include/vtextedit/htmlimgscanner.h
     test_benchmark.cpp test_benchmark.h
 )
 target_include_directories(test_benchmark PRIVATE

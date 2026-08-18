@@ -12,6 +12,7 @@
 #include <QTextDocument>
 #include <QUrl>
 
+#include <vtextedit/htmlimgscanner.h>
 #include <vtextedit/texteditutils.h>
 #include <vtextedit/textutils.h>
 #include <vtextedit/vtextedit.h>
@@ -1093,8 +1094,32 @@ void MarkdownUtils::typeLink(VTextEdit *p_edit, const QString &p_linkText,
   p_edit->insertPlainText(QStringLiteral("[%1](%2)").arg(p_linkText, p_linkUrl));
 }
 
+QString MarkdownUtils::generateImageTag(const QString &p_title, const QString &p_url,
+                                        const QString &p_altText, int p_width, int p_height) {
+  QString tag = QStringLiteral("<img ") + spellHtmlSrcAttr(p_url);
+  // p_title is the alt text and p_altText is the title; see the header.
+  if (!p_title.isEmpty()) {
+    tag += QStringLiteral(" alt=\"%1\"").arg(htmlEscapeAttrValue(p_title));
+  }
+  if (!p_altText.isEmpty()) {
+    tag += QStringLiteral(" title=\"%1\"").arg(htmlEscapeAttrValue(p_altText));
+  }
+  if (p_width > 0) {
+    tag += QStringLiteral(" width=\"%1\"").arg(p_width);
+  }
+  if (p_height > 0) {
+    tag += QStringLiteral(" height=\"%1\"").arg(p_height);
+  }
+  tag += QStringLiteral(" />");
+  return tag;
+}
+
 QString MarkdownUtils::generateImageLink(const QString &p_title, const QString &p_url,
-                                         const QString &p_altText) {
+                                         const QString &p_altText, int p_width, int p_height) {
+  if (p_width > 0 || p_height > 0) {
+    return generateImageTag(p_title, p_url, p_altText, p_width, p_height);
+  }
+
   QString altText;
   if (!p_altText.isEmpty()) {
     altText = QStringLiteral(" \"%1\"").arg(p_altText);
@@ -1178,12 +1203,96 @@ QVector<MarkdownLink> MarkdownUtils::fetchImageLinks(const QString &p_content,
 
   cmark_iter *iter = cmark_iter_new(doc);
   cmark_event_type ev;
+
+  // Raw-text context ("we are inside <script>") carried ACROSS nodes: cmark
+  // emits the opening tag, the contents and the closing tag as separate HTML
+  // nodes. It must advance for EVERY HTML node, including ones whose span could
+  // not be resolved, or an unresolvable `<script>` would unmask an `<img>`
+  // spelled inside it.
+  RawTextState rawText;
+
+  // Shared tail: classify the destination, resolve the path, apply p_flags.
+  auto appendLink = [&](MarkdownLink &link) {
+    if (link.m_urlInLink.isEmpty()) {
+      // `![a]()` points at nothing; it has no type and no path.
+      return;
+    }
+
+    const QString resolved = linkUrlToPath(p_contentBasePath, link.m_urlInLink);
+    link.m_type =
+        classifyUrl(link.m_urlInLink, pathContains(p_contentBasePath, QDir::cleanPath(resolved)));
+    if (link.m_type & MarkdownLink::TypeFlag::Remote) {
+      link.m_path = QUrl(link.m_urlInLink).toString();
+      link.m_exists = false;
+    } else if (link.m_type & MarkdownLink::TypeFlag::QtResource) {
+      link.m_path = link.m_urlInLink;
+      // Qt's filesystem spelling of a resource is `:/foo`, not `qrc:/foo`.
+      QString probe = link.m_urlInLink;
+      if (probe.startsWith(QStringLiteral("qrc:/"))) {
+        probe = probe.mid(4);
+      }
+      link.m_exists = QFileInfo::exists(probe);
+    } else if (QUrl(link.m_urlInLink).isLocalFile()) {
+      link.m_path = QDir::cleanPath(QUrl(link.m_urlInLink).toLocalFile());
+      link.m_exists = QFileInfo::exists(link.m_path);
+    } else {
+      link.m_path = QDir::cleanPath(resolved);
+      link.m_exists = QFileInfo::exists(link.m_path);
+    }
+
+    if (link.m_type & p_flags) {
+      images.push_back(link);
+    }
+  };
+
   while ((ev = cmark_iter_next(iter)) != CMARK_EVENT_DONE) {
     if (ev != CMARK_EVENT_ENTER) {
       continue;
     }
     cmark_node *node = cmark_iter_get_node(iter);
-    if (cmark_node_get_type(node) != CMARK_NODE_IMAGE) {
+    const cmark_node_type type = cmark_node_get_type(node);
+
+    if (type == CMARK_NODE_HTML_INLINE || type == CMARK_NODE_HTML_BLOCK) {
+      int regionStart = -1;
+      int regionEnd = -1;
+      if (!resolveHtmlNodeSpan(p_content, node, offsets, regionStart, regionEnd)) {
+        // Unlocatable, so nothing may be reported -- but the raw-text state
+        // still has to advance over it. Scan the LITERAL for its side effect on
+        // the state only, and discard the tags.
+        const char *literal = cmark_node_get_literal(node);
+        if (literal) {
+          scanHtmlImgTags(QString::fromUtf8(literal), 0, &rawText);
+        }
+        continue;
+      }
+
+      const QString slice = p_content.mid(regionStart, regionEnd - regionStart);
+      const auto tags = scanHtmlImgTags(slice, regionStart, &rawText);
+      for (const auto &tag : tags) {
+        const HtmlImgAttr *srcAttr = tag.attr("src");
+        if (!srcAttr) {
+          continue;
+        }
+
+        MarkdownLink link;
+        link.m_syntax = MarkdownLink::Syntax::Html;
+        link.m_regionStart = tag.m_tagStart;
+        link.m_regionEnd = tag.m_tagEnd;
+        // The VALUE span, quotes excluded -- the same contract as the Markdown
+        // destination span. A caller replacing the whole attribute re-scans.
+        link.m_urlStart = srcAttr->m_valueStart;
+        link.m_urlEnd = srcAttr->m_valueEnd;
+        link.m_urlInLink = tag.src();
+        link.m_alt = tag.alt();
+        link.m_title = tag.title();
+        link.m_width = tag.width();
+        link.m_height = tag.height();
+        appendLink(link);
+      }
+      continue;
+    }
+
+    if (type != CMARK_NODE_IMAGE) {
       continue;
     }
 
@@ -1216,41 +1325,14 @@ QVector<MarkdownLink> MarkdownUtils::fetchImageLinks(const QString &p_content,
       }
     }
 
-    if (link.m_urlInLink.isEmpty()) {
-      // `![a]()` points at nothing; it has no type and no path.
-      continue;
-    }
-
-    const QString resolved = linkUrlToPath(p_contentBasePath, link.m_urlInLink);
-    link.m_type =
-        classifyUrl(link.m_urlInLink, pathContains(p_contentBasePath, QDir::cleanPath(resolved)));
-    if (link.m_type & MarkdownLink::TypeFlag::Remote) {
-      link.m_path = QUrl(link.m_urlInLink).toString();
-      link.m_exists = false;
-    } else if (link.m_type & MarkdownLink::TypeFlag::QtResource) {
-      link.m_path = link.m_urlInLink;
-      // Qt's filesystem spelling of a resource is `:/foo`, not `qrc:/foo`.
-      QString probe = link.m_urlInLink;
-      if (probe.startsWith(QStringLiteral("qrc:/"))) {
-        probe = probe.mid(4);
-      }
-      link.m_exists = QFileInfo::exists(probe);
-    } else if (QUrl(link.m_urlInLink).isLocalFile()) {
-      link.m_path = QDir::cleanPath(QUrl(link.m_urlInLink).toLocalFile());
-      link.m_exists = QFileInfo::exists(link.m_path);
-    } else {
-      link.m_path = QDir::cleanPath(resolved);
-      link.m_exists = QFileInfo::exists(link.m_path);
-    }
-
-    if (link.m_type & p_flags) {
-      images.push_back(link);
-    }
+    appendLink(link);
   }
 
   cmark_iter_free(iter);
   cmark_node_free(doc);
 
+  // Sorted over the MERGED vector, so the descending-m_urlStart contract holds
+  // across syntaxes.
   std::stable_sort(images.begin(), images.end(), markdownLinkCmp);
   return images;
 }

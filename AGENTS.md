@@ -95,6 +95,76 @@ Contract (`typeMarkerOnLines` / `markerRangeOfBlock` in `src/utils/markdownutils
 
 Regression coverage: `testMultiLineMarker*` in `tests/test_markdowneditor/`.
 
+## Image References: Markdown AND HTML
+
+An image reference is either a Markdown `![alt](dest "title" =WxH)` link or an HTML
+`<img …>` tag. Both are reported by `MarkdownUtils::fetchImageLinks()` (snapshot) and by
+`md::walkAndConvert()` → `buildImageLinks()` (live editor), and both carry a `Syntax`
+enum — `MarkdownLink::m_syntax` and `md::ImageLinkInfo::m_syntax`.
+
+### One scanner, and only one
+
+`src/include/vtextedit/htmlimgscanner.h` is **the only place in the tree allowed to
+pattern-match `<img` in note source.** Both consumers call `scanHtmlImgTags()`, so the
+snapshot and live paths cannot drift. `tests/utils/test_image_parser_drift.cpp` in the
+VNote repo is the grep gate. Scanners over *rendered* or *clipboard* HTML
+(`WebViewExporter`, the paste path) are a different problem and are exempt, with a
+line-local `// image-parser-allow:` hatch.
+
+Escaping lives in one place too: `htmlEscapeAttrValue()` and `spellHtmlSrcAttr()`.
+`MarkdownUtils::generateImageTag()` is the single generator, and
+`generateImageLink(title, url, alt, w, h)` delegates to it whenever a size is given
+(Markdown's `=WxH` is understood here but by few other tools, so a sized image is
+emitted as HTML for portability).
+
+### Span conventions
+
+| Field | Markdown | HTML |
+|---|---|---|
+| `m_regionStart/End` | the whole `![…](…)` construct | the whole `<img …>` tag |
+| `m_urlStart/End` | the RAW destination as spelled | the `src` attribute **VALUE**, quotes EXCLUDED |
+
+**Never** measure a replacement with `m_urlInLink.size()` — it is the decoded value. A
+caller replacing a whole `src` attribute (not just its value) must re-scan the region
+with `scanHtmlImgTags()` and take the attribute span: an unquoted `src=old.png` renamed
+to a name containing a space would otherwise split into two attributes.
+
+### D8 — single-line tags only
+
+A tag is recognised only when it opens and closes within **one** source line. A multiline
+`<img …>` is ignored, exactly as before the feature existed. This is what lets both paths
+slice raw source without mapping container prefixes: a `> ` or list indent can then only
+ever appear *between* tags, never inside one. A test asserts a multiline tag is ignored,
+not mis-parsed.
+
+### D9 — never regenerate a tag you did not author
+
+An existing HTML image is rewritten **attribute-locally** (replace the whole `src="…"`,
+or the `width`/`height` attributes). Regenerating the tag would silently destroy
+`class`, `style`, `data-*`, `loading` and anything else a user wrote. Whole-region
+regeneration is reserved for Markdown links and for an explicit, gated conversion.
+
+### Node span resolution and raw text
+
+`resolveHtmlNodeSpan()` (`src/markdowneditor/cmarkadapter.h`) is the single resolver.
+Columns are never trusted — cmark strips each line's container prefix independently but
+inline parsing gets one `block_offset` from the paragraph, so a lazy continuation line
+shifts every reported column.
+
+* `HTML_BLOCK` — sliced by line only. `end_line` is *also* not trusted: cmark reports the
+  last line consumed **before** the end condition matched, so `<script>…</script>` reports
+  the line before `</script>`. The line count is taken from the literal instead. The
+  literal must never be compared for equality; it is not a contiguous copy of the source.
+* `HTML_INLINE` — verify the reported span against `cmark_node_get_literal()`, else search
+  the reported start LINE for a unique occurrence, else skip. Fail safe, never a guess.
+
+Raw-text elements (`script`, `style`, `textarea`, `title`) are suppressed: an `<img>` in a
+JS string is text. cmark emits an opening tag, the contents and the closing tag as
+**separate** nodes, so `RawTextState` is threaded *through* the scanner and must be
+advanced for **every** HTML node — including one whose span could not be resolved.
+Otherwise an unresolvable `<script>` would unmask an `<img>` inside it.
+
+
 ## Testing
 
 * Framework: QtTest (`#include <QtTest>`, link `Qt::Test`)

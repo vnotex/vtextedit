@@ -12,6 +12,7 @@ set(LIBS_FOLDER ../../libs)
 add_executable(test_astwalker
     ${MARKDOWNEDITOR_FOLDER}/markdownastwalker.cpp ${MARKDOWNEDITOR_FOLDER}/markdownastwalker.h
     ${MARKDOWNEDITOR_FOLDER}/cmarkadapter.cpp ${MARKDOWNEDITOR_FOLDER}/cmarkadapter.h
+    ${SRC_FOLDER}/utils/htmlimgscanner.cpp ${SRC_FOLDER}/include/vtextedit/htmlimgscanner.h
     test_astwalker.cpp test_astwalker.h
 )
 target_include_directories(test_astwalker PRIVATE

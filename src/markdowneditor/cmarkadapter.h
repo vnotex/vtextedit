@@ -2,6 +2,7 @@
 #define CMARKADAPTER_H
 
 #include <QByteArray>
+#include <QString>
 #include <QVector>
 
 #include <cmark.h>
@@ -100,5 +101,31 @@ bool cmarkNodeSpan(cmark_node *p_node, const LineOffsetTable &p_offsets, int &p_
 // its cleaned value, which fails whenever cleaning changes the string.
 bool cmarkNodeUrlSpan(cmark_node *p_node, const LineOffsetTable &p_offsets, int &p_startQChar,
                       int &p_endQChar);
+
+// Half-open QChar span of a CMARK_NODE_HTML_INLINE / CMARK_NODE_HTML_BLOCK node
+// in @p_content, VERIFIED against the source. Returns false when the node
+// cannot be located, in which case the caller must skip it (but must still
+// advance any raw-text state, or an unresolvable `<script>` would unmask an
+// `<img>` inside it).
+//
+// Columns are never trusted here. cmark strips each line's container prefix
+// independently in add_line() but inline parsing gets ONE block_offset from the
+// paragraph, so a lazy continuation line shifts every reported column. The two
+// node types are therefore resolved differently:
+//
+// - HTML_BLOCK: columns are ignored entirely; the span is start_line..end_line
+//   from the line table. The block LITERAL must never be compared for equality,
+//   because it is not a contiguous copy of the source -- prefixes are stripped
+//   per line and a synthetic final newline may be appended. Always resolvable.
+//
+// - HTML_INLINE: the literal IS the scanner-matched token, so the reported span
+//   is verified against it; failing that, the reported START LINE is searched
+//   for a unique occurrence of the literal; failing that, the node is skipped.
+//   Fail safe, never a guess.
+//
+// This is the single implementation, shared by the snapshot API and the live
+// walker, so the two cannot drift.
+bool resolveHtmlNodeSpan(const QString &p_content, cmark_node *p_node,
+                         const LineOffsetTable &p_offsets, int &p_startQChar, int &p_endQChar);
 
 #endif

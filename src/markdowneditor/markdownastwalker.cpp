@@ -4,6 +4,8 @@
 
 #include <algorithm>
 
+#include <vtextedit/htmlimgscanner.h>
+
 #ifdef VTE_DEBUG_HIGHLIGHT
 #include <QDebug>
 #endif
@@ -428,6 +430,70 @@ static void extractTable(cmark_node *p_tableNode, const LineOffsetTable &p_offse
   p_result.tableElements.append(table);
 }
 
+// The 0-indexed line containing the document position @p_pos, or -1.
+static int lineIndexOfDocPos(const LineOffsetTable &p_offsets, int p_pos) {
+  int lo = 0;
+  int hi = p_offsets.lineCount() - 1;
+  if (hi < 0 || p_pos < p_offsets.lineStartQCharOffset(0)) {
+    return -1;
+  }
+  while (lo < hi) {
+    const int mid = (lo + hi + 1) / 2;
+    if (p_offsets.lineStartQCharOffset(mid) <= p_pos) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return lo;
+}
+
+// Capture every HTML `<img …>` inside an HTML_INLINE / HTML_BLOCK node as an
+// ImageElement, so the live editor previews and menus treat it exactly like a
+// Markdown image link.
+//
+// @p_rawText is per-WALK state, not per-node: cmark emits `<script>`, its
+// contents and `</script>` as separate HTML nodes, so the "inside a raw-text
+// element" fact has to be threaded across them. It is advanced for EVERY HTML
+// node -- including one whose span cannot be resolved, whose results are
+// scanned purely for that side effect and then discarded. Skipping the advance
+// would let an unresolvable `<script>` unmask an `<img>` spelled inside it.
+static void extractHtmlImages(cmark_node *p_node, const QString &p_text,
+                              const QByteArray &p_utf8Text, const LineOffsetTable &p_offsets,
+                              ASTWalkResult &p_result, int p_offset, RawTextState &p_rawText) {
+  int regionStart = -1;
+  int regionEnd = -1;
+  if (!resolveHtmlNodeSpan(p_text, p_node, p_offsets, regionStart, regionEnd)) {
+    const char *literal = cmark_node_get_literal(p_node);
+    if (literal) {
+      scanHtmlImgTags(QString::fromUtf8(literal), 0, &p_rawText);
+    }
+    return;
+  }
+
+  const QString slice = p_text.mid(regionStart, regionEnd - regionStart);
+  const auto tags = scanHtmlImgTags(slice, regionStart, &p_rawText);
+  for (const auto &tag : tags) {
+    ImageElement image;
+    image.m_startPos = p_offset + tag.m_tagStart;
+    image.m_endPos = p_offset + tag.m_tagEnd;
+    image.m_destination = tag.src();
+    image.m_alternateText = tag.alt();
+    image.m_title = tag.title();
+    image.m_width = tag.width();
+    image.m_height = tag.height();
+    image.m_syntax = ImageLinkInfo::Syntax::Html;
+
+    // A tag is single-line by construction (see scanHtmlImgTags), so one line
+    // index answers for both ends.
+    const int lineIdx = lineIndexOfDocPos(p_offsets, tag.m_tagStart);
+    image.m_standalone =
+        lineIdx >= 0 && isStandaloneSpan(p_utf8Text, p_offsets, lineIdx + 1, lineIdx + 1,
+                                         tag.m_tagStart, tag.m_tagEnd);
+    p_result.imageElements.append(image);
+  }
+}
+
 // Capture the typed data of one non-table element.
 static void extractTypedElement(cmark_node *p_node, cmark_node_type p_type, int p_style,
                                 const QByteArray &p_utf8Text, const LineOffsetTable &p_offsets,
@@ -570,6 +636,13 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
 
   LineOffsetTable offsets(p_utf8Text);
 
+  // Decoded once: the HTML span resolver and the `<img>` scanner both work on
+  // QChar offsets, which is also what every downstream region uses.
+  const QString text = p_fast ? QString() : QString::fromUtf8(p_utf8Text);
+
+  // Per-WALK raw-text context; see extractHtmlImages().
+  RawTextState rawText;
+
   cmark_iter *iter = cmark_iter_new(doc);
   cmark_event_type ev;
 
@@ -593,6 +666,12 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
     bool isLeaf = cmark_node_is_leaf(node);
     if (!isLeaf && ev != CMARK_EVENT_ENTER) {
       continue;
+    }
+
+    // Runs BEFORE the span/style guards below: the raw-text state must advance
+    // for every HTML node, including one this walk cannot place.
+    if (!p_fast && (type == CMARK_NODE_HTML_INLINE || type == CMARK_NODE_HTML_BLOCK)) {
+      extractHtmlImages(node, text, p_utf8Text, offsets, result, p_offset, rawText);
     }
 
     int style = mapCmarkNodeToStyle(type, node);
@@ -687,8 +766,12 @@ QVector<ImageLinkInfo> buildImageLinks(const QVector<ImageElement> &p_elements) 
   QVector<ImageLinkInfo> links;
   links.reserve(p_elements.size());
   for (const auto &element : p_elements) {
-    links.append(ImageLinkInfo(ElementRegion(element.m_startPos, element.m_endPos),
-                               element.m_destination, element.m_width, element.m_height));
+    ImageLinkInfo info(ElementRegion(element.m_startPos, element.m_endPos), element.m_destination,
+                       element.m_width, element.m_height);
+    info.m_syntax = element.m_syntax;
+    info.m_alt = element.m_alternateText;
+    info.m_title = element.m_title;
+    links.append(info);
   }
   return links;
 }

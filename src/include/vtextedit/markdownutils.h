@@ -29,6 +29,12 @@ struct VTEXTEDIT_EXPORT MarkdownLink {
   };
   Q_DECLARE_FLAGS(TypeFlags, TypeFlag);
 
+  // How the image is spelled in the source. A caller that rewrites more than
+  // the destination MUST branch on this: an HTML tag may carry attributes VNote
+  // never generated (`class`, `style`, `data-*`), so it is edited
+  // attribute-locally and never regenerated.
+  enum class Syntax { Markdown, Html };
+
   QString toString() const {
     return QStringLiteral("path (%1) urlInLink (%2) raw [%3, %4)")
         .arg(m_path, m_urlInLink)
@@ -55,17 +61,26 @@ struct VTEXTEDIT_EXPORT MarkdownLink {
   // Half-open span of the RAW destination in the source, exactly as spelled --
   // escapes, entities and angle brackets all still present. -1 when absent; see
   // hasUrlSpan().
+  //
+  // For Syntax::Html this is the `src` attribute VALUE, quotes EXCLUDED. A
+  // caller replacing the WHOLE attribute must re-scan the region with
+  // scanHtmlImgTags() to get the attribute span; see MarkdownEditor and
+  // ContentMediaUtils.
   int m_urlStart = -1;
   int m_urlEnd = -1;
 
-  // Half-open span of the whole `![alt](dest "title" =WxH)` construct. Always
-  // valid for every image returned.
+  // Half-open span of the whole `![alt](dest "title" =WxH)` construct, or of
+  // the whole `<img …>` tag for Syntax::Html. Always valid for every image
+  // returned.
   //
   // Regions may NEST: CommonMark allows an image inside another image's
-  // description (`![foo ![bar](/a)](/b)`), and both are reported. Destination
-  // spans never overlap, so destination-only rewriting is always safe; a caller
-  // that replaces whole REGIONS must skip images contained in another's region,
-  // as MarkdownEditor::fetchImagesToLocalAndReplace() does.
+  // description (`![foo ![bar](/a)](/b)`), and both are reported; an inline
+  // HTML `<img>` token can likewise sit inside a Markdown image's description.
+  // Destination spans never overlap, so destination-only rewriting is always
+  // safe; a caller that replaces whole REGIONS must skip images contained in
+  // another's region, as MarkdownEditor::fetchImagesToLocalAndReplace() does.
+  // That containment filter is deliberately generic -- never special-case it by
+  // syntax.
   int m_regionStart = -1;
   int m_regionEnd = -1;
 
@@ -73,9 +88,12 @@ struct VTEXTEDIT_EXPORT MarkdownLink {
 
   QString m_title;
 
-  // Declared size from the `=WxH` extension; 0 means unspecified for that axis.
+  // Declared size: from the `=WxH` extension for Markdown, from the `width` /
+  // `height` attributes for HTML. 0 means unspecified for that axis.
   int m_width = 0;
   int m_height = 0;
+
+  Syntax m_syntax = Syntax::Markdown;
 
   // SYNTACTIC classification, derived from the shape of the destination alone.
   //
@@ -132,10 +150,30 @@ public:
 
   static void typeLink(VTextEdit *p_edit, const QString &p_linkText, const QString &p_linkUrl);
 
+  // Spell an image reference.
+  //
+  // With no size (both 0) this is the historical `![title](url "altText")`
+  // Markdown form, byte-identical to what it always produced. With a size it
+  // delegates to generateImageTag(), because Markdown has no portable way to
+  // express one -- the `=WxH` extension is understood by this editor but by few
+  // other tools.
+  //
+  // NOTE the parameter names are historical and read backwards: @p_title
+  // becomes the `![…]` ALT text and @p_altText becomes the quoted "title".
   static QString generateImageLink(const QString &p_title, const QString &p_url,
-                                   const QString &p_altText);
+                                   const QString &p_altText, int p_width = 0, int p_height = 0);
 
-  // Every image link in @p_content, straight from cmark's AST.
+  // The canonical HTML spelling: self-closing, double-quoted, fixed attribute
+  // order `src alt title width height`, empty/zero attributes omitted. Every
+  // value is escaped with vte::htmlEscapeAttrValue().
+  //
+  // Same historical parameter naming as generateImageLink(): @p_title is the
+  // alt text, @p_altText is the title.
+  static QString generateImageTag(const QString &p_title, const QString &p_url,
+                                  const QString &p_altText, int p_width, int p_height);
+
+  // Every image reference in @p_content, straight from cmark's AST -- both
+  // Markdown `![…](…)` links and HTML `<img …>` tags (see MarkdownLink::m_syntax).
   //
   // @p_contentBasePath: base path used to resolve a relative destination and to
   //   decide internal vs external.
@@ -145,7 +183,8 @@ public:
   // points at nothing, so there is no path, no type and nothing to act on. An
   // image nested in another image's description IS included; see m_regionStart.
   //
-  // Returned DESCENDING by m_urlStart, so a caller may rewrite destinations in
+  // Returned DESCENDING by m_urlStart -- across BOTH syntaxes, since the sort
+  // runs over the merged vector -- so a caller may rewrite destinations in
   // order without invalidating the spans it has not reached yet. Entries with
   // no destination span (reference-style) sort LAST, since they cannot be
   // rewritten at all; the sort is stable, so their relative document order is

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(VTextEdit VERSION 4.0.0 LANGUAGES C CXX)
+project(VTextEdit VERSION 5.0.0 LANGUAGES C CXX)
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
@@ -44,6 +44,7 @@ add_library(VTextEdit SHARED
     include/vtextedit/blocksegment.h
     include/vtextedit/codeblockhighlighter.h
     include/vtextedit/global.h
+    include/vtextedit/htmlimgscanner.h
     include/vtextedit/lrucache.h
     include/vtextedit/markdowneditorconfig.h
     include/vtextedit/markdownutils.h
@@ -135,6 +136,7 @@ add_library(VTextEdit SHARED
     texteditor/viconfig.cpp
     texteditor/vsyntaxhighlighter.cpp
     texteditor/vtexteditor.cpp
+    utils/htmlimgscanner.cpp
     utils/markdownutils.cpp
     # networkutils is INTERNAL: the header lives next to the .cpp (not under
     # include/vtextedit) so it is neither installed nor consumable by users of

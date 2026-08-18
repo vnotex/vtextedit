@@ -76,6 +76,19 @@ private slots:
   void testNestedImages();
   void testFileUrlClassification();
 
+  // The HTML `<img>` scanner, and HTML images through the snapshot API and the
+  // live walker.
+  void testHtmlImgScannerQuoting();
+  void testHtmlImgScannerSuppression();
+  void testHtmlImgScannerAttrSpans();
+  void testFetchImageLinksHtml();
+  void testFetchImageLinksHtmlContainers();
+  void testFetchImageLinksHtmlRawText();
+  void testFetchImageLinksHtmlAfterMultilineConstruct();
+  void testFetchImageLinksMixedOrdering();
+  void testWalkerHtmlImages();
+  void testGenerateImageTag();
+
   // Extra selection invalidation
   void testCursorLineInvalidationExpanded_data();
   void testCursorLineInvalidationExpanded();

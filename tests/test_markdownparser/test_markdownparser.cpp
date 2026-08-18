@@ -13,6 +13,7 @@
 #include <QTextLayout>
 #include <algorithm>
 
+#include <vtextedit/htmlimgscanner.h>
 #include <vtextedit/markdowneditorconfig.h>
 #include <vtextedit/markdownhighlighter.h>
 #include <vtextedit/markdownutils.h>
@@ -1509,6 +1510,27 @@ void TestMarkdownParser::testImageLinkInvariants() {
       // prove nothing -- replacing any in-bounds span with its own contents is
       // a no-op for every span, right or wrong.
       const QString raw = content.mid(link.m_urlStart, link.m_urlEnd - link.m_urlStart);
+      if (link.m_syntax == MarkdownLink::Syntax::Html) {
+        // The independent oracle for an HTML image is the scanner run over the
+        // reported REGION alone: it must find exactly one tag, spanning the
+        // whole region, whose decoded src is the reported destination and whose
+        // src value span is the reported url span.
+        vte::RawTextState state;
+        const QString region =
+            content.mid(link.m_regionStart, link.m_regionEnd - link.m_regionStart);
+        const auto tags = vte::scanHtmlImgTags(region, link.m_regionStart, &state);
+        QVERIFY2(tags.size() == 1, qPrintable(where));
+        QCOMPARE(tags.first().m_tagStart, link.m_regionStart);
+        QCOMPARE(tags.first().m_tagEnd, link.m_regionEnd);
+        QCOMPARE(tags.first().src(), link.m_urlInLink);
+        const auto *srcAttr = tags.first().attr("src");
+        QVERIFY(srcAttr);
+        QCOMPARE(srcAttr->m_valueStart, link.m_urlStart);
+        QCOMPARE(srcAttr->m_valueEnd, link.m_urlEnd);
+        QCOMPARE(content.mid(link.m_regionStart, 4).toLower(), QStringLiteral("<img"));
+        continue;
+      }
+
       {
         const QString probeMd = QStringLiteral("![](") + raw + QStringLiteral(")\n");
         const QByteArray probeUtf8 = probeMd.toUtf8();
@@ -1636,6 +1658,461 @@ void TestMarkdownParser::testFileUrlClassification() {
                                      MarkdownLink::TypeFlag::LocalRelativeInternal |
                                          MarkdownLink::TypeFlag::LocalRelativeExternal);
   QCOMPARE(relative.size(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// HTML `<img>`
+// ---------------------------------------------------------------------------
+
+// The scanner is the ONE place allowed to pattern-match `<img` in note source,
+// so its quoting, casing and entity handling are pinned here rather than only
+// through the callers.
+void TestMarkdownParser::testHtmlImgScannerQuoting() {
+  struct Case {
+    const char *text;
+    const char *src;
+    const char *alt;
+    int width;
+    int height;
+    bool unknownAttrs;
+  };
+
+  const QVector<Case> cases{
+      {"<img src=\"a.png\"/>", "a.png", "", 0, 0, false},
+      {"<img src='a.png'>", "a.png", "", 0, 0, false},
+      {"<img src=a.png>", "a.png", "", 0, 0, false},
+      {"<IMG SRC=\"a.png\" ALT=\"Hi\">", "a.png", "Hi", 0, 0, false},
+      // Entities are decoded in every value.
+      {"<img src=\"a&amp;b.png\" alt=\"&quot;q&quot;\">", "a&b.png", "\"q\"", 0, 0, false},
+      {"<img src=\"a.png\" width=\"500\" height=\"300\" />", "a.png", "", 500, 300, false},
+      // A percentage, a non-integer and a non-positive value are all "no size".
+      {"<img src=\"a.png\" width=\"50%\">", "a.png", "", 0, 0, false},
+      {"<img src=\"a.png\" width=\"abc\">", "a.png", "", 0, 0, false},
+      {"<img src=\"a.png\" width=\"0\">", "a.png", "", 0, 0, false},
+      {"<img src=\"a.png\" width=\"-5\">", "a.png", "", 0, 0, false},
+      // A `>` inside a quoted value does not terminate the tag.
+      {"<img src=\"a.png\" alt=\"a>b\">", "a.png", "a>b", 0, 0, false},
+      {"<img src=\"a.png\" class=\"x\">", "a.png", "", 0, 0, true},
+      {"<img src=\"a.png\" style=\"width:1px\">", "a.png", "", 0, 0, true},
+      {"<img src=\"a.png\" data-id=\"7\">", "a.png", "", 0, 0, true},
+      // A bare attribute is still an attribute.
+      {"<img src=\"a.png\" hidden>", "a.png", "", 0, 0, true},
+  };
+
+  for (const auto &c : cases) {
+    const QString text = QString::fromUtf8(c.text);
+    vte::RawTextState state;
+    const auto tags = vte::scanHtmlImgTags(text, 0, &state);
+    QVERIFY2(tags.size() == 1, c.text);
+    QCOMPARE(tags.first().src(), QString::fromUtf8(c.src));
+    QCOMPARE(tags.first().alt(), QString::fromUtf8(c.alt));
+    QCOMPARE(tags.first().width(), c.width);
+    QCOMPARE(tags.first().height(), c.height);
+    QCOMPARE(tags.first().hasUnknownAttrs(), c.unknownAttrs);
+    // The tag span is byte-exact.
+    QCOMPARE(text.mid(tags.first().m_tagStart, tags.first().m_tagEnd - tags.first().m_tagStart),
+             text);
+  }
+
+  // The first occurrence wins for reads, and the duplicate is still reported.
+  {
+    vte::RawTextState state;
+    const auto tags = vte::scanHtmlImgTags(
+        QStringLiteral("<img src=\"a.png\" width=\"100\" width=\"200\">"), 0, &state);
+    QCOMPARE(tags.size(), 1);
+    QCOMPARE(tags.first().width(), 100);
+    QVERIFY(tags.first().hasDuplicateAttrs());
+    QVERIFY(!tags.first().hasUnknownAttrs());
+    QCOMPARE(tags.first().m_attrs.size(), 3);
+  }
+}
+
+// Everything the scanner must NOT report.
+void TestMarkdownParser::testHtmlImgScannerSuppression() {
+  const QVector<const char *> ignored{
+      // A multiline tag is out of scope by design (unchanged behaviour).
+      "<img\n  src=\"a.png\">",
+      "<img src=\"a.png\"\n  width=\"5\">",
+      "<!-- <img src=\"a.png\"> -->",
+      // No src, or an empty one.
+      "<img alt=\"a\">",
+      "<img src=\"\">",
+      // Raw-text elements: an `<img>` there is text, not an image.
+      "<script>var s = '<img src=\"a.png\">';</script>",
+      "<style>/* <img src=\"a.png\"> */</style>",
+      "<textarea><img src=\"a.png\"></textarea>",
+      "<title><img src=\"a.png\"></title>",
+      // Unclosed raw text suppresses to the end -- fail safe.
+      "<script>'<img src=\"a.png\">'",
+      // A tag spelled inside another tag's quoted attribute value.
+      "<span title=\"<img src='a.png'>\">x</span>",
+  };
+
+  for (const char *text : ignored) {
+    vte::RawTextState state;
+    const auto tags = vte::scanHtmlImgTags(QString::fromUtf8(text), 0, &state);
+    QVERIFY2(tags.isEmpty(), text);
+  }
+
+  // A real tag immediately after the closing raw-text tag IS found.
+  {
+    vte::RawTextState state;
+    const auto tags = vte::scanHtmlImgTags(
+        QStringLiteral("<script><img src=\"no.png\"></script><img src=\"yes.png\">"), 0, &state);
+    QCOMPARE(tags.size(), 1);
+    QCOMPARE(tags.first().src(), QStringLiteral("yes.png"));
+    QVERIFY(state.m_element.isEmpty());
+  }
+
+  // The state is carried ACROSS calls, because cmark splits an element's
+  // opening tag, contents and closing tag into separate nodes.
+  {
+    vte::RawTextState state;
+    QVERIFY(vte::scanHtmlImgTags(QStringLiteral("<script>"), 0, &state).isEmpty());
+    QCOMPARE(state.m_element, QStringLiteral("script"));
+    QVERIFY(vte::scanHtmlImgTags(QStringLiteral("<img src=\"a.png\">"), 0, &state).isEmpty());
+    QVERIFY(vte::scanHtmlImgTags(QStringLiteral("</SCRIPT>"), 0, &state).isEmpty());
+    QVERIFY(state.m_element.isEmpty());
+    const auto tags = vte::scanHtmlImgTags(QStringLiteral("<img src=\"a.png\">"), 0, &state);
+    QCOMPARE(tags.size(), 1);
+  }
+
+  // Two tags on one line are both found.
+  {
+    vte::RawTextState state;
+    const auto tags = vte::scanHtmlImgTags(
+        QStringLiteral("<img src=\"a.png\"> and <img src=\"b.png\">"), 0, &state);
+    QCOMPARE(tags.size(), 2);
+    QCOMPARE(tags.at(0).src(), QStringLiteral("a.png"));
+    QCOMPARE(tags.at(1).src(), QStringLiteral("b.png"));
+  }
+}
+
+// Attribute spans are what every rewriter measures with; they must be
+// byte-exact, and the base offset must be applied.
+void TestMarkdownParser::testHtmlImgScannerAttrSpans() {
+  const QString text = QStringLiteral("xx<img src=\"a b.png\" width=500 alt='q'>");
+  const int base = 1000;
+  vte::RawTextState state;
+  const auto tags = vte::scanHtmlImgTags(text, base, &state);
+  QCOMPARE(tags.size(), 1);
+
+  const auto &tag = tags.first();
+  QCOMPARE(tag.m_tagStart, base + 2);
+  QCOMPARE(tag.m_tagEnd, base + text.size());
+
+  const auto *src = tag.attr("src");
+  QVERIFY(src);
+  QCOMPARE(text.mid(src->m_attrStart - base, src->m_attrEnd - src->m_attrStart),
+           QStringLiteral("src=\"a b.png\""));
+  QCOMPARE(text.mid(src->m_valueStart - base, src->m_valueEnd - src->m_valueStart),
+           QStringLiteral("a b.png"));
+  QCOMPARE(src->m_quote, QLatin1Char('"'));
+
+  const auto *width = tag.attr("width");
+  QVERIFY(width);
+  QCOMPARE(text.mid(width->m_attrStart - base, width->m_attrEnd - width->m_attrStart),
+           QStringLiteral("width=500"));
+  QVERIFY(width->m_quote.isNull());
+
+  const auto *alt = tag.attr("alt");
+  QVERIFY(alt);
+  QCOMPARE(text.mid(alt->m_valueStart - base, alt->m_valueEnd - alt->m_valueStart),
+           QStringLiteral("q"));
+  QCOMPARE(alt->m_quote, QLatin1Char('\''));
+
+  QVERIFY(!tag.attr("title"));
+}
+
+// An HTML image is a first-class entry of the snapshot API: same region/url
+// span contract, same classification, same flag filtering.
+void TestMarkdownParser::testFetchImageLinksHtml() {
+  const QString content = QStringLiteral(
+      "<img src=\"a b.png\" alt=\"the alt\" title=\"the title\" width=\"500\" height=\"300\" />\n");
+  const auto links = MarkdownUtils::fetchImageLinks(content, QStringLiteral("/base"), allTypes());
+  QCOMPARE(links.size(), 1);
+
+  const auto &link = links.first();
+  QCOMPARE(link.m_syntax, MarkdownLink::Syntax::Html);
+  QCOMPARE(link.m_urlInLink, QStringLiteral("a b.png"));
+  QCOMPARE(link.m_alt, QStringLiteral("the alt"));
+  QCOMPARE(link.m_title, QStringLiteral("the title"));
+  QCOMPARE(link.m_width, 500);
+  QCOMPARE(link.m_height, 300);
+  QVERIFY(link.m_type & MarkdownLink::TypeFlag::LocalRelativeInternal);
+  QCOMPARE(content.mid(link.m_regionStart, link.m_regionEnd - link.m_regionStart),
+           content.trimmed());
+  // The url span is the `src` VALUE, quotes excluded.
+  QVERIFY(link.hasUrlSpan());
+  QCOMPARE(content.mid(link.m_urlStart, link.m_urlEnd - link.m_urlStart),
+           QStringLiteral("a b.png"));
+
+  // Entities are decoded, and the raw span still measures the source spelling.
+  {
+    const QString html = QStringLiteral("<img src=\"a&amp;b.png\">\n");
+    const auto entity = MarkdownUtils::fetchImageLinks(html, QStringLiteral("/base"), allTypes());
+    QCOMPARE(entity.size(), 1);
+    QCOMPARE(entity.first().m_urlInLink, QStringLiteral("a&b.png"));
+    QCOMPARE(
+        html.mid(entity.first().m_urlStart, entity.first().m_urlEnd - entity.first().m_urlStart),
+        QStringLiteral("a&amp;b.png"));
+  }
+
+  // Remote and absolute destinations classify exactly as Markdown ones do.
+  {
+    const QString html = QStringLiteral("<img src=\"https://h/x.png\">\n");
+    const auto remote = MarkdownUtils::fetchImageLinks(html, QStringLiteral("/base"), allTypes());
+    QCOMPARE(remote.size(), 1);
+    QVERIFY(remote.first().m_type & MarkdownLink::TypeFlag::Remote);
+
+    const auto relativeOnly = MarkdownUtils::fetchImageLinks(
+        html, QStringLiteral("/base"), MarkdownLink::TypeFlag::LocalRelativeInternal);
+    QVERIFY(relativeOnly.isEmpty());
+  }
+
+  // A multiline tag is invisible, exactly as before this feature existed.
+  {
+    const auto none = MarkdownUtils::fetchImageLinks(QStringLiteral("<img\n  src=\"a.png\">\n"),
+                                                     QStringLiteral("/base"), allTypes());
+    QVERIFY(none.isEmpty());
+  }
+}
+
+// Container prefixes (`> `, list indent) and multiline HTML blocks: the raw
+// slice keeps the prefixes, but D8 guarantees a tag never contains one, so
+// every reported span must still be byte-exact.
+void TestMarkdownParser::testFetchImageLinksHtmlContainers() {
+  const QVector<QString> contents{
+      QStringLiteral("> <img src=\"a.png\">\n"),
+      QStringLiteral("- <img src=\"a.png\">\n"),
+      QStringLiteral("- item\n\n  <img src=\"a.png\">\n"),
+      QStringLiteral("<div>\n<img src=\"a.png\">\n</div>\n"),
+      QStringLiteral("> <div>\n> <img src=\"a.png\">\n> </div>\n"),
+      QStringLiteral("- <div>\n  <img src=\"a.png\">\n  </div>\n"),
+      // Ending at EOF with no trailing newline.
+      QStringLiteral("<div>\n<img src=\"a.png\">\n</div>"),
+      // A lazy continuation: the container prefix is absent on the tag's line,
+      // which shifts every reported column (D12).
+      QStringLiteral("> lead\n<img src=\"a.png\">\n"),
+      QStringLiteral("- lead\n<img src=\"a.png\">\n"),
+      // Nested in a Markdown image's description (regions may nest).
+      QStringLiteral("![d <img src=\"a.png\"> e](m.png)\n"),
+  };
+
+  for (const QString &content : contents) {
+    const auto links = MarkdownUtils::fetchImageLinks(content, QStringLiteral("/base"), allTypes());
+    const MarkdownLink *html = nullptr;
+    for (const auto &link : links) {
+      if (link.m_syntax == MarkdownLink::Syntax::Html) {
+        QVERIFY2(!html, qPrintable(content));
+        html = &link;
+      }
+    }
+    QVERIFY2(html, qPrintable(content));
+    QCOMPARE(content.mid(html->m_regionStart, html->m_regionEnd - html->m_regionStart),
+             QStringLiteral("<img src=\"a.png\">"));
+    QCOMPARE(content.mid(html->m_urlStart, html->m_urlEnd - html->m_urlStart),
+             QStringLiteral("a.png"));
+  }
+
+  // Two identical tags on one line: both are reported, at distinct spans.
+  {
+    const QString content =
+        QStringLiteral("<div>\n<img src=\"a.png\"><img src=\"a.png\">\n</div>\n");
+    const auto links = MarkdownUtils::fetchImageLinks(content, QStringLiteral("/base"), allTypes());
+    QCOMPARE(links.size(), 2);
+    QVERIFY(links.at(0).m_regionStart != links.at(1).m_regionStart);
+    for (const auto &link : links) {
+      QCOMPARE(content.mid(link.m_regionStart, link.m_regionEnd - link.m_regionStart),
+               QStringLiteral("<img src=\"a.png\">"));
+    }
+  }
+}
+
+// Raw-text suppression must hold THROUGH fetchImageLinks(), not only inside the
+// scanner: cmark splits `<script>`, its contents and `</script>` into separate
+// HTML nodes.
+void TestMarkdownParser::testFetchImageLinksHtmlRawText() {
+  const QVector<QString> suppressed{
+      QStringLiteral("<script>\nvar s = '<img src=\"a.png\">';\n</script>\n"),
+      QStringLiteral("<style>\n/* <img src=\"a.png\"> */\n</style>\n"),
+      QStringLiteral("<textarea>\n<img src=\"a.png\">\n</textarea>\n"),
+      QStringLiteral("<title>\n<img src=\"a.png\">\n</title>\n"),
+      QStringLiteral("para <script>var s = '<img src=\"a.png\">';</script> tail\n"),
+  };
+
+  for (const QString &content : suppressed) {
+    const auto links = MarkdownUtils::fetchImageLinks(content, QStringLiteral("/base"), allTypes());
+    QVERIFY2(links.isEmpty(), qPrintable(content));
+  }
+
+  // A real image after the closing tag is still found.
+  {
+    const QString content =
+        QStringLiteral("<script>\nvar s = '<img src=\"no.png\">';\n</script>\n\n"
+                       "<img src=\"yes.png\">\n");
+    const auto links = MarkdownUtils::fetchImageLinks(content, QStringLiteral("/base"), allTypes());
+    QCOMPARE(links.size(), 1);
+    QCOMPARE(links.first().m_urlInLink, QStringLiteral("yes.png"));
+  }
+
+  // The state must advance even for a node this walk cannot place, or an
+  // unresolvable `<script>` would unmask an `<img>` inside it. A lazy
+  // continuation is what makes the inline node unresolvable.
+  {
+    const QString content = QStringLiteral("> lead <script>\n'<img src=\"a.png\">'\n</script>\n");
+    const auto links = MarkdownUtils::fetchImageLinks(content, QStringLiteral("/base"), allTypes());
+    QVERIFY(links.isEmpty());
+  }
+}
+
+// The T0 regression: a single-line `<img>` following a multiline construct.
+// Before the cmark fix, every inline node after one carried stale coordinates.
+void TestMarkdownParser::testFetchImageLinksHtmlAfterMultilineConstruct() {
+  const QVector<QString> contents{
+      QStringLiteral("a `co\nde` <img src=\"a.png\"> b\n"),
+      QStringLiteral("a <span\nclass=\"x\">b</span> <img src=\"a.png\"> c\n"),
+      QStringLiteral("> a `co\n> de` <img src=\"a.png\"> b\n"),
+      QStringLiteral("- a <span\n  class=\"x\">b</span> <img src=\"a.png\"> c\n"),
+  };
+
+  for (const QString &content : contents) {
+    const auto links = MarkdownUtils::fetchImageLinks(content, QStringLiteral("/base"), allTypes());
+    QCOMPARE(links.size(), 1);
+    QCOMPARE(content.mid(links.first().m_regionStart,
+                         links.first().m_regionEnd - links.first().m_regionStart),
+             QStringLiteral("<img src=\"a.png\">"));
+  }
+}
+
+// The sort runs over the MERGED vector, so the descending-m_urlStart contract
+// holds across syntaxes.
+void TestMarkdownParser::testFetchImageLinksMixedOrdering() {
+  const QString content = QStringLiteral("![a](one.png)\n"
+                                         "<img src=\"two.png\">\n"
+                                         "![b](three.png)\n"
+                                         "<img src=\"four.png\">\n");
+  const auto links = MarkdownUtils::fetchImageLinks(content, QStringLiteral("/base"), allTypes());
+  QCOMPARE(links.size(), 4);
+
+  QStringList order;
+  for (int i = 0; i < links.size(); ++i) {
+    order << links.at(i).m_urlInLink;
+    if (i > 0) {
+      QVERIFY(links.at(i - 1).m_urlStart > links.at(i).m_urlStart);
+    }
+  }
+  QCOMPARE(order, QStringList({QStringLiteral("four.png"), QStringLiteral("three.png"),
+                               QStringLiteral("two.png"), QStringLiteral("one.png")}));
+
+  QCOMPARE(links.at(0).m_syntax, MarkdownLink::Syntax::Html);
+  QCOMPARE(links.at(1).m_syntax, MarkdownLink::Syntax::Markdown);
+}
+
+// The live path: the walker reports an HTML image exactly as it reports a
+// Markdown one, so PreviewMgr and the editor's Image menu need no branch.
+void TestMarkdownParser::testWalkerHtmlImages() {
+  {
+    const QString input =
+        QStringLiteral("<img src=\"a.png\" alt=\"A\" title=\"T\" width=\"200\"/>\n");
+    const auto result = parse(input);
+    QCOMPARE(result.imageElements.size(), 1);
+
+    const auto &image = result.imageElements.first();
+    QCOMPARE(image.m_syntax, vte::md::ImageLinkInfo::Syntax::Html);
+    QCOMPARE(image.m_destination, QStringLiteral("a.png"));
+    QCOMPARE(image.m_alternateText, QStringLiteral("A"));
+    QCOMPARE(image.m_title, QStringLiteral("T"));
+    QCOMPARE(image.m_width, 200);
+    QCOMPARE(image.m_height, 0);
+    QCOMPARE(input.mid(image.m_startPos, image.m_endPos - image.m_startPos), input.trimmed());
+    // Sole content of its line.
+    QVERIFY(image.m_standalone);
+
+    const auto links = vte::md::buildImageLinks(result.imageElements);
+    QCOMPARE(links.size(), 1);
+    QCOMPARE(links.first().m_syntax, vte::md::ImageLinkInfo::Syntax::Html);
+    QCOMPARE(links.first().m_alt, QStringLiteral("A"));
+    QCOMPARE(links.first().m_title, QStringLiteral("T"));
+    QCOMPARE(links.first().m_region.m_startPos, image.m_startPos);
+    QCOMPARE(links.first().m_region.m_endPos, image.m_endPos);
+  }
+
+  // Mid-sentence: not standalone.
+  {
+    const auto result = parse(QStringLiteral("text <img src=\"a.png\"> more\n"));
+    QCOMPARE(result.imageElements.size(), 1);
+    QVERIFY(!result.imageElements.first().m_standalone);
+  }
+
+  // Inside a multiline HTML block, on its own line.
+  {
+    const QString input = QStringLiteral("<div>\n<img src=\"a.png\">\n</div>\n");
+    const auto result = parse(input);
+    QCOMPARE(result.imageElements.size(), 1);
+    QVERIFY(result.imageElements.first().m_standalone);
+    QCOMPARE(
+        input.mid(result.imageElements.first().m_startPos,
+                  result.imageElements.first().m_endPos - result.imageElements.first().m_startPos),
+        QStringLiteral("<img src=\"a.png\">"));
+  }
+
+  // Raw-text suppression holds in the live path too.
+  {
+    const auto result =
+        parse(QStringLiteral("<script>\nvar s = '<img src=\"a.png\">';\n</script>\n"));
+    QVERIFY(result.imageElements.isEmpty());
+  }
+
+  // The T0 regression, through the walker.
+  {
+    const QString input = QStringLiteral("a `co\nde` <img src=\"a.png\"> b\n");
+    const auto result = parse(input);
+    QCOMPARE(result.imageElements.size(), 1);
+    QCOMPARE(
+        input.mid(result.imageElements.first().m_startPos,
+                  result.imageElements.first().m_endPos - result.imageElements.first().m_startPos),
+        QStringLiteral("<img src=\"a.png\">"));
+  }
+}
+
+// Generation is the inverse of the scanner, and the 3-argument
+// generateImageLink() must stay byte-identical for untouched call sites.
+void TestMarkdownParser::testGenerateImageTag() {
+  QCOMPARE(
+      MarkdownUtils::generateImageLink(QStringLiteral("alt"), QStringLiteral("a.png"), QString()),
+      QStringLiteral("![alt](a.png)"));
+  QCOMPARE(MarkdownUtils::generateImageLink(QStringLiteral("alt"), QStringLiteral("a.png"),
+                                            QStringLiteral("title")),
+           QStringLiteral("![alt](a.png \"title\")"));
+  QCOMPARE(MarkdownUtils::generateImageLink(QStringLiteral("alt"), QStringLiteral("a.png"),
+                                            QString(), 0, 0),
+           QStringLiteral("![alt](a.png)"));
+
+  // Any size at all switches to HTML, which every Markdown tool understands.
+  QCOMPARE(MarkdownUtils::generateImageLink(QString(), QStringLiteral("a.png"), QString(), 500, 0),
+           QStringLiteral("<img src=\"a.png\" width=\"500\" />"));
+  QCOMPARE(MarkdownUtils::generateImageLink(QStringLiteral("alt"), QStringLiteral("a.png"),
+                                            QStringLiteral("title"), 500, 300),
+           QStringLiteral(
+               "<img src=\"a.png\" alt=\"alt\" title=\"title\" width=\"500\" height=\"300\" />"));
+
+  // Every value is escaped, so the result always round trips through the
+  // scanner unchanged.
+  const QString tag = MarkdownUtils::generateImageTag(
+      QStringLiteral("a\"b<c"), QStringLiteral("a&b.png"), QStringLiteral("t'x"), 10, 20);
+  QCOMPARE(tag, QStringLiteral("<img src=\"a&amp;b.png\" alt=\"a&quot;b&lt;c\" title=\"t&#39;x\" "
+                               "width=\"10\" height=\"20\" />"));
+
+  vte::RawTextState state;
+  const auto tags = vte::scanHtmlImgTags(tag, 0, &state);
+  QCOMPARE(tags.size(), 1);
+  QCOMPARE(tags.first().src(), QStringLiteral("a&b.png"));
+  QCOMPARE(tags.first().alt(), QStringLiteral("a\"b<c"));
+  QCOMPARE(tags.first().title(), QStringLiteral("t'x"));
+  QCOMPARE(tags.first().width(), 10);
+  QCOMPARE(tags.first().height(), 20);
+  QVERIFY(!tags.first().hasUnknownAttrs());
 }
 
 QTEST_MAIN(tests::TestMarkdownParser)

@@ -47,4 +47,36 @@ Standalone on its own line:
 
 - ![in a list item](img.png)
 
+HTML images are first-class references too, in every quoting style:
+<img src="img.png"> <img src='img.png' width="500"> <img src=img.png height=300>
+
+Uppercase, entity-encoded, and carrying attributes VNote never generates:
+<IMG SRC="a&amp;b.png" ALT="alt"> <img src="img.png" class="x" style="border:0">
+
+Standalone on its own line:
+
+<img src="img.png" alt="standalone" title="a title" width="300" height="200" />
+
+> <img src="img.png">
+
+- <img src="img.png">
+
+Inside a multiline HTML block:
+
+<div>
+  <img src="img.png" width="120">
+</div>
+
+A multiline tag is NOT an image reference, and neither is one inside a comment
+or a raw-text element:
+
+<img
+  src="never.png">
+
+<!-- <img src="never.png"> -->
+
+<script>
+var s = '<img src="never.png">';
+</script>
+
 [ref]: reference-target.png

@@ -4,6 +4,8 @@
 
 #include <node.h>
 
+#include <cstring>
+
 #ifdef VTE_DEBUG_HIGHLIGHT
 #include <QDebug>
 #endif
@@ -403,4 +405,106 @@ bool cmarkNodeUrlSpan(cmark_node *p_node, const LineOffsetTable &p_offsets, int 
   return cmarkSpanFromCoords(p_node, p_offsets, sl, cmark_node_get_url_start_column(p_node),
                              cmark_node_get_url_end_line(p_node),
                              cmark_node_get_url_end_column(p_node), p_startQChar, p_endQChar);
+}
+
+bool resolveHtmlNodeSpan(const QString &p_content, cmark_node *p_node,
+                         const LineOffsetTable &p_offsets, int &p_startQChar, int &p_endQChar) {
+  const cmark_node_type type = cmark_node_get_type(p_node);
+  if (type != CMARK_NODE_HTML_INLINE && type != CMARK_NODE_HTML_BLOCK) {
+    return false;
+  }
+
+  const int startLine = cmark_node_get_start_line(p_node);
+  const int endLine = cmark_node_get_end_line(p_node);
+  if (startLine <= 0) {
+    return false;
+  }
+
+  if (type == CMARK_NODE_HTML_BLOCK) {
+    // Line offsets only: no column is trusted.
+    //
+    // end_line is not trusted either -- cmark reports an HTML block's end_line
+    // as the last line it CONSUMED before the end condition matched, so a
+    // `<script>…</script>` block reports the line before `</script>`. Slicing
+    // to that would cut the closing tag off and leave the raw-text state stuck
+    // open for the rest of the document. The literal is not a contiguous copy
+    // of the source (each line's container prefix is stripped independently and
+    // a synthetic final newline may be appended) so it can never be compared
+    // for equality -- but its LINE COUNT is exactly the block's, which is all
+    // that is needed here.
+    const char *literal = cmark_node_get_literal(p_node);
+    int literalLines = 0;
+    if (literal) {
+      for (const char *p = literal; *p; ++p) {
+        if (*p == '\n') {
+          ++literalLines;
+        }
+      }
+      if (literal[0] != '\0' && literal[strlen(literal) - 1] != '\n') {
+        ++literalLines;
+      }
+    }
+
+    const int lineCount = p_offsets.lineCount();
+    const int startIdx = startLine - 1;
+    int endIdx = (endLine > 0 ? endLine : startLine) - 1;
+    if (literalLines > 0) {
+      endIdx = qMax(endIdx, startIdx + literalLines - 1);
+    }
+    if (startIdx >= lineCount) {
+      return false;
+    }
+    if (endIdx >= lineCount) {
+      endIdx = lineCount - 1;
+    }
+    if (endIdx < startIdx) {
+      endIdx = startIdx;
+    }
+
+    p_startQChar = p_offsets.lineStartQCharOffset(startIdx);
+    p_endQChar = p_offsets.lineEndQCharOffset(endIdx);
+    return p_endQChar >= p_startQChar;
+  }
+
+  const char *literalData = cmark_node_get_literal(p_node);
+  if (!literalData) {
+    return false;
+  }
+  const QString literal = QString::fromUtf8(literalData);
+  if (literal.isEmpty()) {
+    return false;
+  }
+
+  int start = -1;
+  int end = -1;
+  if (cmarkNodeSpan(p_node, p_offsets, start, end) && start >= 0 && end > start &&
+      end <= p_content.size() && p_content.mid(start, end - start) == literal) {
+    p_startQChar = start;
+    p_endQChar = end;
+    return true;
+  }
+
+  // The column was shifted (a lazy continuation line, whose container prefix
+  // the single per-paragraph block_offset cannot describe). The LINE is
+  // reliable, so accept a UNIQUE occurrence of the literal on it.
+  const int lineIdx = startLine - 1;
+  if (lineIdx >= p_offsets.lineCount()) {
+    return false;
+  }
+  const int lineStart = p_offsets.lineStartQCharOffset(lineIdx);
+  const int lineEnd = p_offsets.lineEndQCharOffset(lineIdx);
+  if (lineEnd <= lineStart) {
+    return false;
+  }
+
+  const QString line = p_content.mid(lineStart, lineEnd - lineStart);
+  const int first = line.indexOf(literal);
+  if (first < 0 || line.indexOf(literal, first + 1) >= 0) {
+    // Absent, or ambiguous: skipping is the only safe answer.
+    return false;
+  }
+
+  p_startQChar = lineStart + first;
+  p_endQChar = p_startQChar + literal.size();
+  return true;
 }

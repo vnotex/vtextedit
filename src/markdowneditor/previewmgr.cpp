@@ -185,6 +185,11 @@ void PreviewMgr::buildImageLinksForLayout(const QVector<md::ImageLinkInfo> &p_li
     // destination, so `vx_images\a.png` really does still contain a backslash
     // after cmark's unescaping, while `a\_b.png` correctly resolves to
     // `a_b.png` and is previewed.
+    //
+    // The same rule is applied to an HTML `<img src="…">`, where a backslash is
+    // not an escape at all: `src="C:\a\b.png"` is therefore silently NOT
+    // previewed. That is deliberate -- read mode does not render it either, and
+    // one rule for both syntaxes is what keeps the two paths from diverging.
     if (info.m_destination.isEmpty()) {
       continue;
     }

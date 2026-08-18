@@ -30,6 +30,10 @@ struct ImageElement : public TypedPreviewElement {
 
   // Whether the image is the sole content of its source line.
   bool m_standalone = false;
+
+  // How the image is spelled in the source: a Markdown `![…](…)` link, or an
+  // HTML `<img …>` tag found inside an HTML_INLINE / HTML_BLOCK node.
+  ImageLinkInfo::Syntax m_syntax = ImageLinkInfo::Syntax::Markdown;
 };
 
 struct CodeElement : public TypedPreviewElement {
