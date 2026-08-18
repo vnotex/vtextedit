@@ -23,6 +23,20 @@ set(TRANS_FILES
 )
 qt_add_translation(QM_FILES ${TRANS_FILES})
 
+# Explicitly-invoked target to refresh the .ts catalogs from the sources.
+# Not part of ALL: run it deliberately with
+#   cmake --build <builddir> --target update_translations
+if (TARGET Qt${QT_DEFAULT_MAJOR_VERSION}::lupdate)
+    add_custom_target(update_translations
+        COMMAND Qt${QT_DEFAULT_MAJOR_VERSION}::lupdate
+                -locations relative -no-obsolete
+                ${CMAKE_CURRENT_SOURCE_DIR}
+                -ts ${TRANS_FILES}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Updating .ts translation catalogs"
+        VERBATIM)
+endif()
+
 add_library(VTextEdit SHARED
     ${QM_FILES}
     data/themes/theme.qrc
