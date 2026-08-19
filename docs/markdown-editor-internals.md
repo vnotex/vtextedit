@@ -109,6 +109,10 @@ states, source highlighting, and semantic signals. In particular:
 - `imageLinksUpdated` carries image regions to the internally connected `PreviewMgr`.
 - `codeBlocksUpdated`, `mathBlocksUpdated`, `headersUpdated`, and `tableBlocksUpdated` expose
   semantic data but do not themselves create rendered previews.
+- `headersUpdated` carries only the heading *regions* (`ElementRegion`). `headingsUpdated`
+  additionally publishes typed `md::HeadingInfo` per heading — level plus the AST-derived
+  rendered title and slugify input — so a host can build an outline without re-parsing the
+  source lines. Both are emitted from the same accepted result.
 - `foldingRegionsUpdated` refreshes `MarkdownFoldingProvider`.
 
 ## Preview model

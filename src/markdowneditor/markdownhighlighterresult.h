@@ -119,6 +119,10 @@ public:
   QVector<md::MathElement> m_mathElements;
   QVector<md::TableElement> m_tableElements;
 
+  // Headings with their AST-derived title and anchor text, published to the
+  // host through MarkdownHighlighter::headingsUpdated().
+  QVector<md::HeadingInfo> m_headingElements;
+
   // Build immutable preview snapshots for the element types set in
   // @p_typeMask (bit i corresponds to PreviewElementType value i).
   // @p_styles maps HLUnit::styleIndex to a concrete format and is used to

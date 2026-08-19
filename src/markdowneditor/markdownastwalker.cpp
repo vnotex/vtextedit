@@ -494,6 +494,89 @@ static void extractHtmlImages(cmark_node *p_node, const QString &p_text,
   }
 }
 
+// Accumulate the rendered text of a heading's inline subtree.
+//
+// @p_title is what the reader sees (approximates the browser's textContent of
+// the rendered <h1..h6>); @p_anchorText mirrors markdown-it-anchor, which slugs
+// the concatenated content of only the `text` and `code_inline` tokens of the
+// heading's inlines. The two are therefore built with DIFFERENT whitespace
+// rules and only @p_title may be trimmed afterwards: markdown-it-anchor
+// concatenates raw token content, so a heading like `# a ![x](y)` keeps the
+// trailing space of its text token and slugs to `a-`, and a soft break
+// contributes nothing at all (`Foo\nbar` under a setext rule slugs to `foobar`).
+//
+// All literals come from cmark_node_get_literal(), which is already
+// entity-decoded and owned by the node, so there is no escaping, unescaping or
+// freeing anywhere in this path.
+//
+// Known limitation: cmark is always run with CMARK_OPT_DEFAULT, i.e. raw inline
+// HTML is always recognized as such. The preview passes markdown-it
+// `html: enableHtmlTag`, so with that setting OFF the preview shows the escaped
+// tags as visible text while this extractor still drops them. Same class of
+// divergence as the preview-only plugins (emoji, texmath, footnotes) documented
+// in the plan: the authoritative path for a user-visible link stays
+// MarkdownViewerAdapter::fetchHeadingAnchor.
+static void appendHeadingText(cmark_node *p_node, QString &p_title, QString &p_anchorText) {
+  for (cmark_node *child = cmark_node_first_child(p_node); child; child = cmark_node_next(child)) {
+    const cmark_node_type type = cmark_node_get_type(child);
+    switch (type) {
+    case CMARK_NODE_TEXT:
+    case CMARK_NODE_CODE:
+    case CMARK_NODE_FORMULA_INLINE: {
+      const char *literal = cmark_node_get_literal(child);
+      if (literal) {
+        const QString text = QString::fromUtf8(literal);
+        p_title += text;
+        p_anchorText += text;
+      }
+      break;
+    }
+
+    case CMARK_NODE_SOFTBREAK:
+    case CMARK_NODE_LINEBREAK:
+      // A break is whitespace in the rendered heading, but markdown-it-anchor
+      // drops the token entirely, so it must NOT reach the anchor input.
+      p_title += QStringLiteral(" ");
+      break;
+
+    case CMARK_NODE_IMAGE:
+      // The alt text is not part of the rendered textContent.
+      break;
+
+    case CMARK_NODE_HTML_INLINE:
+      // A leaf whose literal is the tag itself: `## <b>x</b>` renders as `x`.
+      break;
+
+    case CMARK_NODE_FOOTNOTE_REFERENCE:
+    case CMARK_NODE_INLINE_FOOTNOTE:
+      // Rendered as a numbered `[n]` marker, never as the footnote body, and
+      // dropped from the slug input by markdown-it-anchor. Recursing into the
+      // inline form would splice the note body into the heading title, so both
+      // forms are skipped explicitly rather than left to the default branch.
+      break;
+
+    default:
+      // Emphasis, strong, links, strikethrough and any fork extension with
+      // children: recurse. Unknown leaves contribute nothing.
+      appendHeadingText(child, p_title, p_anchorText);
+      break;
+    }
+  }
+}
+
+static void extractHeading(cmark_node *p_node, ASTWalkResult &p_result, int p_absStart,
+                           int p_absEnd) {
+  HeadingInfo heading;
+  heading.m_startPos = p_absStart;
+  heading.m_endPos = p_absEnd;
+  heading.m_level = cmark_node_get_heading_level(p_node);
+  appendHeadingText(p_node, heading.m_title, heading.m_anchorText);
+  // Only the display title is trimmed; see the note above on why the anchor
+  // input must keep markdown-it-anchor's raw concatenation.
+  heading.m_title = heading.m_title.trimmed();
+  p_result.headingElements.append(heading);
+}
+
 // Capture the typed data of one non-table element.
 static void extractTypedElement(cmark_node *p_node, cmark_node_type p_type, int p_style,
                                 const QByteArray &p_utf8Text, const LineOffsetTable &p_offsets,
@@ -541,6 +624,13 @@ static void extractTypedElement(cmark_node *p_node, cmark_node_type p_type, int 
     math.m_expression = literal ? QString::fromUtf8(literal) : QString();
     math.m_display = (p_type == CMARK_NODE_FORMULA_BLOCK);
     p_result.mathElements.append(math);
+    break;
+  }
+
+  case CMARK_NODE_HEADING: {
+    // Reached exactly once per heading: headings are non-leaf, so the walk
+    // loop's ENTER guard lets only the enter event through.
+    extractHeading(p_node, p_result, p_absStart, p_absEnd);
     break;
   }
 
@@ -752,6 +842,9 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
     std::sort(result.codeElements.begin(), result.codeElements.end(), byStart);
     std::sort(result.mathElements.begin(), result.mathElements.end(), byStart);
     std::sort(result.tableElements.begin(), result.tableElements.end(), byStart);
+    std::sort(
+        result.headingElements.begin(), result.headingElements.end(),
+        [](const HeadingInfo &a, const HeadingInfo &b) { return a.m_startPos < b.m_startPos; });
 
     // Runs after the blocksHighlights sort so the sliced units keep the final
     // relative order the format-merge algorithm depends on.

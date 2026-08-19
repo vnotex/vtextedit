@@ -46,7 +46,9 @@ struct MarkdownParseResult {
 
   ~MarkdownParseResult() = default;
 
-  bool operator<(const MarkdownParseResult &p_other) const { return m_timeStamp < p_other.m_timeStamp; }
+  bool operator<(const MarkdownParseResult &p_other) const {
+    return m_timeStamp < p_other.m_timeStamp;
+  }
 
   QString toString() const { return QStringLiteral("MarkdownParseResult ts %1").arg(m_timeStamp); }
 
@@ -100,6 +102,10 @@ struct MarkdownParseResult {
   QVector<CodeElement> m_codeElements;
   QVector<MathElement> m_mathElements;
   QVector<TableElement> m_tableElements;
+
+  // Headings with their AST-derived title and anchor text.
+  // Sorted by start position ascendingly.
+  QVector<HeadingInfo> m_headingElements;
 };
 
 class MarkdownParserWorker : public QThread {
@@ -134,8 +140,8 @@ protected:
   void run() Q_DECL_OVERRIDE;
 
 private:
-  QSharedPointer<MarkdownParseResult> parseMarkdown(const QSharedPointer<MarkdownParseConfig> &p_config,
-                                                QAtomicInt &p_stop);
+  QSharedPointer<MarkdownParseResult>
+  parseMarkdown(const QSharedPointer<MarkdownParseConfig> &p_config, QAtomicInt &p_stop);
 
   bool isAskedToStop() const { return m_stop.loadAcquire() == 1; }
 
@@ -159,7 +165,8 @@ public:
 
   void parseAsync(const QSharedPointer<MarkdownParseConfig> &p_config);
 
-  static QVector<ElementRegion> parseImageRegions(const QSharedPointer<MarkdownParseConfig> &p_config);
+  static QVector<ElementRegion>
+  parseImageRegions(const QSharedPointer<MarkdownParseConfig> &p_config);
 
   static int getNumberOfStyles();
 
@@ -176,7 +183,8 @@ private:
 
   void pickWorker();
 
-  void scheduleWork(MarkdownParserWorker *p_worker, const QSharedPointer<MarkdownParseConfig> &p_config);
+  void scheduleWork(MarkdownParserWorker *p_worker,
+                    const QSharedPointer<MarkdownParseConfig> &p_config);
 
   // Maintain a fixed number of workers to pick work.
   QVector<MarkdownParserWorker *> m_workers;

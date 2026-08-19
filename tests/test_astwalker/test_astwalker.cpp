@@ -731,4 +731,160 @@ void TestASTWalker::testTableCellHighlightsInListAndRaggedRow() {
   QCOMPARE(delimiter.m_cellHighlights.size(), delimiter.m_cells.size());
 }
 
+void TestASTWalker::testHeadingElements() {
+  // The rendered title, not the raw markdown line.
+  {
+    QByteArray md = "## A **bold** `x`\n";
+    auto result = vte::md::walkAndConvert(md, 1);
+    QCOMPARE(result.headingElements.size(), 1);
+    const auto &h = result.headingElements.first();
+    QCOMPARE(h.m_level, 2);
+    QCOMPARE(h.m_title, QStringLiteral("A bold x"));
+    QCOMPARE(h.m_anchorText, QStringLiteral("A bold x"));
+  }
+
+  // A link contributes only its text, never its destination.
+  {
+    auto result = vte::md::walkAndConvert(QByteArray("## [a](b)\n"), 1);
+    QCOMPARE(result.headingElements.size(), 1);
+    QCOMPARE(result.headingElements.first().m_title, QStringLiteral("a"));
+    QCOMPARE(result.headingElements.first().m_anchorText, QStringLiteral("a"));
+  }
+
+  // Entities are decoded exactly once, by cmark. No re-escaping anywhere.
+  {
+    auto result = vte::md::walkAndConvert(QByteArray("## a &amp; b\n"), 1);
+    QCOMPARE(result.headingElements.first().m_title, QStringLiteral("a & b"));
+  }
+  {
+    auto result = vte::md::walkAndConvert(QByteArray("## &amp;lt;\n"), 1);
+    QCOMPARE(result.headingElements.first().m_title, QStringLiteral("&lt;"));
+  }
+  {
+    auto result = vte::md::walkAndConvert(QByteArray("## &amp;amp;\n"), 1);
+    QCOMPARE(result.headingElements.first().m_title, QStringLiteral("&amp;"));
+  }
+
+  // Inline HTML is a leaf whose literal is the tag: it is dropped, matching
+  // the browser's textContent.
+  {
+    auto result = vte::md::walkAndConvert(QByteArray("## <b>x</b>\n"), 1);
+    QCOMPARE(result.headingElements.first().m_title, QStringLiteral("x"));
+  }
+
+  // An image contributes nothing; its alt text is not textContent. The anchor
+  // input keeps the trailing space of the preceding text token, exactly as
+  // markdown-it-anchor's token concatenation does.
+  {
+    auto result = vte::md::walkAndConvert(QByteArray("## ![a](b)\n"), 1);
+    QCOMPARE(result.headingElements.size(), 1);
+    QCOMPARE(result.headingElements.first().m_title, QString());
+  }
+  {
+    auto result = vte::md::walkAndConvert(QByteArray("## a ![x](y)\n"), 1);
+    QCOMPARE(result.headingElements.first().m_title, QStringLiteral("a"));
+    QCOMPARE(result.headingElements.first().m_anchorText, QStringLiteral("a "));
+  }
+
+  // An empty heading yields empty strings rather than no element.
+  {
+    auto result = vte::md::walkAndConvert(QByteArray("##\n"), 1);
+    QCOMPARE(result.headingElements.size(), 1);
+    QCOMPARE(result.headingElements.first().m_title, QString());
+    QCOMPARE(result.headingElements.first().m_anchorText, QString());
+  }
+
+  // Setext headings are published too, at the title line.
+  {
+    QByteArray md = "Title\n=====\n";
+    auto result = vte::md::walkAndConvert(md, 2);
+    QCOMPARE(result.headingElements.size(), 1);
+    QCOMPARE(result.headingElements.first().m_level, 1);
+    QCOMPARE(result.headingElements.first().m_title, QStringLiteral("Title"));
+    QCOMPARE(result.headingElements.first().m_startPos, 0);
+  }
+
+  // A soft break is whitespace in the rendered title but contributes nothing
+  // to the anchor input, because markdown-it drops the softbreak token.
+  {
+    QByteArray md = "Foo\nbar\n---\n";
+    auto result = vte::md::walkAndConvert(md, 3);
+    QCOMPARE(result.headingElements.size(), 1);
+    QCOMPARE(result.headingElements.first().m_title, QStringLiteral("Foo bar"));
+    QCOMPARE(result.headingElements.first().m_anchorText, QStringLiteral("Foobar"));
+  }
+
+  // A hard break shares that production code; assert it directly rather than
+  // relying on the soft-break case to cover both.
+  {
+    QByteArray md = "Foo  \nbar\n---\n";
+    auto result = vte::md::walkAndConvert(md, 3);
+    QCOMPARE(result.headingElements.size(), 1);
+    QCOMPARE(result.headingElements.first().m_title, QStringLiteral("Foo bar"));
+    QCOMPARE(result.headingElements.first().m_anchorText, QStringLiteral("Foobar"));
+  }
+
+  // A `#`-looking line inside a fenced code block is not a heading.
+  {
+    QByteArray md = "```\n# not a heading\n```\n";
+    auto result = vte::md::walkAndConvert(md, 3);
+    QVERIFY(result.headingElements.isEmpty());
+  }
+
+  // Order follows the document, and a fast parse publishes nothing.
+  {
+    QByteArray md = "# one\n\n## two\n\n### three\n";
+    auto result = vte::md::walkAndConvert(md, 5);
+    QCOMPARE(result.headingElements.size(), 3);
+    QCOMPARE(result.headingElements.at(0).m_title, QStringLiteral("one"));
+    QCOMPARE(result.headingElements.at(1).m_title, QStringLiteral("two"));
+    QCOMPARE(result.headingElements.at(2).m_title, QStringLiteral("three"));
+    QVERIFY(result.headingElements.at(0).m_startPos < result.headingElements.at(1).m_startPos);
+    QVERIFY(result.headingElements.at(1).m_startPos < result.headingElements.at(2).m_startPos);
+
+    auto fast = vte::md::walkAndConvert(md, 5, 0, 0, true);
+    QVERIFY(fast.headingElements.isEmpty());
+  }
+}
+
+void TestASTWalker::testHeadingElementsDivergence() {
+  // Preview-only markdown-it plugins are invisible to cmark, so the anchor
+  // text keeps the literal source here where markdown-it-anchor would not.
+  // Pinned so a future change to either side is deliberate rather than
+  // discovered.
+  {
+    auto result = vte::md::walkAndConvert(QByteArray("## :smile:\n"), 1);
+    QCOMPARE(result.headingElements.size(), 1);
+    QCOMPARE(result.headingElements.first().m_title, QStringLiteral(":smile:"));
+    QCOMPARE(result.headingElements.first().m_anchorText, QStringLiteral(":smile:"));
+  }
+
+  // Inline math is a fork extension node: cmark strips the `$` delimiters and
+  // the literal is the expression source. markdown-it's texmath produces a
+  // token type the anchor plugin drops entirely, so the two disagree here.
+  {
+    auto result = vte::md::walkAndConvert(QByteArray("## $x$\n"), 1);
+    QCOMPARE(result.headingElements.size(), 1);
+    QCOMPARE(result.headingElements.first().m_title, QStringLiteral("x"));
+    QCOMPARE(result.headingElements.first().m_anchorText, QStringLiteral("x"));
+  }
+
+  // Footnotes: the preview renders a numbered `[n]` marker, which cmark cannot
+  // reproduce here, and markdown-it-anchor drops the token from the slug. Both
+  // node forms are skipped; in particular the inline form must NOT splice its
+  // body into the heading.
+  {
+    auto result = vte::md::walkAndConvert(QByteArray("## Head [^x]\n\n[^x]: note\n"), 3);
+    QCOMPARE(result.headingElements.size(), 1);
+    QCOMPARE(result.headingElements.first().m_title, QStringLiteral("Head"));
+    QCOMPARE(result.headingElements.first().m_anchorText, QStringLiteral("Head "));
+  }
+  {
+    auto result = vte::md::walkAndConvert(QByteArray("## Head ^[note]\n"), 1);
+    QCOMPARE(result.headingElements.size(), 1);
+    QCOMPARE(result.headingElements.first().m_title, QStringLiteral("Head"));
+    QCOMPARE(result.headingElements.first().m_anchorText, QStringLiteral("Head "));
+  }
+}
+
 QTEST_MAIN(tests::TestASTWalker)

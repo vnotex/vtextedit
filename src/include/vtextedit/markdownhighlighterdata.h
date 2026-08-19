@@ -175,6 +175,41 @@ struct ImageLinkInfo {
   QString m_title;
 };
 
+// One heading found by the parse that produced the current highlighting.
+//
+// Carries what the editor-side outline needs: the level, the position, and the
+// two AST-derived strings. Both are built from the same filtered inline walk
+// (images, inline HTML and footnote markers contribute to neither), but they
+// normalize whitespace differently, which is why there are two fields:
+// m_title synthesizes a space for a line break and is trimmed, for display;
+// m_anchorText mirrors markdown-it-anchor's raw concatenation of the surviving
+// token content, dropping breaks entirely and preserving boundary whitespace,
+// so its slug matches the preview's id.
+//
+// Both are derived from cmark, so neither is a universal match for the preview:
+// preview-only markdown-it plugins (emoji, texmath, footnote markers) and the
+// `html: enableHtmlTag` option are invisible here. The authoritative path for
+// anything the user copies as a link stays
+// MarkdownViewerAdapter::fetchHeadingAnchor.
+struct HeadingInfo {
+  // Absolute, half-open UTF-16 document offsets, same convention as
+  // ElementRegion.
+  int m_startPos = 0;
+  int m_endPos = 0;
+
+  // 1..6, as reported by cmark.
+  int m_level = -1;
+
+  // AST-derived rendered text of the heading, trimmed. For display.
+  QString m_title;
+
+  // Slugify input, mirroring markdown-it-anchor's raw concatenation of the
+  // heading's `text` and `code_inline` token content. Deliberately NOT trimmed
+  // and with no whitespace synthesized for line breaks, so the slug matches the
+  // preview's id.
+  QString m_anchorText;
+};
+
 // Fenced code block only.
 struct VTEXTEDIT_EXPORT FencedCodeBlock {
   bool equalContent(const FencedCodeBlock &p_block) const {

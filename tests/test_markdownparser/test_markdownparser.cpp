@@ -24,6 +24,7 @@
 
 #include "cmarkadapter.h"
 #include "markdownastwalker.h"
+#include "markdownparser.h"
 
 using namespace tests;
 using vte::MarkdownLink;
@@ -1121,6 +1122,77 @@ void TestMarkdownParser::testImageCodeMathElements() {
     QCOMPARE(result.mathElements.size(), 1);
     QVERIFY(result.mathElements.first().m_display);
   }
+}
+
+// End-to-end plumbing of the walker's heading elements: walker ->
+// MarkdownParseResult -> MarkdownHighlighterResult -> headingsUpdated. The
+// walker test alone cannot catch an omitted std::move in either parse path, or
+// an omitted copy in the highlighter result.
+void TestMarkdownParser::testHeadingElementsPublished() {
+  auto textConfig = QSharedPointer<vte::TextEditorConfig>::create();
+  auto markdownConfig = QSharedPointer<vte::MarkdownEditorConfig>::create(textConfig);
+  markdownConfig->m_inplacePreviewSources = vte::MarkdownEditorConfig::NoInplacePreview;
+  auto parameters = QSharedPointer<vte::TextEditorParameters>::create();
+  vte::VMarkdownEditor editor(markdownConfig, parameters);
+  auto highlighter = editor.getHighlighter();
+  QVERIFY(highlighter);
+
+  // A direct lambda rather than a QSignalSpy: no metatype registration is
+  // needed, and the signal is deliberately a same-thread direct connection.
+  QVector<vte::md::HeadingInfo> published;
+  int emissions = 0;
+  QObject::connect(highlighter, &vte::MarkdownHighlighter::headingsUpdated, &editor,
+                   [&published, &emissions](const QVector<vte::md::HeadingInfo> &p_headings) {
+                     published = p_headings;
+                     ++emissions;
+                   });
+
+  QSignalSpy completed(highlighter, &vte::MarkdownHighlighter::highlightCompleted);
+  editor.setText(QStringLiteral("# A **bold** `x`\n\nbody\n\n## [a](b)\n"));
+  completed.clear();
+  highlighter->updateHighlight();
+  QTRY_VERIFY(completed.count() > 0);
+
+  QVERIFY(emissions > 0);
+  QCOMPARE(published.size(), 2);
+  QCOMPARE(published.at(0).m_level, 1);
+  QCOMPARE(published.at(0).m_title, QStringLiteral("A bold x"));
+  QCOMPARE(published.at(0).m_startPos, 0);
+  QCOMPARE(published.at(1).m_level, 2);
+  QCOMPARE(published.at(1).m_title, QStringLiteral("a"));
+  QCOMPARE(published.at(1).m_anchorText, QStringLiteral("a"));
+  QVERIFY(published.at(1).m_startPos > published.at(0).m_startPos);
+
+  // The block of the start position is the heading's own line.
+  QCOMPARE(editor.document()->findBlock(published.at(1).m_startPos).blockNumber(), 4);
+
+  // The synchronous MarkdownParser::parse() path is a copy-paste twin of the
+  // worker's; cover it directly, or an omitted std::move there stays invisible.
+  vte::md::MarkdownParser parser;
+  auto config = QSharedPointer<vte::md::MarkdownParseConfig>::create();
+  config->m_data = QByteArray("# one\n\n## two\n");
+  config->m_numOfBlocks = 3;
+  auto syncResult = parser.parse(config);
+  QVERIFY(!syncResult.isNull());
+  QCOMPARE(syncResult->m_headingElements.size(), 2);
+  QCOMPARE(syncResult->m_headingElements.at(0).m_title, QStringLiteral("one"));
+  QCOMPARE(syncResult->m_headingElements.at(1).m_title, QStringLiteral("two"));
+
+  // A fast parse publishes no heading data at all.
+  config->m_fast = true;
+  auto fastResult = parser.parse(config);
+  QVERIFY(!fastResult.isNull());
+  QVERIFY(fastResult->m_headingElements.isEmpty());
+
+  // ... and unrelated rehighlighting of sensitive blocks does not republish
+  // (only completeHighlight() emits, and the fast path never reaches it), so
+  // the last full publication survives.
+  const auto before = published;
+  const int emissionsBefore = emissions;
+  editor.getHighlighter()->rehighlightSensitiveBlocks();
+  QCOMPARE(emissions, emissionsBefore);
+  QCOMPARE(published.size(), before.size());
+  QCOMPARE(published.at(0).m_title, before.at(0).m_title);
 }
 
 // cmarkNodeSpan() / cmarkNodeUrlSpan() are the single implementation of

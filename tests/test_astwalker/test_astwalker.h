@@ -24,6 +24,8 @@ private slots:
   void testTableCellHighlights();
   void testTableCellHighlightsInBlockquote();
   void testTableCellHighlightsInListAndRaggedRow();
+  void testHeadingElements();
+  void testHeadingElementsDivergence();
 };
 
 } // namespace tests

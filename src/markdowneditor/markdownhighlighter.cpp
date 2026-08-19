@@ -806,6 +806,7 @@ void MarkdownHighlighter::completeHighlight(QSharedPointer<MarkdownHighlighterRe
   // every parse.
   emit imageLinksUpdated(p_result->m_imageLinks);
   emit headersUpdated(p_result->m_headerRegions);
+  emit headingsUpdated(p_result->m_headingElements);
   emit foldingRegionsUpdated(p_result->m_foldingRegions);
 
   // Snapshots are built here rather than when the result is constructed, so a

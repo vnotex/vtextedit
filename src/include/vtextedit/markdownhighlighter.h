@@ -97,6 +97,11 @@ signals:
   // Emitted when header regions have been fetched from a new parsing result.
   void headersUpdated(const QVector<md::ElementRegion> &p_headerRegions);
 
+  // Emitted when typed heading data (level, AST-derived title and anchor text)
+  // has been fetched from a new parsing result. Complements headersUpdated(),
+  // which carries only the regions.
+  void headingsUpdated(const QVector<md::HeadingInfo> &p_headings);
+
   // Emitted when table blocks updated.
   void tableBlocksUpdated(const QVector<md::TableBlock> &p_tableBlocks);
 

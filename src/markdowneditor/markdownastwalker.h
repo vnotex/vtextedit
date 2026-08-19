@@ -104,6 +104,10 @@ struct ASTWalkResult {
   QVector<CodeElement> codeElements;
   QVector<MathElement> mathElements;
   QVector<TableElement> tableElements;
+
+  // Headings with their AST-derived title and anchor text.
+  // Sorted by start position.
+  QVector<HeadingInfo> headingElements;
 };
 
 // Single-pass AST walker. Parses markdown with cmark, walks AST once,

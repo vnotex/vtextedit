@@ -61,6 +61,7 @@ private slots:
   void testTableElementNestedPrefixes();
   void testTableElementInvalid();
   void testImageCodeMathElements();
+  void testHeadingElementsPublished();
 
   // Shared cmark source-position mapping, and the `=WxH` size extension.
   void testCmarkNodeSpans();

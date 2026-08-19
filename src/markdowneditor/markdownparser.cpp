@@ -37,15 +37,16 @@ void MarkdownParserWorker::run() {
 }
 
 QSharedPointer<MarkdownParseResult>
-MarkdownParserWorker::parseMarkdown(const QSharedPointer<MarkdownParseConfig> &p_config, QAtomicInt &p_stop) {
+MarkdownParserWorker::parseMarkdown(const QSharedPointer<MarkdownParseConfig> &p_config,
+                                    QAtomicInt &p_stop) {
   QSharedPointer<MarkdownParseResult> result(new MarkdownParseResult(p_config));
 
   if (p_config->m_data.isEmpty()) {
     return result;
   }
 
-  auto walkResult = walkAndConvert(p_config->m_data, p_config->m_numOfBlocks,
-                                   p_config->m_offset, 0, p_config->m_fast);
+  auto walkResult = walkAndConvert(p_config->m_data, p_config->m_numOfBlocks, p_config->m_offset, 0,
+                                   p_config->m_fast);
 
   if (p_stop.loadAcquire() == 1) {
     return result;
@@ -68,6 +69,7 @@ MarkdownParserWorker::parseMarkdown(const QSharedPointer<MarkdownParseConfig> &p
     result->m_codeElements = std::move(walkResult.codeElements);
     result->m_mathElements = std::move(walkResult.mathElements);
     result->m_tableElements = std::move(walkResult.tableElements);
+    result->m_headingElements = std::move(walkResult.headingElements);
   }
 
   return result;
@@ -107,15 +109,16 @@ void MarkdownParser::parseAsync(const QSharedPointer<MarkdownParseConfig> &p_con
   pickWorker();
 }
 
-QSharedPointer<MarkdownParseResult> MarkdownParser::parse(const QSharedPointer<MarkdownParseConfig> &p_config) {
+QSharedPointer<MarkdownParseResult>
+MarkdownParser::parse(const QSharedPointer<MarkdownParseConfig> &p_config) {
   QSharedPointer<MarkdownParseResult> result(new MarkdownParseResult(p_config));
 
   if (p_config->m_data.isEmpty()) {
     return result;
   }
 
-  auto walkResult = walkAndConvert(p_config->m_data, p_config->m_numOfBlocks,
-                                   p_config->m_offset, 0, p_config->m_fast);
+  auto walkResult = walkAndConvert(p_config->m_data, p_config->m_numOfBlocks, p_config->m_offset, 0,
+                                   p_config->m_fast);
 
   result->m_blocksHighlights = std::move(walkResult.blocksHighlights);
   if (!p_config->m_fast) {
@@ -133,6 +136,7 @@ QSharedPointer<MarkdownParseResult> MarkdownParser::parse(const QSharedPointer<M
     result->m_codeElements = std::move(walkResult.codeElements);
     result->m_mathElements = std::move(walkResult.mathElements);
     result->m_tableElements = std::move(walkResult.tableElements);
+    result->m_headingElements = std::move(walkResult.headingElements);
   }
 
   return result;
@@ -185,7 +189,7 @@ void MarkdownParser::pickWorker() {
 }
 
 void MarkdownParser::scheduleWork(MarkdownParserWorker *p_worker,
-                             const QSharedPointer<MarkdownParseConfig> &p_config) {
+                                  const QSharedPointer<MarkdownParseConfig> &p_config) {
   Q_ASSERT(p_worker->state() == MarkdownParserWorker::WorkerState::Idle);
 
   p_worker->reset();
@@ -199,8 +203,8 @@ MarkdownParser::parseImageRegions(const QSharedPointer<MarkdownParseConfig> &p_c
     return {};
   }
 
-  auto walkResult = walkAndConvert(p_config->m_data, p_config->m_numOfBlocks,
-                                   p_config->m_offset, 0, false);
+  auto walkResult =
+      walkAndConvert(p_config->m_data, p_config->m_numOfBlocks, p_config->m_offset, 0, false);
   return walkResult.imageRegions;
 }
 
