@@ -58,7 +58,22 @@ public:
   // indented continuation markers beyond block_offset — e.g. a block quote nested
   // in a list with extra indent — are approximated; a fully faithful result would
   // require replicating cmark's per-container prefix walk.)
-  int lineStrippedPrefixWidth(int p_lineIdx, int p_blockOffset) const;
+  //
+  // When p_markerWidth is given it receives the width through the LAST matched
+  // '>' marker (0 when there is none) — the part of the prefix cmark removed
+  // whatever the line does about containers nested inside that block quote. A
+  // caller seeing a total width below p_blockOffset is looking at a lazy
+  // continuation and must credit only that much.
+  //
+  // KNOWN APPROXIMATIONS (all pre-date this out-param, all off by a byte or two
+  // in exotic input, none of them a crash or a mis-parse):
+  //   * whitespace after a matched '>' is credited in full, though the block
+  //     quote itself consumes at most one column of it;
+  //   * a tab is one byte here, while cmark expands it to a tab stop and may
+  //     consume it only in part, so a TAB-indented continuation of a list item
+  //     or a tab after a '>' is not modelled.
+  // A faithful result needs cmark to report the prefix it removed per line.
+  int lineStrippedPrefixWidth(int p_lineIdx, int p_blockOffset, int *p_markerWidth = nullptr) const;
 
 private:
   // Per-line: byte offset of line start in the full UTF-8 buffer.

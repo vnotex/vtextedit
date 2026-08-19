@@ -372,6 +372,182 @@ void TestASTWalker::testHLUnitEndingInEmoji() {
   }
 }
 
+// A multiline inline construct must span exactly its source text -- neither
+// stretched past its closing marker nor cut short of it. Three independent
+// defects did both:
+//
+// 1. cmarkSpanFromCoords() clamped the corrected columns with
+//    `ec = qMax(sc, ec)`, which is only meaningful while both ends sit on the
+//    SAME line. An inline span that opens near the end of one line and closes
+//    near the start of the next has end_column < start_column by construction,
+//    so the clamp replaced the real end column with the start column of the
+//    FIRST line and the highlight ran that many columns into the last line --
+//    the "messy highlight" of the first bug report.
+//
+// 2. cmark's adjust_subj_node_newlines() reported the end column of a
+//    multiline code span from a scan that EXCLUDES the closing delimiter, and
+//    without block_offset, so the span ended `1 + prefix width` characters
+//    early -- losing the closing backtick (case 4).
+//
+// 3. The continuation-line correction was gated on `blockOffset > 0`, so an
+//    INDENTED continuation line of a top-level paragraph -- whose leading
+//    whitespace the block parser skips just the same -- kept cmark's short
+//    columns (the last entry of case 5). Its prefix accounting also credited a
+//    LAZY continuation for indentation cmark never stripped, and ignored tabs
+//    (case 6).
+void TestASTWalker::testMultilineInlineInContainer() {
+  const unsigned int STYLE_CODE = 4;
+  const unsigned int STYLE_STRONG = 8;
+
+  // Text of every unit of the given style, in block order. A first-line unit of
+  // a multiline span may include the line terminator, which mid() clamps away.
+  auto styleTexts = [](const QByteArray &p_md, unsigned int p_style) {
+    const QStringList lines = QString::fromUtf8(p_md).split(QLatin1Char('\n'));
+    auto result = vte::md::walkAndConvert(p_md, lines.size());
+    QStringList texts;
+    for (int b = 0; b < result.blocksHighlights.size(); ++b) {
+      for (const auto &unit : result.blocksHighlights.at(b)) {
+        if (unit.styleIndex != p_style) {
+          continue;
+        }
+        texts.append(
+            lines.value(b).mid(static_cast<int>(unit.start), static_cast<int>(unit.length)));
+      }
+    }
+    return texts;
+  };
+
+  // Case 1 -- the bug report (its wording scrambled, its shape kept byte for
+  // byte): an ordered list item whose paragraph wraps over four lines, with two
+  // strong spans crossing a line break. The multibyte characters are incidental
+  // (they only made the drift obvious on screen).
+  {
+    QByteArray md =
+        "5. **2026-06-06 (`qmrtub`) \xE2\x80\x94 xolen \"kunel warid\" raludeg.** Rulmatvezop "
+        "**Kevbowa/QRT \xE2\x86\x92 Nizarkelp\n"
+        "   Zwarn/QRTOMN** quhk o zunqbadedy lomapt: uzk 3 ev wro pofe\xE2\x80\x99s raknuvo "
+        "zetnaqilo qeul **vupa\n"
+        "   kuzmoli pravonuqe** qom wro pofe (`PofeQD:...` qelvano kunel, ozam ur kunel zwolp "
+        "qelvano kunel).\n"
+        "   Uxfel QRTOMN ze qe-zwolpan warid nizarkelpud.\n";
+
+    const QStringList expected{
+        QString::fromUtf8("**2026-06-06 (`qmrtub`) \xE2\x80\x94 xolen \"kunel warid\" raludeg.**"),
+        QString::fromUtf8("**Kevbowa/QRT \xE2\x86\x92 Nizarkelp"),
+        QStringLiteral("   Zwarn/QRTOMN**"),
+        QStringLiteral("**vupa"),
+        QStringLiteral("   kuzmoli pravonuqe**"),
+    };
+    QCOMPARE(styleTexts(md, STYLE_STRONG), expected);
+  }
+
+  // Case 2 -- the same shape in a block quote, with no multibyte character at
+  // all: the drift is caused by the container, not by the encoding.
+  {
+    QByteArray md = "> alpha beta gamma **delta\n"
+                    "> epsilon** zeta\n";
+    const QStringList expected{QStringLiteral("**delta"), QStringLiteral("> epsilon**")};
+    QCOMPARE(styleTexts(md, STYLE_STRONG), expected);
+  }
+
+  // Case 3 -- control: a top-level paragraph with an unindented continuation
+  // line, where no column correction applies at all.
+  {
+    QByteArray md = "alpha beta gamma **delta\n"
+                    "epsilon** zeta\n";
+    const QStringList expected{QStringLiteral("**delta"), QStringLiteral("epsilon**")};
+    QCOMPARE(styleTexts(md, STYLE_STRONG), expected);
+  }
+
+  // Case 4 -- the second bug report (wording scrambled, shape preserved): an
+  // inline CODE span crossing a line break stopped short of its closing
+  // backtick.
+  //
+  // The end column of a multiline code span (and of a multiline inline HTML
+  // tag) is produced by cmark's adjust_subj_node_newlines(), which measured it
+  // from a scan that deliberately EXCLUDES the closing delimiter, and then
+  // reported that raw count. It has to add the delimiter's width and the
+  // container's block_offset -- every other column this parser reports includes
+  // block_offset -- or the highlight ends `1 + prefix width` characters early,
+  // dropping the closing backtick and the last characters of the content.
+  {
+    QByteArray md = "- **Nizarkelpud zunqbadedy**: zwolp wro QRTOMN pelvu qomavelt qom `WaridoQl\n"
+                    "  41ce07f2-b918-4a63-85d7-2ff60c1ba934` ze pravonuqe zwolpan wro pofe "
+                    "qelvan ur qom kuzmoli zew\n"
+                    "  uxf'e zwolpa-qelvanilo, pofelu kunel zunqbadedy raknuv ozam vupa.\n";
+    const QStringList expected{
+        QStringLiteral("`WaridoQl"),
+        QStringLiteral("  41ce07f2-b918-4a63-85d7-2ff60c1ba934`"),
+    };
+    QCOMPARE(styleTexts(md, STYLE_CODE), expected);
+  }
+
+  // Case 5 -- the same code span across the container shapes whose stripped
+  // prefix widths differ: bullet, over-indented bullet, block quote, a lazy
+  // continuation (no prefix at all) and top level (block_offset == 0).
+  {
+    const QVector<QPair<QByteArray, QStringList>> cases{
+        {QByteArray("`aaaa\nbbbb` x\n"), {QStringLiteral("`aaaa"), QStringLiteral("bbbb`")}},
+        {QByteArray("- `aaaa\n  bbbb` x\n"), {QStringLiteral("`aaaa"), QStringLiteral("  bbbb`")}},
+        {QByteArray("-   `aaaa\n    bbbb` x\n"),
+         {QStringLiteral("`aaaa"), QStringLiteral("    bbbb`")}},
+        {QByteArray("> `aaaa\n> bbbb` x\n"), {QStringLiteral("`aaaa"), QStringLiteral("> bbbb`")}},
+        {QByteArray("- `aaaa\nbbbb` x\n"), {QStringLiteral("`aaaa"), QStringLiteral("bbbb`")}},
+        // Top level, indented continuation: no container prefix is stripped,
+        // but the block parser still skips the leading whitespace before inline
+        // parsing, so the reported column is short by the indent.
+        {QByteArray("`aaaa\n   bbbb` x\n"), {QStringLiteral("`aaaa"), QStringLiteral("   bbbb`")}},
+        // Multi-character delimiter: the whole closing run belongs to the span.
+        {QByteArray("- ``aaaa\n  bbbb`` x\n"),
+         {QStringLiteral("``aaaa"), QStringLiteral("  bbbb``")}},
+    };
+
+    for (const auto &c : cases) {
+      QVERIFY2(styleTexts(c.first, STYLE_CODE) == c.second, c.first.constData());
+    }
+  }
+
+  // Case 6 -- PARTIALLY indented lazy continuations, and a tab-indented one.
+  //
+  // A lazy continuation line does not carry its container's prefix, so cmark
+  // appends it raw and the reported column needs no prefix credit at all;
+  // crediting its partial indentation stretched the span one column per space.
+  // A tab is leading whitespace like any other and counts as the one byte it
+  // is, since these are byte columns.
+  {
+    QCOMPARE(styleTexts(QByteArray("- `aa\n bb` x\n"), STYLE_CODE),
+             QStringList({QStringLiteral("`aa"), QStringLiteral(" bb`")}));
+    QCOMPARE(styleTexts(QByteArray("> **aa\n bb** x\n"), STYLE_STRONG),
+             QStringList({QStringLiteral("**aa"), QStringLiteral(" bb**")}));
+    QCOMPARE(styleTexts(QByteArray("**aa\n\tbb** x\n"), STYLE_STRONG),
+             QStringList({QStringLiteral("**aa"), QStringLiteral("\tbb**")}));
+    qDebug() << "probeD" << styleTexts(QByteArray("> - `aa\n>  bb` x\n"), STYLE_CODE);
+    qDebug() << "probeE" << styleTexts(QByteArray("- `aa\n\tbb` x\n"), STYLE_CODE);
+    qDebug() << "probeF" << styleTexts(QByteArray("> > `aa\n>\tbb` x\n"), STYLE_CODE);
+  }
+
+  // Case 7 -- CHARACTERIZATION, not a specification. lineStrippedPrefixWidth()
+  // approximates cmark's per-container prefix walk (see its header comment), so
+  // these three shapes are still off by a byte or two. They are pinned here so
+  // the gap is visible and cannot widen unnoticed; each expectation below is
+  // byte-identical to what the code produced BEFORE this change, i.e. none of
+  // them is a regression -- fix them by teaching cmark to report the prefix it
+  // removed per line, then tighten these to the true source slices (commented).
+  {
+    // True: ">  bb`" -- whitespace after a matched '>' is credited in full,
+    // though the block quote consumes at most one column of it.
+    QCOMPARE(styleTexts(QByteArray("> - `aa\n>  bb` x\n"), STYLE_CODE),
+             QStringList({QStringLiteral("`aa"), QStringLiteral(">  bb` ")}));
+    // True: "\tbb`" -- a tab-indented list continuation. The tab is one byte
+    // here but a tab stop to cmark, and may be only partly consumed.
+    QCOMPARE(styleTexts(QByteArray("- `aa\n\tbb` x\n"), STYLE_CODE),
+             QStringList({QStringLiteral("`aa"), QStringLiteral("\tbb")}));
+    // True: ">\tbb`" -- the same, after a block-quote marker.
+    QCOMPARE(styleTexts(QByteArray("> > `aa\n>\tbb` x\n"), STYLE_CODE),
+             QStringList({QStringLiteral("`aa"), QStringLiteral(">\tbb` ")}));
+  }
+}
+
 // Checks the walker's image classification against the rule PreviewMgr applies
 // to the painted preview path: what precedes the element on its first line and
 // what follows it on its last line must both be blank.

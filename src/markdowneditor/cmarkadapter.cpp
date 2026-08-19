@@ -195,7 +195,11 @@ int LineOffsetTable::lineLeadingSpaces(int p_lineIdx) const {
   return count;
 }
 
-int LineOffsetTable::lineStrippedPrefixWidth(int p_lineIdx, int p_blockOffset) const {
+int LineOffsetTable::lineStrippedPrefixWidth(int p_lineIdx, int p_blockOffset,
+                                             int *p_markerWidth) const {
+  if (p_markerWidth) {
+    *p_markerWidth = 0;
+  }
   if (!m_data || p_lineIdx < 0 || p_lineIdx >= m_lineByteOffsets.size()) {
     return 0;
   }
@@ -204,8 +208,10 @@ int LineOffsetTable::lineStrippedPrefixWidth(int p_lineIdx, int p_blockOffset) c
       (p_lineIdx + 1 < m_lineByteOffsets.size()) ? m_lineByteOffsets[p_lineIdx + 1] : m_dataLen;
   int i = lineStart;
   // Leading indentation: list-continuation padding and/or block-quote indent.
-  // These are always stripped or skipped by cmark before the first content column.
-  while (i < lineEnd && m_data[i] == 0x20) {
+  // These are always stripped or skipped by cmark before the first content
+  // column. A tab counts as the single BYTE it is: these widths are compared
+  // against, and added to, cmark's byte columns, not against display columns.
+  while (i < lineEnd && (m_data[i] == 0x20 || m_data[i] == '\t')) {
     ++i;
   }
   // Block-quote '>' markers, but only while a marker BEGINS no further than
@@ -213,11 +219,19 @@ int LineOffsetTable::lineStrippedPrefixWidth(int p_lineIdx, int p_blockOffset) c
   // content (e.g. an over-indented ">" inside a list item, which cmark keeps as
   // literal text), not a stripped marker. A '>' beginning exactly at block_offset
   // is always a real marker (relative indent 0), so the bound is inclusive. Each
-  // counted '>' also absorbs the spaces cmark skips after it.
+  // counted '>' also absorbs the spaces cmark skips after it -- spaces only: a
+  // TAB after a marker is expanded to a tab stop and may be consumed only in
+  // part (blocks.c partially_consumed_tab), which no byte count can describe, so
+  // it is left to the caller's `- blockOffset` term as before.
   while (i < lineEnd && m_data[i] == '>' && (i - lineStart) <= p_blockOffset) {
     ++i;
     while (i < lineEnd && m_data[i] == 0x20) {
       ++i;
+    }
+    if (p_markerWidth) {
+      // Everything up to here is prefix cmark MATCHED and removed, whatever the
+      // line does about the containers nested inside this block quote.
+      *p_markerWidth = i - lineStart;
     }
   }
   return i - lineStart;
@@ -343,36 +357,58 @@ static bool cmarkSpanFromCoords(cmark_node *p_node, const LineOffsetTable &p_off
   // over-indented continuations behave exactly as before; block-quote '>'
   // markers (invisible to a space-only count) are what was missing, which
   // shifted inline highlights inside block quotes.
+  //
+  // This runs for blockOffset == 0 too. A top-level paragraph strips no
+  // container prefix, but the block parser still skips a continuation line's
+  // leading whitespace before inline parsing, so an INDENTED continuation line
+  // reports columns short by exactly that indent -- e.g. a code span closing on
+  // "  src=...>" was reported two columns early. For an unindented continuation
+  // strippedPrefixWidth() is 0 and nothing changes.
   cmark_node *para = findAncestorParagraph(p_node);
   if (para) {
     int blockOffset = cmark_node_get_start_column(para) - 1;
-    if (blockOffset > 0) {
-      int paraStartLine = cmark_node_get_start_line(para);
-      int stripSc = -1;
-      if (sl > paraStartLine) {
-        stripSc = p_offsets.lineStrippedPrefixWidth(sl - 1, blockOffset);
-        sc += stripSc - blockOffset;
+    int paraStartLine = cmark_node_get_start_line(para);
+    // Width of the prefix cmark actually removed from the given continuation
+    // line. A LAZY continuation -- one that does not carry the whole container
+    // prefix -- is appended raw from the point the match failed, so only the
+    // part that DID match may be credited: the block-quote markers, never a
+    // partial run of list-item padding. Crediting that partial indentation
+    // pushed the span one column per space too far right. A line carrying the
+    // full prefix has it (plus any extra indentation) removed, so the whole
+    // counted width applies.
+    auto strippedWidth = [&p_offsets, blockOffset](int p_line) {
+      int markerWidth = 0;
+      const int width = p_offsets.lineStrippedPrefixWidth(p_line - 1, blockOffset, &markerWidth);
+      return width < blockOffset ? markerWidth : width;
+    };
+    int stripSc = -1;
+    if (sl > paraStartLine) {
+      stripSc = strippedWidth(sl);
+      sc += stripSc - blockOffset;
 #ifdef VTE_DEBUG_HIGHLIGHT
-        qDebug() << "  CONT FIX sc: line=" << sl << "blockOffset=" << blockOffset
-                 << "strip=" << stripSc << "corrected sc=" << sc;
+      qDebug() << "  CONT FIX sc: line=" << sl << "blockOffset=" << blockOffset
+               << "strip=" << stripSc << "corrected sc=" << sc;
 #endif
-      }
-      if (el > paraStartLine) {
-        // Most inline spans are single-line (el == sl); reuse the start-line
-        // prefix width instead of rescanning the identical line for the end.
-        int strip = (el == sl && stripSc >= 0)
-                        ? stripSc
-                        : p_offsets.lineStrippedPrefixWidth(el - 1, blockOffset);
-        ec += strip - blockOffset;
-#ifdef VTE_DEBUG_HIGHLIGHT
-        qDebug() << "  CONT FIX ec: line=" << el << "blockOffset=" << blockOffset
-                 << "strip=" << strip << "corrected ec=" << ec;
-#endif
-      }
-      // Guard against negative/invalid columns
-      sc = qMax(1, sc);
-      ec = qMax(sc, ec);
     }
+    if (el > paraStartLine) {
+      // Most inline spans are single-line (el == sl); reuse the start-line
+      // prefix width instead of rescanning the identical line for the end.
+      int strip = (el == sl && stripSc >= 0) ? stripSc : strippedWidth(el);
+      ec += strip - blockOffset;
+#ifdef VTE_DEBUG_HIGHLIGHT
+      qDebug() << "  CONT FIX ec: line=" << el << "blockOffset=" << blockOffset << "strip=" << strip
+               << "corrected ec=" << ec;
+#endif
+    }
+    // Guard against negative/invalid columns. The end column may only be
+    // clamped to the start column when both ends are on the SAME line: on a
+    // later line the two columns are unrelated, and a multiline span whose end
+    // column is legitimately smaller than its start column (the common case --
+    // the construct closes near the start of a continuation line) would
+    // otherwise be stretched to the start column of its FIRST line, spilling
+    // the highlight far past the closing marker.
+    sc = qMax(1, sc);
+    ec = qMax(el == sl ? sc : 1, ec);
   }
 
   p_startQChar = p_offsets.toDocPosition(sl, sc);
