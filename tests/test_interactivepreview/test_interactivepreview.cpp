@@ -5040,4 +5040,87 @@ void TestInteractivePreview::testOwedWorkDrainsOnceUnderANestedEventLoop() {
   QVERIFY2(delta <= 4, qPrintable(QStringLiteral("%1 drains ran for one unblock").arg(delta)));
 }
 
+
+// ---------------------------------------------------------------------------
+// The (original syntax -> candidate syntax) transition matrix
+// ---------------------------------------------------------------------------
+
+void TestInteractivePreview::testTableSyntaxTransitionMatrix() {
+  const QString c_htmlTable =
+      QStringLiteral("<table>\n<tr><td>a</td><td>b</td></tr>\n</table>\n");
+
+  // MARKDOWN -> MARKDOWN: the historical delimiter/prefix logic, unchanged.
+  {
+    VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+    auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
+    QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
+    setTextAndSettle(editor, QLatin1String(c_table));
+    auto widget = factory->m_widgets.first();
+
+    widget->previewContext()->requestSourceReplacement(
+        QStringLiteral("| h1 | h2 |\n| --- | --- |\n| z | b |"));
+    QCOMPARE(widget->m_lastResult.status(), PreviewReplacementResult::Accepted);
+  }
+
+  // MARKDOWN -> HTML: the first-merge conversion of decision D-h. Accepted
+  // because every prefix of the original is empty, which is exactly what D-l
+  // guarantees is reachable. Without this case the conversion phases 2 and 3
+  // depend on could never be accepted at all.
+  {
+    VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+    auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
+    QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
+    setTextAndSettle(editor, QLatin1String(c_table));
+    auto widget = factory->m_widgets.first();
+
+    widget->previewContext()->requestSourceReplacement(
+        QStringLiteral("<table>\n<tr><td colspan=\"2\">a b</td></tr>\n</table>"));
+    QCOMPARE(widget->m_lastResult.status(), PreviewReplacementResult::Accepted);
+    QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("colspan=\"2\"")));
+  }
+
+  // MARKDOWN -> HTML under a container prefix: refused. Decision D-a means the
+  // converted table would not preview at all.
+  {
+    VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+    auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
+    QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
+    setTextAndSettle(editor, QStringLiteral("> | a | b |\n> | --- | --- |\n> | c | d |\n"));
+    auto widget = factory->m_widgets.first();
+
+    const QString before = editor.document()->toPlainText();
+    widget->previewContext()->requestSourceReplacement(
+        QStringLiteral("<table>\n<tr><td>a</td></tr>\n</table>"));
+    QVERIFY(!widget->m_lastResult.isAccepted());
+    QCOMPARE(editor.document()->toPlainText(), before);
+  }
+
+  // HTML -> HTML, including the ONE-ROW table the Markdown check rejects
+  // outright, and HTML -> MARKDOWN, refused defensively under sticky-HTML D-e.
+  {
+    VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+    auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
+    QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
+    setTextAndSettle(editor, c_htmlTable);
+
+    QCOMPARE(factory->m_widgets.size(), 1);
+    auto widget = factory->m_widgets.first();
+    auto table = widget->m_preview.staticCast<const TablePreview>();
+    QCOMPARE(table->syntax(), PreviewTableSyntax::Html);
+    QCOMPARE(table->gridRowCount(), 1);
+    QCOMPARE(table->gridColumnCount(), 2);
+    QVERIFY(!table->hasHeaderRow());
+
+    widget->previewContext()->requestSourceReplacement(
+        QStringLiteral("<table>\n<tr><td>z</td><td>b</td></tr>\n</table>"));
+    QCOMPARE(widget->m_lastResult.status(), PreviewReplacementResult::Accepted);
+    QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("<td>z</td>")));
+
+    const QString before = editor.document()->toPlainText();
+    widget->previewContext()->requestSourceReplacement(
+        QStringLiteral("| a | b |\n| --- | --- |\n| c | d |"));
+    QVERIFY(!widget->m_lastResult.isAccepted());
+    QCOMPARE(editor.document()->toPlainText(), before);
+  }
+}
 QTEST_MAIN(tests::TestInteractivePreview)

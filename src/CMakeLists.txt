@@ -45,6 +45,7 @@ add_library(VTextEdit SHARED
     include/vtextedit/codeblockhighlighter.h
     include/vtextedit/global.h
     include/vtextedit/htmlimgscanner.h
+    include/vtextedit/htmltablescanner.h
     include/vtextedit/lrucache.h
     include/vtextedit/markdowneditorconfig.h
     include/vtextedit/markdownutils.h
@@ -137,6 +138,8 @@ add_library(VTextEdit SHARED
     texteditor/vsyntaxhighlighter.cpp
     texteditor/vtexteditor.cpp
     utils/htmlimgscanner.cpp
+    utils/htmltablescanner.cpp
+    utils/htmltagparse.cpp utils/htmltagparse.h
     utils/markdownutils.cpp
     # networkutils is INTERNAL: the header lives next to the .cpp (not under
     # include/vtextedit) so it is neither installed nor consumable by users of

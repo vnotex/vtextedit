@@ -5,6 +5,7 @@
 #include <algorithm>
 
 #include <vtextedit/htmlimgscanner.h>
+#include <vtextedit/htmltablescanner.h>
 
 #ifdef VTE_DEBUG_HIGHLIGHT
 #include <QDebug>
@@ -427,6 +428,23 @@ static void extractTable(cmark_node *p_tableNode, const LineOffsetTable &p_offse
 
   table.m_startBlock = p_startBlock + startLine - 1;
 
+  // The logical grid of a pipe table is the degenerate case: every slot is a
+  // 1x1 origin. Its width is the NORMALIZED widest value row -- what
+  // TablePreviewDocument::setTable() already builds -- which a ragged body row
+  // may push past the declared m_columns. The two stay separate on purpose:
+  // m_columns keeps meaning "declared by the header/delimiter rows", so
+  // isRoundTrippable()'s declared-vs-actual width check stays meaningful.
+  table.m_syntax = TableElement::Syntax::Markdown;
+  table.m_markdownBacked = true;
+  table.m_hasHeaderRow = true;
+  for (const auto &row : table.m_rows) {
+    if (row.m_type == TableRowType::Delimiter) {
+      continue;
+    }
+    ++table.m_rowCount;
+    table.m_columnCount = qMax(table.m_columnCount, row.m_cells.size());
+  }
+
   p_result.tableElements.append(table);
 }
 
@@ -448,31 +466,14 @@ static int lineIndexOfDocPos(const LineOffsetTable &p_offsets, int p_pos) {
   return lo;
 }
 
-// Capture every HTML `<img …>` inside an HTML_INLINE / HTML_BLOCK node as an
+// Capture every HTML `<img …>` of one already-resolved slice as an
 // ImageElement, so the live editor previews and menus treat it exactly like a
 // Markdown image link.
-//
-// @p_rawText is per-WALK state, not per-node: cmark emits `<script>`, its
-// contents and `</script>` as separate HTML nodes, so the "inside a raw-text
-// element" fact has to be threaded across them. It is advanced for EVERY HTML
-// node -- including one whose span cannot be resolved, whose results are
-// scanned purely for that side effect and then discarded. Skipping the advance
-// would let an unresolvable `<script>` unmask an `<img>` spelled inside it.
-static void extractHtmlImages(cmark_node *p_node, const QString &p_text,
+static void extractHtmlImages(const QString &p_slice, int p_sliceStart, const QString &p_text,
                               const QByteArray &p_utf8Text, const LineOffsetTable &p_offsets,
                               ASTWalkResult &p_result, int p_offset, RawTextState &p_rawText) {
-  int regionStart = -1;
-  int regionEnd = -1;
-  if (!resolveHtmlNodeSpan(p_text, p_node, p_offsets, regionStart, regionEnd)) {
-    const char *literal = cmark_node_get_literal(p_node);
-    if (literal) {
-      scanHtmlImgTags(QString::fromUtf8(literal), 0, &p_rawText);
-    }
-    return;
-  }
-
-  const QString slice = p_text.mid(regionStart, regionEnd - regionStart);
-  const auto tags = scanHtmlImgTags(slice, regionStart, &p_rawText);
+  Q_UNUSED(p_text);
+  const auto tags = scanHtmlImgTags(p_slice, p_sliceStart, &p_rawText);
   for (const auto &tag : tags) {
     ImageElement image;
     image.m_startPos = p_offset + tag.m_tagStart;
@@ -577,6 +578,217 @@ static void extractHeading(cmark_node *p_node, ASTWalkResult &p_result, int p_ab
   p_result.headingElements.append(heading);
 }
 
+static int alignmentOrdinal(const QString &p_align) {
+  if (p_align == QStringLiteral("left")) {
+    return 1;
+  }
+  if (p_align == QStringLiteral("center")) {
+    return 2;
+  }
+  if (p_align == QStringLiteral("right")) {
+    return 3;
+  }
+  return 0;
+}
+
+// Whether @p_node is a TOP-LEVEL block, i.e. a direct child of the document.
+//
+// Decision D-a made structural rather than textual. The whitespace check below
+// cannot answer this on its own: a list item's continuation indent IS
+// whitespace, so an HTML block indented under `- item` would pass it while
+// living under CMARK_NODE_ITEM. Such a table can only be written back as source
+// that either no longer previews or that the host's prefix check reads as a
+// changed wrapper chain -- and a multi-line replacement would escape the list
+// entirely, since only its first line inherits the retained prefix.
+static bool isDocumentChild(cmark_node *p_node) {
+  cmark_node *parent = cmark_node_parent(p_node);
+  return parent && cmark_node_get_type(parent) == CMARK_NODE_DOCUMENT;
+}
+
+// Whether @p_table occupies the WHOLE of the resolved HTML block
+
+// [@p_blockStart, @p_blockEnd) apart from surrounding whitespace, and every one
+// of its source lines starts at the block's own column.
+//
+// This is decision D-a made concrete. It is what refuses
+// `<div><table>…</table></div>` and a table under `> ` or a list indent: such a
+// table can only be written back as source that either no longer previews, or
+// that the host's prefix check reads as a changed wrapper chain. A refused
+// table simply renders as plain source, exactly as before this feature existed.
+static bool isTopLevelWholeBlock(const QString &p_text, const LineOffsetTable &p_offsets,
+                                 const HtmlTable &p_table, int p_blockStart, int p_blockEnd) {
+  if (p_table.m_tableStart < p_blockStart || p_table.m_tableEnd > p_blockEnd) {
+    return false;
+  }
+  if (!p_text.mid(p_blockStart, p_table.m_tableStart - p_blockStart).trimmed().isEmpty()) {
+    return false;
+  }
+  if (!p_text.mid(p_table.m_tableEnd, p_blockEnd - p_table.m_tableEnd).trimmed().isEmpty()) {
+    return false;
+  }
+
+  const int firstLine = lineIndexOfDocPos(p_offsets, p_table.m_tableStart);
+  const int lastLine = lineIndexOfDocPos(p_offsets, p_table.m_tableEnd - 1);
+  if (firstLine < 0 || lastLine < firstLine) {
+    return false;
+  }
+
+  const int column = p_table.m_tableStart - p_offsets.lineStartQCharOffset(firstLine);
+  if (column < 0) {
+    return false;
+  }
+  for (int line = firstLine; line <= lastLine; ++line) {
+    const int lineStart = p_offsets.lineStartQCharOffset(line);
+    const int lineEnd = p_offsets.lineEndQCharOffset(line);
+    if (lineStart + column > lineEnd) {
+      return false;
+    }
+    // Every line must begin at the SAME column, and everything before it must
+    // be whitespace: any container prefix (`> `, a list indent) shows up here.
+    if (!p_text.mid(lineStart, column).trimmed().isEmpty()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Capture a canonical top-level `<table>` HTML block as a TableElement, so the
+// interactive table preview binds to it exactly as it does to a pipe table.
+static void extractHtmlTables(const QString &p_slice, int p_sliceStart, const QString &p_text,
+                              const LineOffsetTable &p_offsets, ASTWalkResult &p_result,
+                              int p_offset, bool p_isBlock, int p_blockStart, int p_blockEnd,
+                              RawTextState &p_rawText) {
+  const auto tables = scanHtmlTables(p_slice, p_sliceStart, &p_rawText);
+  if (!p_isBlock) {
+    // HTML_INLINE never yields a table (D-a). The scan still ran, purely so its
+    // raw-text state advances in lockstep with the image scan's.
+    return;
+  }
+
+  for (const auto &html : tables) {
+    if (!isTopLevelWholeBlock(p_text, p_offsets, html, p_blockStart, p_blockEnd)) {
+      continue;
+    }
+
+    TableElement table;
+    table.m_syntax = TableElement::Syntax::Html;
+    table.m_startBlock = -1;
+    table.m_startPos = p_offset + html.m_tableStart;
+    table.m_endPos = p_offset + html.m_tableEnd;
+    table.m_rowCount = html.m_rowCount;
+    table.m_columnCount = html.m_columnCount;
+    table.m_columns = html.m_columnCount;
+    table.m_hasHeaderRow = html.m_hasHeaderRow;
+    table.m_openTag =
+        p_text.mid(html.m_openTagStart, html.m_openTagEnd - html.m_openTagStart);
+
+    // Decision D-j / D-n: backing is per TABLE. One malformed payload makes the
+    // whole table HTML-only, so a mutation never has to reconcile two kinds of
+    // cell and a half-decoded table can never be written back.
+    table.m_markdownBacked = html.m_anyPayloadPresent && !html.m_anyPayloadMalformed;
+
+    // Per-cell highlighting parses each payload as its own cmark document, so
+    // it is bounded by the very limit that decides whether an interactive sheet
+    // is possible at all (TablePreviewWidget::c_maxCells, which
+    // sliceTableCellHighlights() mirrors for the same reason). A table past it
+    // never gets a widget, so the runs would be paid for on every parse and
+    // then thrown away.
+    const int c_maxPreviewCells = 300;
+    const bool highlightCells =
+        table.m_markdownBacked &&
+        static_cast<qint64>(html.m_rowCount) * static_cast<qint64>(html.m_columnCount) <=
+            static_cast<qint64>(c_maxPreviewCells);
+
+    table.m_alignments.reserve(html.m_columnCount);
+    for (const auto &align : html.m_alignments) {
+      table.m_alignments.append(alignmentOrdinal(align));
+    }
+
+    for (int r = 0; r < html.m_rows.size(); ++r) {
+      const auto &htmlRow = html.m_rows.at(r);
+      TableRowElement row;
+      row.m_type = (r == 0 && html.m_hasHeaderRow) ? TableRowType::Header : TableRowType::Data;
+      row.m_rowTag = p_text.mid(htmlRow.m_tagStart, htmlRow.m_tagEnd - htmlRow.m_tagStart);
+
+      for (const auto &cell : htmlRow.m_cells) {
+        // A well-formed payload is the cell's Markdown source; a cell without
+        // one in a Markdown-backed table is read as Markdown too (D-j), and an
+        // HTML-only table shows its raw inner source as spelled (D-d).
+        const QString text = (table.m_markdownBacked && cell.m_hasPayload) ? cell.m_payload
+                                                                          : cell.m_inner;
+        row.m_cells.append(text);
+        // Markdown-only: there is no one-source-line-per-row correspondence to
+        // slice highlights out of, so no cell offset is meaningful here.
+        row.m_cellOffsets.append(-1);
+        row.m_cellHighlights.append(highlightCells ? highlightInlineSnippet(text)
+                                                   : QVector<HLUnit>());
+        row.m_colSpans.append(cell.m_colSpan);
+        row.m_rowSpans.append(cell.m_rowSpan);
+        row.m_slotColumns.append(cell.m_origin.x());
+        row.m_cellTags.append(p_text.mid(cell.m_tagStart, cell.m_tagEnd - cell.m_tagStart));
+      }
+
+      table.m_rows.append(row);
+    }
+
+    p_result.tableElements.append(table);
+  }
+}
+
+// The single per-node entry point for HTML scanning.
+//
+// @p_rawText is per-WALK state, not per-node: cmark emits `<script>`, its
+// contents and `</script>` as separate HTML nodes, so the "inside a raw-text
+// element" fact has to be threaded across them. It is advanced for EVERY HTML
+// node -- including one whose span cannot be resolved, whose results are
+// scanned purely for that side effect and then discarded. Skipping the advance
+// would let an unresolvable `<script>` unmask an `<img>` spelled inside it.
+//
+// Two scanners now share that one state, so they cannot simply be called in
+// sequence: the second would start from the state left AFTER the whole slice.
+// Each runs on its own COPY of the incoming state, and the two outgoing states
+// must agree -- which they do because both scanners' top-level lexers are
+// identical, down to the table scanner advancing one tag at a time rather than
+// jumping over a table it captured. The assert is the guard on that invariant.
+static void extractHtmlNode(cmark_node *p_node, const QString &p_text,
+                            const QByteArray &p_utf8Text, const LineOffsetTable &p_offsets,
+                            ASTWalkResult &p_result, int p_offset, RawTextState &p_rawText) {
+  const bool isBlock = cmark_node_get_type(p_node) == CMARK_NODE_HTML_BLOCK;
+
+  int regionStart = -1;
+  int regionEnd = -1;
+  QString slice;
+  int sliceStart = 0;
+  bool resolved = resolveHtmlNodeSpan(p_text, p_node, p_offsets, regionStart, regionEnd);
+  if (resolved) {
+    slice = p_text.mid(regionStart, regionEnd - regionStart);
+    sliceStart = regionStart;
+  } else {
+    // Unplaceable: scan the literal for the raw-text side effect only, and
+    // publish nothing.
+    const char *literal = cmark_node_get_literal(p_node);
+    if (!literal) {
+      return;
+    }
+    slice = QString::fromUtf8(literal);
+    sliceStart = 0;
+  }
+
+  const RawTextState incoming = p_rawText;
+  RawTextState imageState = incoming;
+  RawTextState tableState = incoming;
+
+  ASTWalkResult discarded;
+  extractHtmlImages(slice, sliceStart, p_text, p_utf8Text, p_offsets,
+                    resolved ? p_result : discarded, p_offset, imageState);
+  extractHtmlTables(slice, sliceStart, p_text, p_offsets, resolved ? p_result : discarded,
+                    p_offset, resolved && isBlock && isDocumentChild(p_node), regionStart,
+                    regionEnd, tableState);
+
+  Q_ASSERT(imageState.m_element == tableState.m_element);
+  p_rawText = imageState;
+}
+
 // Capture the typed data of one non-table element.
 static void extractTypedElement(cmark_node *p_node, cmark_node_type p_type, int p_style,
                                 const QByteArray &p_utf8Text, const LineOffsetTable &p_offsets,
@@ -648,7 +860,11 @@ static void sliceTableCellHighlights(ASTWalkResult &p_result) {
   const int c_maxPreviewCells = 300;
 
   for (auto &table : p_result.tableElements) {
-    if (table.m_startBlock < 0) {
+    // An HTML table has no one-source-line-per-row correspondence: the loop
+    // below indexes m_startBlock + r and assumes one source block per row,
+    // which no HTML table satisfies. Its cells' runs come from
+    // highlightInlineSnippet() at extraction time instead.
+    if (table.m_syntax != TableElement::Syntax::Markdown || table.m_startBlock < 0) {
       continue;
     }
 
@@ -761,7 +977,7 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
     // Runs BEFORE the span/style guards below: the raw-text state must advance
     // for every HTML node, including one this walk cannot place.
     if (!p_fast && (type == CMARK_NODE_HTML_INLINE || type == CMARK_NODE_HTML_BLOCK)) {
-      extractHtmlImages(node, text, p_utf8Text, offsets, result, p_offset, rawText);
+      extractHtmlNode(node, text, p_utf8Text, offsets, result, p_offset, rawText);
     }
 
     int style = mapCmarkNodeToStyle(type, node);
@@ -867,6 +1083,16 @@ QVector<ImageLinkInfo> buildImageLinks(const QVector<ImageElement> &p_elements) 
     links.append(info);
   }
   return links;
+}
+
+QVector<HLUnit> highlightInlineSnippet(const QString &p_snippet) {
+  if (p_snippet.isEmpty()) {
+    return QVector<HLUnit>();
+  }
+  // One block, no regions, no typed elements: the fast path is exactly what
+  // per-cell highlighting needs, and it also keeps this off the recursive
+  // element-extraction path entirely.
+  return walkAndConvert(p_snippet.toUtf8(), 1, 0, 0, true).blocksHighlights.value(0);
 }
 
 } // namespace md

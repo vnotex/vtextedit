@@ -14,6 +14,8 @@ add_executable(test_goldenmaster
     ${MARKDOWNEDITOR_FOLDER}/markdownastwalker.cpp ${MARKDOWNEDITOR_FOLDER}/markdownastwalker.h
     ${MARKDOWNEDITOR_FOLDER}/cmarkadapter.cpp ${MARKDOWNEDITOR_FOLDER}/cmarkadapter.h
     ${SRC_FOLDER}/utils/htmlimgscanner.cpp ${SRC_FOLDER}/include/vtextedit/htmlimgscanner.h
+    ${SRC_FOLDER}/utils/htmltablescanner.cpp ${SRC_FOLDER}/include/vtextedit/htmltablescanner.h
+    ${SRC_FOLDER}/utils/htmltagparse.cpp ${SRC_FOLDER}/utils/htmltagparse.h
     test_goldenmaster.cpp test_goldenmaster.h
 )
 target_include_directories(test_goldenmaster PRIVATE

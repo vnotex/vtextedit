@@ -164,6 +164,131 @@ JS string is text. cmark emits an opening tag, the contents and the closing tag 
 advanced for **every** HTML node — including one whose span could not be resolved.
 Otherwise an unresolvable `<script>` would unmask an `<img>` inside it.
 
+## HTML `<table>`: a second first-class reference
+
+A top-level `<table>` HTML block in a strict canonical subset is a
+`PreviewElementType::Table`, so the interactive table sheet binds to it exactly as it
+does to a GFM pipe table. A table holding a merged cell is written back **as HTML**,
+because pipe syntax cannot express `colspan`/`rowspan`.
+
+### One scanner, and only one — again
+
+`src/include/vtextedit/htmltablescanner.h` is **the only place in the tree allowed to
+pattern-match `<table` in note source.** `tests/test_markdownparser`'s
+`testSingleTableScannerGate()` is the grep gate; a *generator* (spelling a fresh tag) is
+exempt with a line-local `// html-table-allow:` hatch.
+
+The `<img>` and `<table>` scanners share one attribute lexer, `src/utils/htmltagparse.h`
+— the layer *below* the single-scanner rule, so "what an attribute is" is also spelled
+once, along with `resumeAfterImgTag()`, the one rule for where a top-level lexer resumes
+after an `<img` opener. They run over the same slice with **independent copies** of
+`RawTextState`, and `extractHtmlNode()` in `markdownastwalker.cpp` asserts the two
+outgoing states agree. That is why the table scanner advances its lexer **one tag at a
+time** instead of jumping over a table it just captured, and why it reproduces the
+`<img>` scanner's resume rule verbatim: a malformed or multiline `<img` resumes just
+after its name, never past a newline, or one scanner ends up inside a `<script>` the
+other has left.
+
+### The canonical subset
+
+A table is captured only when **all** hold; anything else is dropped whole and renders as
+plain source:
+
+* it is a whole `CMARK_NODE_HTML_BLOCK` that is a **direct child of the document**, and
+  whose lines carry no container prefix. The ancestry test is structural on purpose: a
+  list item's continuation indent *is* whitespace, so a source-prefix check alone would
+  admit a table under `- item`;
+* no `<caption>`, `<colgroup>`, `<thead>`, `<tbody>`, `<tfoot>`, no nested `<table>`;
+* every tag opens and closes within one line — **closing tags included** — and every
+  cell's inner source lies on one line;
+* all tags are explicitly balanced: a cell's content is walked with a tag stack, void and
+  self-closing elements aside, and a raw-text element inside a cell is refused outright
+  (a `</td>` spelled inside a `<script>` is text, so the cell's extent would depend on
+  which scanner was asking);
+* either row 0 is entirely `<th>` and every later row entirely `<td>`, or every row is
+  entirely `<td>`;
+* each column has at most one distinct `align` among the cells declaring one;
+* the `colspan`/`rowspan` grid tiles a rectangle **exactly** — no gap, no overlap, no
+  overflow.
+
+Every dimension bound is checked by **subtraction against a small ceiling**, never by
+adding a span to an index. `colspan="2147483647"` is a valid positive `int`; a
+`col + span > limit` test would overflow, pass, and then drive a loop over billions of
+slots — a hang and an unbounded allocation from note source alone.
+
+A refused table also suppresses any table nested inside it, so a refusal never degrades
+into capturing the inner one.
+
+### Cell source lives in a comment
+
+A cell this tree authors is `<!--vte-md:PAYLOAD-->` followed by the HTML cmark renders
+from that payload. The sheet shows and edits the payload; **the comment always wins**, so
+a hand edit to the rendered half is destroyed at the next commit anywhere in the table.
+The codec is `\` → `\\` then `-` → `\-`, which makes `--` — and therefore `-->` —
+unrepresentable.
+
+Backing is **per table, never per cell**: a table is Markdown-backed if any cell carries a
+payload, so a comment-less cell in one is *also* read as Markdown and re-rendered. One
+malformed payload makes the **whole** table HTML-only, whose cells are then literal text
+both ways and for which no comment is ever synthesized.
+
+### Fail closed, always
+
+A commit whose output the scanner then refuses is **unrecoverable in place**: the source
+is replaced, the re-parse finds no table, and the user is left with raw HTML and no sheet.
+Every serializer path therefore returns an empty string — which `flushPendingCommit()`
+already reads as a rejection — rather than emitting something questionable. Two places
+this can happen:
+
+* `TablePreviewHtmlSerializer::renderCellHtml()` must produce **one line**. cmark
+  terminates every block with a newline, and one line of Markdown can render to multi-line
+  HTML (`- x`, `# x`, four leading spaces). A single wrapping `<p>` is stripped, trailing
+  newlines are stripped, and every remaining separator becomes `&#10;` — never a space,
+  which would silently rewrite `x\n` to `x ` inside a `<pre>`.
+* `TablePreviewDocument::mergeCells()` verifies the resulting geometry and, on a mismatch,
+  **rebuilds the document from a pre-merge snapshot**. An edit block is not a transaction
+  and this document has no undo stack, so recovery is the only rollback available. The
+  containment preflight in `canMergeCells()` is what makes it unreachable:
+  `QTextTable::mergeCells()` silently refuses a request whose edge cuts a cell.
+
+The last line of defence is that `TablePreviewHtmlSerializer::serialize()` hands its own
+finished output back to `scanHtmlTables()` and refuses anything but an exact match on the
+row count, column count, header shape, every origin's box and the backing classification.
+Nothing else can cover an HTML-only table, whose cell text is written **verbatim**: a cell
+edited to hold `</td>` or an unbalanced raw-text tag would otherwise reshape the table.
+
+### Tags are preserved verbatim
+
+`<table>`, `<tr>`, `<td>`/`<th>` keep their authored attribute text. Only `colspan`,
+`rowspan` and `align` are rewritten **attribute-locally**, through
+`rewriteHtmlTagAttr()` — never by regenerating the tag, which would destroy `class`,
+`style`, `data-*` and anything else a user wrote. Only an inserted row or cell, or a slot
+newly exposed by a split, gets a generated tag. This is D9 applied to tables.
+
+### The sheet is a logical grid
+
+`TablePreview` keeps `cells()`, `columnCount()`, `rowPrefixes()` and `delimiterPrefix()`
+with their exact historical meaning and raggedness. The **grid** — `gridRowCount()`,
+`gridColumnCount()`, `isOrigin()`, `rowSpan()`, `colSpan()` — is a separate, always
+rectangular view. A pipe table is the degenerate case where every slot is a 1×1 origin.
+
+`QTextTableCell::row()/column()` report the **origin's** coordinates for every covered
+slot. That is what makes `isOrigin()` work, and equally why they can never answer "which
+half of a colspan was clicked" — the context menu resolves the logical column
+geometrically instead.
+
+The single selection clamp is no longer the frame-safety gate. A cell rectangle survives,
+for Merge and for the copy actions, so `collapseComplexSelectionForMutation()` is what
+every text-mutating path goes through — including the standard context menu's Cut and
+Delete, `cut()`/`paste()`, drop, and internal move-drag, none of which reach
+`keyPressEvent()`. **External** move-drag reaches none of them either: `mousePressEvent()`
+collapses a rectangle the press lands inside, before Qt can arm a drag at all. The
+inherited bulk mutators (`clear()`, `setPlainText()`, `setHtml()`, `append()`, …) are not
+selection-mediated and are hidden and refused separately; `isIntact()` is the backstop.
+
+Once written back as HTML a table **stays** HTML, even after every merge is split. There
+is no in-editor route back to pipe syntax.
+
 
 ## Testing
 

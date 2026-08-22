@@ -90,6 +90,24 @@ private slots:
   void testWalkerHtmlImages();
   void testGenerateImageTag();
 
+  // The HTML `<table>` scanner and the canonical subset of decision D-i, plus
+  // the Markdown payload codec and HTML tables through the live walker.
+  void testHtmlTableScannerBasic();
+  void testHtmlTableScannerSpans();
+  void testHtmlTableScannerRefusals();
+  void testHtmlTableScannerPayloads();
+  void testHtmlTablePayloadCodec();
+  void testHtmlTableAttrRewrite();
+  void testWalkerHtmlTables();
+  void testWalkerHtmlTableContainers();
+  void testSingleTableScannerGate();
+  void testScannerRawTextStatesAgree();
+  void testHtmlTableClosingTagsAreSingleLine();
+  void testHtmlTableDuplicateAttrRewrite();
+  void testHtmlTableHostileSpans();
+  void testHtmlTableCellTagBalance();
+  void testWalkerHtmlTableUnderListItem();
+
   // Extra selection invalidation
   void testCursorLineInvalidationExpanded_data();
   void testCursorLineInvalidationExpanded();

@@ -2,7 +2,9 @@
 #define TABLEPREVIEWWIDGET_H
 
 #include <QMetaType>
+#include <QPoint>
 #include <QPointer>
+#include <QRect>
 #include <QScopedPointer>
 #include <QSize>
 #include <QString>
@@ -63,13 +65,88 @@ public:
                            const QVector<QString> &p_rowPrefixes, const QString &p_delimiterPrefix);
 };
 
+// HTML serialization of an editable table sheet, for the tables GFM pipe
+// syntax cannot express.
+//
+// A table is written back as HTML when it was read as HTML, or as soon as any
+// cell spans more than one row or column: `colspan` and `rowspan` have no pipe
+// spelling at all. The conversion is one-way (decision D-e).
+//
+// The output must satisfy the SAME canonical subset the scanner enforces
+// (decision D-i), because the host validates a write-back by re-parsing it: a
+// commit whose output the scanner then refuses is unrecoverable in place -- the
+// source is replaced, the re-parse finds no table, and the user is left with
+// raw HTML and no sheet. Every path therefore fails CLOSED, returning an empty
+// string, which flushPendingCommit() already reads as a rejection.
+class TablePreviewHtmlSerializer {
+public:
+  // Render one cell's Markdown source to the HTML that follows its payload
+  // comment, guaranteed to be a SINGLE LINE.
+  //
+  // The guarantee is not cosmetic. cmark terminates every block with a newline,
+  // and one line of Markdown can render to multi-line HTML: `- x` becomes a
+  // `<ul>`/`<li>` block, `# x` a block plus a newline, four leading spaces a
+  // `<pre><code>x\n</code></pre>`. A multi-line cell fails the scanner's
+  // one-line rule and the whole table stops previewing.
+  //
+  // The rule: strip the wrapping `<p>…</p>` when the render is a single
+  // paragraph, strip trailing newlines, then encode every REMAINING line
+  // separator as the character reference `&#10;` -- never as a space. `&#10;`
+  // is whitespace-collapsed exactly like a newline outside `<pre>` and
+  // preserved exactly like one inside it, so the rendered result is unchanged
+  // in both contexts; a literal space would silently rewrite `x\n` to `x `
+  // inside preformatted text.
+  //
+  // Returns an empty string when the result is still not single-line.
+  static QString renderCellHtml(const QString &p_markdown);
+
+  // `<!--vte-md:PAYLOAD-->` for @p_text (decision D-b).
+  static QString payloadComment(const QString &p_text);
+
+  // Serialize the logical grid.
+  //
+  // @p_cells is row major over the grid, empty at a covered slot. @p_spans
+  // carries (colSpan, rowSpan) at each origin and (0, 0) at a covered slot.
+  // @p_cellTags and @p_rowTags hold the verbatim source tags, empty for
+  // anything this sheet generated.
+  //
+  // Returns an empty string for anything the Markdown serializer also refuses:
+  // no cells, zero width, or a line separator inside a cell.
+  static QString serialize(const QVector<QVector<QString>> &p_cells,
+                           const QVector<QVector<QPoint>> &p_spans,
+                           const QVector<QVector<QString>> &p_cellTags,
+                           const QVector<QString> &p_rowTags, const QString &p_openTag,
+                           const QVector<PreviewTableAlignment> &p_alignments,
+                           bool p_hasHeaderRow, bool p_markdownBacked);
+};
+
+// One origin cell of the logical grid, as the document holds it.
+
+//
+// The GEOMETRY is never stored here: QTextTable owns it and maintains it across
+// every structural operation, so a second copy could only drift. What is stored
+// is what a QTextTable cannot carry -- the verbatim source tag decision D-g
+// requires, so a write-back rewrites `colspan`, `rowspan` and `align`
+// attribute-locally and never regenerates a tag it did not author.
+struct TablePreviewCellMeta {
+  // The verbatim `<td …>` / `<th …>` opening tag, or empty for a cell this
+  // sheet generated (an inserted row or column, or a slot exposed by a split).
+  QString m_tag;
+};
+
 // The rich text document behind one editable sheet: a QTextDocument holding a
 // single QTextTable, plus the metadata a QTextTable cannot carry.
 //
 // The document is the single source of truth. There is no parallel cell
 // matrix: the cells are derived from the table on demand, so a caret sitting
 // in a half-typed cell can never disagree with what is about to be serialized.
+//
+// The table is a LOGICAL GRID of rowCount() x columnCount() slots. Each slot is
+// either an ORIGIN carrying text and metadata, or is COVERED by an origin above
+// or to the left of it. A pipe table is the degenerate case where every slot is
+// a 1x1 origin.
 class TablePreviewDocument {
+
 public:
   // Upper bound on the number of cells one sheet materializes.
   //
@@ -136,6 +213,45 @@ public:
 
   int columnCount() const;
 
+  // --- The logical grid. ---
+
+  // How the table is spelled in the source, and therefore which serializer a
+  // commit uses. Sticky: once Html, never Markdown again (decision D-e).
+  PreviewTableSyntax syntax() const;
+
+  // Decision D-j: whether the cells hold Markdown source rather than literal
+  // HTML text. Per table, never per cell.
+  bool isMarkdownBacked() const;
+
+  // Whether row 0 is a header row. Always true for a pipe table; for an HTML
+  // table true iff row 0 was entirely `<th>`. Drives the header row count, the
+  // row-0 bold weight, the `<th>` vs `<td>` choice for a generated cell, and
+  // the serializer.
+  bool hasHeaderRow() const;
+
+  // Whether slot (@p_row, @p_column) owns its content rather than being covered
+  // by a merged cell.
+  //
+  // Note that QTextTableCell::column() reports the ORIGIN column for every
+  // covered slot, so it can NEVER answer "which half of a colspan is this" --
+  // any slot-to-column mapping must go through the grid coordinates, not
+  // through the cell.
+  bool isOrigin(int p_row, int p_column) const;
+
+  // Span of the cell OWNING slot (@p_row, @p_column); 1 outside the table.
+  int rowSpanAt(int p_row, int p_column) const;
+  int colSpanAt(int p_row, int p_column) const;
+
+  // Whether any cell spans more than one row or column. A table holding one is
+  // written back as HTML even when it was authored as pipe syntax, because GFM
+  // cannot express a span (decision D-h).
+  bool hasMergedCells() const;
+
+  // Whether @p_column is spanned by a merged cell, which makes a per-column
+  // alignment unrepresentable: a spanning cell carries ONE `align` attribute
+  // (decision D-m). Splitting the cell restores alignment control.
+  bool isColumnSpanned(int p_column) const;
+
   // The cell matrix, derived from the live table.
   QVector<QVector<QString>> cells() const;
 
@@ -167,6 +283,11 @@ public:
   // widened by the serializer, which is harmless because nothing is written
   // back from this. Empty when the contents cannot be serialized safely (no
   // cells, zero width, or a cell holding a line separator).
+  //
+  // Pipe syntax CANNOT express a span, so a merged origin's text is put in its
+  // origin slot and every covered slot is an empty string. The copy is
+  // therefore a flattened view of a merged table, not a faithful one; toHtml()
+  // is the faithful copy.
   QString toStandaloneMarkdown() const;
 
   // HTML rendered from toStandaloneMarkdown() by cmark, so inline Markdown
@@ -228,6 +349,52 @@ public:
 
   // Remove @p_column, together with its alignment.
   bool removeColumn(int p_column);
+
+  // The grid rectangle a selection resolves to, or an invalid rectangle when
+  // it does not lie inside the table at all. A caret with no selection
+  // resolves to the 1x1 rectangle of its own origin.
+  //
+  // Expressed in GRID coordinates, so it distinguishes the halves of a colspan
+  // that QTextTableCell::column() cannot.
+  QRect selectionRect(const QTextCursor &p_cursor) const;
+
+  // Whether the cells @p_cursor selects can be merged.
+  //
+  // Requires: a rectangle larger than 1x1, wholly inside the table, not
+  // straddling the header row and a body row, not on a Markdown table carrying
+  // container prefixes (decision D-l), and -- crucially -- CONTAINMENT: every
+  // distinct origin the rectangle touches must have its whole
+  // rowSpan x colSpan box inside it.
+  //
+  // The containment rule is not cosmetic. An imported HTML table can already
+  // carry spans, and QTextTable::mergeCells() SILENTLY REFUSES a request whose
+  // edge cuts a cell. Clearing the texts first and then not merging would erase
+  // content and leave the metadata describing geometry that never changed.
+  bool canMergeCells(const QTextCursor &p_cursor) const;
+
+  // Merge the cells @p_cursor selects into one.
+  //
+  // The surviving cell's text is the non-empty source texts in grid order
+  // joined with a single space (decision D-k). QTextTable::mergeCells()' own
+  // concatenation is deliberately not used: it introduces paragraph breaks,
+  // which hasLineSeparator() rejects, so the table would stop serializing.
+  //
+  // RECOVERY, NOT ROLLBACK. A beginEditBlock/endEditBlock pair groups edits; it
+  // is not a transaction, and this document's undo stack is disabled, so there
+  // is nothing to abort into. The full grid is snapshotted before the block and
+  // the document is rebuilt from it if the post-merge verification fails. That
+  // is a defence against an unexpected Qt refusal, not the normal path: the
+  // containment preflight in canMergeCells() is what makes it unreachable.
+  bool mergeCells(const QTextCursor &p_cursor);
+
+  // Whether the cell owning slot (@p_row, @p_column) spans more than one slot
+  // and may therefore be split back into 1x1 cells.
+  bool canSplitCell(int p_row, int p_column) const;
+
+  // Split the cell owning slot (@p_row, @p_column) into 1x1 cells. The origin
+  // keeps its text and its verbatim tag; each newly exposed slot gets a
+  // generated `<th>` or `<td>` per hasHeaderRow().
+  bool splitCell(int p_row, int p_column);
 
   // Set the alignment of @p_column, which is what the delimiter row of the
   // serialized table carries.
@@ -291,7 +458,55 @@ public:
   void applyPalette(const QPalette &p_palette);
 
 private:
+  // A complete, self-contained description of the grid, used only to rebuild
+  // the document after a merge verification failure. Deliberately built from
+  // the same fields setTable() feeds build(), so the rebuild takes exactly the
+  // path a fresh bind does.
+  struct GridSnapshot {
+    QVector<QVector<QString>> m_source;
+    QVector<QVector<QVector<PreviewFormatRun>>> m_cellFormats;
+    QVector<QVector<TablePreviewCellMeta>> m_cellMeta;
+    QVector<QVector<QPoint>> m_spans; // (colSpan, rowSpan) at each origin.
+    QVector<PreviewTableAlignment> m_alignments;
+    QVector<QString> m_rowPrefixes;
+    QVector<QString> m_rowTags;
+    QString m_delimiterPrefix;
+    int m_rowCount = 0;
+    int m_columnCount = 0;
+    int m_declaredColumnCount = 0;
+  };
+
+  GridSnapshot captureGrid() const;
+
+  // The verbatim cell tags, row major over the grid. Empty at a slot whose cell
+  // this sheet generated.
+  QVector<QVector<QString>> cellTagGrid() const;
+
+  // The verbatim tag of the origin OWNING each slot, repeated on every slot it
+  // covers. Captured before a structural mutation, so a spanning origin whose
+  // own coordinates are about to be deleted can still be found from a slot that
+  // survives.
+  QVector<QVector<QString>> ownerTagGrid() const;
+
+  // Rebuild m_cellMeta and m_rowTags after a structural mutation, keyed to the
+  // LIVE geometry QTextTable now reports.
+  //
+  // A positional insert()/remove() on the metadata is wrong for a spanning
+  // cell: deleting the origin ROW of a rowspan (or the origin COLUMN of a
+  // colspan) makes Qt keep the cell and MOVE its origin, and the positional
+  // edit would discard the only copy of its authored tag -- silently destroying
+  // `class`, `style` and `data-*` at the next commit, against decision D-g.
+  //
+  // @p_rowMap and @p_columnMap give, for each POST-mutation index, the
+  // pre-mutation index it came from, or -1 for one this sheet inserted.
+  void remapCellMeta(const QVector<QVector<QString>> &p_ownerTags,
+                     const QVector<QString> &p_rowTags, const QVector<int> &p_rowMap,
+                     const QVector<int> &p_columnMap);
+
+  void restoreGrid(const GridSnapshot &p_snapshot);
+
   void build();
+
 
   // The single writer of one cell's formats, so build() and applyCellFormats()
   // cannot drift apart.
@@ -354,6 +569,30 @@ private:
   // a body row is wider than the header declares, which is not
   // round-trippable.
   int m_declaredColumnCount = 0;
+
+  // --- HTML syntax state (decisions D-b, D-d, D-e, D-g, D-j). ---
+
+  PreviewTableSyntax m_syntax = PreviewTableSyntax::Markdown;
+
+  bool m_markdownBacked = true;
+
+  bool m_hasHeaderRow = true;
+
+  // The verbatim `<table …>` tag, empty when this sheet must generate one.
+  QString m_openTag;
+
+  // One verbatim `<tr …>` tag per row; an entry is empty for a generated row.
+  QVector<QString> m_rowTags;
+
+  // Row major over the grid, indexed by ORIGIN coordinates. Entries at covered
+  // slots are meaningless and are never read.
+  QVector<QVector<TablePreviewCellMeta>> m_cellMeta;
+
+  // The spans build() must apply, filled by setTable() and by restoreGrid()
+  // and consumed by build(). The LIVE geometry always comes from QTextTable,
+  // which maintains it across every structural operation; a second live copy
+  // could only drift.
+  QVector<QVector<QPoint>> m_pendingSpans;
 };
 
 // The QTextEdit the sheet is rendered and edited in.
@@ -430,6 +669,31 @@ public:
   // affordance is lost.
   void clampSelectionIntoOneCell();
 
+  // Collapse a CELL-RECTANGLE selection onto one cell, then clamp.
+  //
+  // A rectangle is preserved by clampSelectionIntoOneCell() so Merge and the
+  // copy actions can see it (decision D-f). That reopens every path the single
+  // clamp used to close, so this is the gate every text-mutating path must go
+  // through instead - including the ones which never reach keyPressEvent():
+  // the standard context menu's Cut and Delete, the programmatic cut() and
+  // paste(), a drop, and the source removal of an internal move-drag.
+  //
+  // EXTERNAL move-drag is not covered by any of them. On both Qt majors
+  // QWidgetTextControlPrivate::startDrag() removes the source selection after a
+  // successful Qt::MoveAction whose target is not this text control, AFTER the
+  // drag returns and without passing through dropEvent(),
+  // insertFromMimeData() or keyPressEvent(). mousePressEvent() therefore
+  // collapses a rectangle the press lands inside BEFORE the base handler can
+  // arm a drag at all.
+  //
+  // isIntact() remains the backstop, not the gate.
+  void collapseComplexSelectionForMutation();
+
+  // Gated re-spellings of QTextEdit's clipboard slots, which are not virtual
+  // and would otherwise mutate through a rectangle selection.
+  void cut();
+  void paste();
+
   // Pin the format of the next insertion to the caret cell's baseline.
   //
   // Qt gives an insertion the character format of the text to its left, so
@@ -486,6 +750,10 @@ protected:
 
   void mousePressEvent(QMouseEvent *p_event) Q_DECL_OVERRIDE;
 
+  // A drop is a mutation which never reaches keyPressEvent(); it is also where
+  // an INTERNAL move-drag removes its source.
+  void dropEvent(QDropEvent *p_event) Q_DECL_OVERRIDE;
+
   // QTextEdit has no hook to extend its standard menu, so the whole handler is
   // replaced: the base one would only ever show the plain menu.
   void contextMenuEvent(QContextMenuEvent *p_event) Q_DECL_OVERRIDE;
@@ -516,6 +784,35 @@ private slots:
   // emits selectionChanged() and no cursorPositionChanged() at all. The
   // selection clamp has to be reachable from both.
   void handleSelectionChanged();
+
+private slots:
+  // Inherited BULK MUTATORS, hidden AND re-registered.
+  //
+  // The sheet inherits QTextEdit publicly, and every one of these replaces or
+  // empties the whole document - destroying the QTextTable outright, leaving
+  // TablePreviewDocument holding a dangling pointer. They are not
+  // selection-mediated at all, so the collapse gate above does not cover them:
+  // "every text-mutating path is gated" must NOT be read as including these.
+  //
+  // Declared as SLOTS rather than plain private members on purpose. None of
+  // them is virtual, so hiding alone only closes the compile-time route; moc
+  // registers these on the most-derived metaobject, which closes the
+  // QMetaObject::invokeMethod() and connect()-by-name routes as well. A caller
+  // which casts to QTextEdit* first still reaches the base implementation; that
+  // case is caught after the fact by isIntact(), which rebuilds the sheet from
+  // source. Exactly one controlled insertion route stays open, for the
+  // already-gated paste/drop path.
+  void clear();
+  void setText(const QString &p_text);
+  void setPlainText(const QString &p_text);
+  void setHtml(const QString &p_html);
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+  void setMarkdown(const QString &p_markdown);
+#endif
+  void append(const QString &p_text);
+  void insertPlainText(const QString &p_text);
+  void insertHtml(const QString &p_html);
+  void setDocument(QTextDocument *p_document);
 
 private:
   // What the frame and the viewport margins take off the outer width and
@@ -565,7 +862,21 @@ private:
   // suppresses them when a selection survived the click - a mutation would
   // then act on a cell other than the one the selection covers. Copying the
   // whole table is a read, so it stays reachable in that case.
-  QMenu *buildTableMenu(QMenu *p_parent, bool p_offerMutations);
+  //
+  // @p_slot is the GRID slot the pointer resolved to, which is not derivable
+  // from the caret: QTextTableCell::column() reports the ORIGIN column for
+  // every covered slot, so it cannot distinguish which half of a colspan was
+  // clicked. Merge is offered separately from @p_offerMutations, because the
+  // suppression fires precisely when a selection survived the click - which is
+  // exactly when a merge is possible.
+  QMenu *buildTableMenu(QMenu *p_parent, bool p_offerMutations, const QPoint &p_slot);
+
+  // The grid slot (x = column, y = row) under @p_viewportPos, or (-1, -1).
+  //
+  // Resolved GEOMETRICALLY inside a spanning cell: the pointer's x is compared
+  // against a row in which the candidate column is one slot wide. When every
+  // row spans it there is nothing to distinguish, and the origin is returned.
+  QPoint gridSlotAt(const QPoint &p_viewportPos) const;
 
   // Put the caret in @p_row/@p_column, clamped to the table's current bounds,
   // and re-establish both frame invariants. Called after every mutation: Qt

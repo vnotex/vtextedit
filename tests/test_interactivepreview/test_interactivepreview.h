@@ -208,6 +208,9 @@ private slots:
   void testReplacementRejectedOnElementCountMismatch();
   void testReplacementAcceptedAfterUnrelatedEdit();
   void testReplacementPreservesBlockquotePrefix();
+
+  // The (original syntax -> candidate syntax) transition matrix.
+  void testTableSyntaxTransitionMatrix();
   void testTableEditCommitsCanonicalMarkdown();
   void testEnterInTheLastCellGrowsTheSource();
   void testAColumnInsertGrowsTheSource();

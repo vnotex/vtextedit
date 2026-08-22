@@ -35,6 +35,33 @@ enum class PreviewPlacement {
 // Column alignment of a Markdown table, as declared by the delimiter row.
 enum class PreviewTableAlignment { None, Left, Center, Right };
 
+// How a table is spelled in the source.
+//
+// A table becomes Html either because it was authored as a top-level
+// `<table>` block, or because a merged cell forced the conversion: GFM pipe
+// syntax cannot express `colspan`/`rowspan`. The conversion is one-way
+// (decision D-e) -- once HTML, a table stays HTML even after every merge is
+// split.
+enum class PreviewTableSyntax { Markdown, Html };
+
+// One cell of a table's logical grid.
+//
+// The grid is ALWAYS rectangular and ALWAYS tiles exactly, which is what makes
+// it a safe basis for the sheet's structural operations. It is deliberately a
+// SEPARATE view from TablePreview::cells(), which stays ragged and keeps its
+// existing contract; see the class comment there.
+struct VTEXTEDIT_EXPORT PreviewTableSlot {
+  // Grid coordinates of the cell owning this slot. A slot whose origin equals
+  // its own coordinates is an ORIGIN; any other slot is COVERED by a merged
+  // cell above or to the left of it.
+  int m_originRow = 0;
+  int m_originColumn = 0;
+
+  // Span of the OWNING cell, repeated on every slot it covers. Always >= 1.
+  int m_rowSpan = 1;
+  int m_colSpan = 1;
+};
+
 // One resolved character format run within a cell's raw Markdown, in
 // cell-local UTF-16 coordinates. Runs may overlap and must be applied in
 // order: that reproduces the editor's own sequential highlighting behavior.
@@ -174,6 +201,61 @@ public:
 
   // Block container prefix of the delimiter row's source line.
   const QString &delimiterPrefix() const;
+
+  // --- The logical grid. ---
+  //
+  // Two views of one table, deliberately distinct. cells(), columnCount(),
+  // rowPrefixes() and delimiterPrefix() above keep their exact historical
+  // meaning and raggedness, so existing callers and exact-matrix tests are
+  // untouched. The accessors below are the always-rectangular grid the sheet
+  // and both serializers work on.
+  //
+  // For a MARKDOWN table every slot is a 1x1 origin and gridColumnCount() is
+  // the NORMALIZED widest row -- which may exceed the declared columnCount(),
+  // keeping the declared-vs-actual width check meaningful.
+  //
+  // For an HTML table cells() is the grid projected row-major, with the
+  // origin's text at its origin slot and an EMPTY string at every covered slot.
+
+  PreviewTableSyntax syntax() const;
+
+  // Decision D-j: whether the cells' text is Markdown source rather than
+  // literal HTML. Per table, never per cell.
+  bool isMarkdownBacked() const;
+
+  // Whether row 0 is a header row. Always true for a Markdown table.
+  bool hasHeaderRow() const;
+
+  int gridRowCount() const;
+
+  int gridColumnCount() const;
+
+  // Whether slot (@p_row, @p_column) owns its content rather than being
+  // covered by a merged cell.
+  bool isOrigin(int p_row, int p_column) const;
+
+  // Span of the cell OWNING slot (@p_row, @p_column); 1 outside the grid.
+  int rowSpan(int p_row, int p_column) const;
+  int colSpan(int p_row, int p_column) const;
+
+  // Grid coordinates of the cell owning slot (@p_row, @p_column).
+  int originRow(int p_row, int p_column) const;
+  int originColumn(int p_row, int p_column) const;
+
+  // --- Verbatim source tags (HTML syntax only; empty otherwise). ---
+  //
+  // Kept so a write-back can rewrite `colspan`, `rowspan` and `align`
+  // ATTRIBUTE-LOCALLY and never regenerate a tag it did not author, which
+  // would silently destroy `class`, `style`, `data-*` and anything else a user
+  // wrote (AGENTS.md D9, decision D-g).
+
+  const QString &openTag() const;
+
+  // The `<tr …>` tag of grid row @p_row.
+  QString rowTag(int p_row) const;
+
+  // The `<td …>` / `<th …>` tag of the cell owning slot (@p_row, @p_column).
+  QString cellTag(int p_row, int p_column) const;
 
 private:
   friend class PreviewBuilder;

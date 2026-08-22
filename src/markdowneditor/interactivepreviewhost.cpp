@@ -2163,8 +2163,12 @@ void InteractivePreviewHost::finishReplacement(PreviewWidgetContext *p_context,
 // snapshot it replaces, row for row. TablePreview::rowPrefixes() holds the
 // header prefix followed by one prefix per body row; the delimiter row's
 // prefix is stored separately.
-static bool tablePrefixesMatch(const QSharedPointer<const TablePreview> &p_original,
-                               const md::TableElement &p_candidate) {
+//
+// MARKDOWN -> MARKDOWN only: it requires at least two rows and reads row 1 as
+// the delimiter row, which is a pipe-table shape no HTML table has. The four
+// syntax transitions are dispatched by tableTransitionAccepted() below.
+static bool markdownTablePrefixesMatch(const QSharedPointer<const TablePreview> &p_original,
+                                       const md::TableElement &p_candidate) {
   const auto &rowPrefixes = p_original->rowPrefixes();
   if (rowPrefixes.isEmpty() || p_candidate.m_rows.size() < 2) {
     return false;
@@ -2189,6 +2193,79 @@ static bool tablePrefixesMatch(const QSharedPointer<const TablePreview> &p_origi
   }
 
   return true;
+}
+
+// Whether every container prefix of a snapshot is empty, i.e. the table sits at
+// the top level.
+static bool allPrefixesEmpty(const QSharedPointer<const TablePreview> &p_original) {
+  if (!p_original->delimiterPrefix().isEmpty()) {
+    return false;
+  }
+  for (const auto &prefix : p_original->rowPrefixes()) {
+    if (!prefix.isEmpty()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// The (original syntax -> candidate syntax) transition matrix.
+//
+// A write-back may change a table's SYNTAX without changing its element type,
+// so the prefix check cannot be a single pipe-table-shaped function any more.
+// Each case is deliberately explicit:
+//
+// - Markdown -> Markdown: the historical delimiter/prefix logic, verbatim.
+//
+// - HTML -> HTML: decision D-a says an HTML table previews only at the top
+//   level with no container prefix, so both sides must carry none and there is
+//   nothing else to compare. This case must accept a ONE-ROW table, which the
+//   Markdown check rejects outright.
+//
+// - Markdown -> HTML: the first-merge conversion (D-h). Accepted iff every row
+//   prefix AND the delimiter prefix of the original are empty -- exactly what
+//   D-l guarantees is reachable, since merge is disabled on a prefixed
+//   Markdown table. Without this case the conversion that phases 2 and 3
+//   depend on could never be accepted.
+//
+// - HTML -> Markdown: rejected, defensively. Under sticky-HTML D-e there is no
+//   in-editor route back to pipe syntax, so a candidate that parsed as one is
+//   evidence that the serializer emitted something unintended.
+static bool tableTransitionAccepted(const QSharedPointer<const TablePreview> &p_original,
+                                    const md::TableElement &p_candidate) {
+  const bool originalHtml = p_original->syntax() == PreviewTableSyntax::Html;
+  const bool candidateHtml = p_candidate.m_syntax == md::TableElement::Syntax::Html;
+
+  if (!originalHtml && !candidateHtml) {
+    return markdownTablePrefixesMatch(p_original, p_candidate);
+  }
+
+  if (originalHtml && candidateHtml) {
+    if (!allPrefixesEmpty(p_original)) {
+      return false;
+    }
+    for (const auto &row : p_candidate.m_rows) {
+      if (!row.m_prefix.isEmpty()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  if (!originalHtml && candidateHtml) {
+    if (!allPrefixesEmpty(p_original)) {
+      return false;
+    }
+    for (const auto &row : p_candidate.m_rows) {
+      if (!row.m_prefix.isEmpty()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // HTML -> Markdown.
+  return false;
 }
 
 // Build the snapshot which describes @p_text once it sits at [@p_startPos,
@@ -2457,7 +2534,7 @@ bool InteractivePreviewHost::validateReplacement(const QSharedPointer<const Prev
                                             : nullptr;
 
     if (!candidate ||
-        !tablePrefixesMatch(p_preview.staticCast<const TablePreview>(), *candidate)) {
+        !tableTransitionAccepted(p_preview.staticCast<const TablePreview>(), *candidate)) {
       *p_status = PreviewReplacementResult::ElementCountMismatch;
       *p_diagnostic = QStringLiteral("replacement changes the table's block container prefixes");
       return false;

@@ -80,6 +80,22 @@ private slots:
   void testWordDeleteShortcutsStayInsideOneCell();
   void testPastedTextIsSanitized();
   void testPastedRichTextIsFlattened();
+
+  // Merge and split, and the HTML write-back they force.
+  void testHtmlSnapshotBuildsSpanningGrid();
+  void testMergeJoinsTextAndConvertsToHtml();
+  void testMergeRefusals();
+  void testMergeContainmentRefusal();
+  void testSplitCellRestoresTheGrid();
+  void testHtmlSerializerKeepsCellsSingleLine();
+  void testHtmlOnlyTableWritesBackVerbatim();
+  void testMergeMenuEntriesAndAlignmentGating();
+  void testLiveRectangleSurvivesCopyAndGatesMutations();
+  void testBulkMutatorsAreRefused();
+  void testMergedGridRowColumnOpsKeepTags();
+  void testMalformedPayloadTableStaysWritable();
+  void testAlignmentIsRefusedOnASpannedColumn();
+
   void testAPurelySeparatorPayloadIsRefused();
   void testDroppedTextGoesThroughTheSameValidator();
   void testCommittedImeSeparatorsAreSanitized();

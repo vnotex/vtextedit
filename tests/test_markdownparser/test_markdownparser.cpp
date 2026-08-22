@@ -2,6 +2,7 @@
 
 #include <QApplication>
 #include <QDir>
+#include <QDirIterator>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QHash>
@@ -14,6 +15,7 @@
 #include <algorithm>
 
 #include <vtextedit/htmlimgscanner.h>
+#include <vtextedit/htmltablescanner.h>
 #include <vtextedit/markdowneditorconfig.h>
 #include <vtextedit/markdownhighlighter.h>
 #include <vtextedit/markdownutils.h>
@@ -27,7 +29,13 @@
 #include "markdownparser.h"
 
 using namespace tests;
+using vte::escapePayload;
+using vte::HtmlTable;
 using vte::MarkdownLink;
+using vte::RawTextState;
+using vte::rewriteHtmlTagAttr;
+using vte::scanHtmlTables;
+using vte::unescapePayload;
 using vte::MarkdownUtils;
 
 // Highlight type ordinals (matching pmh_element_type / MarkdownSyntaxStyle values
@@ -2222,4 +2230,461 @@ void TestMarkdownParser::testGenerateImageTag() {
   QVERIFY(!tags.first().hasUnknownAttrs());
 }
 
+
+// ---------------------------------------------------------------------------
+// The HTML `<table>` scanner (decisions D-a, D-b, D-i, D-j, D-n).
+// ---------------------------------------------------------------------------
+
+namespace {
+QString htmlTableSource(const QString &p_body) {
+  return QStringLiteral("<table>\n") + p_body + QStringLiteral("\n</table>");
+}
+} // namespace
+
+void TestMarkdownParser::testHtmlTableScannerBasic() {
+  const QString source =
+      QStringLiteral("<table>\n<tr><th>a</th><th>b</th></tr>\n<tr><td>c</td><td>d</td></tr>\n"
+                     "</table>");
+  const auto tables = scanHtmlTables(source, 0, nullptr);
+  QCOMPARE(tables.size(), 1);
+
+  const auto &table = tables.first();
+  QCOMPARE(table.m_rowCount, 2);
+  QCOMPARE(table.m_columnCount, 2);
+  QVERIFY(table.m_hasHeaderRow);
+  QVERIFY(!table.m_anyPayloadPresent);
+  QVERIFY(!table.m_anyPayloadMalformed);
+  QCOMPARE(table.m_tableStart, 0);
+  QCOMPARE(table.m_tableEnd, source.size());
+  QCOMPARE(source.mid(table.m_openTagStart, table.m_openTagEnd - table.m_openTagStart),
+           QStringLiteral("<table>"));
+
+  // Every slot is its own origin in an unmerged table.
+  for (int r = 0; r < 2; ++r) {
+    for (int c = 0; c < 2; ++c) {
+      QCOMPARE(table.originAt(r, c), QPoint(c, r));
+    }
+  }
+  QCOMPARE(table.cellAt(0, 0)->m_inner, QStringLiteral("a"));
+  QCOMPARE(table.cellAt(1, 1)->m_inner, QStringLiteral("d"));
+  QVERIFY(table.cellAt(0, 0)->m_header);
+  QVERIFY(!table.cellAt(1, 0)->m_header);
+
+  // An all-`td` table has no header row, and a one-row table is legal.
+  const auto plain = scanHtmlTables(QStringLiteral("<table><tr><td>x</td></tr></table>"), 0,
+                                    nullptr);
+  QCOMPARE(plain.size(), 1);
+  QVERIFY(!plain.first().m_hasHeaderRow);
+  QCOMPARE(plain.first().m_rowCount, 1);
+  QCOMPARE(plain.first().m_columnCount, 1);
+}
+
+void TestMarkdownParser::testHtmlTableScannerSpans() {
+  // A colspan and a rowspan which together tile a 2x2 rectangle exactly.
+  const QString colspan =
+      htmlTableSource(QStringLiteral("<tr><td colspan=\"2\">wide</td></tr>\n"
+                                     "<tr><td>a</td><td>b</td></tr>"));
+  const auto wide = scanHtmlTables(colspan, 0, nullptr);
+  QCOMPARE(wide.size(), 1);
+  QCOMPARE(wide.first().m_columnCount, 2);
+  QCOMPARE(wide.first().originAt(0, 0), QPoint(0, 0));
+  QCOMPARE(wide.first().originAt(0, 1), QPoint(0, 0));
+  QCOMPARE(wide.first().cellAt(0, 1)->m_colSpan, 2);
+
+  const QString rowspan =
+      htmlTableSource(QStringLiteral("<tr><td rowspan=\"2\">tall</td><td>a</td></tr>\n"
+                                     "<tr><td>b</td></tr>"));
+  const auto tall = scanHtmlTables(rowspan, 0, nullptr);
+  QCOMPARE(tall.size(), 1);
+  QCOMPARE(tall.first().m_rowCount, 2);
+  QCOMPARE(tall.first().m_columnCount, 2);
+  // The second row's only cell is pushed right by the rowspan above it.
+  QCOMPARE(tall.first().originAt(1, 0), QPoint(0, 0));
+  QCOMPARE(tall.first().originAt(1, 1), QPoint(1, 1));
+
+  // Alignment is per column, and only the cells which declare one are read.
+  const QString aligned =
+      htmlTableSource(QStringLiteral("<tr><td align=\"right\">a</td><td>b</td></tr>"));
+  const auto align = scanHtmlTables(aligned, 0, nullptr);
+  QCOMPARE(align.size(), 1);
+  QCOMPARE(align.first().m_alignments.value(0), QStringLiteral("right"));
+  QVERIFY(align.first().m_alignments.value(1).isEmpty());
+}
+
+void TestMarkdownParser::testHtmlTableScannerRefusals() {
+  // Everything decision D-i excludes is dropped WHOLE: the block then renders
+  // as plain source, exactly as before this feature existed.
+  const QStringList refused = {
+      // Structural elements outside the subset.
+      QStringLiteral("<table><caption>c</caption><tr><td>a</td></tr></table>"),
+      QStringLiteral("<table><thead><tr><td>a</td></tr></thead></table>"),
+      QStringLiteral("<table><tbody><tr><td>a</td></tr></tbody></table>"),
+      QStringLiteral("<table><colgroup><col></colgroup><tr><td>a</td></tr></table>"),
+      // A nested table refuses BOTH, so a refusal never degrades into
+      // capturing the inner one.
+      QStringLiteral("<table><tr><td><table><tr><td>x</td></tr></table></td></tr></table>"),
+      // Mixed `th`/`td` in one row, and a `th` row below row 0.
+      QStringLiteral("<table><tr><th>a</th><td>b</td></tr></table>"),
+      QStringLiteral("<table><tr><td>a</td></tr><tr><th>b</th></tr></table>"),
+      // A cell's inner source crossing a line.
+      QStringLiteral("<table><tr><td>a\nb</td></tr></table>"),
+      // Conflicting alignments in one column.
+      QStringLiteral("<table><tr><td align=\"left\">a</td></tr>"
+                     "<tr><td align=\"right\">b</td></tr></table>"),
+      // Spans which do not tile the rectangle: a gap, and an overflow.
+      QStringLiteral("<table><tr><td colspan=\"2\">a</td></tr><tr><td>b</td></tr></table>"),
+      QStringLiteral("<table><tr><td rowspan=\"3\">a</td></tr><tr><td>b</td></tr></table>"),
+      // Unbalanced tags, and text directly inside the table.
+      QStringLiteral("<table><tr><td>a</td></tr>"),
+      QStringLiteral("<table>text<tr><td>a</td></tr></table>"),
+      // A non-positive span.
+      QStringLiteral("<table><tr><td colspan=\"0\">a</td></tr></table>"),
+  };
+
+  for (const auto &source : refused) {
+    const auto tables = scanHtmlTables(source, 0, nullptr);
+    QVERIFY2(tables.isEmpty(), qPrintable(source));
+  }
+
+  // A table inside a raw-text element is text, not markup.
+  RawTextState state;
+  const auto suppressed = scanHtmlTables(
+      QStringLiteral("<script><table><tr><td>a</td></tr></table></script>"), 0, &state);
+  QVERIFY(suppressed.isEmpty());
+}
+
+void TestMarkdownParser::testHtmlTableScannerPayloads() {
+  // A single valid payload makes the whole table Markdown-backed (D-j), and a
+  // comment-less cell in it is read as Markdown source too.
+  const QString mixed =
+      QStringLiteral("<table><tr><td><!--vte-md:a--><p>a</p></td><td>plain</td></tr></table>");
+  const auto backed = scanHtmlTables(mixed, 0, nullptr);
+  QCOMPARE(backed.size(), 1);
+  QVERIFY(backed.first().m_anyPayloadPresent);
+  QVERIFY(!backed.first().m_anyPayloadMalformed);
+  QCOMPARE(backed.first().cellAt(0, 0)->m_payload, QStringLiteral("a"));
+  QVERIFY(!backed.first().cellAt(0, 1)->m_hasPayload);
+
+  // Decision D-n: ONE malformed payload poisons the whole table, however many
+  // valid ones sit beside it.
+  const QString poisoned =
+      QStringLiteral("<table><tr><td><!--vte-md:ok--></td><td><!--vte-md:bad\\--></td></tr>"
+                     "</table>");
+  const auto poison = scanHtmlTables(poisoned, 0, nullptr);
+  QCOMPARE(poison.size(), 1);
+  QVERIFY(poison.first().m_anyPayloadMalformed);
+}
+
+void TestMarkdownParser::testHtmlTablePayloadCodec() {
+  const QStringList payloads = {
+      QStringLiteral("plain"),          QStringLiteral("a-b"),
+      QStringLiteral("a--b"),           QStringLiteral("a\\b"),
+      QStringLiteral("\\"),             QStringLiteral("-"),
+      QStringLiteral("--\x3e"),         QStringLiteral("**bold** - `x`"),
+      QString(),
+  };
+
+  for (const auto &payload : payloads) {
+    const QString encoded = escapePayload(payload);
+    // `--` is unrepresentable in the output, so `-->` can never terminate the
+    // comment early.
+    QVERIFY2(!encoded.contains(QStringLiteral("--")), qPrintable(payload));
+    QString decoded;
+    QVERIFY2(unescapePayload(encoded, decoded), qPrintable(payload));
+    QCOMPARE(decoded, payload);
+  }
+
+  // Malformed input is a hard failure, never a best-effort decode.
+  QString out;
+  QVERIFY(!unescapePayload(QStringLiteral("a\\"), out));
+  QVERIFY(!unescapePayload(QStringLiteral("a\\x"), out));
+  QVERIFY(!unescapePayload(QStringLiteral("a-b"), out));
+}
+
+void TestMarkdownParser::testHtmlTableAttrRewrite() {
+  // Attribute-LOCAL: everything the author wrote survives.
+  const QString tag = QStringLiteral("<td class=\"x\" colspan=\"2\" style=\"a:b\">");
+  QCOMPARE(rewriteHtmlTagAttr(tag, QStringLiteral("colspan"), QStringLiteral("3")),
+           QStringLiteral("<td class=\"x\" colspan=\"3\" style=\"a:b\">"));
+  QCOMPARE(rewriteHtmlTagAttr(tag, QStringLiteral("colspan"), QString()),
+           QStringLiteral("<td class=\"x\" style=\"a:b\">"));
+  QCOMPARE(rewriteHtmlTagAttr(tag, QStringLiteral("align"), QStringLiteral("right")),
+           QStringLiteral("<td class=\"x\" colspan=\"2\" style=\"a:b\" align=\"right\">"));
+
+  // The WHOLE attribute is replaced, never just its value: an unquoted one
+  // would otherwise split in two.
+  QCOMPARE(rewriteHtmlTagAttr(QStringLiteral("<td colspan=2>"), QStringLiteral("colspan"),
+                              QStringLiteral("4")),
+           QStringLiteral("<td colspan=\"4\">"));
+
+  // Absent and null is a no-op, and a value is escaped.
+  QCOMPARE(rewriteHtmlTagAttr(QStringLiteral("<td>"), QStringLiteral("rowspan"), QString()),
+           QStringLiteral("<td>"));
+  QCOMPARE(rewriteHtmlTagAttr(QStringLiteral("<td>"), QStringLiteral("align"),
+                              QStringLiteral("a\"b")),
+           QStringLiteral("<td align=\"a&quot;b\">"));
+}
+
+void TestMarkdownParser::testWalkerHtmlTables() {
+  const QString source =
+      QStringLiteral("<table>\n<tr><th>a</th><th>b</th></tr>\n"
+                     "<tr><td colspan=\"2\">wide</td></tr>\n</table>\n");
+  const auto walk = vte::md::walkAndConvert(source.toUtf8(), source.count(QLatin1Char('\n')) + 1);
+  QCOMPARE(walk.tableElements.size(), 1);
+
+  const auto &table = walk.tableElements.first();
+  QCOMPARE(table.m_syntax, vte::md::TableElement::Syntax::Html);
+  QVERIFY(!table.m_markdownBacked);
+  QVERIFY(table.m_hasHeaderRow);
+  // m_startBlock stays Markdown-only: an HTML table has no one-source-line-per
+  // -row correspondence to slice highlights out of.
+  QCOMPARE(table.m_startBlock, -1);
+  QCOMPARE(table.m_rowCount, 2);
+  QCOMPARE(table.m_columnCount, 2);
+  QCOMPARE(table.m_rows.size(), 2);
+  QCOMPARE(table.m_rows[0].m_type, vte::md::TableRowType::Header);
+  QCOMPARE(table.m_rows[1].m_type, vte::md::TableRowType::Data);
+  QCOMPARE(table.m_rows[1].m_cells.size(), 1);
+  QCOMPARE(table.m_rows[1].m_colSpans.value(0), 2);
+  QCOMPARE(table.m_rows[1].m_cellTags.value(0), QStringLiteral("<td colspan=\"2\">"));
+  QCOMPARE(table.m_openTag, QStringLiteral("<table>"));
+  // No delimiter row is ever emitted for the HTML syntax.
+  for (const auto &row : table.m_rows) {
+    QVERIFY(row.m_type != vte::md::TableRowType::Delimiter);
+    QVERIFY(row.m_prefix.isEmpty());
+  }
+
+  // A Markdown-backed table takes its cells' text from the payloads.
+  const QString backed =
+      QStringLiteral("<table>\n<tr><td><!--vte-md:**b**--><p><strong>b</strong></p></td></tr>\n"
+                     "</table>\n");
+  const auto backedWalk =
+      vte::md::walkAndConvert(backed.toUtf8(), backed.count(QLatin1Char('\n')) + 1);
+  QCOMPARE(backedWalk.tableElements.size(), 1);
+  QVERIFY(backedWalk.tableElements.first().m_markdownBacked);
+  QCOMPARE(backedWalk.tableElements.first().m_rows.value(0).m_cells.value(0),
+           QStringLiteral("**b**"));
+}
+
+void TestMarkdownParser::testWalkerHtmlTableContainers() {
+  // Decision D-a: only a WHOLE top-level HTML block previews. A table under a
+  // container prefix, or nested inside another element, renders as source.
+  const QStringList refused = {
+      QStringLiteral("> <table><tr><td>a</td></tr></table>\n"),
+      QStringLiteral("- <table><tr><td>a</td></tr></table>\n"),
+      QStringLiteral("<div><table><tr><td>a</td></tr></table></div>\n"),
+      QStringLiteral("<div>\n<table><tr><td>a</td></tr></table>\n</div>\n"),
+  };
+
+  for (const auto &source : refused) {
+    const auto walk = vte::md::walkAndConvert(source.toUtf8(), source.count(QLatin1Char('\n')) + 1);
+    QVERIFY2(walk.tableElements.isEmpty(), qPrintable(source));
+  }
+
+  // A pipe table keeps every one of its own fields, and its 1x1 grid.
+  const QString pipe = QStringLiteral("| a | b |\n| --- | --- |\n| c | d |\n");
+  const auto walk = vte::md::walkAndConvert(pipe.toUtf8(), 4);
+  QCOMPARE(walk.tableElements.size(), 1);
+  QCOMPARE(walk.tableElements.first().m_syntax, vte::md::TableElement::Syntax::Markdown);
+  QCOMPARE(walk.tableElements.first().m_rowCount, 2);
+  QCOMPARE(walk.tableElements.first().m_columnCount, 2);
+  QVERIFY(walk.tableElements.first().m_startBlock >= 0);
+}
+
+
+void TestMarkdownParser::testSingleTableScannerGate() {
+  // The drift gate. AGENTS.md allows exactly ONE place in the tree to
+  // pattern-match `<table` in note source; a second one is how the snapshot and
+  // the live paths silently disagree about what a table is. A scanner over
+  // RENDERED or CLIPBOARD HTML is a different problem and is exempted with a
+  // line-local `// html-table-allow:` hatch.
+  const QDir root(QString::fromLatin1(SRC_TREE_DIR));
+  QVERIFY2(root.exists(), qPrintable(root.absolutePath()));
+
+  const QString allowed = QDir(root.absoluteFilePath(QStringLiteral("utils")))
+                              .absoluteFilePath(QStringLiteral("htmltablescanner.cpp"));
+  const QString allowedHeader =
+      QDir(root.absoluteFilePath(QStringLiteral("include/vtextedit")))
+          .absoluteFilePath(QStringLiteral("htmltablescanner.h"));
+
+  QStringList offenders;
+  QDirIterator it(root.absolutePath(), QStringList{QStringLiteral("*.cpp"), QStringLiteral("*.h")},
+                  QDir::Files, QDirIterator::Subdirectories);
+  while (it.hasNext()) {
+    const QString path = QDir::cleanPath(it.next());
+    if (path == QDir::cleanPath(allowed) || path == QDir::cleanPath(allowedHeader)) {
+      continue;
+    }
+
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+      continue;
+    }
+
+    int lineNumber = 0;
+    while (!file.atEnd()) {
+      const QString line = QString::fromUtf8(file.readLine());
+      ++lineNumber;
+      if (!line.contains(QStringLiteral("\"<table")) ||
+          line.contains(QStringLiteral("html-table-allow:"))) {
+        continue;
+      }
+      offenders.append(QStringLiteral("%1:%2").arg(path).arg(lineNumber));
+    }
+  }
+
+  QVERIFY2(offenders.isEmpty(), qPrintable(offenders.join(QLatin1Char('\n'))));
+}
+
+
+void TestMarkdownParser::testScannerRawTextStatesAgree() {
+  // The invariant extractHtmlNode() asserts: the `<img>` and `<table>` scanners
+  // walk the SAME slice with independent copies of RawTextState and must leave
+  // it in the same place. A divergence of one character can leave one of them
+  // inside a `<script>` and the other outside it, which would unmask an `<img>`
+  // or a `<table>` spelled in a JS string.
+  const QStringList slices = {
+      QStringLiteral("<script>"),
+      QStringLiteral("<script>var t = \"<table><tr><td>x</td></tr></table>\";"),
+      QStringLiteral("</script>"),
+      // A malformed / multiline `<img`, which is where the two lexers used to
+      // part company: one resumed after the name, the other skipped past the
+      // newline and swallowed the `<script>` opener.
+      QStringLiteral("<img\n<script>"),
+      QStringLiteral("<img src=\n<script>"),
+      QStringLiteral("<img src=\"a.png\"><script>"),
+      QStringLiteral("<a href=\"<script>\">x</a>"),
+      QStringLiteral("<table><tr><td><script></td></tr></table>"),
+      QStringLiteral("<table><tr><td>a</td></tr></table>"),
+      QStringLiteral("<table><caption>c</caption><tr><td>a</td></tr></table>"),
+      QStringLiteral("<!-- <script> --><table><tr><td>a</td></tr></table>"),
+      QStringLiteral("<textarea><table>"),
+      QStringLiteral("plain text with a bare < and a stray >"),
+  };
+
+  // Threaded across the whole list too, so a slice which begins inside a
+  // raw-text element carried in from an earlier one is covered as well.
+  RawTextState imageCarried;
+  RawTextState tableCarried;
+  for (const auto &slice : slices) {
+    RawTextState imageState = imageCarried;
+    RawTextState tableState = tableCarried;
+    vte::scanHtmlImgTags(slice, 0, &imageState);
+    scanHtmlTables(slice, 0, &tableState);
+    QVERIFY2(imageState.m_element == tableState.m_element, qPrintable(slice));
+
+    imageCarried = imageState;
+    tableCarried = tableState;
+  }
+}
+
+void TestMarkdownParser::testHtmlTableClosingTagsAreSingleLine() {
+  // Decision D-i applies to EVERY tag, not just opening ones: a closing tag
+  // whose '>' is on the next line is outside the canonical subset.
+  const QStringList refused = {
+      QStringLiteral("<table><tr><td>a</td\n></tr></table>"),
+      QStringLiteral("<table><tr><td>a</td></tr\n></table>"),
+      QStringLiteral("<table><tr><td>a</td></tr></table\n>"),
+  };
+
+  for (const auto &source : refused) {
+    QVERIFY2(scanHtmlTables(source, 0, nullptr).isEmpty(), qPrintable(source));
+  }
+}
+
+void TestMarkdownParser::testHtmlTableDuplicateAttrRewrite() {
+  // First-wins is what the readers do, so rewriting only the FIRST occurrence
+  // would leave a later duplicate to become effective - a table whose
+  // serialized geometry silently differs from the live one.
+  QCOMPARE(rewriteHtmlTagAttr(QStringLiteral("<td colspan=\"2\" colspan=\"3\">"),
+                              QStringLiteral("colspan"), QString()),
+           QStringLiteral("<td>"));
+  QCOMPARE(rewriteHtmlTagAttr(QStringLiteral("<td colspan=\"2\" class=\"k\" colspan=\"3\">"),
+                              QStringLiteral("colspan"), QStringLiteral("4")),
+           QStringLiteral("<td colspan=\"4\" class=\"k\">"));
+}
+
+void TestMarkdownParser::testHtmlTableHostileSpans() {
+  // A span is a positive int, so `colspan="2147483647"` is well formed. Bounds
+  // checked as `col + span > limit` would OVERFLOW, pass, and then drive a loop
+  // over billions of slots - a hang and an unbounded allocation from note
+  // source alone. Every one of these must be refused promptly.
+  const QStringList hostile = {
+      QStringLiteral("<table><tr><td>a</td><td colspan=\"2147483647\">b</td></tr></table>"),
+      QStringLiteral("<table><tr><td colspan=\"2147483647\">a</td></tr></table>"),
+      QStringLiteral("<table><tr><td>a</td></tr>"
+                     "<tr><td rowspan=\"2147483647\">b</td></tr></table>"),
+      QStringLiteral("<table><tr><td colspan=\"99999\">a</td></tr></table>"),
+      QStringLiteral("<table><tr><td rowspan=\"-1\">a</td></tr></table>"),
+      QStringLiteral("<table><tr><td colspan=\"nonsense\">a</td></tr></table>"),
+  };
+
+  QElapsedTimer timer;
+  timer.start();
+  for (const auto &source : hostile) {
+    QVERIFY2(scanHtmlTables(source, 0, nullptr).isEmpty(), qPrintable(source));
+  }
+  // Refused by arithmetic, not by exhaustion: a bound that overflowed would
+  // take minutes here rather than microseconds.
+  QVERIFY2(timer.elapsed() < 2000, qPrintable(QString::number(timer.elapsed())));
+}
+
+void TestMarkdownParser::testHtmlTableCellTagBalance() {
+  // "All tags are explicitly balanced" is a CONDITION of the canonical subset,
+  // not a hope. An unclosed `<b>` written back verbatim would swallow the rest
+  // of the table in any renderer that read it.
+  const QStringList refused = {
+      QStringLiteral("<table><tr><td><b>x</td></tr></table>"),
+      QStringLiteral("<table><tr><td><b>x</i></td></tr></table>"),
+      QStringLiteral("<table><tr><td></b></td></tr></table>"),
+      QStringLiteral("<table><tr><td><b><i>x</b></i></td></tr></table>"),
+      // A raw-text element inside a cell: its contents are text, so a `</td>`
+      // spelled in one is not a close, and the cell's extent would depend on
+      // which scanner was asking.
+      QStringLiteral("<table><tr><td><script>var x = 1;</script></td></tr></table>"),
+  };
+
+  for (const auto &source : refused) {
+    QVERIFY2(scanHtmlTables(source, 0, nullptr).isEmpty(), qPrintable(source));
+  }
+
+  // Balanced nesting, void elements and self-closing tags are all fine.
+  const QStringList accepted = {
+      QStringLiteral("<table><tr><td><b>x</b></td></tr></table>"),
+      QStringLiteral("<table><tr><td><b><i>x</i></b></td></tr></table>"),
+      QStringLiteral("<table><tr><td>a<br>b</td></tr></table>"),
+      QStringLiteral("<table><tr><td>a<br />b</td></tr></table>"),
+      QStringLiteral("<table><tr><td><img src=\"a.png\"></td></tr></table>"),
+      QStringLiteral("<table><tr><td><span class=\"k\">x</span></td></tr></table>"),
+  };
+
+  for (const auto &source : accepted) {
+    QCOMPARE(scanHtmlTables(source, 0, nullptr).size(), 1);
+  }
+}
+
+void TestMarkdownParser::testWalkerHtmlTableUnderListItem() {
+  // Decision D-a is STRUCTURAL, not textual. A list item's continuation indent
+  // is whitespace, so a source-prefix check alone would accept an HTML block
+  // living under CMARK_NODE_ITEM - and a multi-line HTML replacement would then
+  // escape the list, since only its first line inherits the retained prefix.
+  const QStringList refused = {
+      QStringLiteral("- item\n\n  <table>\n  <tr><td>a</td></tr>\n  </table>\n"),
+      QStringLiteral("1. item\n\n   <table>\n   <tr><td>a</td></tr>\n   </table>\n"),
+      QStringLiteral("- outer\n  - inner\n\n    <table>\n    <tr><td>a</td></tr>\n"
+                     "    </table>\n"),
+      QStringLiteral("> quoted\n>\n> <table>\n> <tr><td>a</td></tr>\n> </table>\n"),
+  };
+
+  for (const auto &source : refused) {
+    const auto walk = vte::md::walkAndConvert(source.toUtf8(),
+                                              source.count(QLatin1Char('\n')) + 1);
+    QVERIFY2(walk.tableElements.isEmpty(), qPrintable(source));
+  }
+
+  // The same table at the top level is a first-class element.
+  const QString top = QStringLiteral("<table>\n<tr><td>a</td></tr>\n</table>\n");
+  const auto walk = vte::md::walkAndConvert(top.toUtf8(), top.count(QLatin1Char('\n')) + 1);
+  QCOMPARE(walk.tableElements.size(), 1);
+}
 QTEST_MAIN(tests::TestMarkdownParser)

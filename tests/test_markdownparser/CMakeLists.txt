@@ -24,6 +24,7 @@ target_include_directories(test_markdownparser PRIVATE
 )
 target_compile_definitions(test_markdownparser PRIVATE
     FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
+    SRC_TREE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../src"
 )
 target_link_libraries(test_markdownparser PRIVATE
     Qt::Core

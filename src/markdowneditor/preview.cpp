@@ -79,6 +79,35 @@ public:
   QVector<QString> m_rowPrefixes;
 
   QString m_delimiterPrefix;
+
+  PreviewTableSyntax m_syntax = PreviewTableSyntax::Markdown;
+
+  bool m_markdownBacked = true;
+
+  bool m_hasHeaderRow = true;
+
+  int m_gridRowCount = 0;
+
+  int m_gridColumnCount = 0;
+
+  QVector<PreviewTableSlot> m_slots;
+
+  QString m_openTag;
+
+  QVector<QString> m_rowTags;
+
+  QVector<QVector<QString>> m_cellTags;
+
+  const PreviewTableSlot *slot(int p_row, int p_column) const {
+    if (p_row < 0 || p_row >= m_gridRowCount || p_column < 0 || p_column >= m_gridColumnCount) {
+      return nullptr;
+    }
+    const int idx = p_row * m_gridColumnCount + p_column;
+    if (idx >= m_slots.size()) {
+      return nullptr;
+    }
+    return &m_slots.at(idx);
+  }
 };
 
 class PreviewReplacementResultData : public QSharedData {
@@ -163,6 +192,54 @@ const QVector<PreviewTableAlignment> &TablePreview::alignments() const {
 const QVector<QString> &TablePreview::rowPrefixes() const { return m_tableData->m_rowPrefixes; }
 
 const QString &TablePreview::delimiterPrefix() const { return m_tableData->m_delimiterPrefix; }
+
+PreviewTableSyntax TablePreview::syntax() const { return m_tableData->m_syntax; }
+
+bool TablePreview::isMarkdownBacked() const { return m_tableData->m_markdownBacked; }
+
+bool TablePreview::hasHeaderRow() const { return m_tableData->m_hasHeaderRow; }
+
+int TablePreview::gridRowCount() const { return m_tableData->m_gridRowCount; }
+
+int TablePreview::gridColumnCount() const { return m_tableData->m_gridColumnCount; }
+
+bool TablePreview::isOrigin(int p_row, int p_column) const {
+  const auto *slot = m_tableData->slot(p_row, p_column);
+  return slot && slot->m_originRow == p_row && slot->m_originColumn == p_column;
+}
+
+int TablePreview::rowSpan(int p_row, int p_column) const {
+  const auto *slot = m_tableData->slot(p_row, p_column);
+  return slot ? slot->m_rowSpan : 1;
+}
+
+int TablePreview::colSpan(int p_row, int p_column) const {
+  const auto *slot = m_tableData->slot(p_row, p_column);
+  return slot ? slot->m_colSpan : 1;
+}
+
+int TablePreview::originRow(int p_row, int p_column) const {
+  const auto *slot = m_tableData->slot(p_row, p_column);
+  return slot ? slot->m_originRow : p_row;
+}
+
+int TablePreview::originColumn(int p_row, int p_column) const {
+  const auto *slot = m_tableData->slot(p_row, p_column);
+  return slot ? slot->m_originColumn : p_column;
+}
+
+const QString &TablePreview::openTag() const { return m_tableData->m_openTag; }
+
+QString TablePreview::rowTag(int p_row) const { return m_tableData->m_rowTags.value(p_row); }
+
+QString TablePreview::cellTag(int p_row, int p_column) const {
+  const auto *slot = m_tableData->slot(p_row, p_column);
+  if (!slot) {
+    return QString();
+  }
+  return m_tableData->m_cellTags.value(slot->m_originRow).value(slot->m_originColumn);
+}
+
 
 PreviewReplacementResult::PreviewReplacementResult()
     : m_data(new PreviewReplacementResultData()) {}
@@ -292,13 +369,56 @@ PreviewBuilder::createTable(quint64 p_revision, int p_startPos, int p_endPos,
                             const QVector<QString> &p_rowPrefixes,
                             const QString &p_delimiterPrefix,
                             const QVector<QVector<QVector<PreviewFormatRun>>> &p_cellFormats) {
+  TableSnapshotData data;
+  data.m_columnCount = p_columnCount;
+  data.m_cells = p_cells;
+  data.m_cellFormats = p_cellFormats;
+  data.m_alignments = p_alignments;
+  data.m_rowPrefixes = p_rowPrefixes;
+  data.m_delimiterPrefix = p_delimiterPrefix;
+
+  // A pipe table's grid is the degenerate case: every slot a 1x1 origin, over
+  // the NORMALIZED widest row -- which is what TablePreviewDocument::setTable()
+  // already builds, and which a ragged body row may push past the declared
+  // width.
+  data.m_syntax = PreviewTableSyntax::Markdown;
+  data.m_markdownBacked = true;
+  data.m_hasHeaderRow = true;
+  data.m_gridRowCount = p_cells.size();
+  for (const auto &row : p_cells) {
+    data.m_gridColumnCount = qMax(data.m_gridColumnCount, row.size());
+  }
+  data.m_slots.resize(data.m_gridRowCount * data.m_gridColumnCount);
+  for (int r = 0; r < data.m_gridRowCount; ++r) {
+    for (int c = 0; c < data.m_gridColumnCount; ++c) {
+      auto &slot = data.m_slots[r * data.m_gridColumnCount + c];
+      slot.m_originRow = r;
+      slot.m_originColumn = c;
+    }
+  }
+
+  return createTable(p_revision, p_startPos, p_endPos, p_source, data);
+}
+
+QSharedPointer<const Preview> PreviewBuilder::createTable(quint64 p_revision, int p_startPos,
+                                                          int p_endPos, const QString &p_source,
+                                                          const TableSnapshotData &p_data) {
   auto tableData = new TablePreviewPrivate();
-  tableData->m_columnCount = p_columnCount;
-  tableData->m_cells = p_cells;
-  tableData->m_cellFormats = p_cellFormats;
-  tableData->m_alignments = p_alignments;
-  tableData->m_rowPrefixes = p_rowPrefixes;
-  tableData->m_delimiterPrefix = p_delimiterPrefix;
+  tableData->m_columnCount = p_data.m_columnCount;
+  tableData->m_cells = p_data.m_cells;
+  tableData->m_cellFormats = p_data.m_cellFormats;
+  tableData->m_alignments = p_data.m_alignments;
+  tableData->m_rowPrefixes = p_data.m_rowPrefixes;
+  tableData->m_delimiterPrefix = p_data.m_delimiterPrefix;
+  tableData->m_syntax = p_data.m_syntax;
+  tableData->m_markdownBacked = p_data.m_markdownBacked;
+  tableData->m_hasHeaderRow = p_data.m_hasHeaderRow;
+  tableData->m_gridRowCount = p_data.m_gridRowCount;
+  tableData->m_gridColumnCount = p_data.m_gridColumnCount;
+  tableData->m_slots = p_data.m_slots;
+  tableData->m_openTag = p_data.m_openTag;
+  tableData->m_rowTags = p_data.m_rowTags;
+  tableData->m_cellTags = p_data.m_cellTags;
 
   auto d = newCommon(PreviewElementType::Table, PreviewPlacement::BlockAfterSource, p_revision,
                      p_startPos, p_endPos, p_source);

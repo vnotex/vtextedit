@@ -1,219 +1,13 @@
 #include <vtextedit/htmlimgscanner.h>
 
-#include <QByteArray>
-
-// cmark's HTML entity decoder, and the complete named-reference table it comes
-// with. Reaching into cmark's internal headers is already established practice
-// in this library (markdowneditor/cmarkadapter.cpp includes <node.h>), and the
-// alternative -- a hand-maintained subset -- is what this replaced: a
-// destination the renderer decodes but the scanner does not is not merely a
-// cosmetic difference. It feeds obsolete-image cleanup, which DELETES assets.
-extern "C" {
-#include <buffer.h>
-#include <cmark.h>
-#include <houdini.h>
-}
+#include "htmltagparse.h"
 
 using namespace vte;
+using namespace vte::htmltag;
 
 namespace {
 
-bool isNameStart(QChar p_ch) { return p_ch.isLetter(); }
-
-bool isNameChar(QChar p_ch) {
-  // Deliberately permissive: anything that is not whitespace and not one of the
-  // attribute-syntax delimiters is part of the name. `data-*` and `xml:lang`
-  // must survive so hasUnknownAttrs() can see them.
-  return !p_ch.isSpace() && p_ch != QLatin1Char('=') && p_ch != QLatin1Char('>') &&
-         p_ch != QLatin1Char('/') && p_ch != QLatin1Char('<') && p_ch != QLatin1Char('"') &&
-         p_ch != QLatin1Char('\'');
-}
-
-bool isRawTextElement(const QString &p_lowerName) {
-  return p_lowerName == QStringLiteral("script") || p_lowerName == QStringLiteral("style") ||
-         p_lowerName == QStringLiteral("textarea") || p_lowerName == QStringLiteral("title");
-}
-
-// Decode HTML character references, with the SAME table and the same rules the
-// renderer uses: cmark's houdini decoder plus its complete HTML5 named-
-// reference table.
-//
-// This must not be a hand-maintained subset. A destination the renderer decodes
-// but the scanner does not is not a cosmetic difference: `clearObsoleteImages()`
-// compares decoded destinations before DELETING assets, so a scanner that
-// reported `a&copy;.png` where the browser renders `a(c).png` would classify a
-// still-referenced file as obsolete and delete it.
-QString decodeEntities(const QString &p_text) {
-  if (!p_text.contains(QLatin1Char('&'))) {
-    return p_text;
-  }
-
-  const QByteArray utf8 = p_text.toUtf8();
-  cmark_strbuf buf = CMARK_BUF_INIT(cmark_get_default_mem_allocator());
-  houdini_unescape_html_f(&buf, reinterpret_cast<const uint8_t *>(utf8.constData()), utf8.size());
-  const QString decoded = QString::fromUtf8(reinterpret_cast<const char *>(buf.ptr), buf.size);
-  cmark_strbuf_free(&buf);
-  return decoded;
-}
-// Skip past the end of a tag that started at p_idx (which points at '<'),
-// honoring quoted attribute values so a '>' inside `alt="a>b"` does not
-// terminate it. Returns the index just past the closing '>', or -1 when the tag
-// is never closed.
-int skipTag(const QString &p_text, int p_idx) {
-  int i = p_idx + 1;
-  while (i < p_text.size()) {
-    const QChar ch = p_text.at(i);
-    if (ch == QLatin1Char('"') || ch == QLatin1Char('\'')) {
-      const int close = p_text.indexOf(ch, i + 1);
-      if (close < 0) {
-        return -1;
-      }
-      i = close + 1;
-      continue;
-    }
-    if (ch == QLatin1Char('>')) {
-      return i + 1;
-    }
-    ++i;
-  }
-  return -1;
-}
-
-// Find the closing tag of the raw-text element p_element, starting at p_idx.
-// Returns the index just past its '>', or -1 when it is not closed in p_text.
-int findRawTextClose(const QString &p_text, int p_idx, const QString &p_element) {
-  int i = p_idx;
-  while (i < p_text.size()) {
-    const int lt = p_text.indexOf(QLatin1Char('<'), i);
-    if (lt < 0 || lt + 1 >= p_text.size()) {
-      return -1;
-    }
-    if (p_text.at(lt + 1) != QLatin1Char('/')) {
-      i = lt + 1;
-      continue;
-    }
-
-    int j = lt + 2;
-    QString name;
-    while (j < p_text.size() && isNameChar(p_text.at(j))) {
-      name.append(p_text.at(j));
-      ++j;
-    }
-    if (name.toLower() != p_element) {
-      i = lt + 1;
-      continue;
-    }
-
-    while (j < p_text.size() && p_text.at(j).isSpace()) {
-      ++j;
-    }
-    if (j < p_text.size() && p_text.at(j) == QLatin1Char('>')) {
-      return j + 1;
-    }
-    i = lt + 1;
-  }
-  return -1;
-}
-
-// Parse the attributes of a tag whose name ends at p_idx, refusing to read past
-// p_limit (the start of the next newline, per the one-line rule). On success
-// returns true, fills p_attrs and sets p_tagEnd to the index just past the
-// closing '>'.
-bool parseAttrs(const QString &p_text, int p_idx, int p_limit, int p_baseOffset,
-                QVector<HtmlImgAttr> &p_attrs, int &p_tagEnd) {
-  int i = p_idx;
-  while (i < p_limit) {
-    while (i < p_limit && p_text.at(i).isSpace()) {
-      ++i;
-    }
-    if (i >= p_limit) {
-      return false;
-    }
-
-    const QChar ch = p_text.at(i);
-    if (ch == QLatin1Char('>')) {
-      p_tagEnd = i + 1;
-      return true;
-    }
-    if (ch == QLatin1Char('/')) {
-      // `/` is only meaningful immediately before `>`; anywhere else it is a
-      // stray character in a malformed tag and is simply skipped.
-      ++i;
-      continue;
-    }
-    if (!isNameChar(ch)) {
-      // '<', a quote outside a value: malformed. Refuse the whole tag rather
-      // than guess at where the attribute list resumes.
-      return false;
-    }
-
-    HtmlImgAttr attr;
-    const int nameStart = i;
-    while (i < p_limit && isNameChar(p_text.at(i))) {
-      ++i;
-    }
-    attr.m_name = p_text.mid(nameStart, i - nameStart).toLower();
-    attr.m_attrStart = p_baseOffset + nameStart;
-
-    int afterName = i;
-    while (i < p_limit && p_text.at(i).isSpace()) {
-      ++i;
-    }
-    if (i >= p_limit || p_text.at(i) != QLatin1Char('=')) {
-      // Bare attribute: no value, so the value span collapses onto the end.
-      attr.m_attrEnd = p_baseOffset + afterName;
-      attr.m_valueStart = attr.m_attrEnd;
-      attr.m_valueEnd = attr.m_attrEnd;
-      p_attrs.push_back(attr);
-      i = afterName;
-      continue;
-    }
-
-    ++i; // past '='
-    while (i < p_limit && p_text.at(i).isSpace()) {
-      ++i;
-    }
-    if (i >= p_limit) {
-      return false;
-    }
-
-    const QChar quote = p_text.at(i);
-    if (quote == QLatin1Char('"') || quote == QLatin1Char('\'')) {
-      const int valueStart = i + 1;
-      const int close = p_text.indexOf(quote, valueStart);
-      if (close < 0 || close >= p_limit) {
-        // An unterminated quote inside the line: not a tag we can trust.
-        return false;
-      }
-      attr.m_quote = quote;
-      attr.m_valueStart = p_baseOffset + valueStart;
-      attr.m_valueEnd = p_baseOffset + close;
-      attr.m_value = decodeEntities(p_text.mid(valueStart, close - valueStart));
-      attr.m_attrEnd = p_baseOffset + close + 1;
-      i = close + 1;
-    } else {
-      const int valueStart = i;
-      while (i < p_limit && !p_text.at(i).isSpace() && p_text.at(i) != QLatin1Char('>')) {
-        ++i;
-      }
-      if (i == valueStart) {
-        return false;
-      }
-      attr.m_valueStart = p_baseOffset + valueStart;
-      attr.m_valueEnd = p_baseOffset + i;
-      attr.m_value = decodeEntities(p_text.mid(valueStart, i - valueStart));
-      attr.m_attrEnd = p_baseOffset + i;
-    }
-
-    p_attrs.push_back(attr);
-  }
-
-  // Hit the newline (or the end of the slice) without a '>': a multiline tag,
-  // which is out of scope by design.
-  return false;
-}
-
-int positiveIntAttr(const HtmlImgAttr *p_attr) {
+int positiveIntAttr(const HtmlAttr *p_attr) {
   if (!p_attr) {
     return 0;
   }
@@ -227,15 +21,7 @@ int positiveIntAttr(const HtmlImgAttr *p_attr) {
 
 } // namespace
 
-const HtmlImgAttr *HtmlImgTag::attr(const char *p_name) const {
-  const QLatin1String name(p_name);
-  for (const auto &attr : m_attrs) {
-    if (attr.m_name == name) {
-      return &attr;
-    }
-  }
-  return nullptr;
-}
+const HtmlAttr *HtmlImgTag::attr(const char *p_name) const { return findAttr(m_attrs, p_name); }
 
 bool HtmlImgTag::hasUnknownAttrs() const {
   for (const auto &attr : m_attrs) {
@@ -352,26 +138,24 @@ QVector<HtmlImgTag> vte::scanHtmlImgTags(const QString &p_text, int p_baseOffset
       continue;
     }
 
-    // An `<img …>`: it must open and close within this line.
-    int limit = p_text.indexOf(QLatin1Char('\n'), nameEnd);
-    if (limit < 0) {
-      limit = p_text.size();
-    }
-
+    // An `<img …>`: it must open and close within this line. The advance rule
+    // lives in resumeAfterImgTag(), because the `<table>` scanner has to
+    // reproduce it exactly for the shared raw-text state to agree.
     HtmlImgTag tag;
-    int tagEnd = -1;
-    if (!parseAttrs(p_text, nameEnd, limit, p_baseOffset, tag.m_attrs, tagEnd)) {
+    bool parsed = false;
+    const int next = resumeAfterImgTag(p_text, nameEnd, p_baseOffset, tag.m_attrs, parsed);
+    if (!parsed) {
       // Multiline or malformed: ignored, exactly as before this feature existed.
-      i = nameEnd;
+      i = next;
       continue;
     }
 
     tag.m_tagStart = p_baseOffset + lt;
-    tag.m_tagEnd = p_baseOffset + tagEnd;
+    tag.m_tagEnd = p_baseOffset + next;
     if (!tag.src().isEmpty()) {
       tags.push_back(tag);
     }
-    i = tagEnd;
+    i = next;
   }
 
   return tags;

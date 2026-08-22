@@ -9,9 +9,10 @@
 
 namespace vte {
 
-// One attribute of an HTML `<img>` tag, with byte-exact source spans so a
-// caller may rewrite it in place.
-struct VTEXTEDIT_EXPORT HtmlImgAttr {
+// One attribute of an HTML tag, with byte-exact source spans so a caller may
+// rewrite it in place. Shared by the `<img>` and `<table>` scanners; the
+// spelling of "what an attribute is" exists exactly once.
+struct VTEXTEDIT_EXPORT HtmlAttr {
   // Lower-cased attribute name.
   QString m_name;
 
@@ -44,6 +45,9 @@ struct VTEXTEDIT_EXPORT HtmlImgAttr {
   // MarkdownViewWindow2::clearObsoleteImages() disarms itself on one.
   QString m_value;
 };
+
+// Historical spelling, kept so existing `<img>` callers are untouched.
+using HtmlImgAttr = HtmlAttr;
 
 // One `<img …>` tag found in a slice of source text.
 //

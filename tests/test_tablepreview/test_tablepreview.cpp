@@ -24,6 +24,7 @@
 #include <QTextTableCell>
 #include <QTimer>
 
+#include <vtextedit/htmltablescanner.h>
 #include <vtextedit/preview.h>
 
 #include "hlformatresolver.h"
@@ -3774,4 +3775,701 @@ void TestTablePreview::testDarkPaletteReachesTheSheet() {
   QCOMPARE(table->format().toTableFormat().borderBrush().color(), QColor(200, 200, 200));
 }
 
+
+// ---------------------------------------------------------------------------
+// Merge, split, and the HTML write-back they force
+// ---------------------------------------------------------------------------
+
+namespace {
+// An HTML-syntax snapshot over an explicit logical grid.
+//
+// @p_spans carries (colSpan, rowSpan) at each ORIGIN and (0, 0) at a covered
+// slot, exactly as TableSnapshotData spells it.
+QSharedPointer<const TablePreview>
+makeHtmlSnapshot(const QVector<QVector<QString>> &p_cells, const QVector<QVector<QPoint>> &p_spans,
+                 bool p_hasHeaderRow, bool p_markdownBacked,
+                 const QVector<QVector<QString>> &p_cellTags = QVector<QVector<QString>>()) {
+  const int rows = p_cells.size();
+  const int columns = rows > 0 ? p_cells.first().size() : 0;
+
+  TableSnapshotData data;
+  data.m_syntax = PreviewTableSyntax::Html;
+  data.m_markdownBacked = p_markdownBacked;
+  data.m_hasHeaderRow = p_hasHeaderRow;
+  data.m_columnCount = columns;
+  data.m_cells = p_cells;
+  data.m_alignments = QVector<PreviewTableAlignment>(columns, PreviewTableAlignment::None);
+  data.m_rowPrefixes = QVector<QString>(rows);
+  data.m_gridRowCount = rows;
+  data.m_gridColumnCount = columns;
+  data.m_openTag = QStringLiteral("<table>");
+  data.m_rowTags = QVector<QString>(rows);
+  data.m_cellTags = p_cellTags.isEmpty() ? QVector<QVector<QString>>(rows, QVector<QString>(columns))
+                                         : p_cellTags;
+
+  data.m_slots.resize(rows * columns);
+  for (int r = 0; r < rows; ++r) {
+    for (int c = 0; c < columns; ++c) {
+      const QPoint span = p_spans.at(r).at(c);
+      if (span.x() <= 0 || span.y() <= 0) {
+        continue;
+      }
+      for (int dr = 0; dr < span.y(); ++dr) {
+        for (int dc = 0; dc < span.x(); ++dc) {
+          auto &slot = data.m_slots[(r + dr) * columns + c + dc];
+          slot.m_originRow = r;
+          slot.m_originColumn = c;
+          slot.m_rowSpan = span.y();
+          slot.m_colSpan = span.x();
+        }
+      }
+    }
+  }
+
+  return PreviewBuilder::createTable(1, 0, 10, QStringLiteral("source"), data)
+      .staticCast<const TablePreview>();
+}
+
+// Select the grid rectangle [p_top, p_left] .. [p_bottom, p_right] as a cell
+// rectangle, which is what QTextCursor calls a COMPLEX selection.
+QTextCursor selectCells(const TablePreviewDocument &p_document, int p_top, int p_left,
+                        int p_bottom, int p_right) {
+  QTextTable *table = p_document.table();
+  QTextCursor cursor = table->cellAt(p_top, p_left).firstCursorPosition();
+  cursor.setPosition(table->cellAt(p_bottom, p_right).lastCursorPosition().position(),
+                     QTextCursor::KeepAnchor);
+  return cursor;
+}
+} // namespace
+
+void TestTablePreview::testHtmlSnapshotBuildsSpanningGrid() {
+  // A 2x2 grid whose first row is one cell spanning both columns.
+  QVector<QVector<QString>> cells{{QStringLiteral("wide"), QString()},
+                                  {QStringLiteral("a"), QStringLiteral("b")}};
+  QVector<QVector<QPoint>> spans{{QPoint(2, 1), QPoint(0, 0)}, {QPoint(1, 1), QPoint(1, 1)}};
+
+  TablePreviewDocument document;
+  document.setTable(makeHtmlSnapshot(cells, spans, false, false));
+
+  QCOMPARE(document.rowCount(), 2);
+  QCOMPARE(document.columnCount(), 2);
+  QVERIFY(document.isOrigin(0, 0));
+  QVERIFY(!document.isOrigin(0, 1));
+  QCOMPARE(document.colSpanAt(0, 0), 2);
+  QCOMPARE(document.colSpanAt(0, 1), 2);
+  QVERIFY(document.hasMergedCells());
+  QVERIFY(document.isColumnSpanned(0));
+
+  // cells() projects the grid: the origin's text at its origin slot and an
+  // EMPTY string at every covered slot.
+  QCOMPARE(document.cells(), cells);
+
+  // An all-`td` table has no header row at all, so nothing is bolded.
+  QVERIFY(!document.hasHeaderRow());
+  QCOMPARE(document.document()->rootFrame()->childFrames().size(), 1);
+}
+
+void TestTablePreview::testMergeJoinsTextAndConvertsToHtml() {
+  QVector<QVector<QString>> cells;
+  cells.append({QStringLiteral("h1"), QStringLiteral("h2")});
+  cells.append({QStringLiteral("a"), QStringLiteral("b")});
+
+  TablePreviewDocument document;
+  document.setTable(makeTable(cells, {PreviewTableAlignment::None, PreviewTableAlignment::None}));
+  QCOMPARE(document.syntax(), PreviewTableSyntax::Markdown);
+
+  const QTextCursor selection = selectCells(document, 1, 0, 1, 1);
+  QVERIFY(document.canMergeCells(selection));
+  QVERIFY(document.mergeCells(selection));
+
+  // Decision D-k: the non-empty texts in grid order, joined with ONE space -
+  // never QTextTable::mergeCells()' own concatenation, which introduces
+  // paragraph breaks the serializer rejects.
+  QCOMPARE(document.cells().at(1).at(0), QStringLiteral("a b"));
+  QVERIFY(document.cells().at(1).at(1).isEmpty());
+  QCOMPARE(document.colSpanAt(1, 0), 2);
+
+  // Decision D-h / D-e: the first merge converts the table to HTML, and it
+  // stays HTML.
+  QCOMPARE(document.syntax(), PreviewTableSyntax::Html);
+  const QString source = document.toMarkdown();
+  QVERIFY2(source.startsWith(QStringLiteral("<table>")), qPrintable(source));
+  QVERIFY2(source.contains(QStringLiteral("colspan=\"2\"")), qPrintable(source));
+  // Every cell of the pipe table it came from is Markdown source, so the
+  // converted table is Markdown-backed and carries a payload per cell.
+  QVERIFY2(source.contains(QStringLiteral("<!--vte-md:a b-->")), qPrintable(source));
+
+  // And what it emits is inside the canonical subset the scanner accepts, which
+  // is what makes the commit recoverable at all.
+  const auto rescanned = vte::scanHtmlTables(source, 0, nullptr);
+  QCOMPARE(rescanned.size(), 1);
+  QCOMPARE(rescanned.first().m_rowCount, 2);
+  QCOMPARE(rescanned.first().m_columnCount, 2);
+  QVERIFY(rescanned.first().m_anyPayloadPresent);
+  QVERIFY(!rescanned.first().m_anyPayloadMalformed);
+
+  // Splitting every merge does NOT convert it back (D-e).
+  QVERIFY(document.splitCell(1, 0));
+  QVERIFY(!document.hasMergedCells());
+  QCOMPARE(document.syntax(), PreviewTableSyntax::Html);
+  QVERIFY(document.toMarkdown().startsWith(QStringLiteral("<table>")));
+}
+
+void TestTablePreview::testMergeRefusals() {
+  QVector<QVector<QString>> cells;
+  cells.append({QStringLiteral("h1"), QStringLiteral("h2")});
+  cells.append({QStringLiteral("a"), QStringLiteral("b")});
+
+  {
+    TablePreviewDocument document;
+    document.setTable(makeTable(cells, {PreviewTableAlignment::None,
+                                        PreviewTableAlignment::None}));
+
+    // A caret with no selection resolves to a 1x1 rectangle.
+    QVERIFY(!document.canMergeCells(document.table()->cellAt(0, 0).firstCursorPosition()));
+
+    // Across the header boundary: one cell cannot be both a header and a body
+    // cell.
+    QVERIFY(!document.canMergeCells(selectCells(document, 0, 0, 1, 0)));
+
+    // Nothing to split on an unmerged table.
+    QVERIFY(!document.canSplitCell(0, 0));
+  }
+
+  {
+    // Decision D-l: merge and split are disabled on a Markdown table carrying
+    // container prefixes, because the conversion could only emit source which
+    // no longer previews.
+    const QVector<QString> prefixes{QStringLiteral("> "), QStringLiteral("> ")};
+    auto preview = PreviewBuilder::createTable(
+        1, 0, 10, QStringLiteral("source"), 2, cells,
+        {PreviewTableAlignment::None, PreviewTableAlignment::None}, prefixes,
+        QStringLiteral("> "), QVector<QVector<QVector<PreviewFormatRun>>>());
+
+    TablePreviewDocument document;
+    document.setTable(preview.staticCast<const TablePreview>());
+    QVERIFY(!document.canMergeCells(selectCells(document, 1, 0, 1, 1)));
+  }
+}
+
+void TestTablePreview::testMergeContainmentRefusal() {
+  // An imported HTML table can already carry spans. A selection whose edge CUTS
+  // one is refused outright: QTextTable::mergeCells() silently refuses such a
+  // request, so clearing the texts first and then not merging would erase
+  // content and leave the metadata describing geometry that never changed.
+  QVector<QVector<QString>> cells{
+      {QStringLiteral("a"), QStringLiteral("wide"), QString()},
+      {QStringLiteral("d"), QStringLiteral("e"), QStringLiteral("f")}};
+  QVector<QVector<QPoint>> spans{{QPoint(1, 1), QPoint(2, 1), QPoint(0, 0)},
+                                 {QPoint(1, 1), QPoint(1, 1), QPoint(1, 1)}};
+
+  TablePreviewDocument document;
+  document.setTable(makeHtmlSnapshot(cells, spans, false, false));
+  QCOMPARE(document.colSpanAt(0, 1), 2);
+
+  // The rectangle (0,0)-(1,1) reaches only the LEFT half of the colspan in row
+  // 0, so its right edge cuts that cell in two.
+  const QTextCursor cutting = selectCells(document, 0, 0, 1, 1);
+  QVERIFY(!document.canMergeCells(cutting));
+  QVERIFY(!document.mergeCells(cutting));
+
+  // Nothing was touched.
+  QCOMPARE(document.cells(), cells);
+  QCOMPARE(document.colSpanAt(0, 1), 2);
+
+  // The whole box IS mergeable.
+  QVERIFY(document.canMergeCells(selectCells(document, 0, 0, 1, 2)));
+}
+
+
+void TestTablePreview::testSplitCellRestoresTheGrid() {
+  QVector<QVector<QString>> cells{{QStringLiteral("tall"), QStringLiteral("a")},
+                                  {QString(), QStringLiteral("b")}};
+  QVector<QVector<QPoint>> spans{{QPoint(1, 2), QPoint(1, 1)}, {QPoint(0, 0), QPoint(1, 1)}};
+
+  TablePreviewDocument document;
+  document.setTable(makeHtmlSnapshot(cells, spans, false, false));
+  QCOMPARE(document.rowSpanAt(0, 0), 2);
+  QVERIFY(document.canSplitCell(1, 0));
+
+  QVERIFY(document.splitCell(1, 0));
+  QCOMPARE(document.rowSpanAt(0, 0), 1);
+  QVERIFY(document.isOrigin(1, 0));
+  // The origin keeps its text; the newly exposed slot is empty.
+  QCOMPARE(document.cells().at(0).at(0), QStringLiteral("tall"));
+  QVERIFY(document.cells().at(1).at(0).isEmpty());
+  QVERIFY(!document.hasMergedCells());
+}
+
+void TestTablePreview::testHtmlSerializerKeepsCellsSingleLine() {
+  // cmark terminates every block with a newline, and one line of Markdown can
+  // render to MULTI-LINE HTML. A multi-line cell fails the scanner's one-line
+  // rule, and the table would then stop previewing altogether.
+  const QStringList payloads{QStringLiteral("plain"),  QStringLiteral("*em*"),
+                             QStringLiteral("# x"),    QStringLiteral("- x"),
+                             QStringLiteral("---"),    QStringLiteral("    indented"),
+                             QStringLiteral("a | b")};
+
+  for (const auto &payload : payloads) {
+    const QString rendered = TablePreviewHtmlSerializer::renderCellHtml(payload);
+    QVERIFY2(!rendered.contains(QLatin1Char('\n')), qPrintable(payload));
+    QVERIFY2(!rendered.contains(QLatin1Char('\r')), qPrintable(payload));
+  }
+
+  // Inside a `<pre>` a newline is meaningful, so it is encoded as `&#10;` --
+  // whitespace-collapsed like a newline outside one, preserved exactly like one
+  // inside. A literal space would silently rewrite the code's content.
+  const QString indented = TablePreviewHtmlSerializer::renderCellHtml(QStringLiteral("    x"));
+  QVERIFY2(indented.contains(QStringLiteral("<pre>")), qPrintable(indented));
+  QVERIFY2(indented.contains(QStringLiteral("&#10;")), qPrintable(indented));
+
+  // Ordinary prose is unwrapped from its single paragraph.
+  QCOMPARE(TablePreviewHtmlSerializer::renderCellHtml(QStringLiteral("*em*")),
+           QStringLiteral("<em>em</em>"));
+
+  // And a whole serialized table with such a payload still round trips through
+  // the scanner.
+  QVector<QVector<QString>> cells{{QStringLiteral("    x"), QStringLiteral("# h")}};
+  QVector<QVector<QPoint>> spans{{QPoint(1, 1), QPoint(1, 1)}};
+  TablePreviewDocument document;
+  document.setTable(makeHtmlSnapshot(cells, spans, false, true));
+
+  const QString source = document.toMarkdown();
+  QVERIFY(!source.isEmpty());
+  const auto rescanned = vte::scanHtmlTables(source, 0, nullptr);
+  QCOMPARE(rescanned.size(), 1);
+  QCOMPARE(rescanned.first().cellAt(0, 0)->m_payload, QStringLiteral("    x"));
+  QCOMPARE(rescanned.first().cellAt(0, 1)->m_payload, QStringLiteral("# h"));
+}
+
+void TestTablePreview::testHtmlOnlyTableWritesBackVerbatim() {
+  // Decision D-d: an HTML-only table's cells are literal text both ways, and no
+  // payload comment is EVER synthesized for one.
+  QVector<QVector<QString>> cells{{QStringLiteral("<b>x</b>"), QStringLiteral("plain")}};
+  QVector<QVector<QPoint>> spans{{QPoint(1, 1), QPoint(1, 1)}};
+  QVector<QVector<QString>> tags{
+      {QStringLiteral("<td class=\"k\" colspan=\"1\">"), QStringLiteral("<td>")}};
+
+  TablePreviewDocument document;
+  document.setTable(makeHtmlSnapshot(cells, spans, false, false, tags));
+
+  const QString source = document.toMarkdown();
+  QVERIFY2(!source.contains(QStringLiteral("vte-md")), qPrintable(source));
+  QVERIFY2(source.contains(QStringLiteral("<b>x</b>")), qPrintable(source));
+  // Decision D-g: the authored attributes survive, and only `colspan` is
+  // rewritten - here, dropped, because the span is 1.
+  QVERIFY2(source.contains(QStringLiteral("<td class=\"k\">")), qPrintable(source));
+}
+
+void TestTablePreview::testMergeMenuEntriesAndAlignmentGating() {
+  QScopedPointer<TablePreviewWidget> holder;
+  auto widget = buildEditableSheet(holder);
+  QVERIFY(widget);
+  auto sheet = sheetOf(*widget);
+  QVERIFY(sheet);
+
+  QTextTable *table = tableOf(sheet->document());
+  QVERIFY(table);
+
+  // With a caret and no selection Merge is offered but disabled, and Split too.
+  putCaretIn(sheet, 1, 0);
+  QScopedPointer<QMenu> menu(sheet->createContextMenu(QPoint(5, 5)));
+  QVERIFY(menu);
+  auto findAction = [](QMenu *p_menu, const QString &p_name) -> QAction * {
+    return p_menu->findChild<QAction *>(p_name, Qt::FindChildrenRecursively);
+  };
+  QAction *merge = findAction(menu.data(), QStringLiteral("MergeCells"));
+  QAction *split = findAction(menu.data(), QStringLiteral("SplitCell"));
+  QVERIFY(merge);
+  QVERIFY(split);
+  QVERIFY(!merge->isEnabled());
+  QVERIFY(!split->isEnabled());
+
+  // Alignment is available while nothing spans the column (decision D-m).
+  QAction *alignLeft = findAction(menu.data(), QStringLiteral("AlignmentLeft"));
+  QVERIFY(alignLeft);
+  QVERIFY(alignLeft->isEnabled());
+}
+
+void TestTablePreview::testLiveRectangleSurvivesCopyAndGatesMutations() {
+  QScopedPointer<TablePreviewWidget> holder;
+  auto widget = buildEditableSheet(holder);
+  QVERIFY(widget);
+  auto sheet = sheetOf(*widget);
+  QVERIFY(sheet);
+
+  QTextTable *table = tableOf(sheet->document());
+  QVERIFY(table);
+
+  // A LIVE cell rectangle, not a selectAll() the signal-driven clamp has
+  // already confined. This is the shape the old single clamp used to destroy
+  // and which decision D-f now keeps alive.
+  auto installRectangle = [&]() {
+    QTextCursor cursor = table->cellAt(1, 0).firstCursorPosition();
+    cursor.setPosition(table->cellAt(1, 2).lastCursorPosition().position(),
+                       QTextCursor::KeepAnchor);
+    sheet->setTextCursor(cursor);
+    QCoreApplication::processEvents();
+    return sheet->textCursor().hasComplexSelection();
+  };
+
+  QVERIFY(installRectangle());
+
+  // Copy must NOT collapse it: the copy actions and Merge are exactly what the
+  // rectangle is kept for.
+  QApplication::clipboard()->clear();
+  QKeyEvent copyEvent(QEvent::KeyPress, Qt::Key_C, Qt::ControlModifier);
+  QApplication::sendEvent(sheet, &copyEvent);
+  QCoreApplication::processEvents();
+  QVERIFY(sheet->textCursor().hasComplexSelection());
+  QVERIFY(tableOf(sheet->document()) != nullptr);
+  // And the rectangle really was what got copied.
+  QVERIFY(!QApplication::clipboard()->text().isEmpty());
+
+  // Every text-mutating path collapses it first, and the table survives each
+  // one. Removing a selection which crosses a frame boundary removes the FRAME,
+  // so "still intact" is the whole question.
+  const auto expectIntact = [&](const char *p_what) {
+    QCoreApplication::processEvents();
+    QVERIFY2(tableOf(sheet->document()) != nullptr, p_what);
+    QVERIFY2(tableOf(sheet->document()) != nullptr, p_what);
+    QVERIFY2(!sheet->textCursor().hasComplexSelection(), p_what);
+  };
+
+  QVERIFY(installRectangle());
+  QKeyEvent del(QEvent::KeyPress, Qt::Key_Delete, Qt::NoModifier);
+  QApplication::sendEvent(sheet, &del);
+  expectIntact("Delete");
+
+  QVERIFY(installRectangle());
+  QKeyEvent backspace(QEvent::KeyPress, Qt::Key_Backspace, Qt::NoModifier);
+  QApplication::sendEvent(sheet, &backspace);
+  expectIntact("Backspace");
+
+  QVERIFY(installRectangle());
+  QKeyEvent wordDelete(QEvent::KeyPress, Qt::Key_Delete, Qt::ControlModifier);
+  QApplication::sendEvent(sheet, &wordDelete);
+  expectIntact("Ctrl+Delete");
+
+  QVERIFY(installRectangle());
+  QKeyEvent wordBackspace(QEvent::KeyPress, Qt::Key_Backspace, Qt::ControlModifier);
+  QApplication::sendEvent(sheet, &wordBackspace);
+  expectIntact("Ctrl+Backspace");
+
+  // The standard context menu's Cut and Delete never reach keyPressEvent(), so
+  // they are triggered as the ACTIONS the user would click.
+  for (const auto &name : {QStringLiteral("edit-cut"), QStringLiteral("edit-delete")}) {
+    QVERIFY(installRectangle());
+    QScopedPointer<QMenu> standard(sheet->createContextMenu(QPoint(5, 5)));
+    QVERIFY(standard);
+    QAction *action = nullptr;
+    for (QAction *candidate : standard->actions()) {
+      if (candidate->objectName() == name) {
+        action = candidate;
+        break;
+      }
+    }
+    if (!action || !action->isEnabled()) {
+      // The standard menu suppresses an entry it cannot offer; nothing to test.
+      continue;
+    }
+    action->trigger();
+    expectIntact(qPrintable(name));
+  }
+
+  QVERIFY(installRectangle());
+  QKeyEvent typed(QEvent::KeyPress, Qt::Key_X, Qt::NoModifier, QStringLiteral("x"));
+  QApplication::sendEvent(sheet, &typed);
+  expectIntact("typing");
+
+  QVERIFY(installRectangle());
+  sheet->cut();
+  expectIntact("programmatic cut()");
+
+  QVERIFY(installRectangle());
+  {
+    auto data = new QMimeData();
+    data->setText(QStringLiteral("pasted"));
+    QApplication::clipboard()->setMimeData(data);
+  }
+  sheet->paste();
+  expectIntact("programmatic paste()");
+
+  QVERIFY(installRectangle());
+  {
+    QMimeData source;
+    source.setText(QStringLiteral("dropped"));
+    QDropEvent drop(QPointF(5, 5), Qt::MoveAction, &source, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(sheet->viewport(), &drop);
+  }
+  QCoreApplication::processEvents();
+  // A synthetic drop without a live drag is not necessarily delivered to
+  // dropEvent() at all, so only the invariant that matters is asserted: the
+  // frame survives whether or not the handler ran.
+  QVERIFY(tableOf(sheet->document()) != nullptr);
+
+  QVERIFY(installRectangle());
+  {
+    // A preedit-only input method event installs a composition, and installing
+    // one removes the current selection first.
+    QInputMethodEvent preedit(QStringLiteral("composing"),
+                              QList<QInputMethodEvent::Attribute>());
+    QApplication::sendEvent(sheet, &preedit);
+  }
+  expectIntact("preedit-only input method event");
+
+  QVERIFY(installRectangle());
+  {
+    // The press that arms an EXTERNAL move-drag. Nothing else on the sheet sees
+    // one: QWidgetTextControlPrivate::startDrag() removes the source selection
+    // after the drag returns, without passing through dropEvent(),
+    // insertFromMimeData() or keyPressEvent().
+    const QPoint inside = sheet->cursorRect(sheet->textCursor()).center();
+    QMouseEvent press(QEvent::MouseButtonPress, inside, sheet->viewport()->mapToGlobal(inside),
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(sheet->viewport(), &press);
+    QMouseEvent release(QEvent::MouseButtonRelease, inside,
+                        sheet->viewport()->mapToGlobal(inside), Qt::LeftButton, Qt::NoButton,
+                        Qt::NoModifier);
+    QApplication::sendEvent(sheet->viewport(), &release);
+  }
+  QCoreApplication::processEvents();
+  QVERIFY(tableOf(sheet->document()) != nullptr);
+  QVERIFY(!sheet->textCursor().hasComplexSelection());
+}
+
+void TestTablePreview::testBulkMutatorsAreRefused() {
+  // The inherited bulk mutators are NOT selection-mediated, so the collapse gate
+  // does not cover them at all: each would replace or empty the whole document
+  // and take the QTextTable with it. They are hidden and refused.
+  QScopedPointer<TablePreviewWidget> holder;
+  auto widget = buildEditableSheet(holder);
+  QVERIFY(widget);
+  auto sheet = sheetOf(*widget);
+  QVERIFY(sheet);
+
+  const QString before = tableOf(sheet->document()) ? sheet->document()->toPlainText() : QString();
+
+  // Reached the way an external caller would: through the public name on the
+  // sheet, which the private shadow hides. QMetaObject is the only route left,
+  // and it must not reach the base implementation either.
+  QMetaObject::invokeMethod(sheet, "clear", Qt::DirectConnection);
+  QMetaObject::invokeMethod(sheet, "setPlainText", Qt::DirectConnection,
+                            Q_ARG(QString, QStringLiteral("gone")));
+  QMetaObject::invokeMethod(sheet, "setHtml", Qt::DirectConnection,
+                            Q_ARG(QString, QStringLiteral("<p>gone</p>")));
+  QMetaObject::invokeMethod(sheet, "append", Qt::DirectConnection,
+                            Q_ARG(QString, QStringLiteral("gone")));
+  QMetaObject::invokeMethod(sheet, "insertPlainText", Qt::DirectConnection,
+                            Q_ARG(QString, QStringLiteral("gone")));
+  QMetaObject::invokeMethod(sheet, "insertHtml", Qt::DirectConnection,
+                            Q_ARG(QString, QStringLiteral("<b>gone</b>")));
+  QMetaObject::invokeMethod(sheet, "setText", Qt::DirectConnection,
+                            Q_ARG(QString, QStringLiteral("gone")));
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+  QMetaObject::invokeMethod(sheet, "setMarkdown", Qt::DirectConnection,
+                            Q_ARG(QString, QStringLiteral("# gone")));
+#endif
+  QCoreApplication::processEvents();
+
+  {
+    // An external setDocument() would leave TablePreviewDocument holding a
+    // QTextTable belonging to a document the sheet no longer renders - a
+    // dangling pointer no backstop can recover from.
+    QTextDocument stranger;
+    QMetaObject::invokeMethod(sheet, "setDocument", Qt::DirectConnection,
+                              Q_ARG(QTextDocument *, &stranger));
+    QCoreApplication::processEvents();
+    QVERIFY(sheet->document() != &stranger);
+  }
+
+  QVERIFY(tableOf(sheet->document()) != nullptr);
+  QCOMPARE(sheet->document()->toPlainText(), before);
+}
+
+void TestTablePreview::testMergedGridRowColumnOpsKeepTags() {
+  // Decision D-g: an origin whose span is CLIPPED by a row or column removal
+  // keeps its authored tag - including when the row or column holding its
+  // ORIGIN coordinates is the one removed, in which case Qt keeps the cell and
+  // moves its origin. A positional edit of the metadata would discard the only
+  // copy of the tag and silently destroy `class`, `style` and `data-*`.
+  QVector<QVector<QString>> cells{
+      {QStringLiteral("h"), QStringLiteral("i")},
+      {QStringLiteral("tall"), QStringLiteral("a")},
+      {QString(), QStringLiteral("b")}};
+  QVector<QVector<QPoint>> spans{{QPoint(1, 1), QPoint(1, 1)},
+                                 {QPoint(1, 2), QPoint(1, 1)},
+                                 {QPoint(0, 0), QPoint(1, 1)}};
+  QVector<QVector<QString>> tags{
+      {QStringLiteral("<td>"), QStringLiteral("<td>")},
+      {QStringLiteral("<td class=\"keep\" style=\"s\" data-x=\"1\" rowspan=\"2\">"),
+       QStringLiteral("<td>")},
+      {QString(), QStringLiteral("<td>")}};
+
+  TablePreviewDocument document;
+  document.setTable(makeHtmlSnapshot(cells, spans, false, false, tags));
+  QCOMPARE(document.rowSpanAt(1, 0), 2);
+
+  // Remove the row that holds the rowspan's OWN ORIGIN. Qt keeps the cell,
+  // clips the span to 1 and moves the origin down into the surviving row; a
+  // positional edit of the metadata would discard the only copy of the tag.
+  QVERIFY(document.removeRow(1));
+  QCOMPARE(document.rowCount(), 2);
+  const QString source = document.toMarkdown();
+  QVERIFY2(!source.isEmpty(), "the clipped table must still serialize");
+  QVERIFY2(source.contains(QStringLiteral("class=\"keep\"")), qPrintable(source));
+  QVERIFY2(source.contains(QStringLiteral("style=\"s\"")), qPrintable(source));
+  QVERIFY2(source.contains(QStringLiteral("data-x=\"1\"")), qPrintable(source));
+
+  // An inserted column's cells are generated, so they carry no verbatim tag -
+  // and the surviving authored one is still there.
+  QVERIFY(document.insertColumn(1));
+  const QString widened = document.toMarkdown();
+  QVERIFY2(!widened.isEmpty(), qPrintable(widened));
+  QVERIFY2(widened.contains(QStringLiteral("class=\"keep\"")), qPrintable(widened));
+
+  // And whatever it emitted is still inside the canonical subset.
+  QCOMPARE(vte::scanHtmlTables(widened, 0, nullptr).size(), 1);
+
+  // The same question for a COLSPAN whose origin column is the one removed.
+  {
+    QVector<QVector<QString>> wide{{QStringLiteral("span"), QString(), QStringLiteral("z")},
+                                   {QStringLiteral("p"), QStringLiteral("q"),
+                                    QStringLiteral("r")}};
+    QVector<QVector<QPoint>> wideSpans{{QPoint(2, 1), QPoint(0, 0), QPoint(1, 1)},
+                                       {QPoint(1, 1), QPoint(1, 1), QPoint(1, 1)}};
+    QVector<QVector<QString>> wideTags{
+        {QStringLiteral("<td class=\"wide\" colspan=\"2\">"), QString(), QStringLiteral("<td>")},
+        {QStringLiteral("<td>"), QStringLiteral("<td>"), QStringLiteral("<td>")}};
+
+    TablePreviewDocument spanned;
+    spanned.setTable(makeHtmlSnapshot(wide, wideSpans, false, false, wideTags));
+    QCOMPARE(spanned.colSpanAt(0, 0), 2);
+
+    QVERIFY(spanned.removeColumn(0));
+    const QString clipped = spanned.toMarkdown();
+    QVERIFY2(!clipped.isEmpty(), "the clipped table must still serialize");
+    QVERIFY2(clipped.contains(QStringLiteral("class=\"wide\"")), qPrintable(clipped));
+    QCOMPARE(vte::scanHtmlTables(clipped, 0, nullptr).size(), 1);
+  }
+}
+
+void TestTablePreview::testMalformedPayloadTableStaysWritable() {
+  // Decision D-n: one malformed payload makes the WHOLE table HTML-only, whose
+  // cells are then literal text both ways. That is a legitimate, editable
+  // state - so the serializer's self-check must classify its own output exactly
+  // as the walker would, and must not reject a malformed comment it is itself
+  // reproducing verbatim. Rejecting it would leave the table previewable but
+  // permanently unwritable.
+  QVector<QVector<QString>> cells{
+      {QStringLiteral("<!--vte-md:bad\\-->"), QStringLiteral("plain")}};
+  QVector<QVector<QPoint>> spans{{QPoint(1, 1), QPoint(1, 1)}};
+
+  TablePreviewDocument document;
+  document.setTable(makeHtmlSnapshot(cells, spans, false, false));
+
+  const QString source = document.toMarkdown();
+  QVERIFY2(!source.isEmpty(), "an HTML-only table with a malformed payload must still write back");
+  // Verbatim: no comment is ever synthesized for an HTML-only table, and the
+  // one already in the cell text is reproduced as spelled.
+  QVERIFY2(source.contains(QStringLiteral("<!--vte-md:bad\\-->")), qPrintable(source));
+
+  const auto rescanned = vte::scanHtmlTables(source, 0, nullptr);
+  QCOMPARE(rescanned.size(), 1);
+  QVERIFY(rescanned.first().m_anyPayloadMalformed);
+  QVERIFY(!rescanned.first().m_anyPayloadPresent);
+
+  // A table mixing a valid and a malformed payload is HTML-only too, and is
+  // equally writable.
+  QVector<QVector<QString>> mixed{
+      {QStringLiteral("<!--vte-md:ok-->"), QStringLiteral("<!--vte-md:bad\\-->")}};
+  TablePreviewDocument mixedDocument;
+  mixedDocument.setTable(makeHtmlSnapshot(mixed, spans, false, false));
+  QVERIFY(!mixedDocument.toMarkdown().isEmpty());
+}
+
+void TestTablePreview::testAlignmentIsRefusedOnASpannedColumn() {
+  // Decision D-m, at the MODEL level rather than only in the menu that disables
+  // the entry: a cell spanning the column carries ONE `align` attribute, so a
+  // per-column alignment is not representable. Accepting it would update the
+  // alignment vector, write no cell format (the slot is not an origin) and then
+  // serialize from the spanning origin's column - an edit that looks taken and
+  // is silently dropped.
+  QVector<QVector<QString>> cells{{QStringLiteral("wide"), QString()},
+                                  {QStringLiteral("a"), QStringLiteral("b")}};
+  QVector<QVector<QPoint>> spans{{QPoint(2, 1), QPoint(0, 0)}, {QPoint(1, 1), QPoint(1, 1)}};
+
+  TablePreviewDocument document;
+  document.setTable(makeHtmlSnapshot(cells, spans, false, false));
+  QVERIFY(document.isColumnSpanned(0));
+  QVERIFY(document.isColumnSpanned(1));
+
+  QVERIFY(!document.setColumnAlignment(0, PreviewTableAlignment::Right));
+  QVERIFY(!document.setColumnAlignment(1, PreviewTableAlignment::Right));
+  QCOMPARE(document.columnAlignment(0), PreviewTableAlignment::None);
+  QCOMPARE(document.columnAlignment(1), PreviewTableAlignment::None);
+
+  // Splitting the cell restores the control, and only then does the alignment
+  // reach the source.
+  QVERIFY(document.splitCell(0, 0));
+  QVERIFY(!document.isColumnSpanned(1));
+  QVERIFY(document.setColumnAlignment(1, PreviewTableAlignment::Right));
+  QCOMPARE(document.columnAlignment(1), PreviewTableAlignment::Right);
+  const QString source = document.toMarkdown();
+  QVERIFY2(source.contains(QStringLiteral("align=\"right\"")), qPrintable(source));
+
+  // And the menu agrees with the model on a merged table.
+  QScopedPointer<TablePreviewWidget> holder;
+  auto widget = buildEditableSheet(holder);
+  QVERIFY(widget);
+  auto sheet = sheetOf(*widget);
+  QVERIFY(sheet);
+
+  QTextTable *table = tableOf(sheet->document());
+  QVERIFY(table);
+  QTextCursor selection = table->cellAt(1, 0).firstCursorPosition();
+  selection.setPosition(table->cellAt(1, 1).lastCursorPosition().position(),
+                        QTextCursor::KeepAnchor);
+  sheet->setTextCursor(selection);
+  QCoreApplication::processEvents();
+  QVERIFY2(sheet->textCursor().hasComplexSelection(), "the rectangle must survive the clamp");
+
+  // Strictly INSIDE the rectangle. createContextMenu() retargets the caret for
+  // a click that lands OUTSIDE the selection, which would collapse it before
+  // Merge could ever see it - and (5, 5) is in the header row.
+  const QPoint insideSelection =
+      sheet->cursorRect(table->cellAt(1, 1).firstCursorPosition()).center();
+  QScopedPointer<QMenu> menu(sheet->createContextMenu(insideSelection));
+  QVERIFY(menu);
+  QVERIFY2(sheet->textCursor().hasComplexSelection(),
+           "a click inside the rectangle must not retarget the caret");
+  QAction *merge = menu->findChild<QAction *>(QStringLiteral("MergeCells"),
+                                              Qt::FindChildrenRecursively);
+  QVERIFY(merge);
+  QVERIFY2(merge->isEnabled(), "a live rectangle must offer Merge");
+  merge->trigger();
+  QCoreApplication::processEvents();
+
+  QVERIFY(tableOf(sheet->document()) != nullptr);
+  QCOMPARE(tableOf(sheet->document())->cellAt(1, 0).columnSpan(), 2);
+
+  // Every alignment entry is now disabled for the spanned column.
+  putCaretIn(sheet, 1, 0);
+  const QPoint inMergedCell =
+      sheet->cursorRect(tableOf(sheet->document())->cellAt(1, 0).firstCursorPosition()).center();
+  QScopedPointer<QMenu> merged(sheet->createContextMenu(inMergedCell));
+  QVERIFY(merged);
+  for (const auto &name : {QStringLiteral("AlignmentDefault"), QStringLiteral("AlignmentLeft"),
+                           QStringLiteral("AlignmentCenter"),
+                           QStringLiteral("AlignmentRight")}) {
+    QAction *action = merged->findChild<QAction *>(name, Qt::FindChildrenRecursively);
+    QVERIFY2(action, qPrintable(name));
+    QVERIFY2(!action->isEnabled(), qPrintable(name));
+  }
+
+  QAction *split = merged->findChild<QAction *>(QStringLiteral("SplitCell"),
+                                                Qt::FindChildrenRecursively);
+  QVERIFY(split);
+  QVERIFY2(split->isEnabled(), "a merged cell must offer Split");
+}
 QTEST_MAIN(tests::TestTablePreview)
