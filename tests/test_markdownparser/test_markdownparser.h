@@ -107,6 +107,7 @@ private slots:
   void testHtmlTableHostileSpans();
   void testHtmlTableCellTagBalance();
   void testWalkerHtmlTableUnderListItem();
+  void testWalkerHtmlTableFoldingRegion();
 
   // Extra selection invalidation
   void testCursorLineInvalidationExpanded_data();

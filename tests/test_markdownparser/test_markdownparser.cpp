@@ -2687,4 +2687,84 @@ void TestMarkdownParser::testWalkerHtmlTableUnderListItem() {
   const auto walk = vte::md::walkAndConvert(top.toUtf8(), top.count(QLatin1Char('\n')) + 1);
   QCOMPARE(walk.tableElements.size(), 1);
 }
+
+void TestMarkdownParser::testWalkerHtmlTableFoldingRegion() {
+  using vte::md::FoldingRegionType;
+
+  auto tableRegions = [](const QString &p_source) {
+    const auto walk = vte::md::walkAndConvert(p_source.toUtf8(),
+                                              p_source.count(QLatin1Char('\n')) + 1);
+    QVector<QPair<int, int>> regions;
+    for (const auto &region : walk.foldingRegions) {
+      if (region.m_type == FoldingRegionType::Table) {
+        regions.append(qMakePair(region.m_startBlock, region.m_endBlock));
+      }
+    }
+    return regions;
+  };
+
+  // A `<table>` opens a CommonMark type-6 HTML block, which is terminated only
+  // by a BLANK LINE or by EOF - never by `</table>`, and whose reported
+  // end_line is not even that (resolveHtmlNodeSpan() deliberately extends past
+  // it). A fold derived from the block node would therefore swallow everything
+  // after the table, so the region must come from the scanner's exact span.
+  {
+    const QString source = QStringLiteral("<table>\n<tr><td>a</td></tr>\n</table>\n\n"
+                                          "trailing paragraph\n\n# heading\n\nmore\n");
+    const auto regions = tableRegions(source);
+    QCOMPARE(regions.size(), 1);
+    QCOMPARE(regions.first(), qMakePair(0, 2));
+  }
+
+  // At the very end of the document, where the block runs to EOF: the extent is
+  // identical.
+  {
+    const auto regions = tableRegions(QStringLiteral("<table>\n<tr><td>a</td></tr>\n</table>"));
+    QCOMPARE(regions.size(), 1);
+    QCOMPARE(regions.first(), qMakePair(0, 2));
+  }
+
+  // Not at the start of the document either.
+  {
+    const QString source =
+        QStringLiteral("# heading\n\npara\n\n<table>\n<tr><td>a</td></tr>\n</table>\n\ntail\n");
+    const auto regions = tableRegions(source);
+    QCOMPARE(regions.size(), 1);
+    QCOMPARE(regions.first(), qMakePair(4, 6));
+  }
+
+  // Text on the line right after `</table>` is part of the SAME html block, so
+  // the table is not the whole block and decision D-a refuses it outright -
+  // no element, and therefore no region to fold onto.
+  {
+    const QString source =
+        QStringLiteral("<table>\n<tr><td>a</td></tr>\n</table>\ntrailing paragraph\n");
+    QVERIFY(tableRegions(source).isEmpty());
+    const auto walk = vte::md::walkAndConvert(source.toUtf8(),
+                                              source.count(QLatin1Char('\n')) + 1);
+    QVERIFY(walk.tableElements.isEmpty());
+  }
+
+  // A whole table on one line has nothing to fold, and the provider drops a
+  // one-block region anyway.
+  QVERIFY(tableRegions(QStringLiteral("<table><tr><td>a</td></tr></table>\n\ntail\n")).isEmpty());
+
+  // A REFUSED table emits no region at all: it is not a table element, so
+  // nothing would ever be folded onto it.
+  QVERIFY(tableRegions(QStringLiteral("<table>\n<caption>c</caption>\n"
+                                      "<tr><td>a</td></tr>\n</table>\n\ntail\n"))
+              .isEmpty());
+
+  // An ordinary HTML block is untouched - it never had a fold region and still
+  // does not.
+  QVERIFY(tableRegions(QStringLiteral("<div>\n<p>a</p>\n</div>\n\ntail\n")).isEmpty());
+
+  // And a pipe table still folds exactly as before.
+  {
+    const auto regions =
+        tableRegions(QStringLiteral("| a | b |\n| --- | --- |\n| c | d |\ntail\n"));
+    QCOMPARE(regions.size(), 1);
+    QCOMPARE(regions.first(), qMakePair(0, 2));
+  }
+}
 QTEST_MAIN(tests::TestMarkdownParser)

@@ -219,6 +219,21 @@ slots — a hang and an unbounded allocation from note source alone.
 A refused table also suppresses any table nested inside it, so a refusal never degrades
 into capturing the inner one.
 
+### The fold region comes from the scanner, not from the block node
+
+A `<table>` opens a CommonMark **type-6** HTML block, which is terminated only by a blank
+line or by EOF — *never* by `</table>` — and whose reported `end_line` is not even that,
+since `resolveHtmlNodeSpan()` deliberately extends past it. A fold derived from the node
+would therefore run to the end of the document. `extractHtmlTables()` emits a
+`FoldingRegionType::Table` region from `m_tableStart`/`m_tableEnd` instead, which stop
+precisely at `</table>`.
+
+That region is also what makes the sheet's source auto-fold at all:
+`MarkdownFoldingProvider::applyPreviewAutoFold()` iterates **folding regions** and matches
+a preview whose live extent equals one exactly, so an element with no region of its own is
+never even visited. `addFoldingRegion()` has no `STYLE_HTMLBLOCK` arm and must not grow
+one.
+
 ### Cell source lives in a comment
 
 A cell this tree authors is `<!--vte-md:PAYLOAD-->` followed by the HTML cmark renders

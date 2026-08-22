@@ -5123,4 +5123,59 @@ void TestInteractivePreview::testTableSyntaxTransitionMatrix() {
     QCOMPARE(editor.document()->toPlainText(), before);
   }
 }
+
+void TestInteractivePreview::testHtmlTableSourceIsFoldedToItsOwnExtent() {
+  // Two symptoms, one cause. A `<table>` opens a CommonMark type-6 HTML block,
+  // which nothing in the walker used to emit a folding region for:
+  //
+  // - the source was never auto-folded, because
+  //   MarkdownFoldingProvider::applyPreviewAutoFold() iterates FOLDING REGIONS
+  //   and matches a preview whose extent equals one exactly, so an element with
+  //   no region of its own is never even visited;
+  // - and the only fold covering the table was the enclosing heading section,
+  //   which runs to the end of the document.
+  //
+  // The region now comes from the scanner's exact span, so it stops at
+  // `</table>` and the sheet's source folds onto it.
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+
+  auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
+  QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
+
+  // Blocks: 0 "## Table", 1 "", 2..6 the table, 7 "", 8 "after", 9 "".
+  const QString source = QStringLiteral("## Table\n\n"
+                                        "<table>\n"
+                                        "<tr><th>a</th></tr>\n"
+                                        "<tr><td>b</td></tr>\n"
+                                        "<tr><td>c</td></tr>\n"
+                                        "</table>\n\n"
+                                        "after\n");
+  setTextAndSettle(editor, source);
+
+  QCOMPARE(factory->m_widgets.size(), 1);
+  QCOMPARE(editor.document()->findBlockByNumber(2).text(), QStringLiteral("<table>"));
+  QCOMPARE(editor.document()->findBlockByNumber(6).text(), QStringLiteral("</table>"));
+
+  auto visible = [&editor](int p_block) {
+    return editor.document()->findBlockByNumber(p_block).isVisible();
+  };
+
+  // TextFolding::setRangeFolded() keeps BOTH boundary lines visible - the first
+  // carries the fold marker, and the last is what shows where the range ends,
+  // exactly as a folded fenced code block keeps both fences. Everything between
+  // them is hidden.
+  QVERIFY2(visible(2), "the table's opening tag must stay visible");
+  for (int block = 3; block <= 5; ++block) {
+    QVERIFY2(!visible(block), qPrintable(QStringLiteral("block %1 must be folded away")
+                                             .arg(block)));
+  }
+  QVERIFY2(visible(6), "the table's closing tag must stay visible");
+
+  // And the fold stops at `</table>`: everything after it is untouched. This is
+  // the whole point - a fold derived from the HTML block node would reach the
+  // end of the document.
+  QVERIFY2(visible(7), "the blank line after the table must stay visible");
+  QVERIFY2(visible(8), "text after the table must stay visible");
+  QVERIFY2(visible(0), "the heading must stay visible");
+}
 QTEST_MAIN(tests::TestInteractivePreview)

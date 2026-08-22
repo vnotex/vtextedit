@@ -211,6 +211,7 @@ private slots:
 
   // The (original syntax -> candidate syntax) transition matrix.
   void testTableSyntaxTransitionMatrix();
+  void testHtmlTableSourceIsFoldedToItsOwnExtent();
   void testTableEditCommitsCanonicalMarkdown();
   void testEnterInTheLastCellGrowsTheSource();
   void testAColumnInsertGrowsTheSource();

@@ -656,8 +656,8 @@ static bool isTopLevelWholeBlock(const QString &p_text, const LineOffsetTable &p
 // interactive table preview binds to it exactly as it does to a pipe table.
 static void extractHtmlTables(const QString &p_slice, int p_sliceStart, const QString &p_text,
                               const LineOffsetTable &p_offsets, ASTWalkResult &p_result,
-                              int p_offset, bool p_isBlock, int p_blockStart, int p_blockEnd,
-                              RawTextState &p_rawText) {
+                              int p_offset, int p_startBlock, bool p_isBlock, int p_blockStart,
+                              int p_blockEnd, RawTextState &p_rawText) {
   const auto tables = scanHtmlTables(p_slice, p_sliceStart, &p_rawText);
   if (!p_isBlock) {
     // HTML_INLINE never yields a table (D-a). The scan still ran, purely so its
@@ -732,6 +732,35 @@ static void extractHtmlTables(const QString &p_slice, int p_sliceStart, const QS
     }
 
     p_result.tableElements.append(table);
+
+    // The fold region is emitted HERE, from the scanner's exact span, and never
+    // from the enclosing HTML block node.
+    //
+    // A CommonMark type-6 HTML block -- which `<table>` opens -- is terminated
+    // only by a blank line or by EOF, NEVER by `</table>`. Its reported
+    // end_line is not even that: resolveHtmlNodeSpan() deliberately extends
+    // past it, because cmark reports the last line CONSUMED before the end
+    // condition matched. A fold derived from the node would therefore run to
+    // the end of the document whenever the table is not followed by a blank
+    // line. m_tableStart/m_tableEnd stop precisely at `</table>`.
+    //
+    // It is also what makes the sheet's source auto-fold at all:
+    // MarkdownFoldingProvider::applyPreviewAutoFold() iterates FOLDING REGIONS
+    // and matches a preview whose extent equals one exactly, so an element with
+    // no region of its own is never even visited.
+    const int firstLine = lineIndexOfDocPos(p_offsets, html.m_tableStart);
+    const int lastLine = lineIndexOfDocPos(p_offsets, html.m_tableEnd - 1);
+    if (firstLine >= 0 && lastLine >= firstLine) {
+      FoldingRegion region;
+      region.m_type = FoldingRegionType::Table;
+      region.m_startBlock = p_startBlock + firstLine;
+      region.m_endBlock = p_startBlock + lastLine;
+      // A whole table spelled on one line has nothing to fold, and the provider
+      // drops a one-block region anyway.
+      if (region.m_endBlock > region.m_startBlock) {
+        p_result.foldingRegions.append(region);
+      }
+    }
   }
 }
 
@@ -752,7 +781,8 @@ static void extractHtmlTables(const QString &p_slice, int p_sliceStart, const QS
 // jumping over a table it captured. The assert is the guard on that invariant.
 static void extractHtmlNode(cmark_node *p_node, const QString &p_text,
                             const QByteArray &p_utf8Text, const LineOffsetTable &p_offsets,
-                            ASTWalkResult &p_result, int p_offset, RawTextState &p_rawText) {
+                            ASTWalkResult &p_result, int p_offset, int p_startBlock,
+                            RawTextState &p_rawText) {
   const bool isBlock = cmark_node_get_type(p_node) == CMARK_NODE_HTML_BLOCK;
 
   int regionStart = -1;
@@ -782,8 +812,8 @@ static void extractHtmlNode(cmark_node *p_node, const QString &p_text,
   extractHtmlImages(slice, sliceStart, p_text, p_utf8Text, p_offsets,
                     resolved ? p_result : discarded, p_offset, imageState);
   extractHtmlTables(slice, sliceStart, p_text, p_offsets, resolved ? p_result : discarded,
-                    p_offset, resolved && isBlock && isDocumentChild(p_node), regionStart,
-                    regionEnd, tableState);
+                    p_offset, p_startBlock, resolved && isBlock && isDocumentChild(p_node),
+                    regionStart, regionEnd, tableState);
 
   Q_ASSERT(imageState.m_element == tableState.m_element);
   p_rawText = imageState;
@@ -977,7 +1007,7 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
     // Runs BEFORE the span/style guards below: the raw-text state must advance
     // for every HTML node, including one this walk cannot place.
     if (!p_fast && (type == CMARK_NODE_HTML_INLINE || type == CMARK_NODE_HTML_BLOCK)) {
-      extractHtmlNode(node, text, p_utf8Text, offsets, result, p_offset, rawText);
+      extractHtmlNode(node, text, p_utf8Text, offsets, result, p_offset, p_startBlock, rawText);
     }
 
     int style = mapCmarkNodeToStyle(type, node);
