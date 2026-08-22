@@ -1564,9 +1564,9 @@ void InteractivePreviewHost::syncCursorLineToItem(quint64 p_id) {
     cursor.setPosition(firstBlock.position());
     m_textEdit->setTextCursor(cursor);
 
-    // Restoration is only attempted here. A range which moved under the
-    // blockers can stop setValue() landing on the saved value at all, and
-    // everything the blockers swallowed is replayed once they are gone.
+    // The first of two attempts. A range which moved under the blockers can
+    // stop setValue() landing on the saved value at all; the retry below runs
+    // once everything the blockers swallowed has been replayed.
     if (vbar) {
       vbar->setValue(vvalue);
     }
@@ -1596,6 +1596,25 @@ void InteractivePreviewHost::syncCursorLineToItem(quint64 p_id) {
     resyncScrollBarRange(hbar);
   }
 
+  // The restore above runs against the range the blockers left behind, which is
+  // not the range the bar ends up with: QSignalBlocker also silences ScrollBar's
+  // own rangeChanged slot, the one which adds the extra tail space, so a
+  // relayout under the blockers collapses the maximum to the unextended one and
+  // clamps a saved value sitting in that tail. The range replay above puts the
+  // tail back, so retry the restore now that the bar can hold it again -
+  // otherwise the viewport keeps the clamped position and the click visibly
+  // scrolls the page.
+  //
+  // The retry is reported normally: the value returns to where the user left
+  // it, so applyScrollOffset() places the previews exactly as they were and the
+  // focused sheet cannot fall outside the viewport.
+  if (vbar && vbar->value() != vvalue && vvalue >= vbar->minimum() && vvalue <= vbar->maximum()) {
+    vbar->setValue(vvalue);
+  }
+  if (hbar && hbar->value() != hvalue && hvalue >= hbar->minimum() && hvalue <= hbar->maximum()) {
+    hbar->setValue(hvalue);
+  }
+
   // QAbstractScrollArea learns a new offset only from valueChanged, and
   // applyScrollOffset() - which places every preview widget - hangs off the
   // same signal. Left unreported, the scroll area's cached offset, the widgets
@@ -1603,8 +1622,8 @@ void InteractivePreviewHost::syncCursorLineToItem(quint64 p_id) {
   // different offsets, and the previews are drawn over the source until an
   // unrelated scroll happens to resync them.
   //
-  // Skipped when the range replay above moved the value itself: that change
-  // was not blocked, so it has already been reported.
+  // Skipped when the range replay or the retry above moved the value itself:
+  // neither change was blocked, so it has already been reported.
   if (vbar && vbar->value() == vsettled && vsettled != vvalue) {
     qCDebug(previewHostLog) << "cursor line sync settled the vertical scroll at" << vsettled
                             << "instead of" << vvalue << "- the range moved under the restore";

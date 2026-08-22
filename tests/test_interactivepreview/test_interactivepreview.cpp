@@ -4133,11 +4133,13 @@ void TestInteractivePreview::testFocusingASheetMovesTheCursorLine() {
 
 // The caret move saves the scroll position and puts it back with both bars'
 // signals blocked. setTextCursor() relayouts on the way, so a viewport which
-// just grew shrinks the maximum and the restore clamps to a smaller value.
-// valueChanged is the only thing that tells QAbstractScrollArea its new offset
-// and re-places the preview widgets, so a clamped restore used to leave the
-// widgets mapped for the saved value while the text was painted at the settled
-// one - the previews ended up drawn over the source until an unrelated scroll.
+// just grew shrinks the maximum and that first restore clamps to a smaller
+// value. valueChanged is the only thing that tells QAbstractScrollArea its new
+// offset and re-places the preview widgets, so a clamped restore used to leave
+// the widgets mapped for the saved value while the text was painted at the
+// settled one - the previews ended up drawn over the source until an unrelated
+// scroll. The blockers also silence ScrollBar's own range extension, so the
+// clamp is owed a retry once that extension is replayed.
 //
 // The range is shrunk from a cursorPositionChanged handler, which runs
 // synchronously inside setTextCursor() while the blockers are up. That is the
@@ -4187,15 +4189,21 @@ void TestInteractivePreview::testFocusingASheetResyncsAClampedScrollRestore() {
                "the caret did not land on the first line of the table source");
   settleCursorLineSync();
 
-  // The restore really did clamp, so the assertion below is not vacuous.
-  QVERIFY2(vbar->value() < saved, "the restore did not clamp, so this is not the case under test");
-
   // VTextEdit's ScrollBar extends the maximum from rangeChanged so the bottom
   // of the content can still be scrolled up. The range moved while the bar was
   // blocked, so that extension is owed too - and nothing would revisit it
   // until the range happened to change again.
   QVERIFY2(vbar->maximum() > saved - 10,
            "the blocked range change lost ScrollBar's maximum extension");
+
+  // The blocked restore necessarily clamped - the maximum was pulled below the
+  // saved value while the bar could not answer with its extension. Once the
+  // range replay puts that extension back, the saved value is representable
+  // again and must be recovered: leaving the clamped position there is the
+  // viewport visibly scrolling away under a click on the sheet.
+  QVERIFY2(saved <= vbar->maximum(),
+           "the replayed range cannot hold the saved value, so this is not the case under test");
+  QCOMPARE(vbar->value(), saved);
 
   // Whatever the scroll settled on, the widget is placed for that same value.
   QCOMPARE(widget->y() + vbar->value(), documentTop);
