@@ -233,6 +233,12 @@ void VMarkdownEditor::updateFromConfig() {
   // keeps the state it was settled into.
   m_foldingProvider->setAutoFoldPreviewsEnabled(m_config->m_autoFoldPreviewedBlocksEnabled);
 
+  // Also deliberately not retroactive: a table which is already in the
+  // document keeps the shape it has until the user edits it.
+  if (auto host = interactivePreviewHost()) {
+    host->setTableSourceAlignEnabled(m_config->m_alignTableSourceEnabled);
+  }
+
   applyLineSpacing();
 
   updateSpaceWidth();

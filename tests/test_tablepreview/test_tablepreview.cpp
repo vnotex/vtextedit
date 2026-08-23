@@ -615,6 +615,238 @@ void TestTablePreview::testSerializeDoesNotPadOtherRows() {
 }
 
 // ---------------------------------------------------------------------------
+// Opt-in aligned source
+// ---------------------------------------------------------------------------
+
+// The compact form is the contract: asking for nothing, or asking for it
+// explicitly, must produce the historical output byte for byte.
+void TestTablePreview::testAlignedSerializeIsOptIn() {
+  QVector<QVector<QString>> cells;
+  cells.append({QStringLiteral("h1"), QStringLiteral("header2")});
+  cells.append({QStringLiteral("a"), QStringLiteral("b")});
+
+  const QVector<PreviewTableAlignment> alignments{PreviewTableAlignment::None,
+                                                  PreviewTableAlignment::Center};
+  const QVector<QString> prefixes{QString(), QString()};
+
+  const QString compact =
+      TablePreviewSerializer::serialize(cells, alignments, prefixes, QString());
+  QCOMPARE(compact,
+           QStringLiteral("| h1 | header2 |\n| --- | :---: |\n| a | b |"));
+  QCOMPARE(TablePreviewSerializer::serialize(cells, alignments, prefixes, QString(), false),
+           compact);
+  QVERIFY(TablePreviewSerializer::serialize(cells, alignments, prefixes, QString(), true) !=
+          compact);
+}
+
+void TestTablePreview::testAlignedSerializePadsColumnsAndDelimiter() {
+  QVector<QVector<QString>> cells;
+  cells.append({QStringLiteral("h1"), QStringLiteral("header2")});
+  cells.append({QStringLiteral("a"), QStringLiteral("b")});
+
+  const QVector<PreviewTableAlignment> alignments{PreviewTableAlignment::None,
+                                                  PreviewTableAlignment::None};
+  const QVector<QString> prefixes{QString(), QString()};
+
+  const QString markdown =
+      TablePreviewSerializer::serialize(cells, alignments, prefixes, QString(), true);
+  const QStringList lines = markdown.split(QLatin1Char('\n'));
+  QCOMPARE(lines.size(), 3);
+  // The first column is three wide because the marker cannot shrink below its
+  // minimum, not because any cell is.
+  QCOMPARE(lines[0], QStringLiteral("| h1  | header2 |"));
+  QCOMPARE(lines[1], QStringLiteral("| --- | ------- |"));
+  QCOMPARE(lines[2], QStringLiteral("| a   | b       |"));
+}
+
+void TestTablePreview::testAlignedPlacementFollowsTheAlignment() {
+  QVector<QVector<QString>> cells;
+  cells.append({QStringLiteral("abcdef"), QStringLiteral("abcdef"), QStringLiteral("abcdef")});
+  cells.append({QStringLiteral("a"), QStringLiteral("a"), QStringLiteral("a")});
+
+  const QVector<PreviewTableAlignment> alignments{
+      PreviewTableAlignment::Left, PreviewTableAlignment::Right, PreviewTableAlignment::Center};
+  const QVector<QString> prefixes{QString(), QString()};
+
+  const QString markdown =
+      TablePreviewSerializer::serialize(cells, alignments, prefixes, QString(), true);
+  const QStringList lines = markdown.split(QLatin1Char('\n'));
+  QCOMPARE(lines.size(), 3);
+  // The `:` markers stay at the edges, and the dashes fill the column.
+  QCOMPARE(lines[1], QStringLiteral("| :----- | -----: | :----: |"));
+  // Left pads on the right, Right on the left, Center splits with the odd
+  // column going to the right.
+  QCOMPARE(lines[2], QStringLiteral("| a      |      a |   a    |"));
+
+  // And the minimums are never undercut when no cell is wider than them.
+  QVector<QVector<QString>> narrow;
+  narrow.append({QStringLiteral("a"), QStringLiteral("a"), QStringLiteral("a")});
+  narrow.append({QStringLiteral("b"), QStringLiteral("b"), QStringLiteral("b")});
+  const QString tight =
+      TablePreviewSerializer::serialize(narrow, alignments, prefixes, QString(), true);
+  QCOMPARE(tight.split(QLatin1Char('\n')).at(1), QStringLiteral("| :--- | ---: | :---: |"));
+}
+
+void TestTablePreview::testAlignedWidthIsDisplayWidth() {
+  // Emit a one-column table whose body row is four ASCII columns wide, and
+  // report how many spaces the aligned form padded @p_cell with. The column is
+  // four display columns wide, so that is 4 - displayWidth(cell).
+  auto padOf = [](const QString &p_cell) {
+    QVector<QVector<QString>> cells;
+    cells.append({p_cell});
+    cells.append({QStringLiteral("aaaa")});
+    const QString markdown = TablePreviewSerializer::serialize(
+        cells, {PreviewTableAlignment::None}, {QString(), QString()}, QString(), true);
+    // "|" + " " + cell + pad + " |"
+    return markdown.split(QLatin1Char('\n')).at(0).size() - 4 - p_cell.size();
+  };
+
+  QCOMPARE(padOf(QStringLiteral("ab")), 2);
+
+  // East Asian Wide counts 2.
+  QCOMPARE(padOf(QString(QChar(0x4E2D))), 2);
+  QCOMPARE(padOf(QStringLiteral("\u4E2D\u6587")), 0);
+
+  // A combining mark counts 0: U+0301 COMBINING ACUTE ACCENT.
+  QCOMPARE(padOf(QStringLiteral("a\u0301")), 3);
+
+  // The ranges the naive "CJK blocks" approximation misses. U+231A WATCH is
+  // Wide and sits among the miscellaneous symbols; U+1F680 ROCKET is Wide and
+  // astral, so it is two QChars but two display columns, not four.
+  QCOMPARE(padOf(QString(QChar(0x231A))), 2);
+  QString rocket;
+  rocket.append(QChar::highSurrogate(0x1F680));
+  rocket.append(QChar::lowSurrogate(0x1F680));
+  QCOMPARE(padOf(rocket), 2);
+
+  // An ASTRAL combining mark still counts 0: U+101FD PHAISTOS DISC SIGN
+  // COMBINING OBLIQUE STROKE. Only a UCS-4 scan can see its category.
+  QString astralMark = QStringLiteral("a");
+  astralMark.append(QChar::highSurrogate(0x101FD));
+  astralMark.append(QChar::lowSurrogate(0x101FD));
+  QCOMPARE(padOf(astralMark), 3);
+
+  // The four places a hand-written table gets Unicode 15.1 wrong. U+2FFC and
+  // U+31EF are ideographic description characters 15.1 ADDED, and are Wide;
+  // U+2630 and U+268A are Neutral despite sitting between wide neighbours.
+  QCOMPARE(padOf(QString(QChar(0x2FFC))), 2);
+  QCOMPARE(padOf(QString(QChar(0x31EF))), 2);
+  QCOMPARE(padOf(QString(QChar(0x2630))), 3);
+  QCOMPARE(padOf(QString(QChar(0x268A))), 3);
+}
+
+void TestTablePreview::testAlignedWidthUsesTheEscapedText() {
+  QVector<QVector<QString>> cells;
+  cells.append({QStringLiteral("ab")});
+  // Escaping adds a backslash, and the escaped form is what is emitted - so
+  // that, not the raw cell, is what the column has to be wide enough for.
+  cells.append({QStringLiteral("a|b")});
+
+  const QString markdown = TablePreviewSerializer::serialize(
+      cells, {PreviewTableAlignment::None}, {QString(), QString()}, QString(), true);
+  const QStringList lines = markdown.split(QLatin1Char('\n'));
+  QCOMPARE(lines.size(), 3);
+  QCOMPARE(lines[0], QStringLiteral("| ab   |"));
+  QCOMPARE(lines[1], QStringLiteral("| ---- |"));
+  QCOMPARE(lines[2], QStringLiteral("| a\\|b |"));
+}
+
+void TestTablePreview::testAlignedCeilingFallsBackToCompact() {
+  const int rows = 50;
+
+  auto build = [rows](int p_wideLength) {
+    QVector<QVector<QString>> cells;
+    cells.append({QStringLiteral("h"), QStringLiteral("h2")});
+    cells.append({QString(p_wideLength, QLatin1Char('w')), QStringLiteral("x")});
+    for (int i = 2; i < rows; ++i) {
+      cells.append({QStringLiteral("a"), QStringLiteral("b")});
+    }
+    return cells;
+  };
+
+  const QVector<PreviewTableAlignment> alignments{PreviewTableAlignment::None,
+                                                  PreviewTableAlignment::None};
+  const QVector<QString> prefixes(rows, QString());
+
+  // At the ceiling the table is still padded.
+  {
+    const auto cells = build(200);
+    const QString aligned =
+        TablePreviewSerializer::serialize(cells, alignments, prefixes, QString(), true);
+    QVERIFY(aligned != TablePreviewSerializer::serialize(cells, alignments, prefixes, QString()));
+    QCOMPARE(aligned.split(QLatin1Char('\n')).at(0).size(), 1 + (200 + 3) + (3 + 3));
+  }
+
+  // One column past it the WHOLE table falls back to the compact form - not a
+  // failure, and not a per-column decision, which would produce output the
+  // user cannot predict.
+  {
+    const auto cells = build(201);
+    const QString compact =
+        TablePreviewSerializer::serialize(cells, alignments, prefixes, QString());
+    QVERIFY(!compact.isEmpty());
+    QCOMPARE(TablePreviewSerializer::serialize(cells, alignments, prefixes, QString(), true),
+             compact);
+  }
+}
+
+void TestTablePreview::testAlignedOutputRoundTrips() {
+  QVector<QVector<QString>> cells;
+  cells.append({QStringLiteral("h1"), QStringLiteral("a longer header")});
+  cells.append({QStringLiteral("\u4E2D\u6587"), QStringLiteral("b")});
+  cells.append({QStringLiteral("a|b"), QStringLiteral("c")});
+
+  const QVector<PreviewTableAlignment> alignments{PreviewTableAlignment::Left,
+                                                  PreviewTableAlignment::Center};
+  const QVector<QString> prefixes{QString(), QString(), QString()};
+
+  const QString markdown =
+      TablePreviewSerializer::serialize(cells, alignments, prefixes, QString(), true);
+  QVERIFY(!markdown.isEmpty());
+
+  // The host validates a write-back by re-parsing it, and a reparse trims every
+  // cell - so the padding must survive as exactly the same table.
+  auto reparsed = parseCanonical(markdown, 2);
+  QVERIFY(reparsed);
+  QCOMPARE(reparsed->cells(), cells);
+  QCOMPARE(reparsed->alignments(), alignments);
+}
+
+void TestTablePreview::testAlignedOutputKeepsThePrefixes() {
+  QVector<QVector<QString>> cells;
+  cells.append({QStringLiteral("h1"), QStringLiteral("a longer header")});
+  cells.append({QStringLiteral("a"), QStringLiteral("b")});
+
+  const QVector<PreviewTableAlignment> alignments{PreviewTableAlignment::None,
+                                                  PreviewTableAlignment::None};
+
+  // Block quote: padding is emitted after the prefix, never inside it.
+  {
+    const QVector<QString> prefixes{QStringLiteral("> "), QStringLiteral("> ")};
+    const QString markdown = TablePreviewSerializer::serialize(cells, alignments, prefixes,
+                                                               QStringLiteral("> "), true);
+    const QStringList lines = markdown.split(QLatin1Char('\n'));
+    QCOMPARE(lines.size(), 3);
+    for (const auto &line : lines) {
+      QVERIFY2(line.startsWith(QStringLiteral("> |")), qPrintable(line));
+    }
+    QCOMPARE(lines[2], QStringLiteral("> | a   | b               |"));
+  }
+
+  // List: the first row keeps the marker, the rest keep the indent.
+  {
+    const QVector<QString> prefixes{QStringLiteral("- "), QStringLiteral("  ")};
+    const QString markdown =
+        TablePreviewSerializer::serialize(cells, alignments, prefixes, QStringLiteral("  "), true);
+    const QStringList lines = markdown.split(QLatin1Char('\n'));
+    QCOMPARE(lines.size(), 3);
+    QCOMPARE(lines[0], QStringLiteral("- | h1  | a longer header |"));
+    QCOMPARE(lines[1], QStringLiteral("  | --- | --------------- |"));
+    QCOMPARE(lines[2], QStringLiteral("  | a   | b               |"));
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Document
 // ---------------------------------------------------------------------------
 
@@ -3592,6 +3824,54 @@ void TestTablePreview::testCopyActionsPutThePayloadOnTheClipboard() {
            qPrintable(QApplication::clipboard()->text()));
 }
 
+// The option reaches an already-created sheet, and a sheet created afterwards
+// inherits it. The copy payload is what makes it observable without a host:
+// it goes through the same flag the write-back does, so the two cannot
+// disagree about the shape of the source.
+void TestTablePreview::testTheFactoryPropagatesTheAlignOption() {
+  QVector<QVector<QString>> cells;
+  cells.append({QStringLiteral("h1"), QStringLiteral("a longer header")});
+  cells.append({QStringLiteral("a"), QStringLiteral("b")});
+  auto preview =
+      makeTable(cells, {PreviewTableAlignment::None, PreviewTableAlignment::None});
+
+  auto copiedMarkdown = [](TablePreviewWidget *p_widget) {
+    auto sheet = sheetOf(*p_widget);
+    QScopedPointer<QMenu> menu(menuForCell(sheet, 1, 1));
+    QApplication::clipboard()->clear();
+    actionNamed(menu.data(), "CopyAsMarkdown")->trigger();
+    return QApplication::clipboard()->text();
+  };
+
+  TablePreviewWidgetFactory factory;
+
+  // Created while the option is off: compact.
+  QScopedPointer<TablePreviewWidget> early(
+      static_cast<TablePreviewWidget *>(factory.createWidget(nullptr, preview, nullptr)));
+  QVERIFY(early);
+  QVERIFY(early->setPreview(preview));
+  showOffScreen(*early, 800);
+  settle();
+  QCOMPARE(copiedMarkdown(early.data()), QStringLiteral("| h1 | a longer header |\n"
+                                                        "| --- | --- |\n"
+                                                        "| a | b |"));
+
+  // The flip reaches it, without rewriting anything by itself.
+  factory.setSourceAlignEnabled(true);
+  QCOMPARE(copiedMarkdown(early.data()), QStringLiteral("| h1  | a longer header |\n"
+                                                        "| --- | --------------- |\n"
+                                                        "| a   | b               |"));
+
+  // And a sheet created afterwards inherits the state.
+  QScopedPointer<TablePreviewWidget> late(
+      static_cast<TablePreviewWidget *>(factory.createWidget(nullptr, preview, nullptr)));
+  QVERIFY(late);
+  QVERIFY(late->setPreview(preview));
+  showOffScreen(*late, 800);
+  settle();
+  QCOMPARE(copiedMarkdown(late.data()), copiedMarkdown(early.data()));
+}
+
 void TestTablePreview::testTheMenuActionsMutateTheTable() {
   QScopedPointer<TablePreviewWidget> holder;
   auto widget = buildEditableSheet(holder);
@@ -4059,6 +4339,59 @@ void TestTablePreview::testHtmlOnlyTableWritesBackVerbatim() {
   // Decision D-g: the authored attributes survive, and only `colspan` is
   // rewritten - here, dropped, because the span is 1.
   QVERIFY2(source.contains(QStringLiteral("<td class=\"k\">")), qPrintable(source));
+}
+
+// The flag is forwarded to the Markdown serializer only. An HTML-backed or
+// merged table has to match the scanner's canonical subset exactly, and the
+// rendered HTML is layout independent, so neither is padded.
+void TestTablePreview::testAlignedDocumentPathsAndHtmlAreUnaffected() {
+  {
+    QVector<QVector<QString>> cells{{QStringLiteral("<b>x</b>"), QStringLiteral("plain")}};
+    QVector<QVector<QPoint>> spans{{QPoint(1, 1), QPoint(1, 1)}};
+
+    TablePreviewDocument document;
+    document.setTable(makeHtmlSnapshot(cells, spans, false, false));
+    // The write-back is HTML, which has to match the scanner's canonical
+    // subset exactly, so the flag never reaches it. The standalone copy is a
+    // FLATTENED pipe view of the same table, so it is padded like any other
+    // pipe table.
+    QCOMPARE(document.toMarkdown(true), document.toMarkdown(false));
+  }
+
+  // The other HTML branch: a MERGED table, which pipe syntax cannot express at
+  // all. Its write-back is byte-identical with the flag on.
+  {
+    QVector<QVector<QString>> cells{{QStringLiteral("wide"), QString()},
+                                    {QStringLiteral("a longer cell"), QStringLiteral("b")}};
+    QVector<QVector<QPoint>> spans{{QPoint(2, 1), QPoint(0, 0)}, {QPoint(1, 1), QPoint(1, 1)}};
+
+    TablePreviewDocument document;
+    document.setTable(makeHtmlSnapshot(cells, spans, false, false));
+    QVERIFY(document.hasMergedCells());
+    const QString compact = document.toMarkdown(false);
+    QVERIFY(!compact.isEmpty());
+    QCOMPARE(document.toMarkdown(true), compact);
+  }
+
+  QVector<QVector<QString>> cells;
+  cells.append({QStringLiteral("h1"), QStringLiteral("a longer header")});
+  cells.append({QStringLiteral("a"), QStringLiteral("b")});
+
+  TablePreviewDocument document;
+  document.setTable(makeTable(cells, {PreviewTableAlignment::None, PreviewTableAlignment::None}));
+
+  // The pipe paths do change...
+  QVERIFY(document.toMarkdown(true) != document.toMarkdown(false));
+  QVERIFY(document.toStandaloneMarkdown(true) != document.toStandaloneMarkdown(false));
+  QVERIFY2(document.toMarkdown(true).contains(QStringLiteral("| a   | b               |")),
+           qPrintable(document.toMarkdown(true)));
+
+  // ... and toHtml() does not: it deliberately renders the compact form, so no
+  // meaningless whitespace lands in a cell payload.
+  const QString html = document.toHtml();
+  QVERIFY2(html.contains(QStringLiteral("b</td>")), qPrintable(html));
+  // No padding run reached a payload.
+  QVERIFY2(!html.contains(QStringLiteral("  ")), qPrintable(html));
 }
 
 void TestTablePreview::testMergeMenuEntriesAndAlignmentGating() {

@@ -46,6 +46,12 @@ public:
   // affects regions which have not been settled yet.
   bool m_autoFoldPreviewedBlocksEnabled = true;
 
+  // Write a table sheet back as a padded, column-aligned pipe table instead of
+  // the compact one. Off by default, which is the historical output byte for
+  // byte. Changing it at runtime affects subsequent commits only: no existing
+  // table source is ever reformatted on its own.
+  bool m_alignTableSourceEnabled = false;
+
 private:
   void overrideTextStyle();
 };

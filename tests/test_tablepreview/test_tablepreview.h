@@ -20,6 +20,16 @@ private slots:
   void testEscapedPipeDoesNotWidenColumn();
   void testSerializeDoesNotPadOtherRows();
 
+  // Opt-in aligned source.
+  void testAlignedSerializeIsOptIn();
+  void testAlignedSerializePadsColumnsAndDelimiter();
+  void testAlignedPlacementFollowsTheAlignment();
+  void testAlignedWidthIsDisplayWidth();
+  void testAlignedWidthUsesTheEscapedText();
+  void testAlignedCeilingFallsBackToCompact();
+  void testAlignedOutputRoundTrips();
+  void testAlignedOutputKeepsThePrefixes();
+
   // Document.
   void testDocumentBuildsTheTable();
   void testDocumentNormalization();
@@ -147,6 +157,8 @@ private slots:
   void testHtmlKeepsAnEscapedPipeInOneCell();
   void testCopyActionsStayEnabledOnAReadOnlySheet();
   void testCopyActionsPutThePayloadOnTheClipboard();
+  void testTheFactoryPropagatesTheAlignOption();
+  void testAlignedDocumentPathsAndHtmlAreUnaffected();
   void testTheMenuActionsMutateTheTable();
   void testAnAlignmentOnlyChangeIsCommitted();
 

@@ -186,6 +186,8 @@ class TestInteractivePreview : public QObject {
   Q_OBJECT
 private slots:
   void testBuiltinTableWidgetCreated();
+  void testTableSourceAlignOptionThreading();
+  void testAlignedCommitSurvivesTheRealParser();
   void testCellsCarrySyntaxHighlighting();
   void testHighlightingSurvivesACommit();
   void testHighlightingStopsAtTheRunEnd();

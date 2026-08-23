@@ -47,6 +47,14 @@ enum class FocusEscapeDirection {
 // The canonical form is compact: every cell is emitted with exactly one space
 // inside each border and columns are never padded to a common width, so a
 // single long cell cannot amplify the source by the row count.
+//
+// Padding is available as an OPT-IN (@p_align): the cells of a column are then
+// padded to its widest entry - measured in display columns, so a CJK character
+// counts 2 and a combining mark 0 - and the delimiter row's dashes are grown
+// to match, with the `:` markers still at the edges. Text placement follows the
+// column's alignment. A table with a column wider than 200 display columns
+// falls back to the compact form, which is the reason the compact contract
+// exists in the first place.
 class TablePreviewSerializer {
 public:
   // Escape a '|' only when it is preceded by an even number of backslashes.
@@ -60,9 +68,15 @@ public:
                               const QString &p_delimiterPrefix);
 
   // Returns an empty string when the table cannot be serialized safely.
+  //
+  // @p_align opts into the padded, column-aligned form. It defaults to false,
+  // so the compact form stays the contract for every caller which does not ask
+  // for anything else. Note that the ceiling fallback is NOT this function's
+  // failure channel: it emits compact output rather than an empty string.
   static QString serialize(const QVector<QVector<QString>> &p_cells,
                            const QVector<PreviewTableAlignment> &p_alignments,
-                           const QVector<QString> &p_rowPrefixes, const QString &p_delimiterPrefix);
+                           const QVector<QString> &p_rowPrefixes, const QString &p_delimiterPrefix,
+                           bool p_align = false);
 };
 
 // HTML serialization of an editable table sheet, for the tables GFM pipe
@@ -271,7 +285,12 @@ public:
   bool isIntact() const;
 
   // Canonical Markdown of the current document contents.
-  QString toMarkdown() const;
+  //
+  // @p_align opts into the padded, column-aligned pipe form. It is forwarded to
+  // the Markdown serializer only: an HTML-backed or merged table is written by
+  // TablePreviewHtmlSerializer, whose output has to match the scanner's
+  // canonical subset exactly, so it ignores the flag.
+  QString toMarkdown(bool p_align = false) const;
 
   // Copy-oriented Markdown of the current contents: the same table as
   // toMarkdown(), but deliberately without the row/delimiter prefixes the
@@ -288,12 +307,18 @@ public:
   // origin slot and every covered slot is an empty string. The copy is
   // therefore a flattened view of a merged table, not a faithful one; toHtml()
   // is the faithful copy.
-  QString toStandaloneMarkdown() const;
+  //
+  // @p_align opts into the padded form exactly as toMarkdown() does, so what
+  // the user pastes matches what the document would get.
+  QString toStandaloneMarkdown(bool p_align = false) const;
 
   // HTML rendered from toStandaloneMarkdown() by cmark, so inline Markdown
   // inside the cells is rendered too. Copy-oriented like its source: it also
   // drops the row prefixes and is never fed back into the document. Empty
   // whenever toStandaloneMarkdown() is empty.
+  //
+  // Deliberately never padded: the rendered HTML is layout independent, so
+  // padding would only inject meaningless whitespace into the cell payloads.
   QString toHtml() const;
 
   // Whether one more row would still fit inside the cell bound.
@@ -652,6 +677,11 @@ public:
   // already written every per-cell format.
   void refreshPalette();
 
+  // Whether the "Copy as Markdown" payload this sheet's context menu builds is
+  // padded and column aligned. Mirrored down from the widget so the copy and
+  // the write-back cannot disagree about the shape of the source.
+  void setSourceAlignEnabled(bool p_enabled) { m_alignSource = p_enabled; }
+
   // Put the caret back inside the table when something parked it in the empty
   // block a QTextDocument always keeps after a table.
   void clampCursorIntoTable();
@@ -904,6 +934,9 @@ private:
   // is a document change the commit machinery must not see as an edit.
   bool m_applyingFormats = false;
 
+  // See setSourceAlignEnabled(). Read only when a copy payload is built.
+  bool m_alignSource = false;
+
   // The last (outer width, height) pair reported to the host. An unchanged
   // pass terminates here instead of looping against the host's own cache.
   int m_notifiedOuterWidth = -1;
@@ -964,6 +997,16 @@ public:
   // Mirror the editor's read-only state so the sheet cannot swallow edits the
   // host is going to reject anyway.
   void setReadOnly(bool p_readOnly);
+
+  // Whether this sheet writes back a padded, column-aligned pipe table instead
+  // of the compact one.
+  //
+  // Unlike setReadOnly() nothing about the sheet itself changes: no relayout
+  // and no editability recompute, because only the shape of a FUTURE commit is
+  // affected. Existing source is never reformatted on its own, and neither is
+  // it by an edit which cancels out: the commit path asks whether anything
+  // really changed in the shape its baseline was recorded in.
+  void setSourceAlignEnabled(bool p_enabled);
 
   // Write back anything the debounce still owes, while this sheet's context
   // and anchor are still authoritative. The host calls it immediately before
@@ -1065,6 +1108,10 @@ private:
 
   bool m_readOnly = false;
 
+  // Whether a commit writes the padded, column-aligned form. Read at
+  // serialization time only; flipping it never rewrites existing source.
+  bool m_alignSource = false;
+
   // Whether the bound snapshot still describes the document. Cleared by a
   // rejection the sheet cannot recover from, restored by the next snapshot.
   bool m_authoritative = true;
@@ -1096,13 +1143,29 @@ private:
 
   QString m_inFlightMarkdown;
 
+  // The shape m_inFlightMarkdown was serialized in, captured when the request
+  // was issued: a callback the replacement runs can flip the option before the
+  // completion arrives.
+  bool m_inFlightAligned = false;
+
   // The Markdown this sheet last knew the document to hold: the canonical form
   // of the bound source at bind time, and the accepted replacement after every
   // successful commit. It is both the "nothing changed" baseline a flush
   // compares against and the echo baseline setPreview() needs, so a parse
   // generation which merely replays this sheet's own commit is not mistaken
   // for an authoritative external change.
+  //
+  // It always describes text the document really holds, never a synthetic
+  // other-shape rendering of it - which is what m_committedMarkdownAligned
+  // records, so a flushed sheet can still ask "did anything really change"
+  // after the aligned option moved underneath it.
   QString m_committedMarkdown;
+
+  // Whether m_committedMarkdown was serialized in the aligned shape. Compared
+  // against m_alignSource at commit time: when the two disagree the option was
+  // flipped since, and the divergence test has to be run in the shape recorded
+  // here before it can mean anything.
+  bool m_committedMarkdownAligned = false;
 };
 
 class TablePreviewWidgetFactory : public PreviewWidgetFactory {
@@ -1119,6 +1182,10 @@ public:
   // Mirror the editor's read-only state onto every live sheet.
   void setReadOnly(bool p_readOnly);
 
+  // Mirror the aligned-source option onto every live sheet, and onto every
+  // sheet created afterwards.
+  void setSourceAlignEnabled(bool p_enabled);
+
 signals:
   // Relayed from a live sheet, carrying the widget so the host can resolve the
   // identity - and therefore the live anchor - it belongs to.
@@ -1134,6 +1201,8 @@ private:
   void pruneWidgets();
 
   bool m_readOnly = false;
+
+  bool m_alignSource = false;
 
   QVector<QPointer<TablePreviewWidget>> m_widgets;
 };

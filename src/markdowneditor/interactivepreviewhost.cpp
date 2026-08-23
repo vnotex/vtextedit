@@ -1803,6 +1803,20 @@ void InteractivePreviewHost::applyReadOnly() {
   m_tableFactory->setReadOnly(readOnly);
 }
 
+void InteractivePreviewHost::setTableSourceAlignEnabled(bool p_enabled) {
+  if (m_tableSourceAlign == p_enabled) {
+    return;
+  }
+
+  m_tableSourceAlign = p_enabled;
+  qCDebug(previewHostLog) << "table write-back is now"
+                          << (p_enabled ? "column-aligned" : "compact");
+
+  if (m_tableFactory) {
+    m_tableFactory->setSourceAlignEnabled(p_enabled);
+  }
+}
+
 QFont InteractivePreviewHost::editorFont() const {
   QFont font = m_textEdit ? m_textEdit->font() : QApplication::font();
 

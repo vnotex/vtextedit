@@ -550,6 +550,181 @@ void TestInteractivePreview::testBuiltinTableWidgetCreated() {
 }
 
 namespace {
+// A table whose two columns have visibly different widths, so the compact and
+// the aligned write-back cannot be confused for one another.
+const char *c_raggedTable = "| h1 | header2 |\n| --- | --- |\n| a | b |\n";
+
+const char *c_compactCommit = "| h1 | header2 |\n| --- | --- |\n| z | b |";
+
+const char *c_alignedCommit = "| h1  | header2 |\n| --- | ------- |\n| z   | b       |";
+
+// Type @p_text into the first body cell of the single sheet and write it back
+// now, then return what the editor's document holds.
+QString commitFirstCell(VMarkdownEditor &p_editor, const QString &p_text) {
+  auto sheet = sheetView(singlePreviewWidget(p_editor));
+  if (!sheet) {
+    return QString();
+  }
+
+  editCell(sheet, 1, 0, p_text);
+  flushSheet(sheet);
+  settle(p_editor);
+  return p_editor.document()->toPlainText();
+}
+} // namespace
+
+// MarkdownEditorConfig::m_alignTableSourceEnabled reaches the sheet through the
+// host and the built-in factory, and only ever changes what a SUBSEQUENT commit
+// writes.
+void TestInteractivePreview::testTableSourceAlignOptionThreading() {
+  // 1. The default config commits the compact form.
+  {
+    VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+    setTextAndSettle(editor, QLatin1String(c_raggedTable));
+    QVERIFY2(commitFirstCell(editor, QStringLiteral("z"))
+                 .contains(QLatin1String(c_compactCommit)),
+             qPrintable(editor.document()->toPlainText()));
+  }
+
+  // 2. A config with the option on up front commits the padded form.
+  {
+    auto config = makeConfig();
+    config->m_alignTableSourceEnabled = true;
+    VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+    setTextAndSettle(editor, QLatin1String(c_raggedTable));
+    QVERIFY2(commitFirstCell(editor, QStringLiteral("z"))
+                 .contains(QLatin1String(c_alignedCommit)),
+             qPrintable(editor.document()->toPlainText()));
+  }
+
+  // 3-6. Flipping it on a live sheet.
+  auto config = makeConfig();
+  VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QLatin1String(c_raggedTable));
+
+  const QString before = editor.document()->toPlainText();
+  config->m_alignTableSourceEnabled = true;
+  editor.setConfig(config);
+  settle(editor);
+
+  // 3. Existing source is never reformatted on its own.
+  QCOMPARE(editor.document()->toPlainText(), before);
+
+  // Nor is it by an edit which cancels out: the commit path asks whether
+  // anything really changed in the shape its baseline was recorded in, so a
+  // cell re-typed with the value it had still settles without a commit rather
+  // than reformatting the table behind the user's back.
+  {
+    auto sheet = sheetView(singlePreviewWidget(editor));
+    QVERIFY(sheet);
+    editCell(sheet, 1, 0, QStringLiteral("aa"));
+    editCell(sheet, 1, 0, QStringLiteral("a"));
+    flushSheet(sheet);
+    settle(editor);
+    QCOMPARE(editor.document()->toPlainText(), before);
+  }
+
+  // And the same holds for the other ordering, which the flip-time state
+  // cannot see: the edit is already pending, and only cancels out, when the
+  // option changes underneath it.
+  {
+    config->m_alignTableSourceEnabled = false;
+    editor.setConfig(config);
+    settle(editor);
+    QCOMPARE(editor.document()->toPlainText(), before);
+
+    auto sheet = sheetView(singlePreviewWidget(editor));
+    QVERIFY(sheet);
+    editCell(sheet, 1, 0, QStringLiteral("aa"));
+    editCell(sheet, 1, 0, QStringLiteral("a"));
+
+    // Still inside the debounce: the sheet is dirty by generation, settled by
+    // content.
+    config->m_alignTableSourceEnabled = true;
+    editor.setConfig(config);
+    settle(editor);
+
+    auto rebound = sheetView(singlePreviewWidget(editor));
+    QVERIFY(rebound);
+    flushSheet(rebound);
+    settle(editor);
+    QCOMPARE(editor.document()->toPlainText(), before);
+  }
+
+  // 4. The next edit on that very sheet commits the padded form.
+  QVERIFY2(commitFirstCell(editor, QStringLiteral("z")).contains(QLatin1String(c_alignedCommit)),
+           qPrintable(editor.document()->toPlainText()));
+
+  // 5. A sheet created after the change inherits the setting.
+  setTextAndSettle(editor, QLatin1String(c_raggedTable));
+  QVERIFY2(commitFirstCell(editor, QStringLiteral("z")).contains(QLatin1String(c_alignedCommit)),
+           qPrintable(editor.document()->toPlainText()));
+
+  // 6. And flipping it back affects subsequent commits only - on the very same
+  // live sheet, without replacing the editor's contents first.
+  config->m_alignTableSourceEnabled = false;
+  editor.setConfig(config);
+  settle(editor);
+  QVERIFY2(editor.document()->toPlainText().contains(QLatin1String(c_alignedCommit)),
+           "turning the option off rewrote source by itself");
+
+  const QString compactAfterFlipBack =
+      QStringLiteral("| h1 | header2 |\n| --- | --- |\n| y | b |");
+  QVERIFY2(commitFirstCell(editor, QStringLiteral("y")).contains(compactAfterFlipBack),
+           qPrintable(editor.document()->toPlainText()));
+}
+
+// The host validates a write-back by RE-PARSING it, so the padded source has to
+// be understood by the production cmark/AST path exactly as the compact one is:
+// same cells, same alignments, same block prefixes. A sheet which still binds
+// and still shows the same cells after the commit is that round trip.
+void TestInteractivePreview::testAlignedCommitSurvivesTheRealParser() {
+  auto config = makeConfig();
+  config->m_alignTableSourceEnabled = true;
+  VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+
+  // Every alignment, an escaped pipe, a CJK cell measured two columns per
+  // character, and a blockquote prefix on every row.
+  const QString source = QStringLiteral("> | left | center | right | \u4E2D\u6587 |\n"
+                                        "> | :--- | :---: | ---: | --- |\n"
+                                        "> | a | b | c\\|d | e |\n");
+  setTextAndSettle(editor, source);
+
+  auto sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  // A cell holds RAW Markdown, so the escape is part of it and the serializer's
+  // escaping is idempotent over it.
+  QCOMPARE(sheetCell(sheet, 1, 2), QStringLiteral("c\\|d"));
+
+  editCell(sheet, 1, 0, QStringLiteral("a much wider value"));
+  flushSheet(sheet);
+  settle(editor);
+
+  const QString written = editor.document()->toPlainText();
+  QVERIFY2(written.contains(QStringLiteral("> | a much wider value |   b    |  c\\|d | e    |")),
+           qPrintable(written));
+  // The delimiter row grew with the columns and kept its markers at the edges.
+  QVERIFY2(written.contains(QStringLiteral("> | :----------------- | :----: | ----: | ---- |")),
+           qPrintable(written));
+
+  // The re-parse accepted it: a sheet is bound again, over the same cells and
+  // with the blockquote prefix still carried.
+  auto rebound = sheetView(singlePreviewWidget(editor));
+  QVERIFY(rebound);
+  QCOMPARE(sheetCell(rebound, 0, 0), QStringLiteral("left"));
+  QCOMPARE(sheetCell(rebound, 1, 0), QStringLiteral("a much wider value"));
+  QCOMPARE(sheetCell(rebound, 1, 2), QStringLiteral("c\\|d"));
+  QCOMPARE(sheetCell(rebound, 0, 3), QStringLiteral("\u4E2D\u6587"));
+
+  // And a second commit is stable rather than growing the padding again.
+  const QString beforeSecond = editor.document()->toPlainText();
+  editCell(rebound, 1, 1, QStringLiteral("b"));
+  flushSheet(rebound);
+  settle(editor);
+  QCOMPARE(editor.document()->toPlainText(), beforeSecond);
+}
+
+namespace {
 // The char format of the character at cell-local offset @p_offset.
 QTextCharFormat sheetFormatAt(QTextEdit *p_sheet, int p_row, int p_column, int p_offset) {
   QTextTable *table = sheetTable(p_sheet);

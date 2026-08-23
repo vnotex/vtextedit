@@ -103,19 +103,159 @@ bool TablePreviewSerializer::arePrefixesSafe(const QVector<QString> &p_rowPrefix
   return true;
 }
 
-// The delimiter markers are emitted at their minimum readable length: the
-// serializer writes a compact table, so nothing is padded out to a column
-// width.
-static QString alignmentMarker(PreviewTableAlignment p_alignment) {
+// Ceiling on a padded column's display width. Above it the aligned form is
+// abandoned for the whole table.
+static const int c_maxAlignedColumnWidth = 200;
+
+// Every East Asian Width `W` (Wide) and `F` (Fullwidth) range of Unicode 15.1,
+// taken from EastAsianWidth.txt of that version, with adjacent ranges merged
+// and kept sorted so it can be binary searched. Regenerate wholesale against a
+// named version if it is ever refreshed - hand editing it is how a wrong
+// classification gets in.
+//
+// The ad-hoc "CJK blocks" approximation is deliberately not used: it misses
+// U+231A-U+231B, the U+1F300 emoji planes and everything above the BMP, all of
+// which a user can paste into a cell.
+struct EastAsianWideRange {
+  uint m_first;
+  uint m_last;
+};
+
+static const EastAsianWideRange c_eastAsianWideRanges[] = {
+    {0x1100, 0x115F},   {0x231A, 0x231B},   {0x2329, 0x232A},   {0x23E9, 0x23EC},
+    {0x23F0, 0x23F0},   {0x23F3, 0x23F3},   {0x25FD, 0x25FE},   {0x2614, 0x2615},
+    {0x2648, 0x2653},   {0x267F, 0x267F},   {0x2693, 0x2693},   {0x26A1, 0x26A1},
+    {0x26AA, 0x26AB},   {0x26BD, 0x26BE},   {0x26C4, 0x26C5},   {0x26CE, 0x26CE},
+    {0x26D4, 0x26D4},   {0x26EA, 0x26EA},   {0x26F2, 0x26F3},   {0x26F5, 0x26F5},
+    {0x26FA, 0x26FA},   {0x26FD, 0x26FD},   {0x2705, 0x2705},   {0x270A, 0x270B},
+    {0x2728, 0x2728},   {0x274C, 0x274C},   {0x274E, 0x274E},   {0x2753, 0x2755},
+    {0x2757, 0x2757},   {0x2795, 0x2797},   {0x27B0, 0x27B0},   {0x27BF, 0x27BF},
+    {0x2B1B, 0x2B1C},   {0x2B50, 0x2B50},   {0x2B55, 0x2B55},   {0x2E80, 0x2E99},
+    {0x2E9B, 0x2EF3},   {0x2F00, 0x2FD5},   {0x2FF0, 0x303E},   {0x3041, 0x3096},
+    {0x3099, 0x30FF},   {0x3105, 0x312F},   {0x3131, 0x318E},   {0x3190, 0x31E3},
+    {0x31EF, 0x321E},   {0x3220, 0x3247},   {0x3250, 0x4DBF},   {0x4E00, 0xA48C},
+    {0xA490, 0xA4C6},   {0xA960, 0xA97C},   {0xAC00, 0xD7A3},   {0xF900, 0xFAFF},
+    {0xFE10, 0xFE19},   {0xFE30, 0xFE52},   {0xFE54, 0xFE66},   {0xFE68, 0xFE6B},
+    {0xFF01, 0xFF60},   {0xFFE0, 0xFFE6},   {0x16FE0, 0x16FE4}, {0x16FF0, 0x16FF1},
+    {0x17000, 0x187F7}, {0x18800, 0x18CD5}, {0x18D00, 0x18D08}, {0x1AFF0, 0x1AFF3},
+    {0x1AFF5, 0x1AFFB}, {0x1AFFD, 0x1AFFE}, {0x1B000, 0x1B122}, {0x1B132, 0x1B132},
+    {0x1B150, 0x1B152}, {0x1B155, 0x1B155}, {0x1B164, 0x1B167}, {0x1B170, 0x1B2FB},
+    {0x1F004, 0x1F004}, {0x1F0CF, 0x1F0CF}, {0x1F18E, 0x1F18E}, {0x1F191, 0x1F19A},
+    {0x1F200, 0x1F202}, {0x1F210, 0x1F23B}, {0x1F240, 0x1F248}, {0x1F250, 0x1F251},
+    {0x1F260, 0x1F265}, {0x1F300, 0x1F320}, {0x1F32D, 0x1F335}, {0x1F337, 0x1F37C},
+    {0x1F37E, 0x1F393}, {0x1F3A0, 0x1F3CA}, {0x1F3CF, 0x1F3D3}, {0x1F3E0, 0x1F3F0},
+    {0x1F3F4, 0x1F3F4}, {0x1F3F8, 0x1F43E}, {0x1F440, 0x1F440}, {0x1F442, 0x1F4FC},
+    {0x1F4FF, 0x1F53D}, {0x1F54B, 0x1F54E}, {0x1F550, 0x1F567}, {0x1F57A, 0x1F57A},
+    {0x1F595, 0x1F596}, {0x1F5A4, 0x1F5A4}, {0x1F5FB, 0x1F64F}, {0x1F680, 0x1F6C5},
+    {0x1F6CC, 0x1F6CC}, {0x1F6D0, 0x1F6D2}, {0x1F6D5, 0x1F6D7}, {0x1F6DC, 0x1F6DF},
+    {0x1F6EB, 0x1F6EC}, {0x1F6F4, 0x1F6FC}, {0x1F7E0, 0x1F7EB}, {0x1F7F0, 0x1F7F0},
+    {0x1F90C, 0x1F93A}, {0x1F93C, 0x1F945}, {0x1F947, 0x1F9FF}, {0x1FA70, 0x1FA7C},
+    {0x1FA80, 0x1FA88}, {0x1FA90, 0x1FABD}, {0x1FABF, 0x1FAC5}, {0x1FACE, 0x1FADB},
+    {0x1FAE0, 0x1FAE8}, {0x1FAF0, 0x1FAF8}, {0x20000, 0x2FFFD}, {0x30000, 0x3FFFD}};
+
+static bool isEastAsianWide(uint p_code) {
+  int low = 0;
+  int high = static_cast<int>(sizeof(c_eastAsianWideRanges) / sizeof(c_eastAsianWideRanges[0])) - 1;
+  while (low <= high) {
+    const int mid = low + (high - low) / 2;
+    if (p_code < c_eastAsianWideRanges[mid].m_first) {
+      high = mid - 1;
+    } else if (p_code > c_eastAsianWideRanges[mid].m_last) {
+      low = mid + 1;
+    } else {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// Display width of @p_text in terminal-style columns: an East Asian `W`/`F`
+// code point counts 2, a combining mark counts 0, everything else counts 1.
+//
+// Measured over UCS-4 CODE POINTS - surrogate pairs are combined first - so an
+// astral wide character scores 2 rather than 4, and an astral combining mark
+// scores 0 rather than 2.
+//
+// The scan SATURATES at @p_ceiling: it returns as soon as the accumulated
+// width passes it. No int can overflow, and a pathologically long cell is not
+// scanned to its end just to be rejected.
+static int displayWidth(const QString &p_text, int p_ceiling) {
+  int width = 0;
+  for (int i = 0; i < p_text.size(); ++i) {
+    const QChar ch = p_text.at(i);
+    uint code = ch.unicode();
+    if (ch.isHighSurrogate() && i + 1 < p_text.size() && p_text.at(i + 1).isLowSurrogate()) {
+      code = QChar::surrogateToUcs4(ch, p_text.at(i + 1));
+      ++i;
+    }
+
+    const auto category = QChar::category(code);
+    if (category == QChar::Mark_NonSpacing || category == QChar::Mark_Enclosing) {
+      continue;
+    }
+
+    width += isEastAsianWide(code) ? 2 : 1;
+    if (width > p_ceiling) {
+      return width;
+    }
+  }
+
+  return width;
+}
+
+// The delimiter markers are emitted at @p_width dashes, or at their minimum
+// readable length when the column is narrower than that: the compact form the
+// serializer writes by default is the case where @p_width is the minimum, and
+// the opt-in aligned form is the case where it is the column's display width.
+// The `:` markers always stay at the edges.
+static QString alignmentMarker(PreviewTableAlignment p_alignment, int p_width) {
   switch (p_alignment) {
   case PreviewTableAlignment::Left:
-    return QStringLiteral(":---");
+    return QLatin1String(":") + QString(qMax(3, p_width - 1), QLatin1Char('-'));
   case PreviewTableAlignment::Right:
-    return QStringLiteral("---:");
+    return QString(qMax(3, p_width - 1), QLatin1Char('-')) + QLatin1String(":");
   case PreviewTableAlignment::Center:
-    return QStringLiteral(":---:");
+    return QLatin1String(":") + QString(qMax(3, p_width - 2), QLatin1Char('-')) +
+           QLatin1String(":");
   default:
-    return QStringLiteral("---");
+    return QString(qMax(3, p_width), QLatin1Char('-'));
+  }
+}
+
+// The width the delimiter marker of @p_alignment occupies at its minimum
+// readable length: 3 for None, 4 for Left/Right, 5 for Center. A column is
+// never padded below this, because the marker itself cannot shrink.
+static int minimumMarkerWidth(PreviewTableAlignment p_alignment) {
+  switch (p_alignment) {
+  case PreviewTableAlignment::Left:
+  case PreviewTableAlignment::Right:
+    return 4;
+  case PreviewTableAlignment::Center:
+    return 5;
+  default:
+    return 3;
+  }
+}
+
+// Place @p_cell inside a field of @p_width display columns, per the column's
+// alignment: None/Left pad on the right, Right pads on the left, Center splits
+// with the odd column going to the right.
+static QString padCell(const QString &p_cell, int p_width, PreviewTableAlignment p_alignment) {
+  const int pad = p_width - displayWidth(p_cell, p_width);
+  if (pad <= 0) {
+    return p_cell;
+  }
+
+  switch (p_alignment) {
+  case PreviewTableAlignment::Right:
+    return QString(pad, QLatin1Char(' ')) + p_cell;
+  case PreviewTableAlignment::Center: {
+    const int left = pad / 2;
+    return QString(left, QLatin1Char(' ')) + p_cell + QString(pad - left, QLatin1Char(' '));
+  }
+  default:
+    return p_cell + QString(pad, QLatin1Char(' '));
   }
 }
 
@@ -139,7 +279,7 @@ static bool hasLineSeparator(const QString &p_text) {
 QString TablePreviewSerializer::serialize(const QVector<QVector<QString>> &p_cells,
                                           const QVector<PreviewTableAlignment> &p_alignments,
                                           const QVector<QString> &p_rowPrefixes,
-                                          const QString &p_delimiterPrefix) {
+                                          const QString &p_delimiterPrefix, bool p_align) {
   if (p_cells.isEmpty() || p_cells.size() != p_rowPrefixes.size()) {
     return QString();
   }
@@ -172,12 +312,45 @@ QString TablePreviewSerializer::serialize(const QVector<QVector<QString>> &p_cel
     }
   }
 
+  auto columnAlignment = [&](int p_column) {
+    return p_column < p_alignments.size() ? p_alignments[p_column] : PreviewTableAlignment::None;
+  };
+
+  // Per column display widths, empty when the table is emitted compact. The
+  // ceiling is checked per TABLE, not per column: a mixed table would
+  // otherwise produce output the user cannot predict. Beyond it, one long cell
+  // would amplify the source by the row count - the very thing the compact
+  // contract exists to prevent - so the whole table falls back to compact.
+  // This is NOT a failure path: it emits, it does not reject.
+  QVector<int> widths;
+  if (p_align) {
+    widths.resize(columns);
+    bool oversized = false;
+    for (int c = 0; c < columns && !oversized; ++c) {
+      int width = minimumMarkerWidth(columnAlignment(c));
+      for (int r = 0; r < p_cells.size(); ++r) {
+        width = qMax(width, displayWidth(escaped[r * columns + c], c_maxAlignedColumnWidth));
+        if (width > c_maxAlignedColumnWidth) {
+          oversized = true;
+          break;
+        }
+      }
+
+      widths[c] = width;
+    }
+
+    if (oversized) {
+      widths.clear();
+    }
+  }
+
   auto emitRow = [&](const QString &p_prefix, int p_rowIdx) {
     QString line = p_prefix;
     line.append(QLatin1Char('|'));
     for (int c = 0; c < columns; ++c) {
+      const QString &cell = escaped[p_rowIdx * columns + c];
       line.append(QLatin1Char(' '));
-      line.append(escaped[p_rowIdx * columns + c]);
+      line.append(widths.isEmpty() ? cell : padCell(cell, widths[c], columnAlignment(c)));
       line.append(QLatin1String(" |"));
     }
     return line;
@@ -190,10 +363,10 @@ QString TablePreviewSerializer::serialize(const QVector<QVector<QString>> &p_cel
     QString line = p_delimiterPrefix;
     line.append(QLatin1Char('|'));
     for (int c = 0; c < columns; ++c) {
-      const auto alignment =
-          c < p_alignments.size() ? p_alignments[c] : PreviewTableAlignment::None;
+      const auto alignment = columnAlignment(c);
       line.append(QLatin1Char(' '));
-      line.append(alignmentMarker(alignment));
+      line.append(alignmentMarker(alignment,
+                                  widths.isEmpty() ? minimumMarkerWidth(alignment) : widths[c]));
       line.append(QLatin1String(" |"));
     }
     lines.append(line);
@@ -906,7 +1079,7 @@ bool TablePreviewDocument::isIntact() const {
   return false;
 }
 
-QString TablePreviewDocument::toMarkdown() const {
+QString TablePreviewDocument::toMarkdown(bool p_align) const {
   if (!isRoundTrippable()) {
     return QString();
   }
@@ -922,8 +1095,8 @@ QString TablePreviewDocument::toMarkdown() const {
                                                  m_hasHeaderRow, m_markdownBacked);
   }
 
-  return TablePreviewSerializer::serialize(cells(), m_alignments, m_rowPrefixes,
-                                           m_delimiterPrefix);
+  return TablePreviewSerializer::serialize(cells(), m_alignments, m_rowPrefixes, m_delimiterPrefix,
+                                           p_align);
 }
 
 QVector<QVector<QString>> TablePreviewDocument::cellTagGrid() const {
@@ -936,7 +1109,7 @@ QVector<QVector<QString>> TablePreviewDocument::cellTagGrid() const {
   return tags;
 }
 
-QString TablePreviewDocument::toStandaloneMarkdown() const {
+QString TablePreviewDocument::toStandaloneMarkdown(bool p_align) const {
   // Guarded exactly as toMarkdown() is, because cells() reads the cached
   // m_table - but without the round-trippability requirement: widening a
   // ragged sheet only affects the copy, which is never written back.
@@ -949,8 +1122,8 @@ QString TablePreviewDocument::toStandaloneMarkdown() const {
   // to stand on its own, so the blockquote or list indent the binding carried
   // is deliberately dropped. Sized from the matrix rather than m_rowCount, so
   // the serializer's size check cannot fail on a drift between the two.
-  return TablePreviewSerializer::serialize(matrix, m_alignments,
-                                           QVector<QString>(matrix.size()), QString());
+  return TablePreviewSerializer::serialize(matrix, m_alignments, QVector<QString>(matrix.size()),
+                                           QString(), p_align);
 }
 
 QString TablePreviewDocument::toHtml() const {
@@ -967,7 +1140,9 @@ QString TablePreviewDocument::toHtml() const {
                                                  m_hasHeaderRow, m_markdownBacked);
   }
 
-  const QString markdown = toStandaloneMarkdown();
+  // Never padded: the rendered HTML is layout independent, so alignment
+  // padding would only inject meaningless whitespace into the cell payloads.
+  const QString markdown = toStandaloneMarkdown(false);
 
   if (markdown.isEmpty()) {
     return QString();
@@ -2936,7 +3111,7 @@ QMenu *TablePreviewSheet::buildTableMenu(QMenu *p_parent, bool p_offerMutations,
   // the enabled state and what lands on the clipboard cannot disagree - the
   // serializer returns an empty string for contents it cannot represent (an
   // empty matrix, a zero width, a cell holding a line separator).
-  const QString markdown = m_document->toStandaloneMarkdown();
+  const QString markdown = m_document->toStandaloneMarkdown(m_alignSource);
   const QString html = m_document->toHtml();
 
   QAction *copyMarkdown = menu->addAction(tr("Copy as Markdown"));
@@ -3351,7 +3526,7 @@ bool TablePreviewWidget::setPreview(const QSharedPointer<const Preview> &p_previ
     const char *reason = "identical source";
 
     if (!unchanged) {
-      const QString current = m_document->toMarkdown();
+      const QString current = m_document->toMarkdown(m_alignSource);
       unchanged = !current.isEmpty() && current == incoming;
       reason = "the sheet's own contents";
     }
@@ -3397,6 +3572,27 @@ void TablePreviewWidget::setReadOnly(bool p_readOnly) {
 
   m_readOnly = p_readOnly;
   applyEditability();
+}
+
+void TablePreviewWidget::setSourceAlignEnabled(bool p_enabled) {
+  if (m_alignSource == p_enabled) {
+    return;
+  }
+
+  // Deliberately a pure setter: nothing about the live document, the caret,
+  // the geometry or the editability changes, and the committed baseline is
+  // left exactly as it is - it records what the document really holds, which
+  // is what the echo check needs.
+  //
+  // What keeps a mere flip from reformatting the document is not done here but
+  // in flushPendingCommit(), which reconciles the baseline at COMMIT time. That
+  // is the only point which sees every ordering: a flip on a clean sheet, a
+  // flip while an edit which cancels out is still pending, and a flip which
+  // lands from a callback while a replacement is on the wire.
+  m_alignSource = p_enabled;
+  if (m_sheet) {
+    m_sheet->setSourceAlignEnabled(p_enabled);
+  }
 }
 
 void TablePreviewWidget::applyEditability() {
@@ -3513,7 +3709,8 @@ void TablePreviewWidget::resetFromSource() {
   m_inFlightGeneration = 0;
   m_commitInFlight = false;
   m_inFlightMarkdown.clear();
-  m_committedMarkdown = m_document->toMarkdown();
+  m_committedMarkdown = m_document->toMarkdown(m_alignSource);
+  m_committedMarkdownAligned = m_alignSource;
 
   applyEditability();
   updateGeometry();
@@ -3602,7 +3799,37 @@ TablePreviewWidget::FlushOutcome TablePreviewWidget::flushPendingCommit() {
     return FlushOutcome::Settled;
   }
 
-  const QString markdown = m_document->toMarkdown();
+  // The aligned option was flipped since the baseline was recorded. An edit
+  // which cancelled out is not a reason to reformat the document, so the
+  // question "did anything really change" has to be asked in the SHAPE the
+  // baseline was recorded in - a comparison against the new shape would report
+  // a divergence for every table.
+  //
+  // Deliberately here rather than in setSourceAlignEnabled(): this is the one
+  // point which sees every ordering. A flip on a clean sheet, a flip while an
+  // edit which cancels out is still pending, and a flip which lands from a
+  // callback while a replacement is on the wire all arrive at the same test.
+  if (m_committedMarkdownAligned != m_alignSource && !m_committedMarkdown.isEmpty()) {
+    const QString asRecorded = m_document->toMarkdown(m_committedMarkdownAligned);
+    if (!asRecorded.isEmpty() && asRecorded == m_committedMarkdown) {
+      // Semantically settled. Adopt the new shape as the baseline WITHOUT
+      // writing it: the document keeps the source it has, and the next real
+      // content change is what carries the new shape into it.
+      const QString reshaped = m_document->toMarkdown(m_alignSource);
+      if (!reshaped.isEmpty()) {
+        qCDebug(previewTableLog) << "the aligned option changed but the contents did not -"
+                                 << "re-derived the baseline instead of reformatting";
+        m_committedMarkdown = reshaped;
+        m_committedMarkdownAligned = m_alignSource;
+        m_committedGeneration = m_editGeneration;
+        return FlushOutcome::Settled;
+      }
+    }
+  }
+
+  // The same flag the baseline was recorded with, or every commit would look
+  // like a divergence from it.
+  const QString markdown = m_document->toMarkdown(m_alignSource);
   if (markdown.isEmpty()) {
     // Unsafe to rewrite: restore the source view.
     qCWarning(previewTableLog) << "the sheet was edited but cannot be serialized safely -"
@@ -3628,6 +3855,11 @@ TablePreviewWidget::FlushOutcome TablePreviewWidget::flushPendingCommit() {
 
   m_inFlightMarkdown = markdown;
   m_inFlightGeneration = generation;
+  // The shape this request was serialized in. Captured rather than re-read on
+  // completion: a callback the replacement itself runs can flip the option
+  // while this is on the wire, and the accepted baseline must describe the
+  // text which actually landed.
+  m_inFlightAligned = m_alignSource;
   m_commitInFlight = true;
   // Overwritten synchronously by the completion below. Only a request which
   // never reaches one - the host has no live identity for this sheet at all -
@@ -3665,6 +3897,7 @@ void TablePreviewWidget::handleReplacementFinished(const vte::PreviewReplacement
 
     if (wasInFlight) {
       m_committedMarkdown = m_inFlightMarkdown;
+      m_committedMarkdownAligned = m_inFlightAligned;
       // Deliberately the in-flight generation, never the current one: the user
       // may have typed again while this was on the wire, and that edit is
       // still owed a write-back of its own.
@@ -3860,6 +4093,7 @@ TablePreviewWidgetFactory::createWidget(PreviewWidgetContext *p_context,
 
   auto widget = new TablePreviewWidget(p_context, p_parent);
   widget->setReadOnly(m_readOnly);
+  widget->setSourceAlignEnabled(m_alignSource);
 
   // Relay the sheet's requests upwards with the widget attached: only the host
   // can resolve which identity - and therefore which live anchor - they belong
@@ -3900,5 +4134,18 @@ void TablePreviewWidgetFactory::setReadOnly(bool p_readOnly) {
   pruneWidgets();
   for (auto &widget : m_widgets) {
     widget->setReadOnly(p_readOnly);
+  }
+}
+
+void TablePreviewWidgetFactory::setSourceAlignEnabled(bool p_enabled) {
+  if (m_alignSource == p_enabled) {
+    return;
+  }
+
+  m_alignSource = p_enabled;
+
+  pruneWidgets();
+  for (auto &widget : m_widgets) {
+    widget->setSourceAlignEnabled(p_enabled);
   }
 }

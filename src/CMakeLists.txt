@@ -212,6 +212,11 @@ endif()
 # imageLinksUpdated() / PreviewMgr::updateImageLinks() now carry
 # md::ImageLinkInfo rather than md::ElementRegion. An already-linked consumer
 # would otherwise resolve against a signature that no longer exists.
+#
+# 6.0: MarkdownEditorConfig gained m_alignTableSourceEnabled. Same reasoning as
+# the 3.0 entry: applications allocate that struct themselves, so its layout is
+# part of the ABI, and an already-linked consumer would write its other members
+# at the wrong offsets.
 set_target_properties(VTextEdit PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION ${PROJECT_VERSION_MAJOR}

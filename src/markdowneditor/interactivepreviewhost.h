@@ -55,6 +55,15 @@ public:
 
   void setTypeEnabled(PreviewElementType p_type, bool p_enabled);
 
+  // Whether a table sheet writes back a padded, column-aligned pipe table
+  // instead of the compact one. Affects subsequent commits only: no existing
+  // source is reformatted.
+  //
+  // The value is stored as well as forwarded. The built-in table factory is
+  // constructed eagerly, so the stored copy is a defensive fallback for an
+  // application which unregistered it, not a lazy-creation requirement.
+  void setTableSourceAlignEnabled(bool p_enabled);
+
   bool isTypeEnabled(PreviewElementType p_type) const;
 
   // Dynamic property carrying the enabled element type mask to the
@@ -337,6 +346,9 @@ private:
   // Last read-only state reported to the log, so the per-publish call does not
   // repeat itself.
   bool m_lastLoggedReadOnly = false;
+
+  // Mirrored onto m_tableFactory whenever it exists.
+  bool m_tableSourceAlign = false;
 
   // Returns 0 when no existing identity can safely be reused.
   quint64 findIdentity(const QSharedPointer<const Preview> &p_preview,
