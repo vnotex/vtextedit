@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
-project(VTextEdit VERSION 5.0.0 LANGUAGES C CXX)
+# This nested project() overrides PROJECT_VERSION for this directory scope, so it
+# — not the root CMakeLists.txt — is what the SOVERSION at the bottom of this file
+# actually reads. The two declarations MUST be bumped together; bumping only the
+# root leaves the installed library carrying the previous soname.
+project(VTextEdit VERSION 6.0.0 LANGUAGES C CXX)
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
