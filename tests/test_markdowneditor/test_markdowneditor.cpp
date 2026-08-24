@@ -1,5 +1,6 @@
 #include "test_markdowneditor.h"
 
+#include <QBuffer>
 #include <QDir>
 #include <QImage>
 #include <QPixmap>
@@ -12,6 +13,7 @@
 #include <vtextedit/markdowneditorconfig.h>
 #include <vtextedit/markdownhighlighter.h>
 #include <vtextedit/markdownutils.h>
+#include <vtextedit/previewmgr.h>
 #include <vtextedit/texteditorconfig.h>
 #include <vtextedit/vmarkdowneditor.h>
 #include <vtextedit/vtextedit.h>
@@ -639,6 +641,108 @@ void TestMarkdownEditor::testOversizedImageIsClamped() {
     QVERIFY(!fixture.editor()->findImageFromDocumentResourceMgr(
         resourceName(QStringLiteral("local.png"), 99999, 0)));
   });
+}
+
+namespace {
+// A solid p_width x p_height PNG as raw bytes.
+QByteArray testImageData(int p_width, int p_height) {
+  QImage img(p_width, p_height, QImage::Format_ARGB32);
+  img.fill(Qt::blue);
+  QByteArray data;
+  QBuffer buffer(&data);
+  buffer.open(QIODevice::WriteOnly);
+  img.save(&buffer, "PNG");
+  return data;
+}
+} // namespace
+
+// Bytes handed over through seedImageData() are used instead of downloading the
+// image back, at every declared size the document asks for.
+void TestMarkdownEditor::testSeededImageAvoidsDownload() {
+  QTemporaryDir dir;
+  QVERIFY(dir.isValid());
+
+  // Normalization-sensitive: percent-encoded plus a query string, spelled in a
+  // form QUrl canonicalizes, so the raw string is NOT a usable key.
+  const QString url = QStringLiteral("HTTPS://Example.invalid/img/a%20b.png?v=1");
+  QVERIFY(MarkdownUtils::linkUrlToPath(dir.path(), url) != url);
+
+  // Seed BEFORE the links exist, which is the production ordering: the seed has
+  // to be in place when the re-highlight resolves the freshly inserted link, or
+  // a download is issued.
+  Fixture fixture(QString(), 0);
+  fixture.editor()->setBasePath(dir.path());
+  fixture.editor()->getPreviewMgr()->seedImageData(url, testImageData(60, 30));
+
+  auto cursor = QTextCursor(fixture.editor()->document());
+  cursor.insertText(QStringLiteral("![](") + url + QStringLiteral(")\n\n![](") + url +
+                    QStringLiteral(" =300x)\n"));
+  fixture.editor()->getHighlighter()->updateHighlight();
+  fixture.waitForFreshAst(0);
+
+  const QPixmap *natural = nullptr;
+  const QPixmap *sized = nullptr;
+  QTRY_VERIFY_WITH_TIMEOUT(
+      (natural = fixture.editor()->findImageFromDocumentResourceMgr(resourceName(url, 0, 0))) !=
+              nullptr &&
+          (sized = fixture.editor()->findImageFromDocumentResourceMgr(resourceName(url, 300, 0))) !=
+              nullptr,
+      5000);
+  QCOMPARE(natural->width(), 60);
+  QCOMPARE(sized->width(), 300);
+}
+
+// The hand-off buffer is bounded and keyed: re-seeding one URL replaces, and a
+// 5th distinct seed evicts the 1st.
+void TestMarkdownEditor::testSeededImageBufferIsBounded() {
+  QTemporaryDir dir;
+  QVERIFY(dir.isValid());
+
+  const QString first = QStringLiteral("https://example.invalid/1.png");
+  const QString fifth = QStringLiteral("https://example.invalid/5.png");
+
+  Fixture fixture(QString(), 0);
+  fixture.editor()->setBasePath(dir.path());
+  auto *previewMgr = fixture.editor()->getPreviewMgr();
+
+  previewMgr->seedImageData(first, testImageData(10, 10));
+  // Replacing in place must keep its slot, not append a duplicate.
+  previewMgr->seedImageData(first, testImageData(20, 20));
+  for (int i = 2; i <= 4; ++i) {
+    previewMgr->seedImageData(QStringLiteral("https://example.invalid/%1.png").arg(i),
+                              testImageData(10, 10));
+  }
+
+  // 4 distinct entries so far, the first still present (its re-seed did not
+  // consume an extra slot) and carrying the REPLACED bytes.
+  auto cursor = QTextCursor(fixture.editor()->document());
+  cursor.insertText(QStringLiteral("![](") + first + QStringLiteral(")\n"));
+  fixture.editor()->getHighlighter()->updateHighlight();
+  fixture.waitForFreshAst(0);
+  const QPixmap *img = nullptr;
+  QTRY_VERIFY_WITH_TIMEOUT((img = fixture.editor()->findImageFromDocumentResourceMgr(
+                                resourceName(first, 0, 0))) != nullptr,
+                           5000);
+  QCOMPARE(img->width(), 20);
+
+  // A 5th distinct seed evicts the oldest, which is the first URL. Ask for BOTH
+  // at a declared size that has never been built before: the 5th must render
+  // from its seed, and the first - whose seed is gone and whose host does not
+  // resolve - must stay absent even after the 5th has arrived.
+  previewMgr->seedImageData(fifth, testImageData(30, 30));
+
+  cursor.movePosition(QTextCursor::End);
+  cursor.insertText(QStringLiteral("\n\n![](") + first + QStringLiteral(" =123x)\n\n![](") + fifth +
+                    QStringLiteral(" =123x)\n"));
+  fixture.editor()->getHighlighter()->updateHighlight();
+  fixture.waitForFreshAst(0);
+
+  const QPixmap *survivor = nullptr;
+  QTRY_VERIFY_WITH_TIMEOUT((survivor = fixture.editor()->findImageFromDocumentResourceMgr(
+                                resourceName(fifth, 123, 0))) != nullptr,
+                           5000);
+  QCOMPARE(survivor->width(), 123);
+  QVERIFY(!fixture.editor()->findImageFromDocumentResourceMgr(resourceName(first, 123, 0)));
 }
 
 void TestMarkdownEditor::testMultiLineMarkerOnList() {

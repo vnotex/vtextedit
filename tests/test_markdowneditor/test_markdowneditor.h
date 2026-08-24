@@ -67,6 +67,11 @@ private slots:
 
   void testOversizedImageIsClamped();
 
+  // Seeded image data (PreviewMgr::seedImageData).
+  void testSeededImageAvoidsDownload();
+
+  void testSeededImageBufferIsBounded();
+
   // Multi-line inline markers (typeMarker over a cross-block selection).
   void testMultiLineMarkerOnList();
 

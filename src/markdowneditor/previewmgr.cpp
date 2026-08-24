@@ -285,27 +285,38 @@ QString PreviewMgr::imageResourceName(const ImageLink &p_link) {
       return QString();
     }
   } else {
-    // URL. Try to download it.
-    // qrc:// files will touch this path.
-    auto &pending = m_urlMap[imgPath];
-    // Only the first pending entry for a URL issues a request; the rest ride
-    // along on the same download and are all served when it completes.
-    const bool alreadyRequested = !pending.isEmpty();
-    bool known = false;
-    for (const auto &entry : pending) {
-      if (entry->m_name == name) {
-        known = true;
-        break;
+    // URL.
+    // First check whether the application already handed us the bytes of this
+    // image (e.g. right after uploading it to an image host), which saves a
+    // round trip to fetch back what we just sent.
+    const int seededIdx = indexOfSeededImage(imgPath);
+    if (seededIdx != -1) {
+      image = m_seededImages[seededIdx].second;
+      // Do NOT erase the seed on use: one URL may be requested at several
+      // declared sizes, each of which is a distinct resource.
+    } else {
+      // Try to download it.
+      // qrc:// files will touch this path.
+      auto &pending = m_urlMap[imgPath];
+      // Only the first pending entry for a URL issues a request; the rest ride
+      // along on the same download and are all served when it completes.
+      const bool alreadyRequested = !pending.isEmpty();
+      bool known = false;
+      for (const auto &entry : pending) {
+        if (entry->m_name == name) {
+          known = true;
+          break;
+        }
       }
+      if (!known) {
+        pending.append(
+            QSharedPointer<UrlImageData>(new UrlImageData(name, p_link.m_width, p_link.m_height)));
+      }
+      if (!alreadyRequested) {
+        downloader()->requestAsync(imgPath);
+      }
+      return QString();
     }
-    if (!known) {
-      pending.append(
-          QSharedPointer<UrlImageData>(new UrlImageData(name, p_link.m_width, p_link.m_height)));
-    }
-    if (!alreadyRequested) {
-      downloader()->requestAsync(imgPath);
-    }
-    return QString();
   }
 
   int width = p_link.m_width;
@@ -330,6 +341,46 @@ QString PreviewMgr::imageResourceNameForSource(Source p_source, const PreviewIte
 
   resourceMgr->addImage(name, p_image.m_image);
   return name;
+}
+
+int PreviewMgr::indexOfSeededImage(const QString &p_normalizedPath) const {
+  for (int i = 0; i < m_seededImages.size(); ++i) {
+    if (m_seededImages[i].first == p_normalizedPath) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+void PreviewMgr::seedImageData(const QString &p_url, const QByteArray &p_data) {
+  if (p_url.isEmpty() || p_data.isEmpty()) {
+    return;
+  }
+
+  // Normalize through the very same call the link path uses, so the key matches
+  // the imgPath computed when the link is previewed.
+  const QString key = MarkdownUtils::linkUrlToPath(m_interface->basePath(), p_url);
+  if (key.isEmpty()) {
+    return;
+  }
+
+  QPixmap image;
+  if (!image.loadFromData(p_data) || image.isNull()) {
+    // Not an image (an image host may return an HTML error page). Drop it.
+    return;
+  }
+
+  const int idx = indexOfSeededImage(key);
+  if (idx != -1) {
+    // Replace in place, keeping its position.
+    m_seededImages[idx].second = image;
+    return;
+  }
+
+  m_seededImages.append(qMakePair(key, image));
+  while (m_seededImages.size() > c_maxSeededImages) {
+    m_seededImages.removeFirst();
+  }
 }
 
 void PreviewMgr::clearBlockObsoletePreview(TimeStamp p_timeStamp, Source p_source,

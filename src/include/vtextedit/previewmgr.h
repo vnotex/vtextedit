@@ -4,6 +4,8 @@
 #include <QDebug>
 #include <QHash>
 #include <QObject>
+#include <QPair>
+#include <QPixmap>
 #include <QSharedPointer>
 #include <QString>
 #include <QTextBlock>
@@ -98,6 +100,17 @@ public:
 
   // Clear all the preview.
   void clearPreview();
+
+  // Hand over the bytes of an image that the application already has in memory
+  // (typically the payload it just uploaded to an image host), so that the
+  // in-place preview of @p_url does not have to download it back.
+  //
+  // The key is normalized exactly like a link destination is, so pass the URL as
+  // it will be spelled in the document. A payload that does not decode into an
+  // image is dropped silently.
+  //
+  // This is a small bounded hand-off buffer, not a cache.
+  void seedImageData(const QString &p_url, const QByteArray &p_data);
 
   // Helper function to export outside.
   static int calculateBlockMargin(const QTextBlock &p_block, int p_tabStopDistance);
@@ -221,6 +234,9 @@ private:
 
   QString imageResourceNameForSource(PreviewData::Source p_source, const PreviewItem &p_image);
 
+  // Index of @p_normalizedPath in m_seededImages, or -1.
+  int indexOfSeededImage(const QString &p_normalizedPath) const;
+
   void clearBlockObsoletePreview(TimeStamp p_timeStamp, PreviewData::Source p_source,
                                  OrderedIntSet &p_affectedBlocks);
 
@@ -250,6 +266,13 @@ private:
   // single-value map would let the second insert overwrite the first, and the
   // erase on completion would then discard the survivor.
   QHash<QString, QVector<QSharedPointer<UrlImageData>>> m_urlMap;
+
+  // Bounded, insertion-ordered hand-off buffer of images supplied by the
+  // application through seedImageData(). Keyed by the normalized link path.
+  QVector<QPair<QString, QPixmap>> m_seededImages;
+
+  // Maximum number of entries kept in m_seededImages (FIFO eviction).
+  static const int c_maxSeededImages = 4;
 };
 } // namespace vte
 #endif // PREVIEWMGR_H
