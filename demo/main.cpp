@@ -46,7 +46,7 @@ static VTextEditor *setupTextEditor(QWidget *p_parent)
 
 static VMarkdownEditor *setupMarkdownEditor(QWidget *p_parent) {
   auto editorConfig = QSharedPointer<TextEditorConfig>::create();
-  editorConfig->m_inputMode = InputMode::VscodeMode;
+  editorConfig->m_inputMode = InputMode::ViMode;
   editorConfig->m_lineSpacing = 1.25;
   // editorConfig->m_maxContentWidth = 600;
   auto markdownEditorConfig = QSharedPointer<MarkdownEditorConfig>::create(editorConfig);
