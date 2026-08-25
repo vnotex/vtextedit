@@ -9,7 +9,7 @@ set(SRC_FOLDER ../../src)
 set(MDEDITOR_FOLDER ${SRC_FOLDER}/markdowneditor)
 set(LIBS_FOLDER ../../libs)
 
-add_executable(test_tablepreview
+add_executable(test_tablepreviewinputmode
     ${SRC_FOLDER}/include/vtextedit/preview.h
     ${SRC_FOLDER}/include/vtextedit/previewwidget.h
     ${MDEDITOR_FOLDER}/preview.cpp ${MDEDITOR_FOLDER}/previewbuilder.h
@@ -48,9 +48,9 @@ add_executable(test_tablepreview
     # VTextEditTranslate lives here and is a QObject; moc it, or the input mode
     # factories cannot resolve its static metaobject.
     ${SRC_FOLDER}/include/vtextedit/global.h
-    test_tablepreview.cpp test_tablepreview.h
+    test_tablepreviewinputmode.cpp test_tablepreviewinputmode.h
 )
-target_include_directories(test_tablepreview PRIVATE
+target_include_directories(test_tablepreviewinputmode PRIVATE
     ..
     ${SRC_FOLDER}
     ${SRC_FOLDER}/include
@@ -61,12 +61,12 @@ target_include_directories(test_tablepreview PRIVATE
     ${LIBS_FOLDER}/katevi/src/include
 )
 
-target_compile_definitions(test_tablepreview PRIVATE
+target_compile_definitions(test_tablepreviewinputmode PRIVATE
     VTEXTEDIT_STATIC_DEFINE
     KATEVI_STATIC_DEFINE
 )
 
-target_link_libraries(test_tablepreview PRIVATE
+target_link_libraries(test_tablepreviewinputmode PRIVATE
     Qt::Core
     Qt::Gui
     Qt::Test
@@ -74,4 +74,4 @@ target_link_libraries(test_tablepreview PRIVATE
     cmark
     KateVi
 )
-add_test(NAME test_tablepreview COMMAND test_tablepreview)
+add_test(NAME test_tablepreviewinputmode COMMAND test_tablepreviewinputmode)

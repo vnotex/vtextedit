@@ -24,6 +24,8 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include <inputmode/abstractinputmode.h>
+#include <texteditor/inputmodestatuswidget.h>
 #include <vtextedit/markdowneditorconfig.h>
 #include <vtextedit/markdownhighlighter.h>
 #include <vtextedit/texteditorconfig.h>
@@ -4232,9 +4234,10 @@ void TestInteractivePreview::testDocumentEditStillScrollsWhenTheEditorHasFocus()
            "the editor no longer scrolls to its caret when it has the focus");
 }
 
-// Escape hands the focus back without moving the caret, so it must not scroll
-// the viewport either - not even where centering is configured.
-void TestInteractivePreview::testEscapeFromASheetDoesNotScrollTheEditor() {
+// An arrow key at a table edge hands the focus back to the editor and puts the
+// caret on the source. Escape no longer does (decision D3): it belongs to the
+// sheet's input mode, which is how Vi's insert and visual modes are left.
+void TestInteractivePreview::testAnEdgeArrowFromASheetHandsTheFocusBack() {
   auto config = makeConfig();
   config->m_textEditorConfig->m_centerCursor = CenterCursor::AlwaysCenter;
 
@@ -4259,11 +4262,251 @@ void TestInteractivePreview::testEscapeFromASheetDoesNotScrollTheEditor() {
   sheet->setFocus();
   QVERIFY2(sheet->hasFocus(), "the sheet did not take the focus");
 
-  QTest::keyClick(sheet, Qt::Key_Escape);
+  // Row 0 is the first row, so Up is at the top edge.
+  QTest::keyClick(sheet, Qt::Key_Up);
   QCoreApplication::processEvents();
 
   QVERIFY2(textEdit->hasFocus(), "the editor did not take the focus back");
-  QCOMPARE(vbar->value(), vbar->minimum());
+
+  // Escape is the mode's now, and with no Vi mode installed nothing claims it:
+  // the sheet keeps the focus.
+  sheet->setFocus();
+  QVERIFY(sheet->hasFocus());
+  QTest::keyClick(sheet, Qt::Key_Escape);
+  QCoreApplication::processEvents();
+  QVERIFY2(sheet->hasFocus(), "Escape must no longer hand the focus back");
+}
+
+// The sheet runs the editor's configured input mode (decision D6), and tracks
+// a change to it - which is what makes typing inside a previewed table behave
+// like typing outside one.
+void TestInteractivePreview::testASheetFollowsTheEditorsInputMode() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 300);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  editor.setInputMode(InputMode::ViMode);
+  setTextAndSettle(editor, tableAboveFiller());
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = qobject_cast<VTextEdit *>(sheetView(widget));
+  QVERIFY2(sheet, "the sheet is not a VTextEdit, so no input mode can run in it");
+
+  // Decision D5: recorded, not built. A note can hold dozens of previewed
+  // tables and a Vi mode is a whole KateVi::InputModeManager plus a command
+  // bar; only a sheet the user moves into pays for one.
+  QVERIFY2(!sheet->getInputMode(), "the mode was built before the sheet was focused");
+
+  sheet->setFocus();
+  QVERIFY(sheet->hasFocus());
+  QCoreApplication::processEvents();
+
+  QVERIFY(sheet->getInputMode());
+  QCOMPARE(sheet->getInputMode()->mode(), InputMode::ViMode);
+
+  // And it tracks a change. Sourced from the editor's existing modeChanged()
+  // signal plus a query of the mode (decision D8), so no new signal was added.
+  editor.setInputMode(InputMode::VscodeMode);
+  QCOMPARE(sheet->getInputMode()->mode(), InputMode::VscodeMode);
+
+  editor.setInputMode(InputMode::NormalMode);
+  QCOMPARE(sheet->getInputMode()->mode(), InputMode::NormalMode);
+}
+
+// Decision D4: while a sheet holds the focus its mode's status widget takes the
+// editor's single slot, and the editor takes it back on the way out.
+void TestInteractivePreview::testAFocusedSheetTakesTheEditorsStatusSlot() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 300);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  editor.setInputMode(InputMode::ViMode);
+  setTextAndSettle(editor, tableAboveFiller());
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+
+  QSignalSpy published(&editor, &VTextEditor::inputModeStatusWidgetChanged);
+
+  const QSharedPointer<QWidget> editorWidget = editor.inputModeStatusWidget();
+  QVERIFY2(editorWidget, "Vi mode has a status widget");
+
+  sheet->setFocus();
+  QVERIFY(sheet->hasFocus());
+  QCoreApplication::processEvents();
+
+  const QSharedPointer<QWidget> sheetWidget = editor.inputModeStatusWidget();
+  QVERIFY2(sheetWidget, "the sheet's mode has a status widget of its own");
+  QVERIFY2(sheetWidget != editorWidget, "the sheet did not take the editor's status slot");
+  QVERIFY(published.count() > 0);
+
+  auto textEdit = editor.getTextEdit();
+  textEdit->setFocus();
+  QVERIFY(textEdit->hasFocus());
+  QCoreApplication::processEvents();
+
+  QCOMPARE(editor.inputModeStatusWidget(), editorWidget);
+
+  // Destroying the editor here is also the teardown test: the sheet's mode has
+  // to die with its status bar already unparented, which ViInputMode asserts.
+}
+
+// Switching a FOCUSED sheet from a mode with no status widget to one that has
+// one has to mount it. The Normal and vscode modes have none, so the "who owns
+// the slot" bookkeeping reads 0 at exactly the moment the swap happens.
+void TestInteractivePreview::testAFocusedModeSwitchMountsTheNewStatusWidget() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 300);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  editor.setInputMode(InputMode::NormalMode);
+  setTextAndSettle(editor, tableAboveFiller());
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+
+  sheet->setFocus();
+  QVERIFY(sheet->hasFocus());
+  QCoreApplication::processEvents();
+
+  // Normal mode: nobody has a status widget, so the slot is empty.
+  QVERIFY(!editor.inputModeStatusWidget());
+
+  editor.setInputMode(InputMode::ViMode);
+  QCoreApplication::processEvents();
+
+  const QSharedPointer<QWidget> mounted = editor.inputModeStatusWidget();
+  QVERIFY2(mounted, "no status widget was mounted after the switch to Vi");
+
+  // It is the SHEET's, not the editor's: the sheet still has the focus.
+  auto sheetEdit = qobject_cast<VTextEdit *>(sheet);
+  QVERIFY(sheetEdit);
+  QVERIFY(sheetEdit->getInputMode());
+  QVERIFY(sheetEdit->getInputMode()->statusWidget());
+  QCOMPARE(mounted, sheetEdit->getInputMode()->statusWidget()->widget());
+
+  // Back to a mode without one, still focused: the slot empties again rather
+  // than keeping a widget whose mode is gone.
+  editor.setInputMode(InputMode::VscodeMode);
+  QCoreApplication::processEvents();
+  QVERIFY(!editor.inputModeStatusWidget());
+}
+
+// Removing the FOCUSED preview has to hand the focus, and with it the input
+// mode's notion of who is being typed into, back to the editor.
+void TestInteractivePreview::testRemovingAFocusedSheetReturnsTheEditorsMode() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 300);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  editor.setInputMode(InputMode::ViMode);
+  setTextAndSettle(editor, tableAboveFiller());
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+
+  auto textEdit = editor.getTextEdit();
+
+  sheet->setFocus();
+  QVERIFY(sheet->hasFocus());
+  QCoreApplication::processEvents();
+
+  // The sheet's mode holds the status slot while it has the focus.
+  const QSharedPointer<QWidget> sheetWidget = editor.inputModeStatusWidget();
+  QVERIFY(sheetWidget);
+
+  // Rewriting the source away destroys the item under the focus. The status
+  // slot has to come back BEFORE the mode is destroyed - ViInputMode asserts
+  // its status bar is unparented - and the focus has to land on the editor.
+  setTextAndSettle(editor, QStringLiteral("just text, no table at all\n"));
+
+  QVERIFY2(!singlePreviewWidget(editor), "the table preview should be gone");
+  QVERIFY2(textEdit->hasFocus(), "the editor did not take the focus back");
+
+  // The editor's own mode owns the slot again.
+  auto editorMode = editor.getInputMode();
+  QVERIFY(editorMode);
+  QVERIFY(editorMode->statusWidget());
+  QCOMPARE(editor.inputModeStatusWidget(), editorMode->statusWidget()->widget());
+
+  // And it is usable: the editor is in Vi normal mode and answers a motion.
+  QCOMPARE(editor.getEditorMode(), EditorMode::ViModeNormal);
+}
+
+// The same removal, but with the sheet's Vi command bar holding the focus.
+//
+// The bar is mounted in the EDITOR's status slot, so it is not a descendant of
+// the preview: a removal which only looked inside the preview's widget subtree
+// would leave the focus on a bar whose mode is about to be destroyed. Handing
+// the slot back also hides and unparents the bar synchronously, which can emit
+// a focus change re-entrantly - so the ownership snapshot has to be taken
+// before that.
+void TestInteractivePreview::testRemovingASheetWhoseCommandBarHasFocus() {
+  // A real host window: the editor above, its status widget below. The command
+  // bar is only focusable once it is actually mounted in that status widget,
+  // which is the whole point - it is outside the preview.
+  QWidget host;
+  auto layout = new QVBoxLayout(&host);
+  layout->setContentsMargins(0, 0, 0, 0);
+
+  auto editor = new VMarkdownEditor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  layout->addWidget(editor);
+
+  auto status = editor->statusWidget();
+  QVERIFY(status);
+  layout->addWidget(status.data());
+
+  host.resize(600, 360);
+  host.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&host));
+  host.activateWindow();
+  QTest::qWaitForWindowActive(&host);
+
+  editor->setInputMode(InputMode::ViMode);
+  setTextAndSettle(*editor, tableAboveFiller());
+
+  auto widget = singlePreviewWidget(*editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+
+  auto textEdit = editor->getTextEdit();
+
+  sheet->setFocus();
+  if (!sheet->hasFocus()) {
+    QSKIP("the platform did not grant the keyboard focus");
+  }
+  QCoreApplication::processEvents();
+
+  // ':' opens the emulated command bar, which then takes the focus.
+  QTest::keyClick(sheet, Qt::Key_Colon);
+  QCoreApplication::processEvents();
+
+  QWidget *focus = QApplication::focusWidget();
+  if (!focus || focus == sheet || sheet->isAncestorOf(focus)) {
+    QSKIP("the command bar did not take the focus in this environment");
+  }
+  QVERIFY2(!widget->isAncestorOf(focus),
+           "the command bar is expected to live outside the preview widget");
+
+  // Rewriting the source away destroys the item, and with it the mode which
+  // owns the bar that currently has the focus.
+  setTextAndSettle(*editor, QStringLiteral("just text, no table at all\n"));
+
+  QVERIFY2(!singlePreviewWidget(*editor), "the table preview should be gone");
+  QVERIFY2(textEdit->hasFocus(), "the editor did not take the focus back from the command bar");
+
+  auto editorMode = editor->getInputMode();
+  QVERIFY(editorMode);
+  QVERIFY(editorMode->statusWidget());
+  QCOMPARE(editor->inputModeStatusWidget(), editorMode->statusWidget()->widget());
 }
 
 // ---------------------------------------------------------------------------

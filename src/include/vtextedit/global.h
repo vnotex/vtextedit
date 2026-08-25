@@ -59,6 +59,31 @@ inline QString editorModeToString(EditorMode p_mode) {
 
 enum CaretStyle { Line, Block, Underline, Half, MaxCaretStyle };
 
+// Whether a key press in @p_mode inserts text rather than issuing a command.
+//
+// THE input method rule, spelled once. Vi's normal and visual modes turn every
+// printable key into a command, so an input method would swallow the keystroke
+// and compose with it instead; every other mode is ordinary typing. Three
+// widgets answer Qt::ImEnabled from this - VTextEditor, VRichTextEditor and the
+// table preview sheet - and they used to carry three verbatim copies of the
+// switch, which is exactly how one of them ends up disagreeing with the others
+// about where CJK input works.
+inline bool isTextInsertingEditorMode(EditorMode p_mode) {
+  switch (p_mode) {
+  case EditorMode::ViModeNormal:
+    Q_FALLTHROUGH();
+  case EditorMode::ViModeVisual:
+    Q_FALLTHROUGH();
+  case EditorMode::ViModeVisualLine:
+    Q_FALLTHROUGH();
+  case EditorMode::ViModeVisualBlock:
+    return false;
+
+  default:
+    return true;
+  }
+}
+
 typedef unsigned long long TimeStamp;
 
 enum CenterCursor { NeverCenter, AlwaysCenter, CenterOnBottom };

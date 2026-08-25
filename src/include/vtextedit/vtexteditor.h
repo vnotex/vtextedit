@@ -33,6 +33,7 @@ class AbstractInputMode;
 class EditorCompleter;
 class Completer;
 class StatusIndicator;
+class InputModeStatusWidget;
 
 class VTEXTEDIT_EXPORT VTextEditor : public QWidget {
   Q_OBJECT
@@ -112,6 +113,25 @@ public:
   // for Normal/VSCode modes). Lets a host perform an initial sync without the
   // signal having fired yet.
   QSharedPointer<QWidget> inputModeStatusWidget() const;
+
+  // Publish @p_widget in the editor's single input-mode status slot instead of
+  // this editor's own mode's, or restore the editor's own with a null pointer.
+  //
+  // There is exactly ONE such slot - the host status bar mounts one widget -
+  // and an in-place preview which runs an input mode of its own has a status
+  // widget which has to reach it while that preview holds the focus (decision
+  // D4). Rather than teaching every embedding application about a second slot,
+  // the editor lends out the one it has.
+  //
+  // While an override is installed the editor does NOT wire its usual "the
+  // status widget lost the focus -> focus the editor" connection: the caller
+  // owns the widget and is the only one which knows where the focus should
+  // return to (for a table sheet, the sheet - not the editor underneath it).
+  //
+  // The caller must restore the editor's own widget BEFORE it destroys the
+  // mode that produced the override: ViInputMode::~ViInputMode() asserts that
+  // its status bar is no longer parented, and publishing is what unparents it.
+  void overrideInputModeStatusWidget(const QSharedPointer<InputModeStatusWidget> &p_widget);
 
   QTextDocument *document() const;
 
@@ -361,6 +381,10 @@ private:
   // (e.g. the Vi command bar) loses focus. Re-armed on each input-mode change,
   // independent of the (optional) embedded StatusIndicator.
   QMetaObject::Connection m_inputModeFocusConnection;
+
+  // See overrideInputModeStatusWidget(). Null when the editor publishes its
+  // own mode's widget, which is the steady state.
+  QSharedPointer<InputModeStatusWidget> m_overriddenInputModeStatusWidget;
 
   // Path to search for resources, such as images.
   QString m_basePath;

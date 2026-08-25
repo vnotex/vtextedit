@@ -860,7 +860,11 @@ void VTextEditor::updateModeOfStatusWidget() {
 }
 
 void VTextEditor::updateInputModeStatusWidget() {
-  auto inputModeWidget = getInputMode()->statusWidget();
+  // An override, when there is one, takes the editor's single slot for as long
+  // as it is installed (decision D4).
+  const bool overridden = !m_overriddenInputModeStatusWidget.isNull();
+  auto inputModeWidget =
+      overridden ? m_overriddenInputModeStatusWidget : getInputMode()->statusWidget();
   if (m_statusIndicator) {
     m_statusIndicator->updateInputModeStatusWidget(inputModeWidget);
   }
@@ -868,8 +872,13 @@ void VTextEditor::updateInputModeStatusWidget() {
   // Return focus to the editor when the input-mode status widget (e.g. the Vi
   // command bar) loses focus. Wired here so it works even without the embedded
   // StatusIndicator (the migrated status-bar path never creates one).
+  //
+  // Deliberately NOT wired for an override: the widget then belongs to an
+  // in-place preview which still owns the focus, and pulling it back into the
+  // editor would drop the user out of the very cell they are editing. The
+  // overriding caller wires its own.
   disconnect(m_inputModeFocusConnection);
-  if (inputModeWidget) {
+  if (inputModeWidget && !overridden) {
     m_inputModeFocusConnection = connect(inputModeWidget.data(), &InputModeStatusWidget::focusOut,
                                          this, [this]() { m_textEdit->setFocus(); });
   }
@@ -878,6 +887,16 @@ void VTextEditor::updateInputModeStatusWidget() {
   // create a StatusIndicator) still receive the widget swap.
   emit inputModeStatusWidgetChanged(inputModeWidget ? inputModeWidget->widget()
                                                     : QSharedPointer<QWidget>());
+}
+
+void VTextEditor::overrideInputModeStatusWidget(
+    const QSharedPointer<InputModeStatusWidget> &p_widget) {
+  if (m_overriddenInputModeStatusWidget == p_widget) {
+    return;
+  }
+
+  m_overriddenInputModeStatusWidget = p_widget;
+  updateInputModeStatusWidget();
 }
 
 EditorMode VTextEditor::getEditorMode() const {
@@ -1394,7 +1413,11 @@ void VTextEditor::setSpellCheckLanguage(const QString &p_language) {
 }
 
 QSharedPointer<QWidget> VTextEditor::inputModeStatusWidget() const {
-  auto widget = getInputMode()->statusWidget();
+  // The widget really occupying the slot, which is the override when there is
+  // one: a host asking "what should I be showing" must get the same answer
+  // inputModeStatusWidgetChanged() last carried.
+  auto widget = m_overriddenInputModeStatusWidget ? m_overriddenInputModeStatusWidget
+                                                  : getInputMode()->statusWidget();
   return widget ? widget->widget() : QSharedPointer<QWidget>();
 }
 
@@ -1483,22 +1506,7 @@ void VTextEditor::enableInternalContextMenu() {
 }
 
 void VTextEditor::updateInputMethodEnabled() {
-  const auto mode = getEditorMode();
-  switch (mode) {
-  case ViModeNormal:
-    Q_FALLTHROUGH();
-  case ViModeVisual:
-    Q_FALLTHROUGH();
-  case ViModeVisualLine:
-    Q_FALLTHROUGH();
-  case ViModeVisualBlock:
-    m_textEdit->setInputMethodEnabled(false);
-    break;
-
-  default:
-    m_textEdit->setInputMethodEnabled(true);
-    break;
-  }
+  m_textEdit->setInputMethodEnabled(isTextInsertingEditorMode(getEditorMode()));
 }
 
 void VTextEditor::updateIndicatorsBorder() { m_indicatorsBorder->updateBorder(); }

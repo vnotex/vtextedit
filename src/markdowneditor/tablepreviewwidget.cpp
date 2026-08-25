@@ -38,9 +38,14 @@
 
 #include <cmark.h>
 
+#include <inputmode/abstractinputmode.h>
+#include <inputmode/abstractinputmodefactory.h>
+#include <inputmode/inputmodemgr.h>
+#include <texteditor/inputmodestatuswidget.h>
 #include <vtextedit/htmltablescanner.h>
 
 #include "previewlogging.h"
+#include "tablepreviewinputmode.h"
 
 using namespace vte;
 
@@ -891,6 +896,7 @@ void TablePreviewDocument::build() {
   tailBlock.setLineHeight(1, QTextBlockFormat::FixedHeight);
   tail.setBlockFormat(tailBlock);
 
+  noteStructuralChange();
   cursor.endEditBlock();
 }
 
@@ -1492,6 +1498,7 @@ bool TablePreviewDocument::insertRow(int p_row) {
     applyCellFormat(p_row, c);
   }
 
+  noteStructuralChange();
   cursor.endEditBlock();
   return true;
 }
@@ -1525,6 +1532,7 @@ bool TablePreviewDocument::removeRow(int p_row) {
   }
   remapCellMeta(ownerTags, rowTags, rowMap, columnMap);
 
+  noteStructuralChange();
   cursor.endEditBlock();
   return true;
 }
@@ -1576,6 +1584,7 @@ bool TablePreviewDocument::insertColumn(int p_column) {
   // cells now carry the previous neighbour's alignment.
   applyCellFormats();
 
+  noteStructuralChange();
   cursor.endEditBlock();
   return true;
 }
@@ -1614,6 +1623,7 @@ bool TablePreviewDocument::removeColumn(int p_column) {
   rewriteColumnConstraints();
   applyCellFormats();
 
+  noteStructuralChange();
   cursor.endEditBlock();
   return true;
 }
@@ -1889,6 +1899,7 @@ bool TablePreviewDocument::mergeCells(const QTextCursor &p_cursor) {
     m_markdownBacked = true;
   }
 
+  noteStructuralChange();
   cursor.endEditBlock();
   return true;
 }
@@ -1952,6 +1963,7 @@ bool TablePreviewDocument::splitCell(int p_row, int p_column) {
     }
   }
 
+  noteStructuralChange();
   cursor.endEditBlock();
   return true;
 }
@@ -2013,7 +2025,7 @@ QString sanitizeForCell(const QString &p_text) {
 }
 } // namespace
 
-TablePreviewSheet::TablePreviewSheet(QWidget *p_parent) : QTextEdit(p_parent) {
+TablePreviewSheet::TablePreviewSheet(QWidget *p_parent) : VTextEdit(p_parent) {
   setFrameShape(QFrame::NoFrame);
   setLineWrapMode(QTextEdit::WidgetWidth);
   // The sheet renders at its full natural height, so there is never anything
@@ -2029,6 +2041,17 @@ TablePreviewSheet::TablePreviewSheet(QWidget *p_parent) : QTextEdit(p_parent) {
   // Tab is intercepted in keyPressEvent() before Qt's focus chain sees it.
   setTabChangesFocus(false);
   setFocusPolicy(Qt::StrongFocus);
+
+  // A cell holds RAW Markdown, so VTextEdit's auto-bracket completion would
+  // silently edit the source the user is typing - '(' becoming '()' inside a
+  // half-written link is exactly the wrong help.
+  setAutoBracketsEnabled(false);
+  // Both are already the VTextEdit defaults; stated so a later change to those
+  // defaults cannot quietly give the sheet a content-width margin (which would
+  // narrow the band the host measured) or a scroll-to-centre (which has
+  // nothing to scroll and would fight the editor's own viewport).
+  setMaxContentWidth(0);
+  setCenterCursor(CenterCursor::NeverCenter);
 
   QSizePolicy policy(QSizePolicy::Expanding, QSizePolicy::Preferred);
   policy.setHeightForWidth(true);
@@ -2056,7 +2079,21 @@ void TablePreviewSheet::setTableDocument(TablePreviewDocument *p_document) {
   // QTextEdit pushes its own undo setting onto whatever document it is given,
   // and this one must not accumulate a second, invisible undo stack: the
   // granularity the user sees is one whole-table replacement on the editor's.
+  // The input mode's u / Ctrl+R do not need one either - they replay the
+  // sheet's own cell-text snapshot ring instead (decision D2), precisely
+  // because a QTextDocument undo step would also revert a structural mutation
+  // without the C++ metadata that travels beside it.
   setUndoRedoEnabled(false);
+
+  // VTextEdit's constructor connected its revision-filtered contentsChanged
+  // tracking to the document IT created, and the swap above has just discarded
+  // that document. Those connections therefore describe nothing, and
+  // VTextEdit::contentsChanged() never fires on a sheet. That is deliberate
+  // and nothing here rebinds them: the only listener that matters is
+  // TablePreviewWidget, which connects to QTextDocument::contentsChanged on
+  // the table document directly and applies the same revision filter itself.
+  // Rebinding would need VTextEdit's private revision member and would only
+  // give the sheet a second, redundant copy of that signal.
 
   if (auto layout = p_document->document()->documentLayout()) {
     connect(layout, &QAbstractTextDocumentLayout::documentSizeChanged, this,
@@ -2203,7 +2240,7 @@ void TablePreviewSheet::cancelComposition() {
   const QTextBlock block = textCursor().block();
   if (block.isValid() && block.layout() && !block.layout()->preeditAreaText().isEmpty()) {
     QInputMethodEvent clear;
-    QTextEdit::inputMethodEvent(&clear);
+    VTextEdit::inputMethodEvent(&clear);
   }
 
   QTextCursor restored = textCursor();
@@ -2445,11 +2482,22 @@ void TablePreviewSheet::setDocument(QTextDocument *p_document) {
   VTE_REFUSE_BULK_MUTATOR("setDocument");
 }
 
+void TablePreviewSheet::removeSelectedText() { VTE_REFUSE_BULK_MUTATOR("removeSelectedText"); }
+
+void TablePreviewSheet::insertFromMimeDataOfBase(const QMimeData *p_source) {
+  Q_UNUSED(p_source);
+  VTE_REFUSE_BULK_MUTATOR("insertFromMimeDataOfBase");
+}
+
+void TablePreviewSheet::setOverriddenSelection(int p_start, int p_end) {
+  Q_UNUSED(p_start);
+  Q_UNUSED(p_end);
+  VTE_REFUSE_BULK_MUTATOR("setOverriddenSelection");
+}
+
 #undef VTE_REFUSE_BULK_MUTATOR
 
 void TablePreviewSheet::clearSelection() {
-
-
   QTextCursor cursor = textCursor();
   if (!cursor.hasSelection()) {
     return;
@@ -2459,6 +2507,503 @@ void TablePreviewSheet::clearSelection() {
   // clamping is needed - and must not happen, since it would move the caret.
   cursor.setPosition(cursor.position());
   setTextCursor(cursor);
+}
+
+// ---------------------------------------------------------------------------
+// The input mode seam
+// ---------------------------------------------------------------------------
+
+TablePreviewSheet::~TablePreviewSheet() {
+  // AbstractInputMode holds the interface by RAW pointer, and VTextEdit owns
+  // the mode - which it destroys from ~VTextEdit, i.e. AFTER this class's
+  // members (m_inputModeInterface among them) are already gone. Tearing the
+  // mode down here is what keeps that ordering legal.
+  removeInputMode();
+}
+
+void TablePreviewSheet::setDesiredInputMode(InputMode p_mode) {
+  m_desiredInputMode = p_mode;
+  m_desiredInputModeSet = true;
+
+  // Only a sheet which already HAS a mode is switched now. For every other
+  // sheet this is a recording, and ensureInputMode() spends it on first
+  // interaction (decision D5).
+  if (getInputMode()) {
+    installInputMode(p_mode);
+  }
+}
+
+void TablePreviewSheet::ensureInputMode() {
+  if (getInputMode() || !m_desiredInputModeSet) {
+    return;
+  }
+
+  installInputMode(m_desiredInputMode);
+}
+
+void TablePreviewSheet::installInputMode(InputMode p_mode) {
+  {
+    // Scoped: the owning pointer has to be released before the mode is
+    // replaced, so VTextEdit destroys the outgoing mode while the outgoing
+    // interface is still alive.
+    auto current = getInputMode();
+    if (current && current->mode() == p_mode) {
+      return;
+    }
+  }
+
+  // A mode REPLACEMENT is one of the transitions syncInputMethodToMode()
+  // cannot see, because it cannot tell it apart from a submode change: the
+  // outgoing and incoming modes may agree about the input method (Vi insert to
+  // Normal, for one) and it would then have nothing to do. A composition left
+  // open across the swap is rendered over a cell whose mode is gone, so it is
+  // cancelled here - never committed, because the mode which would decide that
+  // is exactly what is being taken away.
+  cancelComposition();
+
+  // The outgoing mode is destroyed by setInputMode() below, and
+  // ViInputMode::~ViInputMode() asserts its status bar is no longer parented.
+  detachInputModeStatusWidget();
+
+  QScopedPointer<TablePreviewInputMode> newInterface(new TablePreviewInputMode(this));
+
+  auto factory = InputModeMgr::getInst().getFactory(p_mode);
+  Q_ASSERT(factory);
+  auto mode = factory->createInputMode(newInterface.data());
+
+  // Decision D7: this ALREADY deactivates the outgoing mode and activates the
+  // incoming one. Calling activate() afterwards trips Q_ASSERT(!m_active).
+  setInputMode(mode);
+
+  // The outgoing interface ends up in newInterface and dies at the end of this
+  // function - after the mode which pointed at it.
+  m_inputModeInterface.swap(newInterface);
+
+  m_inputModeStatusWidget = mode ? mode->statusWidget() : QSharedPointer<InputModeStatusWidget>();
+  emit inputModeStatusWidgetChanged();
+
+  qCDebug(previewTableLog) << "the table sheet installed input mode" << static_cast<int>(p_mode);
+
+  // A mode is installed in some editorMode() from the start - Vi starts in
+  // normal mode, where the input method must be off. The composition was
+  // already resolved at the top of this function, so this only applies the
+  // state.
+  applyInputMethodState(false);
+}
+
+void TablePreviewSheet::removeInputMode() {
+  if (!getInputMode()) {
+    m_inputModeInterface.reset();
+    return;
+  }
+
+  // See installInputMode(): a composition may not outlive the mode which was
+  // accepting it. This is also the destruction path.
+  cancelComposition();
+
+  detachInputModeStatusWidget();
+
+  setInputMode(QSharedPointer<AbstractInputMode>());
+  m_inputModeInterface.reset();
+
+  // Back to plain typing. Without this the input method would stay disabled by
+  // a mode which no longer exists. The composition was already cancelled at
+  // the top of this function.
+  applyInputMethodState(false);
+}
+
+QSharedPointer<InputModeStatusWidget> TablePreviewSheet::inputModeStatusWidget() const {
+  return m_inputModeStatusWidget;
+}
+
+void TablePreviewSheet::detachInputModeStatusWidget() {
+  if (!m_inputModeStatusWidget) {
+    return;
+  }
+
+  auto widget = m_inputModeStatusWidget->widget();
+  m_inputModeStatusWidget.clear();
+
+  // Let the host unmount it first, then make sure it is really unparented: a
+  // host which never mounted it (no status bar at all) leaves it to us, and
+  // the outgoing mode's destructor asserts on the parentage either way.
+  emit inputModeStatusWidgetChanged();
+
+  if (widget) {
+    widget->hide();
+    widget->setParent(nullptr);
+  }
+}
+
+bool TablePreviewSheet::currentCellRange(int &p_first, int &p_last) const {
+  QTextTable *table = m_document ? m_document->table() : nullptr;
+  if (!table) {
+    return false;
+  }
+
+  const QTextTableCell cell = table->cellAt(textCursor().position());
+  if (!cell.isValid()) {
+    return false;
+  }
+
+  p_first = cell.firstPosition();
+  p_last = cell.lastPosition();
+  return p_first <= p_last;
+}
+
+QString TablePreviewSheet::sanitizeCellPayload(const QString &p_text) {
+  if (!hasLineSeparator(p_text)) {
+    return p_text;
+  }
+
+  // Same policy as a paste and as an input method commit: a payload which is
+  // nothing but separators is refused outright rather than collapsed into a
+  // space, because that would insert content the user never typed.
+  return hasCellContent(p_text) ? sanitizeForCell(p_text) : QString();
+}
+
+bool TablePreviewSheet::isTextInsertingMode() const {
+  auto mode = getInputMode();
+  // No mode installed is ordinary typing: that is what the sheet was before
+  // this feature, and what it still is until the host installs one.
+  return !mode || isTextInsertingEditorMode(mode->editorMode());
+}
+
+void TablePreviewSheet::syncInputMethodToMode() { applyInputMethodState(true); }
+
+void TablePreviewSheet::applyInputMethodState(bool p_resolveComposition) {
+  const bool enable = isTextInsertingMode();
+
+  if (!hasFocus()) {
+    // RECORD ONLY. Everything below reaches QInputMethod, which has no
+    // receiver: it acts on the application's FOCUS OBJECT. A background sheet
+    // - and every sheet is one at the moment its mode is installed - would
+    // therefore reset, and on Windows finalize, the composition of whatever
+    // widget really does have the focus: the editor, or another sheet the user
+    // is typing CJK into.
+    //
+    // m_inputMethodApplied is cleared rather than set, so focusInEvent() -
+    // which calls this again - really does apply it instead of finding the
+    // desired value already recorded and returning early.
+    m_inputMethodDesired = enable;
+    m_inputMethodApplied = false;
+    return;
+  }
+
+  if (m_inputMethodApplied && m_inputMethodDesired == enable) {
+    // Nothing to do, and nothing to reset - which matters, because the reset
+    // below is the reentrancy hazard this whole function exists to contain.
+    //
+    // Deliberately compared against the sheet's OWN desired value rather than
+    // against inputMethodQuery(Qt::ImEnabled): the query also folds in
+    // VTextEdit::forceInputMethodDisabled(), a process-wide static owned by
+    // the application. Comparing against the effective value would make a
+    // transition into Vi normal mode look like a no-op while the force is set,
+    // and the sheet would come out of it input-method ENABLED once the
+    // application lifted the force.
+    return;
+  }
+
+  m_inputMethodDesired = enable;
+  m_inputMethodApplied = true;
+
+  // COMPOSITION POLICY. setInputMethodEnabled() calls QInputMethod::reset(),
+  // and on Windows the input context answers a reset by handing the open
+  // composition back as a synchronous *commit* event to the focus object -
+  // this widget - while katevi is still inside handleKeyPress() for the key
+  // that caused the transition. Other platforms send an empty clearing event
+  // instead. Either way the preedit is resolved deliberately rather than left
+  // to whatever the platform does.
+  //
+  // @p_resolveComposition says whether resolving it is THIS call's job. It is
+  // false for the two callers which have already resolved it themselves and
+  // know something this function cannot see: installInputMode() and
+  // removeInputMode() cancel, because the mode which would decide otherwise is
+  // exactly what is being taken away, and the enable flag can be unchanged
+  // across such a swap (Vi insert to Normal) so nothing here would fire.
+  //
+  // When it is true the transition is a SUBMODE change, which has two cases:
+  //
+  //  - leaving an inserting submode (insert/replace -> normal or visual, which
+  //    is the Escape path) COMMITS. The characters are ones the user has
+  //    already typed and can see; dropping them on Escape would be a silent
+  //    loss.
+  //  - entering one CANCELS. There is nothing worth keeping - a command-mode
+  //    sheet refuses input method events - and a stale preedit rendered over
+  //    the cell would be finished into it by the next keystroke.
+  //
+  // The remaining transitions are owned by their own call sites too:
+  // focusOutEvent() commits, and TablePreviewWidget::applyEditability() cancels
+  // on the way to read-only.
+  if (p_resolveComposition) {
+    if (!enable) {
+      commitPreedit();
+    } else {
+      cancelComposition();
+    }
+  }
+
+  // The reset inside setInputMethodEnabled() is a SECOND one, after the
+  // deliberate resolution above, and it is the one whose synchronous callback
+  // would otherwise land in the document unguarded. Cancelling is neither
+  // committing nor deleting, and there is nothing left to commit anyway.
+  QScopedValueRollback<bool> guard(m_cancellingComposition, true);
+  setInputMethodEnabled(enable);
+}
+
+// ---------------------------------------------------------------------------
+// The undo ring (decision D2)
+// ---------------------------------------------------------------------------
+
+const int TablePreviewSheet::c_maxUndoDepth = 64;
+
+QByteArray TablePreviewSheet::tableStructureFingerprint() const {
+  QTextTable *table = m_document ? m_document->table() : nullptr;
+  if (!table) {
+    return QByteArray();
+  }
+
+  const int rows = table->rows();
+  const int columns = table->columns();
+
+  QByteArray fingerprint;
+  fingerprint.reserve(24 + rows * columns * 4);
+  // The document's STRUCTURE GENERATION first, and it is what actually makes
+  // this monotonic. The shape below is reversible - a merge followed by a
+  // split restores the row and column counts and every slot's owner while
+  // leaving the cell TEXT rearranged - so a ring keyed only to the shape would
+  // come back to life and replay a pre-merge cell over a post-split one. A
+  // counter cannot.
+  //
+  // The shape is kept as well, as the belt to that counter's braces: a
+  // structural mutation added later which forgets to call
+  // noteStructuralChange() is still caught, just not a reversible pair of
+  // them.
+  fingerprint.append(QByteArray::number(m_document->structureGeneration())).append('#');
+  fingerprint.append(QByteArray::number(rows)).append(':');
+  fingerprint.append(QByteArray::number(columns)).append(';');
+
+  // Every slot, not just the origins: what has to be detected is a slot
+  // changing OWNER, which a merge or a split does without changing the row or
+  // column count at all.
+  for (int r = 0; r < rows; ++r) {
+    for (int c = 0; c < columns; ++c) {
+      const QTextTableCell cell = table->cellAt(r, c);
+      fingerprint.append(QByteArray::number(cell.row()));
+      fingerprint.append(',');
+      fingerprint.append(QByteArray::number(cell.column()));
+      fingerprint.append(' ');
+    }
+  }
+
+  return fingerprint;
+}
+
+bool TablePreviewSheet::isUndoRingLive() {
+  const QByteArray fingerprint = tableStructureFingerprint();
+  if (fingerprint.isEmpty()) {
+    clearUndoRing();
+    return false;
+  }
+
+  if (fingerprint != m_undoRingFingerprint) {
+    if (!m_undoRing.isEmpty() || !m_redoRing.isEmpty() || m_undoBaseline.m_cell >= 0) {
+      qCDebug(previewTableLog) << "the table's shape moved - dropped the sheet's undo ring";
+    }
+    clearUndoRing();
+  }
+
+  return true;
+}
+
+void TablePreviewSheet::clearUndoRing() {
+  m_undoRing.clear();
+  m_redoRing.clear();
+  m_undoRingFingerprint = tableStructureFingerprint();
+
+  // The BASELINE is re-anchored, not merely dropped. Only the mode's own
+  // mutations take a checkpoint before they run; ordinary typing, a paste and
+  // an input method commit rely on a baseline that was captured earlier. So a
+  // clear which left none would make the first edit after it unrecoverable -
+  // the next checkpoint would record the ALREADY MUTATED cell as the state to
+  // go back to. That is precisely the edit which follows an accepted commit,
+  // i.e. the common case.
+  m_undoBaseline = CellSnapshot();
+  const int index = currentCellIndex();
+  if (index >= 0) {
+    m_undoBaseline.m_cell = index;
+    m_undoBaseline.m_text = cellTextAt(index);
+  }
+}
+
+QString TablePreviewSheet::cellTextAt(int p_cell) const {
+  QTextTable *table = m_document ? m_document->table() : nullptr;
+  if (!table || p_cell < 0 || table->columns() <= 0) {
+    return QString();
+  }
+
+  const int row = p_cell / table->columns();
+  const int column = p_cell % table->columns();
+  if (row >= table->rows()) {
+    return QString();
+  }
+
+  const QTextTableCell cell = table->cellAt(row, column);
+  if (!cell.isValid()) {
+    return QString();
+  }
+
+  QTextCursor cursor = cell.firstCursorPosition();
+  cursor.setPosition(cell.lastPosition(), QTextCursor::KeepAnchor);
+  return cursor.selectedText();
+}
+
+bool TablePreviewSheet::setCellTextAt(int p_cell, const QString &p_text) {
+  QTextTable *table = m_document ? m_document->table() : nullptr;
+  if (!table || p_cell < 0 || table->columns() <= 0) {
+    return false;
+  }
+
+  const int row = p_cell / table->columns();
+  const int column = p_cell % table->columns();
+  if (row >= table->rows()) {
+    return false;
+  }
+
+  const QTextTableCell cell = table->cellAt(row, column);
+  if (!cell.isValid()) {
+    return false;
+  }
+
+  QTextCursor cursor = cell.firstCursorPosition();
+  cursor.setPosition(cell.lastPosition(), QTextCursor::KeepAnchor);
+  // The cell's baseline format, never the format of whatever happens to sit at
+  // its start: a replay must not resurrect a highlight run the parse has since
+  // moved on from.
+  cursor.setCharFormat(m_document->baselineCellFormat(cell.row()));
+  cursor.insertText(p_text);
+  setTextCursor(cursor);
+  return true;
+}
+
+void TablePreviewSheet::captureUndoBaseline() {
+  m_undoBaseline = CellSnapshot();
+  if (!isUndoRingLive()) {
+    return;
+  }
+
+  const int index = currentCellIndex();
+  if (index < 0) {
+    return;
+  }
+
+  m_undoBaseline.m_cell = index;
+  m_undoBaseline.m_text = cellTextAt(index);
+}
+
+void TablePreviewSheet::commitUndoCheckpoint() {
+  if (m_replayingRing || m_applyingFormats) {
+    return;
+  }
+
+  if (!isUndoRingLive()) {
+    return;
+  }
+
+  if (m_undoBaseline.m_cell < 0) {
+    captureUndoBaseline();
+    return;
+  }
+
+  const QString current = cellTextAt(m_undoBaseline.m_cell);
+  if (current == m_undoBaseline.m_text) {
+    // Nothing has happened since the last checkpoint. Re-anchor on the caret's
+    // cell so a checkpoint taken after a plain cursor move follows it.
+    captureUndoBaseline();
+    return;
+  }
+
+  m_undoRing.append(m_undoBaseline);
+  while (m_undoRing.size() > c_maxUndoDepth) {
+    m_undoRing.removeFirst();
+  }
+
+  // A fresh edit invalidates the redo branch, exactly as a text editor's undo
+  // stack does.
+  m_redoRing.clear();
+
+  captureUndoBaseline();
+}
+
+bool TablePreviewSheet::replaySnapshot(QVector<CellSnapshot> &p_from, QVector<CellSnapshot> &p_to) {
+  if (isReadOnly()) {
+    return false;
+  }
+
+  // Flush an uncommitted in-cell edit first, so `u` after typing undoes the
+  // typing rather than skipping past it.
+  commitUndoCheckpoint();
+
+  if (p_from.isEmpty()) {
+    return false;
+  }
+
+  const CellSnapshot entry = p_from.takeLast();
+
+  CellSnapshot inverse;
+  inverse.m_cell = entry.m_cell;
+  inverse.m_text = cellTextAt(entry.m_cell);
+
+  QScopedValueRollback<bool> guard(m_replayingRing, true);
+  if (!setCellTextAt(entry.m_cell, entry.m_text)) {
+    // The slot is gone. The fingerprint check should have made this
+    // unreachable; drop the whole ring rather than guess.
+    qCWarning(previewTableLog) << "an undo ring entry no longer resolves to a cell -"
+                               << "dropped the ring";
+    clearUndoRing();
+    return false;
+  }
+
+  p_to.append(inverse);
+  while (p_to.size() > c_maxUndoDepth) {
+    p_to.removeFirst();
+  }
+
+  m_undoBaseline = entry;
+  return true;
+}
+
+bool TablePreviewSheet::undoFromRing() { return replaySnapshot(m_undoRing, m_redoRing); }
+
+bool TablePreviewSheet::redoFromRing() { return replaySnapshot(m_redoRing, m_undoRing); }
+
+int TablePreviewSheet::undoRingDepth() const {
+  if (m_undoRing.isEmpty() && m_undoBaseline.m_cell < 0) {
+    return 0;
+  }
+
+  if (tableStructureFingerprint() != m_undoRingFingerprint) {
+    // The table's shape moved since the ring was recorded, so none of it is
+    // replayable anymore. Reported as empty rather than cleared, because this
+    // is the const path - the next replay or checkpoint drops it for real.
+    return 0;
+  }
+
+  int depth = m_undoRing.size();
+  if (m_undoBaseline.m_cell >= 0 && cellTextAt(m_undoBaseline.m_cell) != m_undoBaseline.m_text) {
+    // An in-cell edit which has not been checkpointed yet is still one step
+    // away from being undoable, and katevi asks before it acts.
+    ++depth;
+  }
+  return depth;
+}
+
+int TablePreviewSheet::redoRingDepth() const {
+  if (m_redoRing.isEmpty() || tableStructureFingerprint() != m_undoRingFingerprint) {
+    return 0;
+  }
+
+  return m_redoRing.size();
 }
 
 void TablePreviewSheet::handleCursorPositionChanged() {
@@ -2476,6 +3021,11 @@ void TablePreviewSheet::handleCursorPositionChanged() {
 
   const bool leftACell = m_lastCellIndex >= 0;
   m_lastCellIndex = index;
+
+  // Leaving a cell ends an undo step, exactly as it ends a commit debounce:
+  // what was typed in the cell just left is one thing the user did.
+  commitUndoCheckpoint();
+
   if (leftACell) {
     emit cellLeft();
   }
@@ -2528,16 +3078,12 @@ bool TablePreviewSheet::moveToAdjacentCell(bool p_forward) {
 
   QTextCursor cursor = textCursor();
   if (!cursor.movePosition(p_forward ? QTextCursor::NextCell : QTextCursor::PreviousCell)) {
-    // Wrap: past the last cell is the first one, and before the first is the
-    // last.
-    const QTextTableCell target = p_forward
-                                      ? table->cellAt(0, 0)
-                                      : table->cellAt(table->rows() - 1, table->columns() - 1);
-    if (!target.isValid()) {
-      return false;
-    }
-
-    cursor = target.firstCursorPosition();
+    // Past the last cell, or before the first. Deliberately NOT a wrap any
+    // more (decision D3): Escape is the input mode's now, so Tab past the end
+    // and Backtab past the start are - with the edge arrows - the only way
+    // left to hand the caret back to the editor. Wrapping would make the sheet
+    // a keyboard trap for a Vi user, who has no Escape to fall back on.
+    return false;
   }
 
   setTextCursor(cursor);
@@ -2685,18 +3231,52 @@ bool TablePreviewSheet::appendRowFromLastCell() {
 }
 
 void TablePreviewSheet::keyPressEvent(QKeyEvent *p_event) {
-  // Undo and redo belong to the editor: the inner document has no undo stack
-  // precisely so the granularity is one whole-table replacement. Both are
-  // relayed rather than forwarded, because a pending edit has to be written
-  // back before the editor's stack is moved.
+  // The lazy install is triggered here as well as from focusInEvent(). A key
+  // press means the sheet is being typed into, which is the same condition,
+  // and it does not depend on a focus event having been delivered - which a
+  // synthesized key event, and an embedding which moves the focus in ways Qt
+  // does not report, both skip. Idempotent, so the common path pays one null
+  // check.
+  ensureInputMode();
+
+  // katevi exposes no key boundary of its own, and the undo ring needs one:
+  // see TablePreviewInputMode::setUndoMergeAllEdits().
+  if (m_inputModeInterface) {
+    m_inputModeInterface->notifyKeyPressBegin();
+  }
+
+  // PER-KEY PRECEDENCE. Everything in this function runs BEFORE the input
+  // mode, which VTextEdit::keyPressEvent() consults at the very bottom.
+  //
+  // That ordering is a decision, not an accident. The keys below are the
+  // sheet's TABLE vocabulary and have to mean the same thing in all three
+  // input modes, and katevi claims several of them outright: Return is a
+  // normal-mode motion ("down, first non-blank"), the arrow keys are motions
+  // too, and Escape is answered unconditionally by
+  // KateVi::NormalViMode::handleKeyPress(). Letting the mode refuse them first
+  // would therefore silently give Vi users a different table, with no Enter to
+  // append a row. So they are intercepted here instead, in every mode.
+  //
+  // Everything the mode legitimately owns - motions, operators, counts,
+  // registers, the ':' command bar - falls straight through to it.
+
+  // Undo and redo. The mode's own u / Ctrl+R never reach here: katevi handles
+  // them internally and calls back into undo()/redo() on the interface, which
+  // replays the sheet's snapshot ring. This is the plain Ctrl+Z / Ctrl+Y path,
+  // which is relayed to the editor once the ring is exhausted - a pending edit
+  // has to be written back before the editor's stack is moved.
   if (p_event->matches(QKeySequence::Undo)) {
-    emit undoRequested();
+    if (!undoFromRing()) {
+      emit undoRequested();
+    }
     p_event->accept();
     return;
   }
 
   if (p_event->matches(QKeySequence::Redo)) {
-    emit redoRequested();
+    if (!redoFromRing()) {
+      emit redoRequested();
+    }
     p_event->accept();
     return;
   }
@@ -2717,30 +3297,40 @@ void TablePreviewSheet::keyPressEvent(QKeyEvent *p_event) {
     if (!(modifiers & ~Qt::KeypadModifier)) {
       appendRowFromLastCell();
     }
-    // Accepted either way, so Enter is never handed to QTextEdit, which would
-    // split the cell into two blocks.
+    // Accepted either way, so Enter is never handed on - not to the input
+    // mode, and not to QTextEdit, which would split the cell into two blocks.
     p_event->accept();
     return;
 
   case Qt::Key_Tab:
-    if (!modifiers.testFlag(Qt::ControlModifier) && moveToAdjacentCell(true)) {
+    if (!modifiers.testFlag(Qt::ControlModifier)) {
+      if (moveToAdjacentCell(true)) {
+        p_event->accept();
+        return;
+      }
+
+      // Past the last cell: hand the caret back below the table, which is
+      // where the next thing to type is (decision D3).
+      commitPreedit();
+      emit focusEscapeRequested(FocusEscapeDirection::Down);
       p_event->accept();
       return;
     }
     break;
 
   case Qt::Key_Backtab:
-    if (!modifiers.testFlag(Qt::ControlModifier) && moveToAdjacentCell(false)) {
+    if (!modifiers.testFlag(Qt::ControlModifier)) {
+      if (moveToAdjacentCell(false)) {
+        p_event->accept();
+        return;
+      }
+
+      commitPreedit();
+      emit focusEscapeRequested(FocusEscapeDirection::Up);
       p_event->accept();
       return;
     }
     break;
-
-  case Qt::Key_Escape:
-    commitPreedit();
-    emit focusEscapeRequested(FocusEscapeDirection::Keep);
-    p_event->accept();
-    return;
 
   case Qt::Key_Up:
     if (modifiers == Qt::NoModifier && isAtTopEdge()) {
@@ -2761,6 +3351,14 @@ void TablePreviewSheet::keyPressEvent(QKeyEvent *p_event) {
     break;
 
   default:
+    // DELIBERATELY NO Qt::Key_Escape BRANCH (decision D3). Escape used to hand
+    // the caret back to the editor; it now belongs to the input mode, which is
+    // the only key Vi cannot do without - it is how insert and visual mode are
+    // left, and NormalViMode answers it unconditionally, so "offer it to the
+    // mode and hand focus back if it declines" is unreachable by construction.
+    // The hand-back affordances are Tab past the last cell, Backtab before the
+    // first, and the arrow keys at the table's edges - all above. This is a
+    // visible change for Normal and vscode users too, and an accepted one.
     break;
   }
 
@@ -2786,10 +3384,18 @@ void TablePreviewSheet::keyPressEvent(QKeyEvent *p_event) {
 
     // Whatever this key inserts must not inherit the highlighting of the
     // character to its left.
-    resetInsertionFormat();
+    //
+    // Skipped in Vi's normal and visual modes only. There the key inserts
+    // nothing at all, and QTextEdit::setCurrentCharFormat() applies to the
+    // SELECTION when there is one - which visual mode always has, so this
+    // would recolour the very range the operator is about to act on. Every
+    // other mode, installed or not, is ordinary typing and wants it.
+    if (isTextInsertingMode()) {
+      resetInsertionFormat();
+    }
   }
 
-  QTextEdit::keyPressEvent(p_event);
+  VTextEdit::keyPressEvent(p_event);
 }
 
 void TablePreviewSheet::wheelEvent(QWheelEvent *p_event) {
@@ -2798,14 +3404,36 @@ void TablePreviewSheet::wheelEvent(QWheelEvent *p_event) {
 }
 
 void TablePreviewSheet::focusInEvent(QFocusEvent *p_event) {
-  QTextEdit::focusInEvent(p_event);
+  VTextEdit::focusInEvent(p_event);
+  // Decision D5: the mode is built here, on the sheet the user actually moved
+  // into, rather than for every previewed table on the page.
+  ensureInputMode();
   clampCursorIntoTable();
   m_lastCellIndex = currentCellIndex();
+  // The undo ring is per sheet and survives a focus round trip, but its
+  // baseline is per cell and the caret may have been moved while the sheet was
+  // in the background.
+  captureUndoBaseline();
+  // Decision D7: only focusIn()/focusOut() are driven from here. For Vi this
+  // is what restores the caret's blink state; the mode itself is neither
+  // activated nor deactivated by a focus change.
+  if (auto mode = getInputMode()) {
+    mode->focusIn();
+  }
+  // The sheet is the focus object now, so its mode - not the editor's - owns
+  // input method enablement.
+  syncInputMethodToMode();
 }
 
 void TablePreviewSheet::focusOutEvent(QFocusEvent *p_event) {
   commitPreedit();
-  QTextEdit::focusOutEvent(p_event);
+  // The cell the user was typing in is finished; the same edge that flushes
+  // the commit debounce closes the undo step.
+  commitUndoCheckpoint();
+  if (auto mode = getInputMode()) {
+    mode->focusOut();
+  }
+  VTextEdit::focusOutEvent(p_event);
   emit focusLost();
 }
 
@@ -2834,20 +3462,20 @@ void TablePreviewSheet::mousePressEvent(QMouseEvent *p_event) {
   // The base handler puts the caret at the exact character under the pointer,
   // which is the whole point of this substrate; it can also park it in the
   // block after the table when the click lands below the last row.
-  QTextEdit::mousePressEvent(p_event);
+  VTextEdit::mousePressEvent(p_event);
   clampCursorIntoTable();
 }
 
 void TablePreviewSheet::dropEvent(QDropEvent *p_event) {
   if (isReadOnly()) {
-    QTextEdit::dropEvent(p_event);
+    VTextEdit::dropEvent(p_event);
     return;
   }
 
   // A drop is where an INTERNAL move-drag removes its source, and where a
   // replacement lands on whatever is selected. Both must act on one cell.
   collapseComplexSelectionForMutation();
-  QTextEdit::dropEvent(p_event);
+  VTextEdit::dropEvent(p_event);
   clampCursorIntoTable();
 }
 
@@ -3231,12 +3859,12 @@ void TablePreviewSheet::resizeEvent(QResizeEvent *p_event) {
   // QTextEdit re-lays the document out for the new viewport width, which emits
   // documentSizeChanged for a size the host itself chose.
   QScopedValueRollback<bool> guard(m_applyingGeometry, true);
-  QTextEdit::resizeEvent(p_event);
+  VTextEdit::resizeEvent(p_event);
 }
 
 void TablePreviewSheet::inputMethodEvent(QInputMethodEvent *p_event) {
   if (!p_event) {
-    QTextEdit::inputMethodEvent(p_event);
+    VTextEdit::inputMethodEvent(p_event);
     return;
   }
 
@@ -3287,7 +3915,7 @@ void TablePreviewSheet::inputMethodEvent(QInputMethodEvent *p_event) {
   // consistent while the document contents are left alone.
   auto forwardWithoutTheCommit = [this, p_event, &attributes]() {
     QInputMethodEvent filtered(p_event->preeditString(), attributes);
-    QTextEdit::inputMethodEvent(&filtered);
+    VTextEdit::inputMethodEvent(&filtered);
     p_event->accept();
   };
 
@@ -3302,7 +3930,7 @@ void TablePreviewSheet::inputMethodEvent(QInputMethodEvent *p_event) {
     // apart through it.
     collapseComplexSelectionForMutation();
     if (!droppedSelection) {
-      QTextEdit::inputMethodEvent(p_event);
+      VTextEdit::inputMethodEvent(p_event);
       return;
     }
 
@@ -3373,7 +4001,7 @@ void TablePreviewSheet::inputMethodEvent(QInputMethodEvent *p_event) {
   // The commit is an insertion like any other: it must not inherit the
   // highlighting of the character to its left.
   resetInsertionFormat();
-  QTextEdit::inputMethodEvent(&replacement);
+  VTextEdit::inputMethodEvent(&replacement);
   p_event->accept();
 }
 
@@ -3441,6 +4069,17 @@ TablePreviewWidget::TablePreviewWidget(PreviewWidgetContext *p_context, QWidget 
 
   connect(m_document->document(), &QTextDocument::contentsChanged, this,
           &TablePreviewWidget::handleContentsChanged);
+  // Records which revision really changed characters; see
+  // handleContentsChanged(). Connected first so the revision is up to date by
+  // the time the paired contentsChanged is delivered - Qt emits
+  // contentsChange before contentsChanged.
+  connect(m_document->document(), &QTextDocument::contentsChange, this,
+          [this](int p_position, int p_charsRemoved, int p_charsAdded) {
+            Q_UNUSED(p_position);
+            if (p_charsRemoved != 0 || p_charsAdded != 0) {
+              m_lastDocumentRevisionWithChanges = m_document->document()->revision();
+            }
+          });
   connect(m_sheet, &TablePreviewSheet::cellLeft, this, &TablePreviewWidget::handleCellLeft);
   connect(m_sheet, &TablePreviewSheet::focusLost, this, &TablePreviewWidget::handleFocusLost);
   connect(m_sheet, &TablePreviewSheet::focusEscapeRequested, this,
@@ -3449,6 +4088,8 @@ TablePreviewWidget::TablePreviewWidget(PreviewWidgetContext *p_context, QWidget 
           &TablePreviewWidget::handleUndoRequested);
   connect(m_sheet, &TablePreviewSheet::redoRequested, this,
           &TablePreviewWidget::handleRedoRequested);
+  connect(m_sheet, &TablePreviewSheet::inputModeStatusWidgetChanged, this,
+          &TablePreviewWidget::inputModeStatusWidgetChanged);
 
   // The host's event filter watches this widget, not the sheet inside it, so
   // the sheet cannot reach it through updateGeometry() alone.
@@ -3574,6 +4215,38 @@ void TablePreviewWidget::setReadOnly(bool p_readOnly) {
   applyEditability();
 }
 
+void TablePreviewWidget::setInputMode(InputMode p_mode) {
+  if (m_inputModeApplied && m_inputMode == p_mode) {
+    return;
+  }
+
+  m_inputMode = p_mode;
+  m_inputModeApplied = true;
+
+  // Deliberately nothing else: an input mode is orthogonal to the four ANDed
+  // inputs applyEditability() folds together, and it neither changes what the
+  // sheet would serialize to nor how tall it is. The mode's own isReadOnly()
+  // is the sheet's, so a viewer refuses every mutation the mode drives without
+  // the mode having to be uninstalled.
+  //
+  // Recorded rather than created: decision D5 builds the mode on first focus,
+  // so a page of previewed tables does not allocate one KateVi manager and one
+  // command bar per table.
+  if (m_sheet) {
+    m_sheet->setDesiredInputMode(p_mode);
+  }
+}
+
+QSharedPointer<InputModeStatusWidget> TablePreviewWidget::inputModeStatusWidget() const {
+  return m_sheet ? m_sheet->inputModeStatusWidget() : QSharedPointer<InputModeStatusWidget>();
+}
+
+void TablePreviewWidget::focusSheet() {
+  if (m_sheet) {
+    m_sheet->setFocus();
+  }
+}
+
 void TablePreviewWidget::setSourceAlignEnabled(bool p_enabled) {
   if (m_alignSource == p_enabled) {
     return;
@@ -3688,6 +4361,9 @@ void TablePreviewWidget::resetFromSource() {
     QScopedValueRollback<bool> guard(m_applyingSource, true);
     m_document->setTable(m_table);
     if (m_sheet) {
+      // Every ring entry describes a cell of the grid which has just been
+      // thrown away, so none of them may survive the rebuild (decision D2).
+      m_sheet->clearUndoRing();
       // Only the palette: build() has just written every per-cell format, and
       // repeating that pass is O(cells) of pure duplicate work.
       m_sheet->refreshPalette();
@@ -3729,6 +4405,22 @@ void TablePreviewWidget::armCommit() {
 
 void TablePreviewWidget::handleContentsChanged() {
   if (m_applyingSource || m_suppressed) {
+    return;
+  }
+
+  // Qt emits contentsChanged for an EMPTY edit block and for a rehighlight,
+  // neither of which changed a character. That is not academic here: in Vi
+  // insert mode ViInputMode::pre/postKeyPressDefaultHandle() open and close an
+  // edit block around every key the mode did not claim, including the ones the
+  // sheet answers by only moving the caret between cells. Counting those as
+  // edits would advance the generation and arm a commit for a table nobody
+  // touched, which then writes the source back to itself.
+  //
+  // The same filter VTextEdit applies to its own contentsChanged signal
+  // (vtextedit.cpp), on this document instead: contentsChange - which carries
+  // the character counts - records the revision, and only that revision counts.
+  auto doc = m_document->document();
+  if (doc && doc->revision() != m_lastDocumentRevisionWithChanges) {
     return;
   }
 
@@ -3894,6 +4586,13 @@ void TablePreviewWidget::handleReplacementFinished(const vte::PreviewReplacement
     // which is precisely what the undo relay produces: the sheet would keep
     // rendering the committed table over a source which no longer holds it.
     rebindFromContext();
+
+    if (m_sheet) {
+      // The source generation the ring's entries were taken against is gone:
+      // the editor's own undo stack is what reverts an accepted commit now, so
+      // a surviving cell snapshot could only revert half of one (decision D2).
+      m_sheet->clearUndoRing();
+    }
 
     if (wasInFlight) {
       m_committedMarkdown = m_inFlightMarkdown;
@@ -4094,6 +4793,9 @@ TablePreviewWidgetFactory::createWidget(PreviewWidgetContext *p_context,
   auto widget = new TablePreviewWidget(p_context, p_parent);
   widget->setReadOnly(m_readOnly);
   widget->setSourceAlignEnabled(m_alignSource);
+  // Before any of the relays below, so a sheet created while the editor is
+  // already in Vi mode does not spend its first keystrokes without one.
+  widget->setInputMode(m_inputMode);
 
   // Relay the sheet's requests upwards with the widget attached: only the host
   // can resolve which identity - and therefore which live anchor - they belong
@@ -4106,6 +4808,8 @@ TablePreviewWidgetFactory::createWidget(PreviewWidgetContext *p_context,
           [this, widget]() { emit undoRequested(widget); });
   connect(widget, &TablePreviewWidget::redoRequested, this,
           [this, widget]() { emit redoRequested(widget); });
+  connect(widget, &TablePreviewWidget::inputModeStatusWidgetChanged, this,
+          [this, widget]() { emit inputModeStatusWidgetChanged(widget); });
 
   // Every host rebuild destroys the previous sheets. setReadOnly() does
   // compact the list, but it early-returns when the value is unchanged, which
@@ -4134,6 +4838,20 @@ void TablePreviewWidgetFactory::setReadOnly(bool p_readOnly) {
   pruneWidgets();
   for (auto &widget : m_widgets) {
     widget->setReadOnly(p_readOnly);
+  }
+}
+
+void TablePreviewWidgetFactory::setInputMode(InputMode p_mode) {
+  if (m_inputModeApplied && m_inputMode == p_mode) {
+    return;
+  }
+
+  m_inputMode = p_mode;
+  m_inputModeApplied = true;
+
+  pruneWidgets();
+  for (auto &widget : m_widgets) {
+    widget->setInputMode(p_mode);
   }
 }
 

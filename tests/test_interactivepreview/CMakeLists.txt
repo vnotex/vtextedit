@@ -16,6 +16,10 @@ add_executable(test_interactivepreview
 target_include_directories(test_interactivepreview PRIVATE
     ..
     ${SRC_FOLDER}/include
+    # AbstractInputMode is reachable through the exported
+    # VTextEdit::getInputMode(), but its header does not live under include/.
+    # Only that header is used from here; nothing else internal is compiled in.
+    ${SRC_FOLDER}
 )
 target_link_libraries(test_interactivepreview PRIVATE
     Qt::Core

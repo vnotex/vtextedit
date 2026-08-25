@@ -310,7 +310,12 @@ private slots:
   void testSheetEditDoesNotScrollToTheEditorCaret();
   void testCenterCursorIsSkippedWhileASheetHasTheFocus();
   void testDocumentEditStillScrollsWhenTheEditorHasFocus();
-  void testEscapeFromASheetDoesNotScrollTheEditor();
+  void testAnEdgeArrowFromASheetHandsTheFocusBack();
+  void testASheetFollowsTheEditorsInputMode();
+  void testAFocusedSheetTakesTheEditorsStatusSlot();
+  void testAFocusedModeSwitchMountsTheNewStatusWidget();
+  void testRemovingAFocusedSheetReturnsTheEditorsMode();
+  void testRemovingASheetWhoseCommandBarHasFocus();
 
   // The cursor line follows a preview widget which takes the focus.
   void testFocusingASheetMovesTheCursorLine();

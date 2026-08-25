@@ -67,9 +67,9 @@ private slots:
   void testTypingNeedsNoEditMode();
   void testTheCaretNeverLeavesTheTable();
   void testReadOnlySheetKeepsTheCaretButSwallowsTyping();
-  void testTabWrapsBetweenCells();
+  void testTabHandsBackAtTheEnds();
   void testArrowOutAtTheEdgesRequestsAFocusEscape();
-  void testEscapeRequestsAFocusEscape();
+  void testEscapeNoLongerRequestsAFocusEscape();
 
   // Content invariants.
   void testEnterIsSwallowed();
@@ -123,12 +123,13 @@ private slots:
   void testDebouncedCommit();
   void testCellLeaveFlushesImmediately();
   void testFocusOutFlushesImmediately();
-  void testEscapeFlushesImmediately();
+  void testAFocusEscapeFlushesImmediately();
   void testEchoOfACommitKeepsANewerEdit();
   void testARevertToThePreCommitSourceIsHonoured();
   void testRejectionMakesTheSheetReadOnly();
   void testAnUntouchedDocumentDiscardsTheEdit();
-  void testUndoFlushesBeforeItReachesTheEditor();
+  void testUndoUnwindsTheRingBeforeItReachesTheEditor();
+  void testTypingAfterACommitIsStillUndoable();
   void testRedoIsDroppedWhileDirty();
   void testCommittedImeInputReachesTheFlush();
   void testAnActiveCompositionSurvivesTheRemovalFlush();

@@ -215,20 +215,5 @@ void VRichTextEditor::setModified(bool p_modified) {
 }
 
 void VRichTextEditor::updateInputMethodEnabled() {
-  const auto mode = getEditorMode();
-  switch (mode) {
-  case ViModeNormal:
-    Q_FALLTHROUGH();
-  case ViModeVisual:
-    Q_FALLTHROUGH();
-  case ViModeVisualLine:
-    Q_FALLTHROUGH();
-  case ViModeVisualBlock:
-    m_textEdit->setInputMethodEnabled(false);
-    break;
-
-  default:
-    m_textEdit->setInputMethodEnabled(true);
-    break;
-  }
+  m_textEdit->setInputMethodEnabled(isTextInsertingEditorMode(getEditorMode()));
 }

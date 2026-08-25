@@ -12,6 +12,8 @@
 #include <QTimer>
 #include <QWidget>
 
+#include <inputmode/abstractinputmode.h>
+#include <texteditor/inputmodestatuswidget.h>
 #include <vtextedit/markdownhighlighter.h>
 #include <vtextedit/theme.h>
 #include <vtextedit/vmarkdowneditor.h>
@@ -170,7 +172,27 @@ InteractivePreviewHost::InteractivePreviewHost(VMarkdownEditor *p_editor)
           [this](TablePreviewWidget *p_widget) { handleSheetUndo(p_widget); });
   connect(m_tableFactory.data(), &TablePreviewWidgetFactory::redoRequested, this,
           [this](TablePreviewWidget *p_widget) { handleSheetRedo(p_widget); });
+  connect(m_tableFactory.data(), &TablePreviewWidgetFactory::inputModeStatusWidgetChanged, this,
+          [this](TablePreviewWidget *p_widget) {
+            // Only for the sheet which owns the FOCUS, so a background sheet
+            // swapping its mode cannot take the slot away from the focused
+            // one. Deliberately not compared against m_inputModeStatusOwnerId,
+            // which is 0 whenever the focused sheet's mode has no status
+            // widget of its own - the Normal and vscode modes have none, and
+            // that is exactly the case where switching to Vi has to mount one.
+            const quint64 id = identityOf(p_widget);
+            if (id != 0 && id == m_focusDomainId) {
+              publishInputModeStatusWidget(id);
+            }
+          });
   registerFactory(m_tableFactory.data(), 0);
+
+  if (m_editor) {
+    // Decision D6: the sheets follow the editor's configured input mode and
+    // track changes to it.
+    connect(m_editor, &VTextEditor::modeChanged, this, &InteractivePreviewHost::applyInputMode);
+    applyInputMode();
+  }
 
   publishEnabledTypeMask();
 }
@@ -1327,15 +1349,47 @@ void InteractivePreviewHost::removeItem(quint64 p_id, bool p_synchronous) {
   ActiveItem item = it.value();
   m_items.erase(it);
 
+  // Whether this item owned the focus. Captured BEFORE the status slot is
+  // handed back, because handing it back synchronously hides and unparents the
+  // mounted widget (StatusIndicator::updateInputModeStatusWidget), and if that
+  // widget is a Vi command bar the user is typing in, hiding it emits a focus
+  // change - which runs applyFocusDomain() re-entrantly and zeroes
+  // m_focusDomainId before this line would have read it.
+  //
+  // m_focusDomainId is deliberately NOT cleared here either: the focus move
+  // below is a real transition and has to be seen as one by applyFocusDomain(),
+  // which is where the EDITOR's input mode is told it has the focus again.
+  // Zeroing it first would make that transition look like "already there". The
+  // identity is dead but harmless - identities are allocated monotonically and
+  // never reused, so nothing can match it again.
+  const bool ownedFocus = (p_id == m_focusDomainId);
+
+  // The editor's status slot must be handed back BEFORE the widget - and with
+  // it the sheet's input mode - is destroyed: publishing is what unparents the
+  // mounted status widget, and ViInputMode::~ViInputMode() asserts its status
+  // bar is no longer parented. Reached after the erase on purpose, so
+  // tableWidgetOf() can no longer resolve this identity and the slot really
+  // does come back to the editor.
+  if (p_id == m_inputModeStatusOwnerId) {
+    publishInputModeStatusWidget(0);
+  }
+
   qCDebug(previewHostLog) << "removing item" << p_id
                           << (item.m_preview ? previewTypeName(item.m_preview->type()) : "?")
                           << (p_synchronous ? "(synchronously)" : "(deferred)");
 
   if (item.m_widget) {
     // Move focus back to the editor before destroying a focused widget.
+    //
+    // ownedFocus is checked as well as the widget subtree, because a sheet's
+    // published Vi command bar is deliberately NOT a descendant of the preview
+    // - it is mounted in the editor's status slot - so the subtree test alone
+    // would leave the focus on a bar whose mode is about to be destroyed. It
+    // is a snapshot taken before that bar was unmounted; see above.
     QWidget *focus = QApplication::focusWidget();
-    if (m_textEdit && focus &&
-        (focus == item.m_widget.data() || item.m_widget->isAncestorOf(focus))) {
+    const bool focusInside =
+        focus && (focus == item.m_widget.data() || item.m_widget->isAncestorOf(focus));
+    if (m_textEdit && (focusInside || ownedFocus) && !m_textEdit->hasFocus()) {
       m_textEdit->setFocus();
     }
 
@@ -1456,6 +1510,11 @@ void InteractivePreviewHost::clearPreviewSelections() {
 
 void InteractivePreviewHost::handleApplicationFocusChanged(QWidget *p_old, QWidget *p_now) {
   Q_UNUSED(p_old);
+
+  // The focus DOMAIN first, which is larger than the widget: it also covers a
+  // published Vi command bar, which lives in the editor's status slot rather
+  // than inside the preview.
+  applyFocusDomain(p_now);
 
   const quint64 id = identityForFocusWidget(p_now);
   if (id == 0) {
@@ -1814,6 +1873,143 @@ void InteractivePreviewHost::setTableSourceAlignEnabled(bool p_enabled) {
 
   if (m_tableFactory) {
     m_tableFactory->setSourceAlignEnabled(p_enabled);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Input modes inside the built-in table sheets
+// ---------------------------------------------------------------------------
+
+void InteractivePreviewHost::applyInputMode() {
+  if (!m_tableFactory) {
+    return;
+  }
+
+  // Decision D8: no new signal on VTextEditor. modeChanged() carries no
+  // argument and fires on every Vi submode transition as well, so the value is
+  // queried and the noise filtered here.
+  auto mode = m_editor ? m_editor->getInputMode() : QSharedPointer<AbstractInputMode>();
+  const InputMode value = mode ? mode->mode() : InputMode::NormalMode;
+  if (m_inputModePushed && value == m_lastInputMode) {
+    return;
+  }
+
+  m_lastInputMode = value;
+  m_inputModePushed = true;
+  qCDebug(previewHostLog) << "pushing input mode" << static_cast<int>(value) << "to the sheets";
+
+  m_tableFactory->setInputMode(value);
+}
+
+TablePreviewWidget *InteractivePreviewHost::tableWidgetOf(quint64 p_id) const {
+  if (p_id == 0) {
+    return nullptr;
+  }
+
+  const auto it = m_items.constFind(p_id);
+  if (it == m_items.constEnd()) {
+    return nullptr;
+  }
+
+  return qobject_cast<TablePreviewWidget *>(it.value().m_widget.data());
+}
+
+quint64 InteractivePreviewHost::focusDomainFor(QWidget *p_focus) const {
+  const quint64 id = identityForFocusWidget(p_focus);
+  if (id != 0) {
+    return id;
+  }
+
+  // The published status widget - a Vi command bar, in practice - is mounted
+  // in the EDITOR's status slot, so it is not a descendant of the preview
+  // widget and the lookup above cannot see it. It is nonetheless part of the
+  // sheet's focus domain: naive "focus left the sheet" logic would restore the
+  // editor's mode and its own status widget out from under the bar the user is
+  // typing a ':' command into.
+  if (m_inputModeStatusOwnerId != 0 && p_focus && m_publishedStatusHostWidget) {
+    QWidget *host = m_publishedStatusHostWidget.data();
+    if (host == p_focus || host->isAncestorOf(p_focus)) {
+      return m_inputModeStatusOwnerId;
+    }
+  }
+
+  return 0;
+}
+
+void InteractivePreviewHost::publishInputModeStatusWidget(quint64 p_id) {
+  auto *widget = tableWidgetOf(p_id);
+  QSharedPointer<InputModeStatusWidget> statusWidget;
+  if (widget) {
+    statusWidget = widget->inputModeStatusWidget();
+  }
+
+  if (statusWidget == m_publishedStatusWidget) {
+    // Same widget; only the ownership record can have moved.
+    m_inputModeStatusOwnerId = statusWidget ? p_id : 0;
+    return;
+  }
+
+  disconnect(m_publishedStatusFocusConnection);
+  m_publishedStatusWidget = statusWidget;
+  m_inputModeStatusOwnerId = statusWidget ? p_id : 0;
+  m_publishedStatusHostWidget =
+      statusWidget ? statusWidget->widget().data() : static_cast<QWidget *>(nullptr);
+
+  if (statusWidget) {
+    // The editor's own "the status widget lost the focus -> focus me" wiring
+    // is suppressed while an override is installed, precisely so this one can
+    // send the focus back into the cell instead.
+    m_publishedStatusFocusConnection =
+        connect(statusWidget.data(), &InputModeStatusWidget::focusOut, this, [this, p_id]() {
+          if (auto *owner = tableWidgetOf(p_id)) {
+            owner->focusSheet();
+          } else if (m_textEdit) {
+            m_textEdit->setFocus();
+          }
+        });
+  }
+
+  if (m_editor) {
+    // Publishing is also what UNPARENTS the outgoing widget, which the
+    // outgoing mode's destructor asserts on - hence this being reachable from
+    // the sheet's own inputModeStatusWidgetChanged, emitted while that mode is
+    // still alive.
+    m_editor->overrideInputModeStatusWidget(statusWidget);
+  }
+}
+
+void InteractivePreviewHost::applyFocusDomain(QWidget *p_now) {
+  const quint64 domain = focusDomainFor(p_now);
+  if (domain == m_focusDomainId) {
+    return;
+  }
+
+  const quint64 previous = m_focusDomainId;
+  m_focusDomainId = domain;
+
+  // The status slot follows the domain. Qt delivers FocusOut before FocusIn,
+  // so a sheet A -> sheet B move has already run A's own focus-loss - its
+  // preedit is committed and its undo step closed - by the time this runs.
+  publishInputModeStatusWidget(domain);
+
+  auto editorMode = m_editor ? m_editor->getInputMode() : QSharedPointer<AbstractInputMode>();
+  if (!editorMode) {
+    return;
+  }
+
+  if (previous == 0 && domain != 0) {
+    // VTextEditor::focusOutEvent() does NOT fire for an editor -> sheet move:
+    // the sheet lives inside the editor's own viewport. This is the only thing
+    // which tells the editor's mode it is no longer the one being typed into.
+    editorMode->focusOut();
+    return;
+  }
+
+  if (previous != 0 && domain == 0 && m_textEdit && p_now &&
+      (p_now == m_textEdit || m_textEdit->isAncestorOf(p_now))) {
+    // Only when the focus really landed back on the editor. Moving to another
+    // window leaves both modes alone.
+    editorMode->focusIn();
   }
 }
 

@@ -1664,7 +1664,7 @@ void TestTablePreview::testReadOnlySheetKeepsTheCaretButSwallowsTyping() {
   QCOMPARE(cellText(sheet->document(), 1, 1), before);
 }
 
-void TestTablePreview::testTabWrapsBetweenCells() {
+void TestTablePreview::testTabHandsBackAtTheEnds() {
   QScopedPointer<TablePreviewWidget> holder;
   auto widget = buildEditableSheet(holder);
   QVERIFY(widget);
@@ -1678,20 +1678,31 @@ void TestTablePreview::testTabWrapsBetweenCells() {
                  : qMakePair(-1, -1);
   };
 
+  QSignalSpy spy(widget, &TablePreviewWidget::focusEscapeRequested);
+
   putCaretIn(sheet, 0, 0);
   QTest::keyClick(sheet, Qt::Key_Tab);
   QCOMPARE(currentCell(), qMakePair(0, 1));
 
   QTest::keyClick(sheet, Qt::Key_Backtab);
   QCOMPARE(currentCell(), qMakePair(0, 0));
+  QCOMPARE(spy.count(), 0);
 
-  // Shift-Tab out of the first cell wraps to the last one, and Tab out of the
-  // last one wraps back.
+  // Decision D3: Escape is the input mode's now, so Tab past the last cell and
+  // Backtab before the first are - with the edge arrows - the only way left to
+  // hand the caret back. They used to WRAP, which for a Vi user with no
+  // Escape would make the sheet a keyboard trap.
   QTest::keyClick(sheet, Qt::Key_Backtab);
-  QCOMPARE(currentCell(), qMakePair(1, 2));
-
-  QTest::keyClick(sheet, Qt::Key_Tab);
+  QCOMPARE(spy.count(), 1);
+  QCOMPARE(spy.last().at(0).value<FocusEscapeDirection>(), FocusEscapeDirection::Up);
+  // The caret has not moved: where it goes is the host's business.
   QCOMPARE(currentCell(), qMakePair(0, 0));
+
+  putCaretIn(sheet, 1, 2);
+  QTest::keyClick(sheet, Qt::Key_Tab);
+  QCOMPARE(spy.count(), 2);
+  QCOMPARE(spy.last().at(0).value<FocusEscapeDirection>(), FocusEscapeDirection::Down);
+  QCOMPARE(currentCell(), qMakePair(1, 2));
 
   // And Tab never reaches the focus chain: it was consumed before Qt's own
   // handling saw it, so the caret is still inside the table.
@@ -1726,7 +1737,7 @@ void TestTablePreview::testArrowOutAtTheEdgesRequestsAFocusEscape() {
   QVERIFY(sheet->textCursor().currentTable());
 }
 
-void TestTablePreview::testEscapeRequestsAFocusEscape() {
+void TestTablePreview::testEscapeNoLongerRequestsAFocusEscape() {
   QScopedPointer<TablePreviewWidget> holder;
   auto widget = buildEditableSheet(holder);
   QVERIFY(widget);
@@ -1736,11 +1747,20 @@ void TestTablePreview::testEscapeRequestsAFocusEscape() {
   QSignalSpy spy(widget, &TablePreviewWidget::focusEscapeRequested);
 
   putCaretIn(sheet, 1, 1);
+  const int caret = sheet->textCursor().position();
   QTest::keyClick(sheet, Qt::Key_Escape);
 
-  QCOMPARE(spy.count(), 1);
-  // Keep: the editor takes the focus back and the caret stays where it was.
-  QCOMPARE(spy.last().at(0).value<FocusEscapeDirection>(), FocusEscapeDirection::Keep);
+  // Decision D3: Escape belongs to the input mode now - it is how Vi's insert
+  // and visual mode are left, and NormalViMode answers it unconditionally, so
+  // "offer it to the mode and hand focus back if it declines" is unreachable.
+  // The hand-back is Tab past the last cell, Backtab before the first, and the
+  // arrow keys at the table's edges.
+
+  QCOMPARE(spy.count(), 0);
+  // With no mode installed nothing claims it either, and the sheet is left
+  // exactly as it was.
+  QCOMPARE(sheet->textCursor().position(), caret);
+  QVERIFY(sheet->textCursor().currentTable());
 }
 
 // ---------------------------------------------------------------------------
@@ -2902,7 +2922,7 @@ void TestTablePreview::testFocusOutFlushesImmediately() {
   QVERIFY(harness.lastRequest().contains(QStringLiteral("a?")));
 }
 
-void TestTablePreview::testEscapeFlushesImmediately() {
+void TestTablePreview::testAFocusEscapeFlushesImmediately() {
   SheetHarness harness(makeCommittableTable());
   auto sheet = harness.sheet();
   QVERIFY(sheet);
@@ -2911,7 +2931,11 @@ void TestTablePreview::testEscapeFlushesImmediately() {
   typeInto(sheet, 1, 0, QStringLiteral("*"));
   QCOMPARE(harness.requestCount(), 0);
 
-  QTest::keyClick(sheet, Qt::Key_Escape);
+  // Driven by an edge arrow rather than Escape (decision D3), but the contract
+  // is unchanged: handing the caret back is a visible end of the edit, so it
+  // does not wait for the debounce.
+  putCaretIn(sheet, 1, 0);
+  QTest::keyClick(sheet, Qt::Key_Down);
   QCoreApplication::processEvents();
 
   QCOMPARE(harness.requestCount(), 1);
@@ -3026,7 +3050,7 @@ void TestTablePreview::testAnUntouchedDocumentDiscardsTheEdit() {
   QVERIFY(!sheet->isReadOnly());
 }
 
-void TestTablePreview::testUndoFlushesBeforeItReachesTheEditor() {
+void TestTablePreview::testUndoUnwindsTheRingBeforeItReachesTheEditor() {
   SheetHarness harness(makeCommittableTable());
   auto sheet = harness.sheet();
   QVERIFY(sheet);
@@ -3034,28 +3058,74 @@ void TestTablePreview::testUndoFlushesBeforeItReachesTheEditor() {
 
   QSignalSpy undoSpy(harness.widget(), &TablePreviewWidget::undoRequested);
 
-  // Pressed inside the idle window. Forwarding straight through would undo an
-  // unrelated earlier operation and the pending table edit would then still be
-  // committed on top of whatever the undo restored.
+  // Decision D2: the sheet owns a cell-text snapshot ring, and Ctrl+Z spends
+  // that first. The typing is one step, so this undoes it locally and the
+  // editor's own stack is not touched at all.
   typeInto(sheet, 1, 0, QStringLiteral("U"));
+  QCOMPARE(cellText(sheet->document(), 1, 0), QStringLiteral("aU"));
   QCOMPARE(harness.requestCount(), 0);
 
   QTest::keyClick(sheet, Qt::Key_Z, Qt::ControlModifier);
   QCoreApplication::processEvents();
 
-  QCOMPARE(harness.requestCount(), 1);
+  QCOMPARE(cellText(sheet->document(), 1, 0), QStringLiteral("a"));
+  QCOMPARE(undoSpy.count(), 0);
+
+  // The replay put the cell back where the bound source had it, so the flush
+  // finds nothing to write and the editor never sees a commit either.
+  waitForCommit();
+  QCOMPARE(harness.requestCount(), 0);
+
+  // The ring is empty now, so the next Ctrl+Z is the editor's - and nothing is
+  // owed, so it goes straight through.
+  QTest::keyClick(sheet, Qt::Key_Z, Qt::ControlModifier);
+  QCoreApplication::processEvents();
+  QCOMPARE(harness.requestCount(), 0);
   QCOMPARE(undoSpy.count(), 1);
 
-  // Pressed after the debounce has already fired, nothing is owed and the undo
-  // goes straight through.
+  // With a committed edit outstanding the relay still flushes first: forwarding
+  // straight through would undo an unrelated earlier operation, and the pending
+  // table edit would then be committed on top of whatever the undo restored.
   typeInto(sheet, 1, 1, QStringLiteral("V"));
   waitForCommit();
-  QCOMPARE(harness.requestCount(), 2);
+  QCOMPARE(harness.requestCount(), 1);
+
+  // A successful commit clears the ring - a snapshot may never outlive the
+  // source generation it was taken against - so this one relays too.
+  QTest::keyClick(sheet, Qt::Key_Z, Qt::ControlModifier);
+  QCoreApplication::processEvents();
+  QCOMPARE(harness.requestCount(), 1);
+  QCOMPARE(undoSpy.count(), 2);
+}
+
+void TestTablePreview::testTypingAfterACommitIsStillUndoable() {
+  SheetHarness harness(makeCommittableTable());
+  auto sheet = harness.sheet();
+  QVERIFY(sheet);
+  showOffScreen(*harness.widget(), 600);
+
+  QSignalSpy undoSpy(harness.widget(), &TablePreviewWidget::undoRequested);
+
+  // An accepted commit drops the ring - a cell snapshot may not outlive the
+  // source generation it was taken against. What it must NOT drop is the
+  // BASELINE: ordinary typing takes no checkpoint of its own, so a clear which
+  // left none would make the very next edit unrecoverable, with the next
+  // checkpoint recording the already-mutated cell as the state to go back to.
+  typeInto(sheet, 1, 0, QStringLiteral("A"));
+  waitForCommit();
+  QCOMPARE(harness.requestCount(), 1);
+  QCOMPARE(cellText(sheet->document(), 1, 0), QStringLiteral("aA"));
+
+  // Typed into the same cell, without the caret ever leaving it.
+  QTextCursor cursor = sheet->textCursor();
+  cursor.insertText(QStringLiteral("B"));
+  QCOMPARE(cellText(sheet->document(), 1, 0), QStringLiteral("aAB"));
 
   QTest::keyClick(sheet, Qt::Key_Z, Qt::ControlModifier);
   QCoreApplication::processEvents();
-  QCOMPARE(harness.requestCount(), 2);
-  QCOMPARE(undoSpy.count(), 2);
+
+  QCOMPARE(cellText(sheet->document(), 1, 0), QStringLiteral("aA"));
+  QCOMPARE(undoSpy.count(), 0);
 }
 
 void TestTablePreview::testRedoIsDroppedWhileDirty() {

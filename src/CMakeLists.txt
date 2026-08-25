@@ -109,6 +109,7 @@ add_library(VTextEdit SHARED
     markdowneditor/previewmgr.cpp
     markdowneditor/previewwidget.cpp
     markdowneditor/tablepreviewwidget.cpp markdowneditor/tablepreviewwidget.h
+    markdowneditor/tablepreviewinputmode.cpp markdowneditor/tablepreviewinputmode.h
     markdowneditor/textdocumentlayout.cpp markdowneditor/textdocumentlayout.h
     markdowneditor/textdocumentlayoutdata.h
     markdowneditor/vmarkdowneditor.cpp
