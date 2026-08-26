@@ -7,51 +7,49 @@
 
 class QTextDocument;
 
-namespace tests
-{
-    class TestTextFolding : public QObject
-    {
-        Q_OBJECT
-    private slots:
-        void initTestCase();
+namespace tests {
+class TestTextFolding : public QObject {
+  Q_OBJECT
+private slots:
+  void initTestCase();
 
-        // Define test cases here per slot.
-        void testNewFoldingRange();
+  // Define test cases here per slot.
+  void testNewFoldingRange();
 
-        void textFoldRange();
+  void textFoldRange();
 
-        void testRemoveFoldingRange();
+  void testRemoveFoldingRange();
 
-        void testDocumentReplacement();
+  void testDocumentReplacement();
 
-        void testDocumentClear();
+  void testDocumentClear();
 
-        void testRangeAccessors();
+  void testRangeAccessors();
 
-        void testHardClearRestoresVisibility();
+  void testHardClearRestoresVisibility();
 
-        void testFoldedLineSelectionSurvivesInPlaceReplacement();
+  void testFoldedLineSelectionSurvivesInPlaceReplacement();
 
-        void testDeepestFoldableRangeOnBlock();
+  void testDeepestFoldableRangeOnBlock();
 
-        void testOutermostFoldedRangeOnBlock();
+  void testOutermostFoldedRangeOnBlock();
 
-        void testFoldQueriesWhenDisabled();
+  void testFoldQueriesWhenDisabled();
 
-        void cleanupTestCase();
+  void cleanupTestCase();
 
-        // Will be executed before any test function.
-        void cleanup();
+  // Will be executed before any test function.
+  void cleanup();
 
-    private:
-        qint64 insertNewFoldingRange(int p_first,
-                                     int p_last,
-                                     vte::TextFolding::FoldingRangeFlags p_flags = vte::TextFolding::FoldingRangeFlags());
+private:
+  qint64 insertNewFoldingRange(
+      int p_first, int p_last,
+      vte::TextFolding::FoldingRangeFlags p_flags = vte::TextFolding::FoldingRangeFlags());
 
-        QTextDocument *m_doc = nullptr;
+  QTextDocument *m_doc = nullptr;
 
-        vte::TextFolding *m_textFolding = nullptr;
-    };
-} // ns tests
+  vte::TextFolding *m_textFolding = nullptr;
+};
+} // namespace tests
 
 #endif

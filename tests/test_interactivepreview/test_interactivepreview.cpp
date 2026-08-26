@@ -583,8 +583,7 @@ void TestInteractivePreview::testTableSourceAlignOptionThreading() {
   {
     VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
     setTextAndSettle(editor, QLatin1String(c_raggedTable));
-    QVERIFY2(commitFirstCell(editor, QStringLiteral("z"))
-                 .contains(QLatin1String(c_compactCommit)),
+    QVERIFY2(commitFirstCell(editor, QStringLiteral("z")).contains(QLatin1String(c_compactCommit)),
              qPrintable(editor.document()->toPlainText()));
   }
 
@@ -594,8 +593,7 @@ void TestInteractivePreview::testTableSourceAlignOptionThreading() {
     config->m_alignTableSourceEnabled = true;
     VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
     setTextAndSettle(editor, QLatin1String(c_raggedTable));
-    QVERIFY2(commitFirstCell(editor, QStringLiteral("z"))
-                 .contains(QLatin1String(c_alignedCommit)),
+    QVERIFY2(commitFirstCell(editor, QStringLiteral("z")).contains(QLatin1String(c_alignedCommit)),
              qPrintable(editor.document()->toPlainText()));
   }
 
@@ -670,8 +668,7 @@ void TestInteractivePreview::testTableSourceAlignOptionThreading() {
   QVERIFY2(editor.document()->toPlainText().contains(QLatin1String(c_alignedCommit)),
            "turning the option off rewrote source by itself");
 
-  const QString compactAfterFlipBack =
-      QStringLiteral("| h1 | header2 |\n| --- | --- |\n| y | b |");
+  const QString compactAfterFlipBack = QStringLiteral("| h1 | header2 |\n| --- | --- |\n| y | b |");
   QVERIFY2(commitFirstCell(editor, QStringLiteral("y")).contains(compactAfterFlipBack),
            qPrintable(editor.document()->toPlainText()));
 }
@@ -848,8 +845,7 @@ void TestInteractivePreview::testMultiTypeFactory() {
   VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
 
   auto factory = new RecordingPreviewFactory({PreviewElementType::Image, PreviewElementType::Code,
-                                              PreviewElementType::Math,
-                                              PreviewElementType::Table});
+                                              PreviewElementType::Math, PreviewElementType::Table});
   QVERIFY(editor.registerPreviewWidgetFactory(factory, 1));
 
   setTextAndSettle(editor, QStringLiteral("![a](b.png)\n\n```cpp\nint a;\n```\n\n$$\nx\n$$\n\n") +
@@ -963,8 +959,8 @@ void TestInteractivePreview::testUnregisterDestroysFactory() {
   auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
   QPointer<RecordingPreviewFactory> guard(factory);
   QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
-  QCOMPARE(factory->parent(), editor.findChild<QObject *>(
-                                  QStringLiteral("vte_interactive_preview_host")));
+  QCOMPARE(factory->parent(),
+           editor.findChild<QObject *>(QStringLiteral("vte_interactive_preview_host")));
 
   QVERIFY(editor.unregisterPreviewWidgetFactory(factory));
   // Unregistering twice is refused.
@@ -1125,8 +1121,7 @@ void TestInteractivePreview::testReplacementRejectedOnElementCountMismatch() {
   auto widget = factory->m_widgets.first();
 
   // Two tables.
-  widget->previewContext()->requestSourceReplacement(QLatin1String(c_table) +
-                                                     QStringLiteral("\n") +
+  widget->previewContext()->requestSourceReplacement(QLatin1String(c_table) + QStringLiteral("\n") +
                                                      QLatin1String(c_table));
   QCOMPARE(widget->m_lastResult.status(), PreviewReplacementResult::ElementCountMismatch);
 
@@ -1428,9 +1423,8 @@ void TestInteractivePreview::testPaddedSourceIsOnlyRewrittenOnARealEdit() {
 
 void TestInteractivePreview::testSourceBitDisablesTablePreview() {
   auto config = makeConfig();
-  config->m_inplacePreviewSources =
-      MarkdownEditorConfig::ImageLink | MarkdownEditorConfig::CodeBlock |
-      MarkdownEditorConfig::Math;
+  config->m_inplacePreviewSources = MarkdownEditorConfig::ImageLink |
+                                    MarkdownEditorConfig::CodeBlock | MarkdownEditorConfig::Math;
 
   VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
   setTextAndSettle(editor, QLatin1String(c_table));
@@ -1465,8 +1459,7 @@ void TestInteractivePreview::testDuplicateTablesGetDistinctIdentities() {
 
   auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
   QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
-  setTextAndSettle(editor, QLatin1String(c_table) + QStringLiteral("\n") +
-                               QLatin1String(c_table));
+  setTextAndSettle(editor, QLatin1String(c_table) + QStringLiteral("\n") + QLatin1String(c_table));
 
   QCOMPARE(factory->m_widgets.size(), 2);
   const auto first = factory->m_widgets[0]->previewContext();
@@ -1493,10 +1486,9 @@ void TestInteractivePreview::testWidgetGeometryFollowsScrolling() {
   QVERIFY(QTest::qWaitForWindowExposed(&editor));
   setTextAndSettle(editor, text);
 
-  QVERIFY2(factory->m_widgets.size() == 1,
-           qPrintable(QStringLiteral("created=%1 live=%2")
-                          .arg(factory->m_widgets.size())
-                          .arg(previewWidgets(editor).size())));
+  QVERIFY2(factory->m_widgets.size() == 1, qPrintable(QStringLiteral("created=%1 live=%2")
+                                                          .arg(factory->m_widgets.size())
+                                                          .arg(previewWidgets(editor).size())));
   auto widget = factory->m_widgets.first();
   auto vbar = editor.getTextEdit()->verticalScrollBar();
   QVERIFY(vbar->maximum() > 0);
@@ -1767,8 +1759,7 @@ void TestInteractivePreview::testReplacementOfLaterInlineElement() {
   // the candidate ambiguous.
   second->previewContext()->requestSourceReplacement(QStringLiteral("![changed](c.png)"));
   QCOMPARE(second->m_lastResult.status(), PreviewReplacementResult::Accepted);
-  QCOMPARE(editor.document()->toPlainText(),
-           QStringLiteral("![first](a.png) ![changed](c.png)\n"));
+  QCOMPARE(editor.document()->toPlainText(), QStringLiteral("![first](a.png) ![changed](c.png)\n"));
 }
 
 void TestInteractivePreview::testWidgetDestroyingItselfOnUpdateFallsBack() {
@@ -1846,8 +1837,7 @@ void TestInteractivePreview::testConfigChangeKeepsLiveAnchors() {
   cursor.insertText(QStringLiteral("prefix "));
 
   auto config = makeConfig();
-  config->m_inplacePreviewSources =
-      MarkdownEditorConfig::Table | MarkdownEditorConfig::ImageLink;
+  config->m_inplacePreviewSources = MarkdownEditorConfig::Table | MarkdownEditorConfig::ImageLink;
   editor.setConfig(config);
   QTest::qWait(50);
   QCoreApplication::processEvents();
@@ -1856,8 +1846,7 @@ void TestInteractivePreview::testConfigChangeKeepsLiveAnchors() {
   // parse position.
   auto rebuilt = singlePreviewWidget(editor);
   QVERIFY(rebuilt);
-  const QString anchored =
-      editor.document()->toPlainText().mid(anchoredStart + 7, 4);
+  const QString anchored = editor.document()->toPlainText().mid(anchoredStart + 7, 4);
   QCOMPARE(anchored, QStringLiteral("| h1"));
 
   // A commit still resolves against the live source.
@@ -1883,9 +1872,9 @@ void TestInteractivePreview::testReplacementRejectsExoticLineSeparators() {
   // cmark's line table only splits on '\n'.
   const QVector<QChar> separators{QChar(QLatin1Char('\r')), QChar(0x2028), QChar(0x2029)};
   for (const auto &separator : separators) {
-    widget->previewContext()->requestSourceReplacement(
-        QStringLiteral("| h1 | h2 |") + separator + QStringLiteral("| --- | --- |") + separator +
-        QStringLiteral("| z | b |"));
+    widget->previewContext()->requestSourceReplacement(QStringLiteral("| h1 | h2 |") + separator +
+                                                       QStringLiteral("| --- | --- |") + separator +
+                                                       QStringLiteral("| z | b |"));
     QCOMPARE(widget->m_lastResult.status(), PreviewReplacementResult::ParseFailure);
     QCOMPARE(editor.document()->toPlainText(), before);
   }
@@ -1939,8 +1928,7 @@ void TestInteractivePreview::testNoSnapshotWorkWithoutAClaimableFactory() {
   editor.getHighlighter()->updateHighlight();
   QTRY_VERIFY(spy.count() > 0);
 
-  const auto previews =
-      spy.last().at(1).value<QVector<QSharedPointer<const Preview>>>();
+  const auto previews = spy.last().at(1).value<QVector<QSharedPointer<const Preview>>>();
   QVERIFY(previews.isEmpty());
   QVERIFY(previewWidgets(editor).isEmpty());
 
@@ -1968,15 +1956,13 @@ void TestInteractivePreview::testBackToBackReplacementsAccepted() {
   auto widget = factory->m_widgets.first();
   auto context = widget->previewContext();
 
-  context->requestSourceReplacement(
-      QStringLiteral("| h1 | h2 |\n| --- | --- |\n| z | b |"));
+  context->requestSourceReplacement(QStringLiteral("| h1 | h2 |\n| --- | --- |\n| z | b |"));
   QCOMPARE(widget->m_lastResult.status(), PreviewReplacementResult::Accepted);
 
   // A second commit before the next parse generation lands. The bound snapshot
   // must describe what the first commit put in the document, otherwise this is
   // rejected as a SourceMismatch and the edit is silently dropped.
-  context->requestSourceReplacement(
-      QStringLiteral("| h1 | h2 |\n| --- | --- |\n| z | y |"));
+  context->requestSourceReplacement(QStringLiteral("| h1 | h2 |\n| --- | --- |\n| z | y |"));
   QCOMPARE(widget->m_lastResult.status(), PreviewReplacementResult::Accepted);
   QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("| z | y |")));
 
@@ -1998,12 +1984,10 @@ void TestInteractivePreview::testBackToBackReplacementsAcceptedForNonTable() {
   auto context = factory->m_widgets.first()->previewContext();
 
   context->requestSourceReplacement(QStringLiteral("```cpp\nint b;\n```"));
-  QCOMPARE(factory->m_widgets.first()->m_lastResult.status(),
-           PreviewReplacementResult::Accepted);
+  QCOMPARE(factory->m_widgets.first()->m_lastResult.status(), PreviewReplacementResult::Accepted);
 
   context->requestSourceReplacement(QStringLiteral("```cpp\nint c;\n```"));
-  QCOMPARE(factory->m_widgets.first()->m_lastResult.status(),
-           PreviewReplacementResult::Accepted);
+  QCOMPARE(factory->m_widgets.first()->m_lastResult.status(), PreviewReplacementResult::Accepted);
   QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("int c;")));
 }
 
@@ -2016,8 +2000,7 @@ void TestInteractivePreview::testRebasedSourceSurvivesRebuild() {
 
   const QString committed = QStringLiteral("| h1 | h2 |\n| --- | --- |\n| z | b |");
   factory->m_widgets.first()->previewContext()->requestSourceReplacement(committed);
-  QCOMPARE(factory->m_widgets.first()->m_lastResult.status(),
-           PreviewReplacementResult::Accepted);
+  QCOMPARE(factory->m_widgets.first()->m_lastResult.status(), PreviewReplacementResult::Accepted);
 
   // A factory change rebuilds every item by replaying the parse generation,
   // which still holds the pre-commit source, and forces a re-emit of that same
@@ -2153,8 +2136,7 @@ void TestInteractivePreview::testTableSheetRefitsAfterFontChange() {
   editor.resize(600, 400);
   editor.show();
   QVERIFY(QTest::qWaitForWindowExposed(&editor));
-  setTextAndSettle(editor,
-                   QStringLiteral("| header | header |\n| --- | --- |\n| haha | haha |\n"));
+  setTextAndSettle(editor, QStringLiteral("| header | header |\n| --- | --- |\n| haha | haha |\n"));
 
   auto widget = singlePreviewWidget(editor);
   QVERIFY(widget);
@@ -2337,10 +2319,9 @@ int expectedSheetWidth(qreal p_available, int p_natural) {
 void TestInteractivePreview::testTableSheetSpansContentWidth() {
   // Whatever the contents - a table which would be far narrower than the band,
   // and one whose single cell is far wider than it - the sheet is the band.
-  const QVector<QString> tables{
-      QStringLiteral("| a | b |\n| --- | --- |\n| c | d |\n"),
-      QStringLiteral("| h |\n| --- |\n| ") + QString(300, QLatin1Char('x')) +
-          QStringLiteral(" |\n")};
+  const QVector<QString> tables{QStringLiteral("| a | b |\n| --- | --- |\n| c | d |\n"),
+                                QStringLiteral("| h |\n| --- |\n| ") +
+                                    QString(300, QLatin1Char('x')) + QStringLiteral(" |\n")};
 
   for (int i = 0; i < tables.size(); ++i) {
     VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
@@ -2391,10 +2372,9 @@ void TestInteractivePreview::testClickEditsACellInPlace() {
   editor.show();
   QVERIFY(QTest::qWaitForWindowExposed(&editor));
 
-  setTextAndSettle(editor,
-                   QStringLiteral("| Left | Center | Right |\n"
-                                  "|:-----|:------:|------:|\n"
-                                  "| *italic* | **bold** | `code` |\n"));
+  setTextAndSettle(editor, QStringLiteral("| Left | Center | Right |\n"
+                                          "|:-----|:------:|------:|\n"
+                                          "| *italic* | **bold** | `code` |\n"));
   QTest::qWait(50);
   QCoreApplication::processEvents();
 
@@ -2475,10 +2455,10 @@ void TestInteractivePreview::testTableSheetHeightMatchesItsRows() {
 
   // The whole point of the narrow editor: a description cell no longer fits on
   // one line and is shown in full instead of being elided.
-  QVERIFY2(tallest >= 2 * shortest,
-           qPrintable(QStringLiteral("nothing wrapped: tallest %1, shortest %2")
-                          .arg(tallest)
-                          .arg(shortest)));
+  QVERIFY2(
+      tallest >= 2 * shortest,
+      qPrintable(
+          QStringLiteral("nothing wrapped: tallest %1, shortest %2").arg(tallest).arg(shortest)));
 
   // The band the host reserved is exactly the sheet, and the sheet is exactly
   // the document: no empty strip under the last row, and nothing clipped.
@@ -2507,10 +2487,10 @@ void TestInteractivePreview::testTableSheetHeightMatchesItsRows() {
            qPrintable(QStringLiteral("a row still wraps at full width: tallest %1, shortest %2")
                           .arg(wideTallest)
                           .arg(wideShortest)));
-  QVERIFY2(widget->height() < tallBand,
-           qPrintable(QStringLiteral("the band did not shrink: %1 vs %2")
-                          .arg(widget->height())
-                          .arg(tallBand)));
+  QVERIFY2(
+      widget->height() < tallBand,
+      qPrintable(
+          QStringLiteral("the band did not shrink: %1 vs %2").arg(widget->height()).arg(tallBand)));
   QCOMPARE(sheet->verticalScrollBar()->maximum(), 0);
 }
 
@@ -2826,8 +2806,7 @@ void TestInteractivePreview::testEditorDestructionFlushesADirtySheet() {
   // itself, its pre-removal flush runs after everything it needs is gone and
   // an edit still inside the debounce window is silently dropped.
   for (bool focused : {false, true}) {
-    auto editor = new VMarkdownEditor(makeConfig(),
-                                      QSharedPointer<TextEditorParameters>::create());
+    auto editor = new VMarkdownEditor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
     editor->resize(600, 400);
     editor->show();
     QVERIFY(QTest::qWaitForWindowExposed(editor));
@@ -2923,8 +2902,8 @@ void TestInteractivePreview::testArrowOutMovesTheEditorCaretToTheLiveAnchor() {
   const QString text = editor.document()->toPlainText();
   const int sourceStart = text.indexOf(QStringLiteral("| h1"));
   QVERIFY(sourceStart > 0);
-  const int sourceEnd = text.indexOf(QStringLiteral("| a | b |")) +
-                        QStringLiteral("| a | b |").size();
+  const int sourceEnd =
+      text.indexOf(QStringLiteral("| a | b |")) + QStringLiteral("| a | b |").size();
   QVERIFY(sourceEnd > sourceStart);
 
   // Up out of the first row. The source is rendered above the sheet, so "up"
@@ -3268,8 +3247,8 @@ void TestInteractivePreview::testUnregisteringTheBuiltinFactoryIsSafe() {
   // public API can unregister it like any other. The host keeps a direct
   // reference to it for the per-publish read-only push, which must not outlive
   // the object.
-  const auto factories = host->findChildren<PreviewWidgetFactory *>(QString(),
-                                                                    Qt::FindDirectChildrenOnly);
+  const auto factories =
+      host->findChildren<PreviewWidgetFactory *>(QString(), Qt::FindDirectChildrenOnly);
   QCOMPARE(factories.size(), 1);
   QPointer<PreviewWidgetFactory> guard(factories.first());
 
@@ -3341,8 +3320,7 @@ void TestInteractivePreview::testGenerationDeliveredDuringCallbackIsNotLost() {
   widget->m_duringSpin = [&]() {
     delivered = QMetaObject::invokeMethod(
         host, "updatePreviews", Qt::DirectConnection, Q_ARG(quint64, nextRevision),
-        Q_ARG(QVector<QSharedPointer<const Preview>>,
-              QVector<QSharedPointer<const Preview>>()));
+        Q_ARG(QVector<QSharedPointer<const Preview>>, QVector<QSharedPointer<const Preview>>()));
   };
   widget->m_spinOnNextSetPreview = true;
 
@@ -3368,8 +3346,7 @@ void TestInteractivePreview::testReplacementCannotSplitATableCell() {
   // An inline element inside a table row. A single line is not a table to
   // cmark - that needs the delimiter row - so the validation probe cannot see
   // that '|' is structural here.
-  setTextAndSettle(editor,
-                   QStringLiteral("| a | ![i](x.png) |\n| --- | --- |\n| b | c |\n"));
+  setTextAndSettle(editor, QStringLiteral("| a | ![i](x.png) |\n| --- | --- |\n| b | c |\n"));
 
   QVERIFY2(factory->m_widgets.size() == 1,
            qPrintable(QStringLiteral("created=%1").arg(factory->m_widgets.size())));
@@ -3378,8 +3355,7 @@ void TestInteractivePreview::testReplacementCannotSplitATableCell() {
 
   // Would split the cell and silently give the table a third column.
   widget->previewContext()->requestSourceReplacement(QStringLiteral("![i|j](y.png)"));
-  QVERIFY2(!widget->m_lastResult.isAccepted(),
-           qPrintable(editor.document()->toPlainText()));
+  QVERIFY2(!widget->m_lastResult.isAccepted(), qPrintable(editor.document()->toPlainText()));
   QCOMPARE(editor.document()->toPlainText(), before);
 
   // An escaped pipe is not structural, and a plain replacement is fine.
@@ -3486,8 +3462,7 @@ int foldRefreshes(VMarkdownEditor &p_editor) {
 QWidget *indicatorsBorder(VMarkdownEditor &p_editor) {
   const auto children = p_editor.findChildren<QWidget *>();
   for (auto child : children) {
-    if (QLatin1String(child->metaObject()->className()) ==
-        QLatin1String("vte::IndicatorsBorder")) {
+    if (QLatin1String(child->metaObject()->className()) == QLatin1String("vte::IndicatorsBorder")) {
       return child;
     }
   }
@@ -3551,8 +3526,7 @@ bool toggleFoldFromGutter(VMarkdownEditor &p_editor, int p_blockNumber, int p_pr
 // A previewed table comes up folded: the header row and the last row stay
 // visible, and only the interior is hidden.
 void TestInteractivePreview::testPreviewedTableIsFoldedOnce() {
-  VMarkdownEditor editor(makeAutoFoldConfig(true),
-                         QSharedPointer<TextEditorParameters>::create());
+  VMarkdownEditor editor(makeAutoFoldConfig(true), QSharedPointer<TextEditorParameters>::create());
   setTextAndSettle(editor, QLatin1String(c_table) + QStringLiteral("\ntail\n"));
   QVERIFY(singlePreviewWidget(editor));
 
@@ -3570,8 +3544,7 @@ void TestInteractivePreview::testPreviewedTableIsFoldedOnce() {
 }
 
 void TestInteractivePreview::testAutoFoldIsOptional() {
-  VMarkdownEditor editor(makeAutoFoldConfig(false),
-                         QSharedPointer<TextEditorParameters>::create());
+  VMarkdownEditor editor(makeAutoFoldConfig(false), QSharedPointer<TextEditorParameters>::create());
   setTextAndSettle(editor, QLatin1String(c_table) + QStringLiteral("\ntail\n"));
   QVERIFY(singlePreviewWidget(editor));
 
@@ -3586,8 +3559,7 @@ void TestInteractivePreview::testAutoFoldIsOptional() {
 // Folding keeps the first and last block visible, so only a caret in the
 // interior would be hidden - and such a region is left open for good.
 void TestInteractivePreview::testCaretInsideKeepsTheSourceOpen() {
-  VMarkdownEditor editor(makeAutoFoldConfig(true),
-                         QSharedPointer<TextEditorParameters>::create());
+  VMarkdownEditor editor(makeAutoFoldConfig(true), QSharedPointer<TextEditorParameters>::create());
 
   // The caret is placed before the parse generation lands, so the very first
   // decision sees it inside the table.
@@ -3686,8 +3658,7 @@ void TestInteractivePreview::testFoldSurvivesASheetCellEdit() {
 // element, otherwise a second rewrite issued before the next parse misses the
 // live range.
 void TestInteractivePreview::testFoldSurvivesARewriteWithTrailingBlankLines() {
-  VMarkdownEditor editor(makeAutoFoldConfig(true),
-                         QSharedPointer<TextEditorParameters>::create());
+  VMarkdownEditor editor(makeAutoFoldConfig(true), QSharedPointer<TextEditorParameters>::create());
 
   auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
   QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
@@ -3700,8 +3671,7 @@ void TestInteractivePreview::testFoldSurvivesARewriteWithTrailingBlankLines() {
   auto widget = factory->m_widgets.first();
   widget->previewContext()->requestSourceReplacement(
       QStringLiteral("| h1 | h2 |\n| --- | --- |\n| z | b |\n\n"));
-  QVERIFY2(widget->m_lastResult.isAccepted(),
-           qPrintable(widget->m_lastResult.diagnostic()));
+  QVERIFY2(widget->m_lastResult.isAccepted(), qPrintable(widget->m_lastResult.diagnostic()));
   QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("| z | b |")));
   QVERIFY2(!blockVisible(editor, 1), "the restored range missed the trimmed extent");
   // Block 2 is the discriminator: the trimmed element ends there, the anchor
@@ -3712,8 +3682,7 @@ void TestInteractivePreview::testFoldSurvivesARewriteWithTrailingBlankLines() {
   // A second rewrite before the next parse still finds the restored range.
   widget->previewContext()->requestSourceReplacement(
       QStringLiteral("| h1 | h2 |\n| --- | --- |\n| y | b |\n\n"));
-  QVERIFY2(widget->m_lastResult.isAccepted(),
-           qPrintable(widget->m_lastResult.diagnostic()));
+  QVERIFY2(widget->m_lastResult.isAccepted(), qPrintable(widget->m_lastResult.diagnostic()));
   QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("| y | b |")));
   QVERIFY(!blockVisible(editor, 1));
   QVERIFY(blockVisible(editor, 2));
@@ -3729,13 +3698,12 @@ void TestInteractivePreview::testFoldSurvivesARewriteWithTrailingBlankLines() {
 // ranges must keep their fold state, which is what the live-position
 // reconciliation buys.
 void TestInteractivePreview::testRewriteKeepsAFoldedTableBelowFolded() {
-  VMarkdownEditor editor(makeAutoFoldConfig(true),
-                         QSharedPointer<TextEditorParameters>::create());
+  VMarkdownEditor editor(makeAutoFoldConfig(true), QSharedPointer<TextEditorParameters>::create());
 
   auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
   QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
-  setTextAndSettle(editor, QLatin1String(c_table) + QStringLiteral("\ntail\n\n") +
-                               QLatin1String(c_table));
+  setTextAndSettle(editor,
+                   QLatin1String(c_table) + QStringLiteral("\ntail\n\n") + QLatin1String(c_table));
 
   settleFolding();
   QCOMPARE(factory->m_widgets.size(), 2);
@@ -3762,8 +3730,7 @@ void TestInteractivePreview::testRewriteKeepsAFoldedTableBelowFolded() {
 // A region left open for the caret stays open across its own rewrite: the
 // rewrite restores what was there, not what the option would have chosen.
 void TestInteractivePreview::testCaretSkippedTableStaysOpenAcrossARewrite() {
-  VMarkdownEditor editor(makeAutoFoldConfig(true),
-                         QSharedPointer<TextEditorParameters>::create());
+  VMarkdownEditor editor(makeAutoFoldConfig(true), QSharedPointer<TextEditorParameters>::create());
 
   auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
   QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
@@ -3871,8 +3838,7 @@ void TestInteractivePreview::testFoldStateSurvivesAWidgetRebuild() {
 // not on the item yet when a rewrite arrives. The rewrite samples the live
 // state instead of trusting the item, in both directions.
 void TestInteractivePreview::testGutterUnfoldBeforeARewriteIsHonoured() {
-  VMarkdownEditor editor(makeAutoFoldConfig(true),
-                         QSharedPointer<TextEditorParameters>::create());
+  VMarkdownEditor editor(makeAutoFoldConfig(true), QSharedPointer<TextEditorParameters>::create());
 
   auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
   QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
@@ -3904,8 +3870,7 @@ void TestInteractivePreview::testGutterUnfoldBeforeARewriteIsHonoured() {
 }
 
 void TestInteractivePreview::testGutterFoldBeforeARewriteIsHonoured() {
-  VMarkdownEditor editor(makeAutoFoldConfig(true),
-                         QSharedPointer<TextEditorParameters>::create());
+  VMarkdownEditor editor(makeAutoFoldConfig(true), QSharedPointer<TextEditorParameters>::create());
 
   auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
   QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
@@ -3942,8 +3907,7 @@ void TestInteractivePreview::testGutterFoldBeforeARewriteIsHonoured() {
 // the next generation is a fresh element and the option decides again. This is
 // documented behaviour, and the assertion is here to pin it down.
 void TestInteractivePreview::testUndoOfARewriteReDecides() {
-  VMarkdownEditor editor(makeAutoFoldConfig(true),
-                         QSharedPointer<TextEditorParameters>::create());
+  VMarkdownEditor editor(makeAutoFoldConfig(true), QSharedPointer<TextEditorParameters>::create());
 
   auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
   QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
@@ -3966,8 +3930,7 @@ void TestInteractivePreview::testUndoOfARewriteReDecides() {
   settle(editor);
   settleFolding();
 
-  QVERIFY2(!blockVisible(editor, 1),
-           "the documented re-decide after an undo no longer happens");
+  QVERIFY2(!blockVisible(editor, 1), "the documented re-decide after an undo no longer happens");
 
   // A redo is the same kind of destructive replacement, and re-decides the
   // same way. With the caret away from the interior, the option folds the
@@ -3978,15 +3941,13 @@ void TestInteractivePreview::testUndoOfARewriteReDecides() {
   settleFolding();
 
   QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("| z | b |")));
-  QVERIFY2(!blockVisible(editor, 1),
-           "the documented re-decide after a redo no longer happens");
+  QVERIFY2(!blockVisible(editor, 1), "the documented re-decide after a redo no longer happens");
 }
 
 // A full replacement is a new document: every identity and every range is gone,
 // so the option decides from scratch.
 void TestInteractivePreview::testFullReplacementReDecides() {
-  VMarkdownEditor editor(makeAutoFoldConfig(true),
-                         QSharedPointer<TextEditorParameters>::create());
+  VMarkdownEditor editor(makeAutoFoldConfig(true), QSharedPointer<TextEditorParameters>::create());
 
   editor.setText(QLatin1String(c_table) + QStringLiteral("\ntail\n"));
   putEditorCaretInBlock(editor, 1);
@@ -4003,8 +3964,7 @@ void TestInteractivePreview::testFullReplacementReDecides() {
 // anchor has collapsed, so it describes no range and nothing may be folded for
 // it.
 void TestInteractivePreview::testDeletedSourceFoldsNothing() {
-  VMarkdownEditor editor(makeAutoFoldConfig(true),
-                         QSharedPointer<TextEditorParameters>::create());
+  VMarkdownEditor editor(makeAutoFoldConfig(true), QSharedPointer<TextEditorParameters>::create());
   setTextAndSettle(editor, QLatin1String(c_table) + QStringLiteral("\ntail\n"));
 
   settleFolding();
@@ -4026,9 +3986,9 @@ void TestInteractivePreview::testDeletedSourceFoldsNothing() {
 
   QVERIFY(previewWidgets(editor).isEmpty());
   for (int i = 0; i < editor.document()->blockCount(); ++i) {
-    QVERIFY2(blockVisible(editor, i),
-             qPrintable(QStringLiteral("block %1 stayed hidden after its source was deleted")
-                            .arg(i)));
+    QVERIFY2(
+        blockVisible(editor, i),
+        qPrintable(QStringLiteral("block %1 stayed hidden after its source was deleted").arg(i)));
   }
 }
 
@@ -4036,8 +3996,7 @@ void TestInteractivePreview::testDeletedSourceFoldsNothing() {
 // host's own queued timers. The fold evaluation must not run against a
 // half-reconciled item set.
 void TestInteractivePreview::testFoldRefreshIsDeferredDuringWidgetCallback() {
-  VMarkdownEditor editor(makeAutoFoldConfig(true),
-                         QSharedPointer<TextEditorParameters>::create());
+  VMarkdownEditor editor(makeAutoFoldConfig(true), QSharedPointer<TextEditorParameters>::create());
 
   auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
   QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
@@ -4712,8 +4671,7 @@ void TestInteractivePreview::testFocusingASheetKeepsACaretAlreadyInTheSource() {
 // grabs the focus from inside its own callback - while a nested event loop is
 // delivering the host's timers - is served only after the block unwinds.
 void TestInteractivePreview::testCursorLineSyncIsDeferredDuringWidgetCallback() {
-  VMarkdownEditor editor(makeAutoFoldConfig(false),
-                         QSharedPointer<TextEditorParameters>::create());
+  VMarkdownEditor editor(makeAutoFoldConfig(false), QSharedPointer<TextEditorParameters>::create());
   editor.resize(600, 300);
   editor.show();
   QVERIFY(QTest::qWaitForWindowExposed(&editor));
@@ -4756,8 +4714,7 @@ void TestInteractivePreview::testCursorLineSyncIsDeferredDuringWidgetCallback() 
 // VTextEdit::handleCursorPositionChange(), which would land it somewhere the
 // user never asked for. The sync declines instead.
 void TestInteractivePreview::testFocusingASheetWithAHiddenFirstBlockKeepsTheCaret() {
-  VMarkdownEditor editor(makeAutoFoldConfig(false),
-                         QSharedPointer<TextEditorParameters>::create());
+  VMarkdownEditor editor(makeAutoFoldConfig(false), QSharedPointer<TextEditorParameters>::create());
   editor.resize(600, 300);
   editor.show();
   QVERIFY(QTest::qWaitForWindowExposed(&editor));
@@ -4968,7 +4925,8 @@ void TestInteractivePreview::testFocusLeavingTheApplicationKeepsTheSelection() {
   elsewhere->setFocus();
   QCoreApplication::processEvents();
 
-  QVERIFY2(!editor.getTextEdit()->hasFocus(), "the editor took the focus, which is a different case");
+  QVERIFY2(!editor.getTextEdit()->hasFocus(),
+           "the editor took the focus, which is a different case");
   QVERIFY2(sheet->textCursor().hasSelection(), "an unrelated focus move dropped the selection");
 }
 
@@ -5466,14 +5424,12 @@ void TestInteractivePreview::testOwedWorkDrainsOnceUnderANestedEventLoop() {
   QVERIFY2(delta <= 4, qPrintable(QStringLiteral("%1 drains ran for one unblock").arg(delta)));
 }
 
-
 // ---------------------------------------------------------------------------
 // The (original syntax -> candidate syntax) transition matrix
 // ---------------------------------------------------------------------------
 
 void TestInteractivePreview::testTableSyntaxTransitionMatrix() {
-  const QString c_htmlTable =
-      QStringLiteral("<table>\n<tr><td>a</td><td>b</td></tr>\n</table>\n");
+  const QString c_htmlTable = QStringLiteral("<table>\n<tr><td>a</td><td>b</td></tr>\n</table>\n");
 
   // MARKDOWN -> MARKDOWN: the historical delimiter/prefix logic, unchanged.
   {
@@ -5592,8 +5548,8 @@ void TestInteractivePreview::testHtmlTableSourceIsFoldedToItsOwnExtent() {
   // them is hidden.
   QVERIFY2(visible(2), "the table's opening tag must stay visible");
   for (int block = 3; block <= 5; ++block) {
-    QVERIFY2(!visible(block), qPrintable(QStringLiteral("block %1 must be folded away")
-                                             .arg(block)));
+    QVERIFY2(!visible(block),
+             qPrintable(QStringLiteral("block %1 must be folded away").arg(block)));
   }
   QVERIFY2(visible(6), "the table's closing tag must stay visible");
 

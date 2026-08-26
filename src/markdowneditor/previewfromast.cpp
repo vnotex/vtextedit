@@ -29,8 +29,8 @@ static void buildHtmlGrid(const md::TableElement &p_element, TableSnapshotData &
   const int cols = p_data.m_gridColumnCount;
 
   QVector<QVector<QString>> cells(rows, QVector<QString>(cols));
-  QVector<QVector<QVector<PreviewFormatRun>>> cellFormats(
-      rows, QVector<QVector<PreviewFormatRun>>(cols));
+  QVector<QVector<QVector<PreviewFormatRun>>> cellFormats(rows,
+                                                          QVector<QVector<PreviewFormatRun>>(cols));
   QVector<QVector<QString>> cellTags(rows, QVector<QString>(cols));
 
   p_data.m_rowTags.resize(rows);

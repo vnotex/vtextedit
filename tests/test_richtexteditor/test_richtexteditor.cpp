@@ -436,7 +436,6 @@ void TestRichTextEditor::testJoinLinesIsFormatLossy() {
   QCOMPARE(block.textFormats().count(), 1);
 }
 
-
 void TestRichTextEditor::testVscodeMoveLineIsFormatLossy() {
   VRichTextEditor editor(configWithMode(InputMode::VscodeMode));
   editor.setHtml(QStringLiteral("<p>first</p><p><b>second</b></p><p>third</p>"));

@@ -3,15 +3,13 @@
 
 #include <QtTest>
 
-namespace tests
-{
-    class TestBenchmark : public QObject
-    {
-        Q_OBJECT
-    private slots:
-        void initTestCase();
-        void benchmarkParse();
-    };
-} // ns tests
+namespace tests {
+class TestBenchmark : public QObject {
+  Q_OBJECT
+private slots:
+  void initTestCase();
+  void benchmarkParse();
+};
+} // namespace tests
 
 #endif

@@ -3,11 +3,9 @@
 
 #include <QString>
 
-namespace tests
-{
-    namespace utils
-    {
-        QString getCppText();
-    }
+namespace tests {
+namespace utils {
+QString getCppText();
 }
+} // namespace tests
 #endif

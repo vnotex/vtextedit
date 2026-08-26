@@ -78,7 +78,8 @@ public:
     bool operator==(const WidgetPreviewSpec &p_other) const {
       return m_id == p_other.m_id && m_startPos == p_other.m_startPos &&
              m_endPos == p_other.m_endPos && m_placement == p_other.m_placement &&
-             m_typeOrder == p_other.m_typeOrder && qFuzzyCompare(m_width + 1, p_other.m_width + 1) &&
+             m_typeOrder == p_other.m_typeOrder &&
+             qFuzzyCompare(m_width + 1, p_other.m_width + 1) &&
              qFuzzyCompare(m_height + 1, p_other.m_height + 1);
     }
 

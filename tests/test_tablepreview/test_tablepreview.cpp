@@ -71,9 +71,9 @@ makeTable(const QVector<QVector<QString>> &p_cells,
     prefixes.append(QString());
   }
 
-  auto preview = PreviewBuilder::createTable(1, 0, 10, QStringLiteral("source"),
-                                             p_alignments.size(), p_cells, p_alignments, prefixes,
-                                             p_delimiterPrefix, p_cellFormats);
+  auto preview =
+      PreviewBuilder::createTable(1, 0, 10, QStringLiteral("source"), p_alignments.size(), p_cells,
+                                  p_alignments, prefixes, p_delimiterPrefix, p_cellFormats);
   return preview.staticCast<const TablePreview>();
 }
 
@@ -88,9 +88,9 @@ makeSnapshot(const QVector<QVector<QString>> &p_cells,
   const QVector<QString> prefixes(p_cells.size(), QString());
   const QString source =
       TablePreviewSerializer::serialize(p_cells, p_alignments, prefixes, QString());
-  auto preview = PreviewBuilder::createTable(p_revision, 0, source.size(), source,
-                                             p_alignments.size(), p_cells, p_alignments, prefixes,
-                                             QString(), p_cellFormats);
+  auto preview =
+      PreviewBuilder::createTable(p_revision, 0, source.size(), source, p_alignments.size(),
+                                  p_cells, p_alignments, prefixes, QString(), p_cellFormats);
   return preview.staticCast<const TablePreview>();
 }
 
@@ -116,8 +116,7 @@ QSharedPointer<const TablePreview> parseCanonical(const QString &p_markdown, qui
     QString current;
     for (int i = 0; i < body.size(); ++i) {
       const QChar ch = body.at(i);
-      if (ch == QLatin1Char('\\') && i + 1 < body.size() &&
-          body.at(i + 1) == QLatin1Char('|')) {
+      if (ch == QLatin1Char('\\') && i + 1 < body.size() && body.at(i + 1) == QLatin1Char('|')) {
         current.append(QLatin1Char('|'));
         ++i;
         continue;
@@ -158,10 +157,9 @@ QSharedPointer<const TablePreview> parseCanonical(const QString &p_markdown, qui
   }
 
   const QVector<QString> prefixes(cells.size(), QString());
-  auto preview = PreviewBuilder::createTable(p_revision, 0, p_markdown.size(), p_markdown,
-                                             alignments.size(), cells, alignments, prefixes,
-                                             QString(),
-                                             QVector<QVector<QVector<PreviewFormatRun>>>());
+  auto preview = PreviewBuilder::createTable(
+      p_revision, 0, p_markdown.size(), p_markdown, alignments.size(), cells, alignments, prefixes,
+      QString(), QVector<QVector<QVector<PreviewFormatRun>>>());
   return preview.staticCast<const TablePreview>();
 }
 
@@ -366,9 +364,9 @@ TablePreviewWidget *buildEditableSheet(QScopedPointer<TablePreviewWidget> &p_hol
   cells.append({QStringLiteral("*italic*"), QStringLiteral("**bold**"), QStringLiteral("`code`")});
 
   p_holder.reset(new TablePreviewWidget(nullptr, nullptr));
-  if (!p_holder->setPreview(makeTable(cells, {PreviewTableAlignment::Left,
-                                              PreviewTableAlignment::Center,
-                                              PreviewTableAlignment::Right}))) {
+  if (!p_holder->setPreview(
+          makeTable(cells, {PreviewTableAlignment::Left, PreviewTableAlignment::Center,
+                            PreviewTableAlignment::Right}))) {
     return nullptr;
   }
 
@@ -395,9 +393,8 @@ void TestTablePreview::testEscapeCellParity() {
 }
 
 void TestTablePreview::testEscapeCellIdempotent() {
-  const QStringList inputs{QStringLiteral("a|b"), QStringLiteral("a\\|b"),
-                           QStringLiteral("|"),   QStringLiteral("\\\\|"),
-                           QStringLiteral("a||b")};
+  const QStringList inputs{QStringLiteral("a|b"), QStringLiteral("a\\|b"), QStringLiteral("|"),
+                           QStringLiteral("\\\\|"), QStringLiteral("a||b")};
   for (const auto &input : inputs) {
     const QString once = TablePreviewSerializer::escapeCell(input);
     QCOMPARE(TablePreviewSerializer::escapeCell(once), once);
@@ -420,10 +417,10 @@ void TestTablePreview::testSerializeCanonical() {
 
 void TestTablePreview::testSerializeAlignments() {
   QVector<QVector<QString>> cells;
-  cells.append({QStringLiteral("a"), QStringLiteral("b"), QStringLiteral("c"),
-                QStringLiteral("d")});
-  cells.append({QStringLiteral("1"), QStringLiteral("2"), QStringLiteral("3"),
-                QStringLiteral("4")});
+  cells.append(
+      {QStringLiteral("a"), QStringLiteral("b"), QStringLiteral("c"), QStringLiteral("d")});
+  cells.append(
+      {QStringLiteral("1"), QStringLiteral("2"), QStringLiteral("3"), QStringLiteral("4")});
 
   const QVector<PreviewTableAlignment> alignments{
       PreviewTableAlignment::None, PreviewTableAlignment::Left, PreviewTableAlignment::Center,
@@ -604,9 +601,9 @@ void TestTablePreview::testSerializeDoesNotPadOtherRows() {
       continue;
     }
 
-    QVERIFY2(lines[i].size() < 20, qPrintable(QStringLiteral("line %1 is %2 characters wide")
-                                                  .arg(i)
-                                                  .arg(lines[i].size())));
+    QVERIFY2(
+        lines[i].size() < 20,
+        qPrintable(QStringLiteral("line %1 is %2 characters wide").arg(i).arg(lines[i].size())));
   }
 
   // Which bounds the whole output: with padding it would be rows x 500.
@@ -629,10 +626,8 @@ void TestTablePreview::testAlignedSerializeIsOptIn() {
                                                   PreviewTableAlignment::Center};
   const QVector<QString> prefixes{QString(), QString()};
 
-  const QString compact =
-      TablePreviewSerializer::serialize(cells, alignments, prefixes, QString());
-  QCOMPARE(compact,
-           QStringLiteral("| h1 | header2 |\n| --- | :---: |\n| a | b |"));
+  const QString compact = TablePreviewSerializer::serialize(cells, alignments, prefixes, QString());
+  QCOMPARE(compact, QStringLiteral("| h1 | header2 |\n| --- | :---: |\n| a | b |"));
   QCOMPARE(TablePreviewSerializer::serialize(cells, alignments, prefixes, QString(), false),
            compact);
   QVERIFY(TablePreviewSerializer::serialize(cells, alignments, prefixes, QString(), true) !=
@@ -823,8 +818,8 @@ void TestTablePreview::testAlignedOutputKeepsThePrefixes() {
   // Block quote: padding is emitted after the prefix, never inside it.
   {
     const QVector<QString> prefixes{QStringLiteral("> "), QStringLiteral("> ")};
-    const QString markdown = TablePreviewSerializer::serialize(cells, alignments, prefixes,
-                                                               QStringLiteral("> "), true);
+    const QString markdown =
+        TablePreviewSerializer::serialize(cells, alignments, prefixes, QStringLiteral("> "), true);
     const QStringList lines = markdown.split(QLatin1Char('\n'));
     QCOMPARE(lines.size(), 3);
     for (const auto &line : lines) {
@@ -987,8 +982,7 @@ void TestTablePreview::testDocumentRoundTrip() {
   document.setTable(makeTable(cells, {PreviewTableAlignment::None, PreviewTableAlignment::Right}));
 
   // The right aligned column keeps its ":" marker.
-  QCOMPARE(document.toMarkdown(),
-           QStringLiteral("| h1 | h2 |\n| --- | ---: |\n| a | b |"));
+  QCOMPARE(document.toMarkdown(), QStringLiteral("| h1 | h2 |\n| --- | ---: |\n| a | b |"));
 
   QTextCursor cursor = document.table()->cellAt(1, 1).lastCursorPosition();
   cursor.insertText(QStringLiteral("etter value"));
@@ -1331,8 +1325,7 @@ void TestTablePreview::testWidgetRejectsNonTable() {
   TablePreviewWidget widget(nullptr, nullptr);
   QCOMPARE(widget.supportedTypes(), QVector<PreviewElementType>{PreviewElementType::Table});
 
-  auto code = PreviewBuilder::createCode(1, 0, 3, QStringLiteral("```\n```"), QString(),
-                                         QString());
+  auto code = PreviewBuilder::createCode(1, 0, 3, QStringLiteral("```\n```"), QString(), QString());
   QVERIFY(!widget.setPreview(code));
   QVERIFY(!widget.setPreview(QSharedPointer<const Preview>()));
 }
@@ -1430,9 +1423,9 @@ void TestTablePreview::testHeightForWidthComesFromTheDocumentLayout() {
   // gone: this is Qt's own rich text layout answering.
   const int wide = widget.heightForWidth(600);
   const int narrow = widget.heightForWidth(300);
-  QVERIFY2(narrow > wide, qPrintable(QStringLiteral("narrow %1 is not taller than wide %2")
-                                         .arg(narrow)
-                                         .arg(wide)));
+  QVERIFY2(
+      narrow > wide,
+      qPrintable(QStringLiteral("narrow %1 is not taller than wide %2").arg(narrow).arg(wide)));
 
   // Repeating a query may not drift, and asking for the other width must not
   // return the previous answer.
@@ -1491,8 +1484,7 @@ void TestTablePreview::testColumnsFillTheAssignedWidth() {
     const QRect first = cellRect(sheet, 0, 0);
     const QRect second = cellRect(sheet, 0, 1);
     QVERIFY(first.isValid() && second.isValid());
-    QVERIFY2(second.left() > first.left(),
-             "the two columns were laid out on top of each other");
+    QVERIFY2(second.left() > first.left(), "the two columns were laid out on top of each other");
   }
 }
 
@@ -1637,8 +1629,7 @@ void TestTablePreview::testTheCaretNeverLeavesTheTable() {
   tail.movePosition(QTextCursor::End);
   sheet->setTextCursor(tail);
 
-  QVERIFY2(sheet->textCursor().currentTable(),
-           "the caret was left in the block after the table");
+  QVERIFY2(sheet->textCursor().currentTable(), "the caret was left in the block after the table");
 }
 
 void TestTablePreview::testReadOnlySheetKeepsTheCaretButSwallowsTyping() {
@@ -1799,8 +1790,7 @@ void TestTablePreview::testAppendRowKeepsThePrefixesAndTheRowCount() {
   // A block quote prefix, so the appended row has a prefix which is actually
   // something: an empty one would be reproduced by a plain bug too.
   document.setTable(makeTable(cells, {PreviewTableAlignment::None, PreviewTableAlignment::None},
-                              {QStringLiteral("> "), QStringLiteral("> ")},
-                              QStringLiteral("> ")));
+                              {QStringLiteral("> "), QStringLiteral("> ")}, QStringLiteral("> ")));
   QVERIFY(document.table());
   QCOMPARE(document.rowCount(), 2);
 
@@ -1808,14 +1798,13 @@ void TestTablePreview::testAppendRowKeepsThePrefixesAndTheRowCount() {
   // prefix and its formats are one edit block.
   int changes = 0;
   bool complete = true;
-  QObject::connect(document.document(), &QTextDocument::contentsChanged, document.document(),
-                   [&]() {
-                     ++changes;
-                     if (document.rowCount() != document.table()->rows() ||
-                         document.toMarkdown().isEmpty()) {
-                       complete = false;
-                     }
-                   });
+  QObject::connect(
+      document.document(), &QTextDocument::contentsChanged, document.document(), [&]() {
+        ++changes;
+        if (document.rowCount() != document.table()->rows() || document.toMarkdown().isEmpty()) {
+          complete = false;
+        }
+      });
 
   QVERIFY(document.canAppendRow());
   QVERIFY(document.appendRow());
@@ -1951,8 +1940,8 @@ void TestTablePreview::testEnterModifiersDecideWhetherARowIsAppended() {
   pressInLastCell(Qt::Key_Enter, Qt::KeypadModifier);
   QCOMPARE(rowsNow(), ++rows);
 
-  for (auto modifier : {Qt::ShiftModifier, Qt::ControlModifier, Qt::AltModifier,
-                        Qt::MetaModifier}) {
+  for (auto modifier :
+       {Qt::ShiftModifier, Qt::ControlModifier, Qt::AltModifier, Qt::MetaModifier}) {
     pressInLastCell(Qt::Key_Return, modifier);
     QCOMPARE(rowsNow(), rows);
   }
@@ -2318,8 +2307,7 @@ void TestTablePreview::testPastedTextIsSanitized() {
            QStringLiteral("one two"));
 
   // A whole pasted table is one line too, so it can still be written back.
-  const QString pastedTable =
-      QStringLiteral("| a | b |\n| --- | --- |\n| c | d |");
+  const QString pastedTable = QStringLiteral("| a | b |\n| --- | --- |\n| c | d |");
   const QString landed = pasteInto(pastedTable);
   QVERIFY2(!landed.contains(QLatin1Char('\n')), qPrintable(landed));
   QVERIFY2(!landed.contains(QChar(0x2029)), qPrintable(landed));
@@ -2375,13 +2363,11 @@ void TestTablePreview::testCommittedImeSeparatorsAreSanitized() {
   // An input method commits whatever it composed, which is not filtered by
   // keyPressEvent() and not a MIME payload either.
   QInputMethodEvent event;
-  event.setCommitString(QStringLiteral("one\ntwo") + QChar(0x2029) +
-                        QStringLiteral("three"));
+  event.setCommitString(QStringLiteral("one\ntwo") + QChar(0x2029) + QStringLiteral("three"));
   QCoreApplication::sendEvent(sheet, &event);
   QCoreApplication::processEvents();
 
-  QCOMPARE(cellText(sheet->document(), 1, 0),
-           QStringLiteral("*italic*one two three"));
+  QCOMPARE(cellText(sheet->document(), 1, 0), QStringLiteral("*italic*one two three"));
   QCOMPARE(sheet->document()->blockCount(), blocks);
   QCOMPARE(tableOf(sheet->document()), table);
 }
@@ -2611,8 +2597,7 @@ void TestTablePreview::testBecomingAViewerCancelsTheComposition() {
   putCaretIn(sheet, 1, 1);
   const QString before = sheet->document()->toPlainText();
 
-  QInputMethodEvent composing(QStringLiteral("composing"),
-                              QList<QInputMethodEvent::Attribute>());
+  QInputMethodEvent composing(QStringLiteral("composing"), QList<QInputMethodEvent::Attribute>());
   QCoreApplication::sendEvent(sheet, &composing);
   QCoreApplication::processEvents();
   QCOMPARE(preeditOf(sheet), QStringLiteral("composing"));
@@ -2661,8 +2646,7 @@ void TestTablePreview::testABackgroundSheetLeavesTheFocusedCompositionAlone() {
     QSKIP("the platform did not give the other widget the input focus");
   }
 
-  QInputMethodEvent composing(QStringLiteral("composing"),
-                              QList<QInputMethodEvent::Attribute>());
+  QInputMethodEvent composing(QStringLiteral("composing"), QList<QInputMethodEvent::Attribute>());
   QCoreApplication::sendEvent(&other, &composing);
   QCoreApplication::processEvents();
   QCOMPARE(preeditOf(&other), QStringLiteral("composing"));
@@ -3216,7 +3200,6 @@ void TestTablePreview::testAnActiveCompositionSurvivesTheRemovalFlush() {
   QVERIFY2(harness.lastRequest().contains(QStringLiteral("a\u3042\u3044")),
            qPrintable(harness.lastRequest()));
 }
-
 
 void TestTablePreview::testRevokedAuthoritySilencesEveryCommit() {
   SheetHarness harness(makeCommittableTable());
@@ -3902,8 +3885,7 @@ void TestTablePreview::testTheFactoryPropagatesTheAlignOption() {
   QVector<QVector<QString>> cells;
   cells.append({QStringLiteral("h1"), QStringLiteral("a longer header")});
   cells.append({QStringLiteral("a"), QStringLiteral("b")});
-  auto preview =
-      makeTable(cells, {PreviewTableAlignment::None, PreviewTableAlignment::None});
+  auto preview = makeTable(cells, {PreviewTableAlignment::None, PreviewTableAlignment::None});
 
   auto copiedMarkdown = [](TablePreviewWidget *p_widget) {
     auto sheet = sheetOf(*p_widget);
@@ -4076,7 +4058,6 @@ void TestTablePreview::testAnAlignmentOnlyChangeIsCommitted() {
                                                  "| a | b |"));
 }
 
-
 // ---------------------------------------------------------------------------
 // Palette
 // ---------------------------------------------------------------------------
@@ -4125,7 +4106,6 @@ void TestTablePreview::testDarkPaletteReachesTheSheet() {
   QCOMPARE(table->format().toTableFormat().borderBrush().color(), QColor(200, 200, 200));
 }
 
-
 // ---------------------------------------------------------------------------
 // Merge, split, and the HTML write-back they force
 // ---------------------------------------------------------------------------
@@ -4154,8 +4134,9 @@ makeHtmlSnapshot(const QVector<QVector<QString>> &p_cells, const QVector<QVector
   data.m_gridColumnCount = columns;
   data.m_openTag = QStringLiteral("<table>");
   data.m_rowTags = QVector<QString>(rows);
-  data.m_cellTags = p_cellTags.isEmpty() ? QVector<QVector<QString>>(rows, QVector<QString>(columns))
-                                         : p_cellTags;
+  data.m_cellTags = p_cellTags.isEmpty()
+                        ? QVector<QVector<QString>>(rows, QVector<QString>(columns))
+                        : p_cellTags;
 
   data.m_slots.resize(rows * columns);
   for (int r = 0; r < rows; ++r) {
@@ -4182,8 +4163,8 @@ makeHtmlSnapshot(const QVector<QVector<QString>> &p_cells, const QVector<QVector
 
 // Select the grid rectangle [p_top, p_left] .. [p_bottom, p_right] as a cell
 // rectangle, which is what QTextCursor calls a COMPLEX selection.
-QTextCursor selectCells(const TablePreviewDocument &p_document, int p_top, int p_left,
-                        int p_bottom, int p_right) {
+QTextCursor selectCells(const TablePreviewDocument &p_document, int p_top, int p_left, int p_bottom,
+                        int p_right) {
   QTextTable *table = p_document.table();
   QTextCursor cursor = table->cellAt(p_top, p_left).firstCursorPosition();
   cursor.setPosition(table->cellAt(p_bottom, p_right).lastCursorPosition().position(),
@@ -4272,8 +4253,7 @@ void TestTablePreview::testMergeRefusals() {
 
   {
     TablePreviewDocument document;
-    document.setTable(makeTable(cells, {PreviewTableAlignment::None,
-                                        PreviewTableAlignment::None}));
+    document.setTable(makeTable(cells, {PreviewTableAlignment::None, PreviewTableAlignment::None}));
 
     // A caret with no selection resolves to a 1x1 rectangle.
     QVERIFY(!document.canMergeCells(document.table()->cellAt(0, 0).firstCursorPosition()));
@@ -4293,8 +4273,8 @@ void TestTablePreview::testMergeRefusals() {
     const QVector<QString> prefixes{QStringLiteral("> "), QStringLiteral("> ")};
     auto preview = PreviewBuilder::createTable(
         1, 0, 10, QStringLiteral("source"), 2, cells,
-        {PreviewTableAlignment::None, PreviewTableAlignment::None}, prefixes,
-        QStringLiteral("> "), QVector<QVector<QVector<PreviewFormatRun>>>());
+        {PreviewTableAlignment::None, PreviewTableAlignment::None}, prefixes, QStringLiteral("> "),
+        QVector<QVector<QVector<PreviewFormatRun>>>());
 
     TablePreviewDocument document;
     document.setTable(preview.staticCast<const TablePreview>());
@@ -4307,9 +4287,8 @@ void TestTablePreview::testMergeContainmentRefusal() {
   // one is refused outright: QTextTable::mergeCells() silently refuses such a
   // request, so clearing the texts first and then not merging would erase
   // content and leave the metadata describing geometry that never changed.
-  QVector<QVector<QString>> cells{
-      {QStringLiteral("a"), QStringLiteral("wide"), QString()},
-      {QStringLiteral("d"), QStringLiteral("e"), QStringLiteral("f")}};
+  QVector<QVector<QString>> cells{{QStringLiteral("a"), QStringLiteral("wide"), QString()},
+                                  {QStringLiteral("d"), QStringLiteral("e"), QStringLiteral("f")}};
   QVector<QVector<QPoint>> spans{{QPoint(1, 1), QPoint(2, 1), QPoint(0, 0)},
                                  {QPoint(1, 1), QPoint(1, 1), QPoint(1, 1)}};
 
@@ -4330,7 +4309,6 @@ void TestTablePreview::testMergeContainmentRefusal() {
   // The whole box IS mergeable.
   QVERIFY(document.canMergeCells(selectCells(document, 0, 0, 1, 2)));
 }
-
 
 void TestTablePreview::testSplitCellRestoresTheGrid() {
   QVector<QVector<QString>> cells{{QStringLiteral("tall"), QStringLiteral("a")},
@@ -4355,9 +4333,9 @@ void TestTablePreview::testHtmlSerializerKeepsCellsSingleLine() {
   // cmark terminates every block with a newline, and one line of Markdown can
   // render to MULTI-LINE HTML. A multi-line cell fails the scanner's one-line
   // rule, and the table would then stop previewing altogether.
-  const QStringList payloads{QStringLiteral("plain"),  QStringLiteral("*em*"),
-                             QStringLiteral("# x"),    QStringLiteral("- x"),
-                             QStringLiteral("---"),    QStringLiteral("    indented"),
+  const QStringList payloads{QStringLiteral("plain"), QStringLiteral("*em*"),
+                             QStringLiteral("# x"),   QStringLiteral("- x"),
+                             QStringLiteral("---"),   QStringLiteral("    indented"),
                              QStringLiteral("a | b")};
 
   for (const auto &payload : payloads) {
@@ -4615,8 +4593,7 @@ void TestTablePreview::testLiveRectangleSurvivesCopyAndGatesMutations() {
   {
     // A preedit-only input method event installs a composition, and installing
     // one removes the current selection first.
-    QInputMethodEvent preedit(QStringLiteral("composing"),
-                              QList<QInputMethodEvent::Attribute>());
+    QInputMethodEvent preedit(QStringLiteral("composing"), QList<QInputMethodEvent::Attribute>());
     QApplication::sendEvent(sheet, &preedit);
   }
   expectIntact("preedit-only input method event");
@@ -4631,9 +4608,8 @@ void TestTablePreview::testLiveRectangleSurvivesCopyAndGatesMutations() {
     QMouseEvent press(QEvent::MouseButtonPress, inside, sheet->viewport()->mapToGlobal(inside),
                       Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
     QApplication::sendEvent(sheet->viewport(), &press);
-    QMouseEvent release(QEvent::MouseButtonRelease, inside,
-                        sheet->viewport()->mapToGlobal(inside), Qt::LeftButton, Qt::NoButton,
-                        Qt::NoModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease, inside, sheet->viewport()->mapToGlobal(inside),
+                        Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
     QApplication::sendEvent(sheet->viewport(), &release);
   }
   QCoreApplication::processEvents();
@@ -4696,13 +4672,11 @@ void TestTablePreview::testMergedGridRowColumnOpsKeepTags() {
   // ORIGIN coordinates is the one removed, in which case Qt keeps the cell and
   // moves its origin. A positional edit of the metadata would discard the only
   // copy of the tag and silently destroy `class`, `style` and `data-*`.
-  QVector<QVector<QString>> cells{
-      {QStringLiteral("h"), QStringLiteral("i")},
-      {QStringLiteral("tall"), QStringLiteral("a")},
-      {QString(), QStringLiteral("b")}};
-  QVector<QVector<QPoint>> spans{{QPoint(1, 1), QPoint(1, 1)},
-                                 {QPoint(1, 2), QPoint(1, 1)},
-                                 {QPoint(0, 0), QPoint(1, 1)}};
+  QVector<QVector<QString>> cells{{QStringLiteral("h"), QStringLiteral("i")},
+                                  {QStringLiteral("tall"), QStringLiteral("a")},
+                                  {QString(), QStringLiteral("b")}};
+  QVector<QVector<QPoint>> spans{
+      {QPoint(1, 1), QPoint(1, 1)}, {QPoint(1, 2), QPoint(1, 1)}, {QPoint(0, 0), QPoint(1, 1)}};
   QVector<QVector<QString>> tags{
       {QStringLiteral("<td>"), QStringLiteral("<td>")},
       {QStringLiteral("<td class=\"keep\" style=\"s\" data-x=\"1\" rowspan=\"2\">"),
@@ -4737,8 +4711,7 @@ void TestTablePreview::testMergedGridRowColumnOpsKeepTags() {
   // The same question for a COLSPAN whose origin column is the one removed.
   {
     QVector<QVector<QString>> wide{{QStringLiteral("span"), QString(), QStringLiteral("z")},
-                                   {QStringLiteral("p"), QStringLiteral("q"),
-                                    QStringLiteral("r")}};
+                                   {QStringLiteral("p"), QStringLiteral("q"), QStringLiteral("r")}};
     QVector<QVector<QPoint>> wideSpans{{QPoint(2, 1), QPoint(0, 0), QPoint(1, 1)},
                                        {QPoint(1, 1), QPoint(1, 1), QPoint(1, 1)}};
     QVector<QVector<QString>> wideTags{
@@ -4764,8 +4737,7 @@ void TestTablePreview::testMalformedPayloadTableStaysWritable() {
   // as the walker would, and must not reject a malformed comment it is itself
   // reproducing verbatim. Rejecting it would leave the table previewable but
   // permanently unwritable.
-  QVector<QVector<QString>> cells{
-      {QStringLiteral("<!--vte-md:bad\\-->"), QStringLiteral("plain")}};
+  QVector<QVector<QString>> cells{{QStringLiteral("<!--vte-md:bad\\-->"), QStringLiteral("plain")}};
   QVector<QVector<QPoint>> spans{{QPoint(1, 1), QPoint(1, 1)}};
 
   TablePreviewDocument document;
@@ -4846,8 +4818,8 @@ void TestTablePreview::testAlignmentIsRefusedOnASpannedColumn() {
   QVERIFY(menu);
   QVERIFY2(sheet->textCursor().hasComplexSelection(),
            "a click inside the rectangle must not retarget the caret");
-  QAction *merge = menu->findChild<QAction *>(QStringLiteral("MergeCells"),
-                                              Qt::FindChildrenRecursively);
+  QAction *merge =
+      menu->findChild<QAction *>(QStringLiteral("MergeCells"), Qt::FindChildrenRecursively);
   QVERIFY(merge);
   QVERIFY2(merge->isEnabled(), "a live rectangle must offer Merge");
   merge->trigger();
@@ -4863,15 +4835,14 @@ void TestTablePreview::testAlignmentIsRefusedOnASpannedColumn() {
   QScopedPointer<QMenu> merged(sheet->createContextMenu(inMergedCell));
   QVERIFY(merged);
   for (const auto &name : {QStringLiteral("AlignmentDefault"), QStringLiteral("AlignmentLeft"),
-                           QStringLiteral("AlignmentCenter"),
-                           QStringLiteral("AlignmentRight")}) {
+                           QStringLiteral("AlignmentCenter"), QStringLiteral("AlignmentRight")}) {
     QAction *action = merged->findChild<QAction *>(name, Qt::FindChildrenRecursively);
     QVERIFY2(action, qPrintable(name));
     QVERIFY2(!action->isEnabled(), qPrintable(name));
   }
 
-  QAction *split = merged->findChild<QAction *>(QStringLiteral("SplitCell"),
-                                                Qt::FindChildrenRecursively);
+  QAction *split =
+      merged->findChild<QAction *>(QStringLiteral("SplitCell"), Qt::FindChildrenRecursively);
   QVERIFY(split);
   QVERIFY2(split->isEnabled(), "a merged cell must offer Split");
 }

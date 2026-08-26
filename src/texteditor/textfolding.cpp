@@ -49,8 +49,8 @@ TextFolding::TextFolding(QTextDocument *p_document) : QObject(p_document), m_doc
               // Detect full document replacement (e.g., setPlainText / clear).
               // All previously stored QTextBlock references are stale and must
               // not be accessed.  Hard-clear instead of checkAndUpdateFoldings.
-              if (!m_foldingRanges.isEmpty() && p_position == 0 && p_charsRemoved > 0
-                  && p_charsAdded + 1 >= m_document->characterCount()) {
+              if (!m_foldingRanges.isEmpty() && p_position == 0 && p_charsRemoved > 0 &&
+                  p_charsAdded + 1 >= m_document->characterCount()) {
                 hardClear();
               } else {
                 checkAndUpdateFoldings();

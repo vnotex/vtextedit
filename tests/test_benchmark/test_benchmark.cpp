@@ -2,10 +2,10 @@
 
 #include <markdownastwalker.h>
 
+#include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
-#include <QDateTime>
 #include <QTextStream>
 
 #include <algorithm>
@@ -50,136 +50,126 @@ static const char *styleNames[NUM_HIGHLIGHT_STYLES] = {
     "TABLEBORDER",     // 32
 };
 
-static QString readFixture(const QString &p_name)
-{
-    QFile f(QStringLiteral(FIXTURES_DIR) + "/" + p_name);
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        return QString();
-    }
-    return QString::fromUtf8(f.readAll());
+static QString readFixture(const QString &p_name) {
+  QFile f(QStringLiteral(FIXTURES_DIR) + "/" + p_name);
+  if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    return QString();
+  }
+  return QString::fromUtf8(f.readAll());
 }
 
 // Helper: count blocks (newlines + 1) in UTF-8 text.
-static int countBlocks(const QByteArray &p_utf8)
-{
-    int n = 1;
-    for (int i = 0; i < p_utf8.size(); ++i) {
-        if (p_utf8[i] == '\n') ++n;
-    }
-    return n;
+static int countBlocks(const QByteArray &p_utf8) {
+  int n = 1;
+  for (int i = 0; i < p_utf8.size(); ++i) {
+    if (p_utf8[i] == '\n')
+      ++n;
+  }
+  return n;
 }
 
-void TestBenchmark::initTestCase()
-{
-}
+void TestBenchmark::initTestCase() {}
 
-void TestBenchmark::benchmarkParse()
-{
-    // Read all 8 fixture files.
-    QStringList fixtureNames = {
-        "block_elements.md",
-        "inline_elements.md",
-        "multiline_elements.md",
-        "nested_elements.md",
-        "edge_cases.md",
-        "extension_elements.md",
-        "table_elements.md",
-        "math_elements.md"
-    };
+void TestBenchmark::benchmarkParse() {
+  // Read all 8 fixture files.
+  QStringList fixtureNames = {"block_elements.md",  "inline_elements.md", "multiline_elements.md",
+                              "nested_elements.md", "edge_cases.md",      "extension_elements.md",
+                              "table_elements.md",  "math_elements.md"};
 
-    QString combined;
-    for (const auto &name : fixtureNames) {
-        QString content = readFixture(name);
-        QVERIFY2(!content.isEmpty(),
-                 qPrintable(QString("Failed to read fixture: %1").arg(name)));
-        combined += content + "\n";
-    }
+  QString combined;
+  for (const auto &name : fixtureNames) {
+    QString content = readFixture(name);
+    QVERIFY2(!content.isEmpty(), qPrintable(QString("Failed to read fixture: %1").arg(name)));
+    combined += content + "\n";
+  }
 
-    // Pad to ~1000 lines by repeating.
-    int lineCount = combined.count('\n');
-    QString doc;
-    doc.reserve(combined.size() * (1000 / lineCount + 1));
-    while (doc.count('\n') < 1000) {
-        doc += combined;
-    }
+  // Pad to ~1000 lines by repeating.
+  int lineCount = combined.count('\n');
+  QString doc;
+  doc.reserve(combined.size() * (1000 / lineCount + 1));
+  while (doc.count('\n') < 1000) {
+    doc += combined;
+  }
 
-    QByteArray utf8 = doc.toUtf8();
-    int numBlocks = countBlocks(utf8);
-    int docLines = doc.count('\n');
-    int docBytes = utf8.size();
+  QByteArray utf8 = doc.toUtf8();
+  int numBlocks = countBlocks(utf8);
+  int docLines = doc.count('\n');
+  int docBytes = utf8.size();
 
-    // Count elements in one parse.
-    int bucketCounts[NUM_HIGHLIGHT_STYLES] = {};
-    int totalElements = 0;
-    {
-        auto result = vte::md::walkAndConvert(utf8, numBlocks);
-        for (const auto &block : result.blocksHighlights) {
-            for (const auto &unit : block) {
-                if (unit.styleIndex < (unsigned int)NUM_HIGHLIGHT_STYLES) {
-                    bucketCounts[unit.styleIndex]++;
-                }
-                totalElements++;
-            }
+  // Count elements in one parse.
+  int bucketCounts[NUM_HIGHLIGHT_STYLES] = {};
+  int totalElements = 0;
+  {
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+    for (const auto &block : result.blocksHighlights) {
+      for (const auto &unit : block) {
+        if (unit.styleIndex < (unsigned int)NUM_HIGHLIGHT_STYLES) {
+          bucketCounts[unit.styleIndex]++;
         }
+        totalElements++;
+      }
     }
+  }
 
-    // Run 100 iterations, measure times.
-    const int iterations = 100;
-    QVector<qint64> times;
-    times.reserve(iterations);
-    for (int iter = 0; iter < iterations; iter++) {
-        QElapsedTimer timer;
-        timer.start();
-        auto result = vte::md::walkAndConvert(utf8, numBlocks);
-        qint64 elapsed = timer.elapsed();
-        // Verify non-empty result.
-        bool hasAny = false;
-        for (const auto &block : result.blocksHighlights) {
-            if (!block.isEmpty()) { hasAny = true; break; }
-        }
-        QVERIFY(hasAny);
-        times.append(elapsed);
+  // Run 100 iterations, measure times.
+  const int iterations = 100;
+  QVector<qint64> times;
+  times.reserve(iterations);
+  for (int iter = 0; iter < iterations; iter++) {
+    QElapsedTimer timer;
+    timer.start();
+    auto result = vte::md::walkAndConvert(utf8, numBlocks);
+    qint64 elapsed = timer.elapsed();
+    // Verify non-empty result.
+    bool hasAny = false;
+    for (const auto &block : result.blocksHighlights) {
+      if (!block.isEmpty()) {
+        hasAny = true;
+        break;
+      }
     }
+    QVERIFY(hasAny);
+    times.append(elapsed);
+  }
 
-    std::sort(times.begin(), times.end());
-    qint64 minTime = times.first();
-    qint64 maxTime = times.last();
-    qint64 sum = 0;
-    for (auto t : times) {
-        sum += t;
-    }
-    double avgTime = static_cast<double>(sum) / iterations;
+  std::sort(times.begin(), times.end());
+  qint64 minTime = times.first();
+  qint64 maxTime = times.last();
+  qint64 sum = 0;
+  for (auto t : times) {
+    sum += t;
+  }
+  double avgTime = static_cast<double>(sum) / iterations;
 
-    qDebug() << "Average parse time:" << avgTime << "ms"
-             << "min:" << minTime << "max:" << maxTime
-             << "total elements:" << totalElements;
+  qDebug() << "Average parse time:" << avgTime << "ms"
+           << "min:" << minTime << "max:" << maxTime << "total elements:" << totalElements;
 
-    // Write evidence file.
-    QDir evidenceDir(QStringLiteral(EVIDENCE_DIR));
-    if (!evidenceDir.exists()) {
-        evidenceDir.mkpath(".");
-    }
+  // Write evidence file.
+  QDir evidenceDir(QStringLiteral(EVIDENCE_DIR));
+  if (!evidenceDir.exists()) {
+    evidenceDir.mkpath(".");
+  }
 
-    QFile out(evidenceDir.filePath("task-1-benchmark-before.txt"));
-    QVERIFY2(out.open(QIODevice::WriteOnly | QIODevice::Text),
-             qPrintable(QString("Cannot write evidence: %1").arg(out.fileName())));
+  QFile out(evidenceDir.filePath("task-1-benchmark-before.txt"));
+  QVERIFY2(out.open(QIODevice::WriteOnly | QIODevice::Text),
+           qPrintable(QString("Cannot write evidence: %1").arg(out.fileName())));
 
-    QTextStream ts(&out);
-    ts << "Benchmark: Before Pipeline Rethink\n";
-    ts << "Date: " << QDateTime::currentDateTime().toString(Qt::ISODate) << "\n";
-    ts << "Document: " << docLines << " lines, " << docBytes << " bytes\n";
-    ts << "Iterations: " << iterations << "\n";
-    ts << QString("Average Parse Time: %1 ms\n").arg(avgTime, 0, 'f', 2);
-    ts << "Min Parse Time: " << minTime << " ms\n";
-    ts << "Max Parse Time: " << maxTime << " ms\n";
-    ts << "Total Elements (33 buckets): " << totalElements << "\n";
-    ts << "Per-bucket counts:\n";
-    for (int i = 0; i < NUM_HIGHLIGHT_STYLES; i++) {
-        ts << QString("  [%1] %2: %3\n").arg(i).arg(styleNames[i]).arg(bucketCounts[i]);
-    }
+  QTextStream ts(&out);
+  ts << "Benchmark: Before Pipeline Rethink\n";
+  ts << "Date: " << QDateTime::currentDateTime().toString(Qt::ISODate) << "\n";
+  ts << "Document: " << docLines << " lines, " << docBytes << " bytes\n";
+  ts << "Iterations: " << iterations << "\n";
+  ts << QString("Average Parse Time: %1 ms\n").arg(avgTime, 0, 'f', 2);
+  ts << "Min Parse Time: " << minTime << " ms\n";
+  ts << "Max Parse Time: " << maxTime << " ms\n";
+  ts << "Total Elements (33 buckets): " << totalElements << "\n";
+  ts << "Per-bucket counts:\n";
+  for (int i = 0; i < NUM_HIGHLIGHT_STYLES; i++) {
+    ts << QString("  [%1] %2: %3\n").arg(i).arg(styleNames[i]).arg(bucketCounts[i]);
+  }
 
-    out.close();
-    qDebug() << "Evidence written to:" << out.fileName();
+  out.close();
+  qDebug() << "Evidence written to:" << out.fileName();
 }
 
 QTEST_MAIN(tests::TestBenchmark)

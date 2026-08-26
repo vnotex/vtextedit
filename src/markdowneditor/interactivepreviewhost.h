@@ -108,8 +108,7 @@ public:
   void scheduleFoldRefresh();
 
 public slots:
-  void updatePreviews(quint64 p_revision,
-                      const QVector<QSharedPointer<const Preview>> &p_previews);
+  void updatePreviews(quint64 p_revision, const QVector<QSharedPointer<const Preview>> &p_previews);
 
   // Recompute preferred sizes, resubmit layout reservations and reposition
   // every widget. Coalesced through a zero timer.

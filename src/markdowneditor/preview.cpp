@@ -184,7 +184,6 @@ const QVector<QVector<QVector<PreviewFormatRun>>> &TablePreview::cellFormats() c
   return m_tableData->m_cellFormats;
 }
 
-
 const QVector<PreviewTableAlignment> &TablePreview::alignments() const {
   return m_tableData->m_alignments;
 }
@@ -240,9 +239,7 @@ QString TablePreview::cellTag(int p_row, int p_column) const {
   return m_tableData->m_cellTags.value(slot->m_originRow).value(slot->m_originColumn);
 }
 
-
-PreviewReplacementResult::PreviewReplacementResult()
-    : m_data(new PreviewReplacementResultData()) {}
+PreviewReplacementResult::PreviewReplacementResult() : m_data(new PreviewReplacementResultData()) {}
 
 PreviewReplacementResult::PreviewReplacementResult(const PreviewReplacementResult &p_other)
     : m_data(p_other.m_data) {}
@@ -318,18 +315,19 @@ static PreviewPrivate *newCommon(PreviewElementType p_type, PreviewPlacement p_p
   return d;
 }
 
-QSharedPointer<const Preview>
-PreviewBuilder::createImage(quint64 p_revision, int p_startPos, int p_endPos,
-                            const QString &p_source, PreviewPlacement p_placement,
-                            const QString &p_destination, const QString &p_alternateText,
-                            const QString &p_title) {
+QSharedPointer<const Preview> PreviewBuilder::createImage(quint64 p_revision, int p_startPos,
+                                                          int p_endPos, const QString &p_source,
+                                                          PreviewPlacement p_placement,
+                                                          const QString &p_destination,
+                                                          const QString &p_alternateText,
+                                                          const QString &p_title) {
   auto imageData = new ImagePreviewPrivate();
   imageData->m_destination = p_destination;
   imageData->m_alternateText = p_alternateText;
   imageData->m_title = p_title;
 
-  auto d = newCommon(PreviewElementType::Image, p_placement, p_revision, p_startPos, p_endPos,
-                     p_source);
+  auto d =
+      newCommon(PreviewElementType::Image, p_placement, p_revision, p_startPos, p_endPos, p_source);
   return QSharedPointer<const ImagePreview>(new ImagePreview(d, imageData));
 }
 
@@ -361,14 +359,11 @@ QSharedPointer<const Preview> PreviewBuilder::createMath(quint64 p_revision, int
   return QSharedPointer<const MathPreview>(new MathPreview(d, mathData));
 }
 
-QSharedPointer<const Preview>
-PreviewBuilder::createTable(quint64 p_revision, int p_startPos, int p_endPos,
-                            const QString &p_source, int p_columnCount,
-                            const QVector<QVector<QString>> &p_cells,
-                            const QVector<PreviewTableAlignment> &p_alignments,
-                            const QVector<QString> &p_rowPrefixes,
-                            const QString &p_delimiterPrefix,
-                            const QVector<QVector<QVector<PreviewFormatRun>>> &p_cellFormats) {
+QSharedPointer<const Preview> PreviewBuilder::createTable(
+    quint64 p_revision, int p_startPos, int p_endPos, const QString &p_source, int p_columnCount,
+    const QVector<QVector<QString>> &p_cells, const QVector<PreviewTableAlignment> &p_alignments,
+    const QVector<QString> &p_rowPrefixes, const QString &p_delimiterPrefix,
+    const QVector<QVector<QVector<PreviewFormatRun>>> &p_cellFormats) {
   TableSnapshotData data;
   data.m_columnCount = p_columnCount;
   data.m_cells = p_cells;

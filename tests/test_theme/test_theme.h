@@ -3,22 +3,20 @@
 
 #include <QtTest>
 
-namespace tests
-{
-    class TestTheme : public QObject
-    {
-        Q_OBJECT
-    private slots:
-        void initTestCase();
+namespace tests {
+class TestTheme : public QObject {
+  Q_OBJECT
+private slots:
+  void initTestCase();
 
-        void testCreateThemeFromContent_validJson();
+  void testCreateThemeFromContent_validJson();
 
-        void testCreateThemeFromContent_invalidJson();
+  void testCreateThemeFromContent_invalidJson();
 
-        void testCreateThemeFromContent_emptyString();
+  void testCreateThemeFromContent_emptyString();
 
-        void cleanupTestCase();
-    };
-} // ns tests
+  void cleanupTestCase();
+};
+} // namespace tests
 
 #endif

@@ -3,8 +3,8 @@
 #include <inputmode/abstractinputmode.h>
 #include <inputmode/inputmodemgr.h>
 #include <vtextedit/markdowneditorconfig.h>
-#include <vtextedit/markdownutils.h>
 #include <vtextedit/markdownhighlighter.h>
+#include <vtextedit/markdownutils.h>
 #include <vtextedit/textblockdata.h>
 #include <vtextedit/texteditutils.h>
 #include <vtextedit/textutils.h>
@@ -18,9 +18,9 @@
 #include "editorpreviewmgr.h"
 #include "interactivepreviewhost.h"
 #include "ksyntaxcodeblockhighlighter.h"
+#include "markdownfoldingprovider.h"
 #include "mathblockhighlighter.h"
 #include "textdocumentlayout.h"
-#include "markdownfoldingprovider.h"
 #include "webcodeblockhighlighter.h"
 
 #include <QDebug>
@@ -40,8 +40,8 @@ VMarkdownEditor::VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_c
 
   // Setup folding provider.
   m_foldingProvider.reset(new MarkdownFoldingProvider(getTextFolding(), document()));
-  connect(getHighlighter(), &MarkdownHighlighter::foldingRegionsUpdated,
-          this, [this](const QVector<md::FoldingRegion> &p_regions) {
+  connect(getHighlighter(), &MarkdownHighlighter::foldingRegionsUpdated, this,
+          [this](const QVector<md::FoldingRegion> &p_regions) {
             m_foldingProvider->updateFoldingRegions(p_regions);
             // Never evaluate the fold state synchronously here:
             // MarkdownHighlighter::completeHighlight() emits
@@ -54,18 +54,17 @@ VMarkdownEditor::VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_c
 
   // Reset provider state when TextFolding is externally cleared
   // (e.g., during document replacement detected by hardClear).
-  connect(getTextFolding(), &TextFolding::foldingRangesChanged,
-          this, [this]() {
-            if (getTextFolding()->isEmpty()) {
-              m_foldingProvider->resetState();
-            }
+  connect(getTextFolding(), &TextFolding::foldingRangesChanged, this, [this]() {
+    if (getTextFolding()->isEmpty()) {
+      m_foldingProvider->resetState();
+    }
 
-            // A manual fold or unfold from the gutter has to be written back
-            // onto the preview item which owns that region.
-            if (auto host = interactivePreviewHost()) {
-              host->scheduleFoldRefresh();
-            }
-          });
+    // A manual fold or unfold from the gutter has to be written back
+    // onto the preview item which owns that region.
+    if (auto host = interactivePreviewHost()) {
+      host->scheduleFoldRefresh();
+    }
+  });
 
   // Unnecessary for now.
   // m_textEdit->installEventFilter(this);
@@ -120,9 +119,9 @@ void VMarkdownEditor::setupSyntaxHighlighter() {
   connect(m_mathBlockHighlighter, &MathBlockHighlighter::externalMathHighlightRequested, this,
           &VMarkdownEditor::externalMathHighlightRequested);
 
-  m_highlighter = new MarkdownHighlighter(m_highlighterInterface.data(), document(), theme(),
-                                             codeBlockHighlighter, highlighterConfig,
-                                             m_mathBlockHighlighter);
+  m_highlighter =
+      new MarkdownHighlighter(m_highlighterInterface.data(), document(), theme(),
+                              codeBlockHighlighter, highlighterConfig, m_mathBlockHighlighter);
   updateSpellCheck();
   connect(getHighlighter(), &MarkdownHighlighter::highlightCompleted, this, [this]() {
     m_textEdit->updateCursorWidth();
@@ -172,8 +171,8 @@ void VMarkdownEditor::setupPreviewMgr() {
 }
 
 InteractivePreviewHost *VMarkdownEditor::interactivePreviewHost() const {
-  return findChild<InteractivePreviewHost *>(
-      QLatin1String(InteractivePreviewHost::c_objectName), Qt::FindDirectChildrenOnly);
+  return findChild<InteractivePreviewHost *>(QLatin1String(InteractivePreviewHost::c_objectName),
+                                             Qt::FindDirectChildrenOnly);
 }
 
 bool VMarkdownEditor::registerPreviewWidgetFactory(PreviewWidgetFactory *p_factory,
@@ -313,9 +312,9 @@ void VMarkdownEditor::updateInplacePreviewSources() {
   }
 
   // The painted path only knows about image, code and math.
-  const auto paintedSources =
-      m_config->m_inplacePreviewSources &
-      (MarkdownEditorConfig::ImageLink | MarkdownEditorConfig::CodeBlock | MarkdownEditorConfig::Math);
+  const auto paintedSources = m_config->m_inplacePreviewSources &
+                              (MarkdownEditorConfig::ImageLink | MarkdownEditorConfig::CodeBlock |
+                               MarkdownEditorConfig::Math);
   if (paintedSources == (MarkdownEditorConfig::ImageLink | MarkdownEditorConfig::CodeBlock |
                          MarkdownEditorConfig::Math)) {
     m_previewMgr->setPreviewEnabled(true);

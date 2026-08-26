@@ -32,11 +32,11 @@ using namespace tests;
 using vte::escapePayload;
 using vte::HtmlTable;
 using vte::MarkdownLink;
+using vte::MarkdownUtils;
 using vte::RawTextState;
 using vte::rewriteHtmlTagAttr;
 using vte::scanHtmlTables;
 using vte::unescapePayload;
-using vte::MarkdownUtils;
 
 // Highlight type ordinals (matching pmh_element_type / MarkdownSyntaxStyle values
 // used by the cmark adapter).
@@ -2230,7 +2230,6 @@ void TestMarkdownParser::testGenerateImageTag() {
   QVERIFY(!tags.first().hasUnknownAttrs());
 }
 
-
 // ---------------------------------------------------------------------------
 // The HTML `<table>` scanner (decisions D-a, D-b, D-i, D-j, D-n).
 // ---------------------------------------------------------------------------
@@ -2271,8 +2270,8 @@ void TestMarkdownParser::testHtmlTableScannerBasic() {
   QVERIFY(!table.cellAt(1, 0)->m_header);
 
   // An all-`td` table has no header row, and a one-row table is legal.
-  const auto plain = scanHtmlTables(QStringLiteral("<table><tr><td>x</td></tr></table>"), 0,
-                                    nullptr);
+  const auto plain =
+      scanHtmlTables(QStringLiteral("<table><tr><td>x</td></tr></table>"), 0, nullptr);
   QCOMPARE(plain.size(), 1);
   QVERIFY(!plain.first().m_hasHeaderRow);
   QCOMPARE(plain.first().m_rowCount, 1);
@@ -2281,9 +2280,8 @@ void TestMarkdownParser::testHtmlTableScannerBasic() {
 
 void TestMarkdownParser::testHtmlTableScannerSpans() {
   // A colspan and a rowspan which together tile a 2x2 rectangle exactly.
-  const QString colspan =
-      htmlTableSource(QStringLiteral("<tr><td colspan=\"2\">wide</td></tr>\n"
-                                     "<tr><td>a</td><td>b</td></tr>"));
+  const QString colspan = htmlTableSource(QStringLiteral("<tr><td colspan=\"2\">wide</td></tr>\n"
+                                                         "<tr><td>a</td><td>b</td></tr>"));
   const auto wide = scanHtmlTables(colspan, 0, nullptr);
   QCOMPARE(wide.size(), 1);
   QCOMPARE(wide.first().m_columnCount, 2);
@@ -2377,10 +2375,14 @@ void TestMarkdownParser::testHtmlTableScannerPayloads() {
 
 void TestMarkdownParser::testHtmlTablePayloadCodec() {
   const QStringList payloads = {
-      QStringLiteral("plain"),          QStringLiteral("a-b"),
-      QStringLiteral("a--b"),           QStringLiteral("a\\b"),
-      QStringLiteral("\\"),             QStringLiteral("-"),
-      QStringLiteral("--\x3e"),         QStringLiteral("**bold** - `x`"),
+      QStringLiteral("plain"),
+      QStringLiteral("a-b"),
+      QStringLiteral("a--b"),
+      QStringLiteral("a\\b"),
+      QStringLiteral("\\"),
+      QStringLiteral("-"),
+      QStringLiteral("--\x3e"),
+      QStringLiteral("**bold** - `x`"),
       QString(),
   };
 
@@ -2420,15 +2422,14 @@ void TestMarkdownParser::testHtmlTableAttrRewrite() {
   // Absent and null is a no-op, and a value is escaped.
   QCOMPARE(rewriteHtmlTagAttr(QStringLiteral("<td>"), QStringLiteral("rowspan"), QString()),
            QStringLiteral("<td>"));
-  QCOMPARE(rewriteHtmlTagAttr(QStringLiteral("<td>"), QStringLiteral("align"),
-                              QStringLiteral("a\"b")),
-           QStringLiteral("<td align=\"a&quot;b\">"));
+  QCOMPARE(
+      rewriteHtmlTagAttr(QStringLiteral("<td>"), QStringLiteral("align"), QStringLiteral("a\"b")),
+      QStringLiteral("<td align=\"a&quot;b\">"));
 }
 
 void TestMarkdownParser::testWalkerHtmlTables() {
-  const QString source =
-      QStringLiteral("<table>\n<tr><th>a</th><th>b</th></tr>\n"
-                     "<tr><td colspan=\"2\">wide</td></tr>\n</table>\n");
+  const QString source = QStringLiteral("<table>\n<tr><th>a</th><th>b</th></tr>\n"
+                                        "<tr><td colspan=\"2\">wide</td></tr>\n</table>\n");
   const auto walk = vte::md::walkAndConvert(source.toUtf8(), source.count(QLatin1Char('\n')) + 1);
   QCOMPARE(walk.tableElements.size(), 1);
 
@@ -2491,7 +2492,6 @@ void TestMarkdownParser::testWalkerHtmlTableContainers() {
   QVERIFY(walk.tableElements.first().m_startBlock >= 0);
 }
 
-
 void TestMarkdownParser::testSingleTableScannerGate() {
   // The drift gate. AGENTS.md allows exactly ONE place in the tree to
   // pattern-match `<table` in note source; a second one is how the snapshot and
@@ -2503,9 +2503,8 @@ void TestMarkdownParser::testSingleTableScannerGate() {
 
   const QString allowed = QDir(root.absoluteFilePath(QStringLiteral("utils")))
                               .absoluteFilePath(QStringLiteral("htmltablescanner.cpp"));
-  const QString allowedHeader =
-      QDir(root.absoluteFilePath(QStringLiteral("include/vtextedit")))
-          .absoluteFilePath(QStringLiteral("htmltablescanner.h"));
+  const QString allowedHeader = QDir(root.absoluteFilePath(QStringLiteral("include/vtextedit")))
+                                    .absoluteFilePath(QStringLiteral("htmltablescanner.h"));
 
   QStringList offenders;
   QDirIterator it(root.absolutePath(), QStringList{QStringLiteral("*.cpp"), QStringLiteral("*.h")},
@@ -2535,7 +2534,6 @@ void TestMarkdownParser::testSingleTableScannerGate() {
 
   QVERIFY2(offenders.isEmpty(), qPrintable(offenders.join(QLatin1Char('\n'))));
 }
-
 
 void TestMarkdownParser::testScannerRawTextStatesAgree() {
   // The invariant extractHtmlNode() asserts: the `<img>` and `<table>` scanners
@@ -2677,8 +2675,7 @@ void TestMarkdownParser::testWalkerHtmlTableUnderListItem() {
   };
 
   for (const auto &source : refused) {
-    const auto walk = vte::md::walkAndConvert(source.toUtf8(),
-                                              source.count(QLatin1Char('\n')) + 1);
+    const auto walk = vte::md::walkAndConvert(source.toUtf8(), source.count(QLatin1Char('\n')) + 1);
     QVERIFY2(walk.tableElements.isEmpty(), qPrintable(source));
   }
 
@@ -2692,8 +2689,8 @@ void TestMarkdownParser::testWalkerHtmlTableFoldingRegion() {
   using vte::md::FoldingRegionType;
 
   auto tableRegions = [](const QString &p_source) {
-    const auto walk = vte::md::walkAndConvert(p_source.toUtf8(),
-                                              p_source.count(QLatin1Char('\n')) + 1);
+    const auto walk =
+        vte::md::walkAndConvert(p_source.toUtf8(), p_source.count(QLatin1Char('\n')) + 1);
     QVector<QPair<int, int>> regions;
     for (const auto &region : walk.foldingRegions) {
       if (region.m_type == FoldingRegionType::Table) {
@@ -2740,8 +2737,7 @@ void TestMarkdownParser::testWalkerHtmlTableFoldingRegion() {
     const QString source =
         QStringLiteral("<table>\n<tr><td>a</td></tr>\n</table>\ntrailing paragraph\n");
     QVERIFY(tableRegions(source).isEmpty());
-    const auto walk = vte::md::walkAndConvert(source.toUtf8(),
-                                              source.count(QLatin1Char('\n')) + 1);
+    const auto walk = vte::md::walkAndConvert(source.toUtf8(), source.count(QLatin1Char('\n')) + 1);
     QVERIFY(walk.tableElements.isEmpty());
   }
 

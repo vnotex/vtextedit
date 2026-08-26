@@ -75,11 +75,13 @@ bool TextBlockData::isMarkedAsFoldingStart() const { return m_markedAsFoldingSta
 
 void TextBlockData::setMarkedAsFoldingStart(bool p_set) { m_markedAsFoldingStart = p_set; }
 
-const QSharedPointer<MarkdownHighlightBlockData> &TextBlockData::getMarkdownHighlightBlockData() const {
+const QSharedPointer<MarkdownHighlightBlockData> &
+TextBlockData::getMarkdownHighlightBlockData() const {
   return m_markdownHighlightData;
 }
 
-void TextBlockData::setMarkdownHighlightBlockData(const QSharedPointer<MarkdownHighlightBlockData> &p_data) {
+void TextBlockData::setMarkdownHighlightBlockData(
+    const QSharedPointer<MarkdownHighlightBlockData> &p_data) {
   m_markdownHighlightData = p_data;
 }
 

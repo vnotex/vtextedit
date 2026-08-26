@@ -192,7 +192,6 @@ QVector<ImageLinkInfo> buildImageLinks(const QVector<ImageElement> &p_elements);
 // sliceTableCellHighlights() instead, and an HTML-only table gets no runs.
 QVector<HLUnit> highlightInlineSnippet(const QString &p_snippet);
 
-
 } // namespace md
 } // namespace vte
 

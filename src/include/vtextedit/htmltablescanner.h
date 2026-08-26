@@ -186,7 +186,6 @@ VTEXTEDIT_EXPORT bool unescapePayload(const QString &p_text, QString &p_out);
 VTEXTEDIT_EXPORT QString rewriteHtmlTagAttr(const QString &p_tag, const QString &p_name,
                                             const QString &p_value);
 
-
 } // namespace vte
 
 #endif // VTEXTEDIT_HTMLTABLESCANNER_H

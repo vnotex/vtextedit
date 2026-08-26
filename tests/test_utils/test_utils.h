@@ -3,21 +3,18 @@
 
 #include <QtTest>
 
-namespace tests
-{
-    class TestUtils : public QObject
-    {
-        Q_OBJECT
-    private slots:
-        // LruCache Tests.
-        void testLruCache();
+namespace tests {
+class TestUtils : public QObject {
+  Q_OBJECT
+private slots:
+  // LruCache Tests.
+  void testLruCache();
 
-        // ScrollBar Tests.
-        void testScrollBarExtendsTheMaximum();
+  // ScrollBar Tests.
+  void testScrollBarExtendsTheMaximum();
 
-        void testScrollBarKeepsExtendingAfterANoOpExtension();
-
-    };
-} // ns tests
+  void testScrollBarKeepsExtendingAfterANoOpExtension();
+};
+} // namespace tests
 
 #endif

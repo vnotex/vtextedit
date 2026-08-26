@@ -113,12 +113,9 @@ int regionRank(const md::FoldingRegion &p_region) {
 
 MarkdownFoldingProvider::MarkdownFoldingProvider(TextFolding *p_textFolding,
                                                  QTextDocument *p_document)
-    : m_textFolding(p_textFolding), m_document(p_document)
-{
-}
+    : m_textFolding(p_textFolding), m_document(p_document) {}
 
-void MarkdownFoldingProvider::updateFoldingRegions(const QVector<md::FoldingRegion> &p_regions)
-{
+void MarkdownFoldingProvider::updateFoldingRegions(const QVector<md::FoldingRegion> &p_regions) {
   // 0. Drop the ranges the document has invalidated behind TextFolding's back.
   //
   // Replacing the whole source of an element in one edit - what the preview
@@ -277,8 +274,7 @@ void MarkdownFoldingProvider::updateFoldingRegions(const QVector<md::FoldingRegi
   m_entries = newEntries;
 }
 
-void MarkdownFoldingProvider::clear()
-{
+void MarkdownFoldingProvider::clear() {
   QVector<qint64> ids;
   ids.reserve(m_entries.size());
   for (auto it = m_entries.cbegin(); it != m_entries.cend(); ++it) {
@@ -292,8 +288,7 @@ void MarkdownFoldingProvider::clear()
 
 void MarkdownFoldingProvider::resetState() { m_entries.clear(); }
 
-void MarkdownFoldingProvider::setAutoFoldPreviewsEnabled(bool p_enabled)
-{
+void MarkdownFoldingProvider::setAutoFoldPreviewsEnabled(bool p_enabled) {
   // Deliberately does not re-evaluate settled regions: the option only ever
   // decides the initial state of a region which has not been settled yet.
   m_autoFoldEnabled = p_enabled;
@@ -301,8 +296,7 @@ void MarkdownFoldingProvider::setAutoFoldPreviewsEnabled(bool p_enabled)
 
 QVector<QPair<quint64, PreviewFoldState>>
 MarkdownFoldingProvider::applyPreviewAutoFold(const QVector<PreviewedRange> &p_widgetRanges,
-                                              int p_caretBlock)
-{
+                                              int p_caretBlock) {
   QVector<QPair<quint64, PreviewFoldState>> reports;
 
   // Folding availability is tracked separately from the option: with text
@@ -460,9 +454,8 @@ MarkdownFoldingProvider::applyPreviewAutoFold(const QVector<PreviewedRange> &p_w
       continue;
     }
 
-    const auto liveState = m_textFolding->isRangeFolded(decision.m_id)
-                               ? PreviewFoldState::Folded
-                               : PreviewFoldState::Unfolded;
+    const auto liveState = m_textFolding->isRangeFolded(decision.m_id) ? PreviewFoldState::Folded
+                                                                       : PreviewFoldState::Unfolded;
     if (liveState != decision.m_remembered) {
       reports.append(qMakePair(decision.m_identity, liveState));
     }
@@ -472,8 +465,7 @@ MarkdownFoldingProvider::applyPreviewAutoFold(const QVector<PreviewedRange> &p_w
 }
 
 bool MarkdownFoldingProvider::tryRegionFolded(PreviewElementType p_type, int p_startBlock,
-                                              int p_endBlock, bool *p_folded) const
-{
+                                              int p_endBlock, bool *p_folded) const {
   // With text folding switched off there is no range a caller may act on, even
   // though a parse still creates them: newFoldingRange() is not gated on the
   // switch, only TextFolding's own maintenance is. Reporting "unfolded" here
@@ -514,8 +506,7 @@ bool MarkdownFoldingProvider::tryRegionFolded(PreviewElementType p_type, int p_s
   return false;
 }
 
-void MarkdownFoldingProvider::rekeyEntriesByLiveExtent()
-{
+void MarkdownFoldingProvider::rekeyEntriesByLiveExtent() {
   QHash<QPair<int, int>, Entry> rekeyed;
   rekeyed.reserve(m_entries.size());
   for (auto it = m_entries.cbegin(); it != m_entries.cend(); ++it) {
@@ -536,8 +527,7 @@ void MarkdownFoldingProvider::rekeyEntriesByLiveExtent()
 }
 
 bool MarkdownFoldingProvider::restoreFoldedRange(PreviewElementType p_type, int p_startBlock,
-                                                 int p_endBlock)
-{
+                                                 int p_endBlock) {
   if (!m_textFolding->isEnabled()) {
     return false;
   }
@@ -557,13 +547,12 @@ bool MarkdownFoldingProvider::restoreFoldedRange(PreviewElementType p_type, int 
     return false;
   }
 
-  qint64 id = m_textFolding->newFoldingRange(range,
-                                             TextFolding::Persistent | TextFolding::Folded);
+  qint64 id = m_textFolding->newFoldingRange(range, TextFolding::Persistent | TextFolding::Folded);
   if (id == TextFolding::InvalidRangeId) {
     // The next parse recreates the range and the restore branch of
     // applyPreviewAutoFold() folds it, with a visible flash in between.
-    qWarning() << "failed to restore the folded range of a rewritten preview at ["
-               << p_startBlock << "," << p_endBlock << "]";
+    qWarning() << "failed to restore the folded range of a rewritten preview at [" << p_startBlock
+               << "," << p_endBlock << "]";
     return false;
   }
 

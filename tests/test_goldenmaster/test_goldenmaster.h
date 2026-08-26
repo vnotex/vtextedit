@@ -3,15 +3,13 @@
 
 #include <QtTest>
 
-namespace tests
-{
-    class TestGoldenMaster : public QObject
-    {
-        Q_OBJECT
-    private slots:
-        void generateGolden();
-        void verifyGolden();
-    };
-} // ns tests
+namespace tests {
+class TestGoldenMaster : public QObject {
+  Q_OBJECT
+private slots:
+  void generateGolden();
+  void verifyGolden();
+};
+} // namespace tests
 
 #endif

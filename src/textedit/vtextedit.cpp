@@ -528,8 +528,7 @@ void VTextEdit::setCursorWidth(int p_width) {
 
 void VTextEdit::checkCenterCursor() {
   const bool mouseButtonDown = QGuiApplication::mouseButtons() != Qt::NoButton;
-  if (mouseButtonDown || m_centerCursor == CenterCursor::NeverCenter ||
-      isViewportWidgetFocused()) {
+  if (mouseButtonDown || m_centerCursor == CenterCursor::NeverCenter || isViewportWidgetFocused()) {
     return;
   }
 

@@ -108,7 +108,6 @@ static int trimmedEndOffset(const QString &p_text) {
   return end;
 }
 
-
 static int typeOrder(PreviewElementType p_type) { return static_cast<int>(p_type); }
 
 static int typeIndex(PreviewElementType p_type) {
@@ -819,7 +818,6 @@ void InteractivePreviewHost::setPreviewFoldStates(
   }
 }
 
-
 void InteractivePreviewHost::updatePreviews(
     quint64 p_revision, const QVector<QSharedPointer<const Preview>> &p_previews) {
   if (m_reconciling || isBlocked()) {
@@ -937,8 +935,7 @@ quint64 InteractivePreviewHost::findIdentity(const QSharedPointer<const Preview>
   // generation, so an element which merely moved with the text still reports
   // exactly its anchor's range. That is the overwhelmingly common case, and
   // resolving it by scanning every live item is what makes this quadratic.
-  const auto exact =
-      m_anchorIndex.constFind(qMakePair(p_preview->startPos(), p_preview->endPos()));
+  const auto exact = m_anchorIndex.constFind(qMakePair(p_preview->startPos(), p_preview->endPos()));
   if (exact != m_anchorIndex.constEnd()) {
     for (quint64 id : exact.value()) {
       if (p_used.contains(id)) {
@@ -1199,9 +1196,8 @@ void InteractivePreviewHost::createItem(const QSharedPointer<const Preview> &p_p
   m_items.insert(id, item);
 
   qCDebug(previewHostLog) << "created item" << id << previewTypeName(bound->type()) << "at ["
-                          << item.m_anchor.selectionStart() << ","
-                          << item.m_anchor.selectionEnd() << ") widget"
-                          << widget->metaObject()->className() << "factory"
+                          << item.m_anchor.selectionStart() << "," << item.m_anchor.selectionEnd()
+                          << ") widget" << widget->metaObject()->className() << "factory"
                           << (usedFactory ? usedFactory->metaObject()->className() : "?")
                           << (carriedBinding
                                   ? "(rebuilt, carried the rebased source)"
@@ -2116,9 +2112,9 @@ void InteractivePreviewHost::publish() {
       item.m_measuredWidthBasis = widthBasis;
       item.m_measureDirty = false;
 
-      qCDebug(previewLayoutLog)
-          << "measured item" << item.m_id << previewTypeName(item.m_preview->type()) << "->"
-          << item.m_measuredSize << "at width basis" << widthBasis;
+      qCDebug(previewLayoutLog) << "measured item" << item.m_id
+                                << previewTypeName(item.m_preview->type()) << "->"
+                                << item.m_measuredSize << "at width basis" << widthBasis;
     }
 
     spec.m_width = item.m_measuredSize.width();
@@ -2139,8 +2135,8 @@ void InteractivePreviewHost::publish() {
 
   // Establish claims before the reservation relayout so no element is ever
   // rendered twice.
-  qCDebug(previewLayoutLog) << "publishing" << specs.size() << "reservation(s) and"
-                            << claims.size() << "claim(s), available width" << availableWidth;
+  qCDebug(previewLayoutLog) << "publishing" << specs.size() << "reservation(s) and" << claims.size()
+                            << "claim(s), available width" << availableWidth;
   for (const auto &spec : specs) {
     qCDebug(previewLayoutLog) << "  spec" << spec.m_id << "[" << spec.m_startPos << ","
                               << spec.m_endPos << ") placement"
@@ -2285,9 +2281,8 @@ void InteractivePreviewHost::applyScrollOffsetImpl() {
   const int hScroll = m_textEdit && m_textEdit->horizontalScrollBar()
                           ? m_textEdit->horizontalScrollBar()->value()
                           : 0;
-  const int vScroll = m_textEdit && m_textEdit->verticalScrollBar()
-                          ? m_textEdit->verticalScrollBar()->value()
-                          : 0;
+  const int vScroll =
+      m_textEdit && m_textEdit->verticalScrollBar() ? m_textEdit->verticalScrollBar()->value() : 0;
   const QRect viewportRect(QPoint(0, 0), vp->size());
 
   for (auto it = m_items.begin(); it != m_items.end(); ++it) {
@@ -2378,9 +2373,8 @@ void InteractivePreviewHost::finishReplacement(PreviewWidgetContext *p_context,
     // request is retried.
     qCDebug(previewReplaceLog) << "  ->" << statusName(p_status) << ":" << p_diagnostic;
   } else {
-    qCWarning(previewReplaceLog)
-        << "replacement rejected for identity" << p_result.identity() << "-"
-        << statusName(p_status) << ":" << p_diagnostic;
+    qCWarning(previewReplaceLog) << "replacement rejected for identity" << p_result.identity()
+                                 << "-" << statusName(p_status) << ":" << p_diagnostic;
   }
 
   if (p_context) {
@@ -2412,10 +2406,10 @@ static bool markdownTablePrefixesMatch(const QSharedPointer<const TablePreview> 
     // Candidate row i is body row i - 1 of the snapshot. Rows beyond the
     // snapshot must continue the last known body prefix.
     const int originalIdx = i - 1;
-    const QString expected = originalIdx < rowPrefixes.size()
-                                 ? rowPrefixes[originalIdx]
-                                 : (rowPrefixes.size() > 1 ? rowPrefixes.last()
-                                                           : p_original->delimiterPrefix());
+    const QString expected =
+        originalIdx < rowPrefixes.size()
+            ? rowPrefixes[originalIdx]
+            : (rowPrefixes.size() > 1 ? rowPrefixes.last() : p_original->delimiterPrefix());
     if (p_candidate.m_rows[i].m_prefix != expected) {
       return false;
     }
@@ -2509,26 +2503,23 @@ static bool tableTransitionAccepted(const QSharedPointer<const TablePreview> &p_
 static QSharedPointer<const Preview> rebaseImage(const QSharedPointer<const Preview> &p_original,
                                                  int p_startPos, const QString &p_text,
                                                  const md::ImageElement &p_element) {
-  return PreviewBuilder::createImage(p_original->revision(), p_startPos,
-                                     p_startPos + p_text.size(), p_text, p_original->placement(),
-                                     p_element.m_destination, p_element.m_alternateText,
-                                     p_element.m_title);
+  return PreviewBuilder::createImage(p_original->revision(), p_startPos, p_startPos + p_text.size(),
+                                     p_text, p_original->placement(), p_element.m_destination,
+                                     p_element.m_alternateText, p_element.m_title);
 }
 
 static QSharedPointer<const Preview> rebaseCode(const QSharedPointer<const Preview> &p_original,
                                                 int p_startPos, const QString &p_text,
                                                 const md::CodeElement &p_element) {
-  return PreviewBuilder::createCode(p_original->revision(), p_startPos,
-                                    p_startPos + p_text.size(), p_text, p_element.m_language,
-                                    p_element.m_code);
+  return PreviewBuilder::createCode(p_original->revision(), p_startPos, p_startPos + p_text.size(),
+                                    p_text, p_element.m_language, p_element.m_code);
 }
 
 static QSharedPointer<const Preview> rebaseMath(const QSharedPointer<const Preview> &p_original,
                                                 int p_startPos, const QString &p_text,
                                                 const md::MathElement &p_element) {
-  return PreviewBuilder::createMath(p_original->revision(), p_startPos,
-                                    p_startPos + p_text.size(), p_text, p_element.m_expression,
-                                    p_element.m_display);
+  return PreviewBuilder::createMath(p_original->revision(), p_startPos, p_startPos + p_text.size(),
+                                    p_text, p_element.m_expression, p_element.m_display);
 }
 
 static QSharedPointer<const Preview> rebaseTable(const QSharedPointer<const Preview> &p_original,
@@ -2537,8 +2528,8 @@ static QSharedPointer<const Preview> rebaseTable(const QSharedPointer<const Prev
   // No highlighter styles are available on the rebase path, so the rebased
   // snapshot deliberately carries no syntax runs: the widget keeps its current
   // physical formats until the next full-parse snapshot brings correct ones.
-  return createTablePreview(p_original->revision(), p_startPos, p_startPos + p_text.size(),
-                            p_text, p_element, QVector<QTextCharFormat>());
+  return createTablePreview(p_original->revision(), p_startPos, p_startPos + p_text.size(), p_text,
+                            p_element, QVector<QTextCharFormat>());
 }
 
 // Per-type dispatch onto the snapshot builders above. Returns a null pointer
@@ -2747,9 +2738,8 @@ bool InteractivePreviewHost::validateReplacement(const QSharedPointer<const Prev
   const int lines = probe.count(QLatin1Char('\n')) + 1;
   const auto walk = md::walkAndConvert(utf8, lines, 0, 0, false);
 
-  const int matchedIndex = findSoleMatchingElement(walk, probe, prefixLength,
-                                                   prefixLength + p_text.size(), type, p_status,
-                                                   p_diagnostic);
+  const int matchedIndex = findSoleMatchingElement(
+      walk, probe, prefixLength, prefixLength + p_text.size(), type, p_status, p_diagnostic);
   if (matchedIndex < 0) {
     return false;
   }
@@ -2758,9 +2748,8 @@ bool InteractivePreviewHost::validateReplacement(const QSharedPointer<const Prev
     // The candidate is the one the scan matched, i.e. anchored at the
     // replacement boundary and followed by nothing but whitespace. Its
     // container prefixes must be verified before anything is rebased onto it.
-    const md::TableElement *candidate = matchedIndex < walk.tableElements.size()
-                                            ? &walk.tableElements[matchedIndex]
-                                            : nullptr;
+    const md::TableElement *candidate =
+        matchedIndex < walk.tableElements.size() ? &walk.tableElements[matchedIndex] : nullptr;
 
     if (!candidate ||
         !tableTransitionAccepted(p_preview.staticCast<const TablePreview>(), *candidate)) {
@@ -2892,8 +2881,8 @@ void InteractivePreviewHost::handleSourceReplacementRequested(
   bool known = false;
   if (liveSpan > 0) {
     const int lastBlock = m_doc->findBlock(start + liveSpan - 1).blockNumber();
-    known = m_editor->tryPreviewSourceFolded(item.m_preview->type(), firstBlock, lastBlock,
-                                             &folded);
+    known =
+        m_editor->tryPreviewSourceFolded(item.m_preview->type(), firstBlock, lastBlock, &folded);
   }
 
   if (known) {
@@ -2939,8 +2928,8 @@ void InteractivePreviewHost::handleSourceReplacementRequested(
   // schedulePublish() below resettles the widget geometry.
   const int span = trimmedEndOffset(p_replacementMarkdown);
   if (known && folded && span > 0) {
-    m_editor->restoreFoldAfterPreviewRewrite(
-        item.m_preview->type(), firstBlock, m_doc->findBlock(start + span - 1).blockNumber());
+    m_editor->restoreFoldAfterPreviewRewrite(item.m_preview->type(), firstBlock,
+                                             m_doc->findBlock(start + span - 1).blockNumber());
   }
 
   // The anchors moved: resubmit the reservations without waiting for the next

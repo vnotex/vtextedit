@@ -243,10 +243,9 @@ void TextDocumentLayout::draw(QPainter *p_painter, const PaintContext &p_context
     // until a scroll re-anchored the walk on another block.
     if (layoutGeometryLog().isDebugEnabled() && !realEqual(offset.y(), info->top()) &&
         block.blockNumber() != first) {
-      qCDebug(layoutGeometryLog)
-          << "block" << block.blockNumber() << "offset" << info->top()
-          << "disagrees with the accumulated height chain" << offset.y() << "by"
-          << (info->top() - offset.y());
+      qCDebug(layoutGeometryLog) << "block" << block.blockNumber() << "offset" << info->top()
+                                 << "disagrees with the accumulated height chain" << offset.y()
+                                 << "by" << (info->top() - offset.y());
     }
 
     offset.setY(info->top());
@@ -1446,8 +1445,7 @@ TextDocumentLayout::widgetSpecsForBlock(const QTextBlock &p_block, PreviewPlacem
   return result;
 }
 
-bool TextDocumentLayout::isPreviewClaimed(int p_start, int p_end,
-                                          PreviewElementType p_type) const {
+bool TextDocumentLayout::isPreviewClaimed(int p_start, int p_end, PreviewElementType p_type) const {
   for (const auto &claim : m_claimedPreviews) {
     if (claim.m_startPos >= p_end) {
       // Claims are sorted by start position.
@@ -1693,8 +1691,7 @@ QRectF TextDocumentLayout::sourceTextRect(int p_startPos, int p_endPos) const {
 }
 
 bool TextDocumentLayout::lineClaimsRange(const QTextLine &p_line, int p_start, int p_end,
-                                         bool p_positioned, qreal *p_startX,
-                                         qreal *p_endX) const {
+                                         bool p_positioned, qreal *p_startX, qreal *p_endX) const {
   const int lineStart = p_line.textStart();
   const int lineEnd = lineStart + p_line.textLength();
   if (p_end <= lineStart || p_start >= lineEnd) {
@@ -1777,10 +1774,9 @@ void TextDocumentLayout::updateWidgetPreviewGeometry() {
 
       auto info = BlockLayoutData::get(block);
       if (!info->hasOffset() || info->m_widgets.isEmpty()) {
-        qCDebug(layoutGeometryLog)
-            << "  block" << it.key() << "holds a reservation but has"
-            << (info->hasOffset() ? "no reserved band" : "no offset")
-            << "- its widgets are unpublished";
+        qCDebug(layoutGeometryLog) << "  block" << it.key() << "holds a reservation but has"
+                                   << (info->hasOffset() ? "no reserved band" : "no offset")
+                                   << "- its widgets are unpublished";
         continue;
       }
 

@@ -796,7 +796,9 @@ bool TextEditInputMode::insertLine(int p_line, const QString &p_str) {
   return true;
 }
 
-void TextEditInputMode::setOverwriteMode(bool p_enabled) { m_textEdit->setOverwriteMode(p_enabled); }
+void TextEditInputMode::setOverwriteMode(bool p_enabled) {
+  m_textEdit->setOverwriteMode(p_enabled);
+}
 
 QWidget *TextEditInputMode::focusProxy() const { return m_textEdit; }
 

@@ -490,8 +490,7 @@ bool parseTable(const QString &p_text, int p_idx, int p_nameEnd, int p_baseOffse
         break;
       }
 
-      if (cellClosing ||
-          (cellName != QStringLiteral("td") && cellName != QStringLiteral("th"))) {
+      if (cellClosing || (cellName != QStringLiteral("td") && cellName != QStringLiteral("th"))) {
         return false;
       }
 
@@ -741,7 +740,6 @@ QString vte::rewriteHtmlTagAttr(const QString &p_tag, const QString &p_name,
   if (insertAt > 0 && out.at(insertAt - 1) == QLatin1Char('/')) {
     --insertAt;
   }
-  out.insert(insertAt,
-             QStringLiteral(" %1=\"%2\"").arg(lower, htmlEscapeAttrValue(p_value)));
+  out.insert(insertAt, QStringLiteral(" %1=\"%2\"").arg(lower, htmlEscapeAttrValue(p_value)));
   return out;
 }

@@ -140,8 +140,8 @@ public:
                            const QVector<QVector<QPoint>> &p_spans,
                            const QVector<QVector<QString>> &p_cellTags,
                            const QVector<QString> &p_rowTags, const QString &p_openTag,
-                           const QVector<PreviewTableAlignment> &p_alignments,
-                           bool p_hasHeaderRow, bool p_markdownBacked);
+                           const QVector<PreviewTableAlignment> &p_alignments, bool p_hasHeaderRow,
+                           bool p_markdownBacked);
 };
 
 // One origin cell of the logical grid, as the document holds it.
@@ -556,7 +556,6 @@ private:
   void restoreGrid(const GridSnapshot &p_snapshot);
 
   void build();
-
 
   // The single writer of one cell's formats, so build() and applyCellFormats()
   // cannot drift apart.

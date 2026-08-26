@@ -67,8 +67,8 @@ struct VTEXTEDIT_EXPORT PreviewTableSlot {
 // order: that reproduces the editor's own sequential highlighting behavior.
 struct VTEXTEDIT_EXPORT PreviewFormatRun {
   bool operator==(const PreviewFormatRun &p_other) const {
-    return m_start == p_other.m_start && m_length == p_other.m_length
-           && m_format == p_other.m_format;
+    return m_start == p_other.m_start && m_length == p_other.m_length &&
+           m_format == p_other.m_format;
   }
 
   bool operator!=(const PreviewFormatRun &p_other) const { return !(*this == p_other); }

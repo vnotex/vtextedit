@@ -74,13 +74,11 @@ public:
 
   static QSharedPointer<const Preview> createCode(quint64 p_revision, int p_startPos, int p_endPos,
                                                   const QString &p_source,
-                                                  const QString &p_language,
-                                                  const QString &p_code);
+                                                  const QString &p_language, const QString &p_code);
 
   static QSharedPointer<const Preview> createMath(quint64 p_revision, int p_startPos, int p_endPos,
                                                   const QString &p_source,
-                                                  const QString &p_expression,
-                                                  bool p_displayMath);
+                                                  const QString &p_expression, bool p_displayMath);
 
   // @p_cellFormats is row major and parallel to @p_cells; pass an empty vector
   // when no resolved highlighting is available.
@@ -94,8 +92,8 @@ public:
               const QVector<QString> &p_rowPrefixes, const QString &p_delimiterPrefix,
               const QVector<QVector<QVector<PreviewFormatRun>>> &p_cellFormats);
 
-  static QSharedPointer<const Preview> createTable(quint64 p_revision, int p_startPos,
-                                                   int p_endPos, const QString &p_source,
+  static QSharedPointer<const Preview> createTable(quint64 p_revision, int p_startPos, int p_endPos,
+                                                   const QString &p_source,
                                                    const TableSnapshotData &p_data);
 
 private:

@@ -1,9 +1,9 @@
 #include "tablepreviewwidget.h"
 
-#include <QApplication>
 #include <QAbstractTextDocumentLayout>
 #include <QAction>
 #include <QActionGroup>
+#include <QApplication>
 #include <QClipboard>
 #include <QContextMenuEvent>
 #include <QFocusEvent>
@@ -370,8 +370,8 @@ QString TablePreviewSerializer::serialize(const QVector<QVector<QString>> &p_cel
     for (int c = 0; c < columns; ++c) {
       const auto alignment = columnAlignment(c);
       line.append(QLatin1Char(' '));
-      line.append(alignmentMarker(alignment,
-                                  widths.isEmpty() ? minimumMarkerWidth(alignment) : widths[c]));
+      line.append(
+          alignmentMarker(alignment, widths.isEmpty() ? minimumMarkerWidth(alignment) : widths[c]));
       line.append(QLatin1String(" |"));
     }
     lines.append(line);
@@ -415,8 +415,7 @@ QString TablePreviewHtmlSerializer::renderCellHtml(const QString &p_markdown) {
   // CMARK_OPT_DEFAULT is the safe mode: raw inline HTML inside a cell is
   // replaced with an "omitted" comment rather than passed through.
   std::unique_ptr<char, decltype(&std::free)> rendered(
-      cmark_markdown_to_html(utf8.constData(), static_cast<size_t>(utf8.size()),
-                             CMARK_OPT_DEFAULT),
+      cmark_markdown_to_html(utf8.constData(), static_cast<size_t>(utf8.size()), CMARK_OPT_DEFAULT),
       &std::free);
   if (!rendered) {
     return QString();
@@ -583,11 +582,9 @@ QString TablePreviewHtmlSerializer::serialize(const QVector<QVector<QString>> &p
   // malformed payload comment in its verbatim cell text (D-n), and rejecting
   // that outright would make such a table unwritable rather than merely
   // literal.
-  const bool rescannedMarkdownBacked =
-      check.m_anyPayloadPresent && !check.m_anyPayloadMalformed;
-  if (check.m_tableStart != 0 || check.m_tableEnd != source.size() ||
-      check.m_rowCount != rows || check.m_columnCount != columns ||
-      check.m_hasHeaderRow != p_hasHeaderRow ||
+  const bool rescannedMarkdownBacked = check.m_anyPayloadPresent && !check.m_anyPayloadMalformed;
+  if (check.m_tableStart != 0 || check.m_tableEnd != source.size() || check.m_rowCount != rows ||
+      check.m_columnCount != columns || check.m_hasHeaderRow != p_hasHeaderRow ||
       rescannedMarkdownBacked != p_markdownBacked) {
     return QString();
   }
@@ -755,10 +752,10 @@ void TablePreviewDocument::setTable(const QSharedPointer<const TablePreview> &p_
   // The spans and the verbatim tags build() needs. A covered slot is spelled
   // QPoint(0, 0); an origin carries (colSpan, rowSpan). For a pipe table every
   // slot is a 1x1 origin, so this degenerates to a uniform grid.
-  m_pendingSpans = QVector<QVector<QPoint>>(m_rowCount, QVector<QPoint>(m_columnCount, QPoint(1, 1)));
-  m_cellMeta =
-      QVector<QVector<TablePreviewCellMeta>>(m_rowCount,
-                                             QVector<TablePreviewCellMeta>(m_columnCount));
+  m_pendingSpans =
+      QVector<QVector<QPoint>>(m_rowCount, QVector<QPoint>(m_columnCount, QPoint(1, 1)));
+  m_cellMeta = QVector<QVector<TablePreviewCellMeta>>(m_rowCount,
+                                                      QVector<TablePreviewCellMeta>(m_columnCount));
   m_rowTags = QVector<QString>(m_rowCount);
   if (p_table) {
     for (int r = 0; r < m_rowCount; ++r) {
@@ -1035,8 +1032,8 @@ bool TablePreviewDocument::isRoundTrippable() const {
         if (!cell.isValid() || cell.row() < 0 || cell.column() < 0 ||
             cell.row() + qMax(1, cell.rowSpan()) > m_rowCount ||
             cell.column() + qMax(1, cell.columnSpan()) > m_columnCount) {
-          qCDebug(previewTableLog) << "not round-trippable: the grid does not tile exactly at"
-                                   << r << c;
+          qCDebug(previewTableLog)
+              << "not round-trippable: the grid does not tile exactly at" << r << c;
           return false;
         }
       }
@@ -1097,8 +1094,8 @@ QString TablePreviewDocument::toMarkdown(bool p_align) const {
     // Every cell of a pipe table is Markdown source, so a Markdown -> HTML
     // conversion emits a payload comment for every cell.
     return TablePreviewHtmlSerializer::serialize(grid.m_source, grid.m_spans, cellTagGrid(),
-                                                 m_rowTags, m_openTag, m_alignments,
-                                                 m_hasHeaderRow, m_markdownBacked);
+                                                 m_rowTags, m_openTag, m_alignments, m_hasHeaderRow,
+                                                 m_markdownBacked);
   }
 
   return TablePreviewSerializer::serialize(cells(), m_alignments, m_rowPrefixes, m_delimiterPrefix,
@@ -1142,8 +1139,8 @@ QString TablePreviewDocument::toHtml() const {
     }
     const GridSnapshot grid = captureGrid();
     return TablePreviewHtmlSerializer::serialize(grid.m_source, grid.m_spans, cellTagGrid(),
-                                                 m_rowTags, m_openTag, m_alignments,
-                                                 m_hasHeaderRow, m_markdownBacked);
+                                                 m_rowTags, m_openTag, m_alignments, m_hasHeaderRow,
+                                                 m_markdownBacked);
   }
 
   // Never padded: the rendered HTML is layout independent, so alignment
@@ -1853,8 +1850,7 @@ bool TablePreviewDocument::mergeCells(const QTextCursor &p_cursor) {
 
   const QTextTableCell survivor = m_table->cellAt(rect.top(), rect.left());
   const bool geometryOk = survivor.isValid() && survivor.row() == rect.top() &&
-                          survivor.column() == rect.left() &&
-                          survivor.rowSpan() == rect.height() &&
+                          survivor.column() == rect.left() && survivor.rowSpan() == rect.height() &&
                           survivor.columnSpan() == rect.width();
   if (!geometryOk) {
     cursor.endEditBlock();
@@ -1905,8 +1901,7 @@ bool TablePreviewDocument::mergeCells(const QTextCursor &p_cursor) {
 }
 
 bool TablePreviewDocument::canSplitCell(int p_row, int p_column) const {
-  if (!m_table || p_row < 0 || p_column < 0 || p_row >= m_rowCount ||
-      p_column >= m_columnCount) {
+  if (!m_table || p_row < 0 || p_column < 0 || p_row >= m_rowCount || p_column >= m_columnCount) {
     return false;
   }
 
@@ -2059,8 +2054,7 @@ TablePreviewSheet::TablePreviewSheet(QWidget *p_parent) : VTextEdit(p_parent) {
 
   connect(this, &QTextEdit::cursorPositionChanged, this,
           &TablePreviewSheet::handleCursorPositionChanged);
-  connect(this, &QTextEdit::selectionChanged, this,
-          &TablePreviewSheet::handleSelectionChanged);
+  connect(this, &QTextEdit::selectionChanged, this, &TablePreviewSheet::handleSelectionChanged);
 }
 
 void TablePreviewSheet::setTableDocument(TablePreviewDocument *p_document) {
@@ -2367,8 +2361,7 @@ void TablePreviewSheet::clampSelectionIntoOneCell() {
     // Neither end is in a cell at all, which is what Ctrl+A produces: the
     // anchor lands before the table and the caret in the block after it. Fall
     // back to the cell the caret was last seen in.
-    target = table->cellAt(m_lastCellIndex / table->columns(),
-                           m_lastCellIndex % table->columns());
+    target = table->cellAt(m_lastCellIndex / table->columns(), m_lastCellIndex % table->columns());
   }
 
   if (!target.isValid()) {
@@ -3488,8 +3481,8 @@ void TablePreviewSheet::focusCell(int p_row, int p_column) {
   // Clamped rather than trusted: after a delete the index the caret came from
   // may no longer exist, and removeRows()/removeColumns() can park the caret
   // in the trailing block a QTextDocument always keeps after a table.
-  const QTextTableCell cell = table->cellAt(qBound(0, p_row, table->rows() - 1),
-                                            qBound(0, p_column, table->columns() - 1));
+  const QTextTableCell cell =
+      table->cellAt(qBound(0, p_row, table->rows() - 1), qBound(0, p_column, table->columns() - 1));
   if (cell.isValid()) {
     setTextCursor(cell.firstCursorPosition());
   }
@@ -3943,10 +3936,9 @@ void TablePreviewSheet::inputMethodEvent(QInputMethodEvent *p_event) {
   // line separators is refused exactly as a paste is, and refusing it must not
   // delete what is selected - which is why this comes before the removal
   // below. The same separator policy otherwise: a cell holds one block.
-  const QString sanitized =
-      hasLineSeparator(commit)
-          ? (hasCellContent(commit) ? sanitizeForCell(commit) : QString())
-          : commit;
+  const QString sanitized = hasLineSeparator(commit)
+                                ? (hasCellContent(commit) ? sanitizeForCell(commit) : QString())
+                                : commit;
   if (sanitized.isEmpty() && replacementLength == 0) {
     qCDebug(previewTableLog) << "refused an input method commit which is nothing but line"
                              << "separators";
@@ -4141,12 +4133,11 @@ bool TablePreviewWidget::setPreview(const QSharedPointer<const Preview> &p_previ
   // chain is re-walked on every parse generation: warning here would repeat
   // forever for a static, by-design condition.
   if (!TablePreviewDocument::isWithinLimits(*table)) {
-    qCDebug(previewTableLog)
-        << "refused an oversized table -" << table->cells().size() << "row(s) x"
-        << TablePreviewDocument::normalizedColumnCount(*table) << "column(s) ="
-        << TablePreviewDocument::normalizedCellCount(*table) << "cells; limits are"
-        << TablePreviewDocument::c_maxCells << "cells and"
-        << TablePreviewDocument::c_maxColumns << "columns";
+    qCDebug(previewTableLog) << "refused an oversized table -" << table->cells().size()
+                             << "row(s) x" << TablePreviewDocument::normalizedColumnCount(*table)
+                             << "column(s) =" << TablePreviewDocument::normalizedCellCount(*table)
+                             << "cells; limits are" << TablePreviewDocument::c_maxCells
+                             << "cells and" << TablePreviewDocument::c_maxColumns << "columns";
     return false;
   }
 
@@ -4279,9 +4270,9 @@ void TablePreviewWidget::applyEditability() {
   // copy, which the retired NoEditTriggers did not.
   const bool roundTrippable = m_document->isRoundTrippable();
   const bool editable = !m_readOnly && roundTrippable && m_authoritative && !m_suppressed;
-  qCDebug(previewTableLog) << "sheet is" << (editable ? "editable" : "viewer only")
-                           << "- read-only" << m_readOnly << "round-trippable" << roundTrippable
-                           << "authoritative" << m_authoritative << "suppressed" << m_suppressed;
+  qCDebug(previewTableLog) << "sheet is" << (editable ? "editable" : "viewer only") << "- read-only"
+                           << m_readOnly << "round-trippable" << roundTrippable << "authoritative"
+                           << m_authoritative << "suppressed" << m_suppressed;
 
   const bool wasReadOnly = m_sheet->isReadOnly();
 

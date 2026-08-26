@@ -115,10 +115,9 @@ static std::function<void()> setupRichTextEditor(QMainWindow *p_win) {
     }
   };
 
-  QObject::connect(editor, &VRichTextEditor::inputModeStatusWidgetChanged, p_win,
-                   [mountStatusWidget](QSharedPointer<QWidget> p_widget) {
-                     mountStatusWidget(p_widget);
-                   });
+  QObject::connect(
+      editor, &VRichTextEditor::inputModeStatusWidgetChanged, p_win,
+      [mountStatusWidget](QSharedPointer<QWidget> p_widget) { mountStatusWidget(p_widget); });
   // Initial sync: the mode was installed during construction.
   mountStatusWidget(editor->inputModeStatusWidget());
 

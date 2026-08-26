@@ -95,10 +95,10 @@ int caretCell(TablePreviewSheet *p_sheet) { return p_sheet->currentCellIndex(); 
 // QInputMethod acts on the application's focus object, and a widget in a
 // window which was never activated never becomes one. Those tests pass
 // p_visible.
-TablePreviewWidget *buildSheet(
-    QScopedPointer<TablePreviewWidget> &p_holder, InputMode p_mode,
-    const QSharedPointer<const TablePreview> &p_table = QSharedPointer<const TablePreview>(),
-    bool p_visible = false) {
+TablePreviewWidget *
+buildSheet(QScopedPointer<TablePreviewWidget> &p_holder, InputMode p_mode,
+           const QSharedPointer<const TablePreview> &p_table = QSharedPointer<const TablePreview>(),
+           bool p_visible = false) {
   p_holder.reset(new TablePreviewWidget(nullptr, nullptr));
   if (!p_holder->setPreview(p_table ? p_table : makeSampleTable())) {
     return nullptr;
@@ -837,8 +837,8 @@ void TestTablePreviewInputMode::testAReversibleStructuralPairAlsoDropsTheRing() 
 
 void TestTablePreviewInputMode::testInputMethodFollowsTheSheetsMode() {
   QScopedPointer<TablePreviewWidget> holder;
-  auto widget = buildSheet(holder, InputMode::NormalMode,
-                           QSharedPointer<const TablePreview>(), true);
+  auto widget =
+      buildSheet(holder, InputMode::NormalMode, QSharedPointer<const TablePreview>(), true);
   QVERIFY(widget);
   auto sheet = sheetOf(*widget);
   QVERIFY(sheet);
@@ -894,8 +894,8 @@ void TestTablePreviewInputMode::testInputMethodFollowsTheSheetsMode() {
 // must not leave a command-mode sheet input-method enabled.
 void TestTablePreviewInputMode::testAForcedDisableDoesNotUnstickTheMode() {
   QScopedPointer<TablePreviewWidget> holder;
-  auto widget = buildSheet(holder, InputMode::NormalMode,
-                           QSharedPointer<const TablePreview>(), true);
+  auto widget =
+      buildSheet(holder, InputMode::NormalMode, QSharedPointer<const TablePreview>(), true);
   QVERIFY(widget);
   auto sheet = sheetOf(*widget);
   QVERIFY(sheet);
@@ -930,8 +930,8 @@ void TestTablePreviewInputMode::testABackgroundSheetDefersItsInputMethodState() 
   // Both are real windows, so both CAN own the input context - but only one
   // does at a time, which is the whole point.
   QScopedPointer<TablePreviewWidget> background;
-  QVERIFY(buildSheet(background, InputMode::NormalMode, QSharedPointer<const TablePreview>(),
-                     true));
+  QVERIFY(
+      buildSheet(background, InputMode::NormalMode, QSharedPointer<const TablePreview>(), true));
   auto backgroundSheet = sheetOf(*background);
   QVERIFY(backgroundSheet);
 

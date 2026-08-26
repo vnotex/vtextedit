@@ -679,8 +679,7 @@ static void extractHtmlTables(const QString &p_slice, int p_sliceStart, const QS
     table.m_columnCount = html.m_columnCount;
     table.m_columns = html.m_columnCount;
     table.m_hasHeaderRow = html.m_hasHeaderRow;
-    table.m_openTag =
-        p_text.mid(html.m_openTagStart, html.m_openTagEnd - html.m_openTagStart);
+    table.m_openTag = p_text.mid(html.m_openTagStart, html.m_openTagEnd - html.m_openTagStart);
 
     // Decision D-j / D-n: backing is per TABLE. One malformed payload makes the
     // whole table HTML-only, so a mutation never has to reconcile two kinds of
@@ -714,8 +713,8 @@ static void extractHtmlTables(const QString &p_slice, int p_sliceStart, const QS
         // A well-formed payload is the cell's Markdown source; a cell without
         // one in a Markdown-backed table is read as Markdown too (D-j), and an
         // HTML-only table shows its raw inner source as spelled (D-d).
-        const QString text = (table.m_markdownBacked && cell.m_hasPayload) ? cell.m_payload
-                                                                          : cell.m_inner;
+        const QString text =
+            (table.m_markdownBacked && cell.m_hasPayload) ? cell.m_payload : cell.m_inner;
         row.m_cells.append(text);
         // Markdown-only: there is no one-source-line-per-row correspondence to
         // slice highlights out of, so no cell offset is meaningful here.
@@ -779,10 +778,9 @@ static void extractHtmlTables(const QString &p_slice, int p_sliceStart, const QS
 // must agree -- which they do because both scanners' top-level lexers are
 // identical, down to the table scanner advancing one tag at a time rather than
 // jumping over a table it captured. The assert is the guard on that invariant.
-static void extractHtmlNode(cmark_node *p_node, const QString &p_text,
-                            const QByteArray &p_utf8Text, const LineOffsetTable &p_offsets,
-                            ASTWalkResult &p_result, int p_offset, int p_startBlock,
-                            RawTextState &p_rawText) {
+static void extractHtmlNode(cmark_node *p_node, const QString &p_text, const QByteArray &p_utf8Text,
+                            const LineOffsetTable &p_offsets, ASTWalkResult &p_result, int p_offset,
+                            int p_startBlock, RawTextState &p_rawText) {
   const bool isBlock = cmark_node_get_type(p_node) == CMARK_NODE_HTML_BLOCK;
 
   int regionStart = -1;
@@ -811,9 +809,9 @@ static void extractHtmlNode(cmark_node *p_node, const QString &p_text,
   ASTWalkResult discarded;
   extractHtmlImages(slice, sliceStart, p_text, p_utf8Text, p_offsets,
                     resolved ? p_result : discarded, p_offset, imageState);
-  extractHtmlTables(slice, sliceStart, p_text, p_offsets, resolved ? p_result : discarded,
-                    p_offset, p_startBlock, resolved && isBlock && isDocumentChild(p_node),
-                    regionStart, regionEnd, tableState);
+  extractHtmlTables(slice, sliceStart, p_text, p_offsets, resolved ? p_result : discarded, p_offset,
+                    p_startBlock, resolved && isBlock && isDocumentChild(p_node), regionStart,
+                    regionEnd, tableState);
 
   Q_ASSERT(imageState.m_element == tableState.m_element);
   p_rawText = imageState;

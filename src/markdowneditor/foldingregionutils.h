@@ -35,10 +35,9 @@ inline void computeHeadingSections(QVector<FoldingRegion> &p_regions, int p_numO
   }
 
   // Sort headings by m_startBlock ascending.
-  std::sort(headings.begin(), headings.end(),
-            [](const FoldingRegion &a, const FoldingRegion &b) {
-              return a.m_startBlock < b.m_startBlock;
-            });
+  std::sort(headings.begin(), headings.end(), [](const FoldingRegion &a, const FoldingRegion &b) {
+    return a.m_startBlock < b.m_startBlock;
+  });
 
   // Compute heading section ranges.
   for (int i = 0; i < headings.size(); ++i) {
@@ -87,10 +86,9 @@ inline void computeHeadingSections(QVector<FoldingRegion> &p_regions, int p_numO
   p_regions.append(validHeadings);
 
   // Sort by m_startBlock ascending.
-  std::sort(p_regions.begin(), p_regions.end(),
-            [](const FoldingRegion &a, const FoldingRegion &b) {
-              return a.m_startBlock < b.m_startBlock;
-            });
+  std::sort(p_regions.begin(), p_regions.end(), [](const FoldingRegion &a, const FoldingRegion &b) {
+    return a.m_startBlock < b.m_startBlock;
+  });
 }
 
 } // namespace md
