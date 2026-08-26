@@ -1171,6 +1171,10 @@ static MarkdownLink::TypeFlags classifyUrl(const QString &p_url, bool p_isIntern
     if (!driveLetter) {
       return MarkdownLink::TypeFlag::Remote;
     }
+    // Decided by SHAPE, not by the host platform's path rules: on a non-Windows
+    // build QDir::isRelativePath() would call `x:/foo` relative and the
+    // destination would be migrated as a notebook-relative asset.
+    return MarkdownLink::TypeFlag::LocalAbsolute;
   }
 
   if (!QDir::isRelativePath(p_url)) {
