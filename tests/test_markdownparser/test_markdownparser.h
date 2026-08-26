@@ -20,6 +20,8 @@ private slots:
   void testHTMLNodesAreStyledLikeCode();
   void testIndentedCodeBlocks();
   void testHTMLBlocks();
+  void testHtmlBlockClosingTagIsStyled();
+  void testHtmlBlockKeepsContainerPrefixUnstyled();
   void testLists();
   void testFrontmatter();
   void testDisplayFormula();

@@ -1024,14 +1024,50 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
 
     int docStart = 0;
     int docEnd = 0;
-    if (!cmarkNodeSpan(node, offsets, docStart, docEnd)) {
-      continue;
-    }
 
     // Line numbers are still needed below for folding regions and for the
     // typed-element extractors, which work line-wise rather than by offset.
     int sl = cmark_node_get_start_line(node);
     int el = cmark_node_get_end_line(node);
+
+    if (type == CMARK_NODE_HTML_BLOCK) {
+      // An HTML block's reported END is wrong: cmark gives the last line it
+      // CONSUMED BEFORE the end condition matched, so `<pre>…</pre>` reports
+      // the line before `</pre>` and the raw span styles every line of the
+      // block except its closing tag. resolveHtmlNodeSpan() is the one
+      // correction, already used by extractHtmlNode() and by the snapshot API;
+      // the highlight path takes its END, or the font and the element
+      // extraction disagree about where the block stops.
+      //
+      // Only the end. The resolver deliberately ignores columns and slices
+      // whole lines, which is right for a scanner reading the source back but
+      // wrong for a highlight: the first line's container prefix (`> `, `- `)
+      // belongs to the quote or the list item, not to the HTML, and painting it
+      // in the monospace face would step the marker sideways. cmark's reported
+      // START column is prefix-relative and correct, so it is kept.
+      int resolvedStart = 0;
+      int resolvedEnd = 0;
+      const bool resolved = resolveHtmlNodeSpan(text, node, offsets, resolvedStart, resolvedEnd);
+      if (!cmarkNodeSpan(node, offsets, docStart, docEnd)) {
+        if (!resolved) {
+          continue;
+        }
+        docStart = resolvedStart;
+        docEnd = resolvedEnd;
+      } else if (resolved) {
+        docEnd = qMax(docEnd, resolvedEnd);
+      }
+
+      const int firstLine = lineIndexOfDocPos(offsets, docStart);
+      const int lastLine = lineIndexOfDocPos(offsets, docEnd > docStart ? docEnd - 1 : docStart);
+      if (firstLine < 0 || lastLine < firstLine) {
+        continue;
+      }
+      sl = firstLine + 1;
+      el = lastLine + 1;
+    } else if (!cmarkNodeSpan(node, offsets, docStart, docEnd)) {
+      continue;
+    }
 
     // The formula delimiters are not part of cmark's reported span; widening by
     // one on each side is node-type policy, so it stays at the call site.

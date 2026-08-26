@@ -422,6 +422,43 @@ void TestMarkdownParser::testHTMLBlocks() {
   QVERIFY((int)elems[0].second > 0);
 }
 
+// A `<pre>`, `<script>`, `<textarea>` or `<style>` block is terminated by its
+// CLOSING TAG, and cmark reports end_line as the last line consumed BEFORE that
+// condition matched -- i.e. the line before `</pre>`. Highlighting from the raw
+// span therefore left the closing tag in the prose face while every other line
+// of the block was monospace. The corrected end comes from
+// resolveHtmlNodeSpan(), the same one extractHtmlNode() and the snapshot API
+// use, so the font and the element extraction cannot disagree.
+void TestMarkdownParser::testHtmlBlockClosingTagIsStyled() {
+  const QString input = QStringLiteral("<pre>\nhello\n</pre>\n");
+  auto result = parse(input);
+
+  auto elems = findElements(result, HLT_HTMLBLOCK, input);
+  QCOMPARE(elems.size(), 3);
+  std::sort(elems.begin(), elems.end());
+
+  // The last unit is the closing tag's own line, whole.
+  const int closingStart = input.indexOf(QStringLiteral("</pre>"));
+  QCOMPARE((int)elems[2].first, closingStart);
+  QCOMPARE((int)elems[2].second, closingStart + 6);
+}
+
+// Only the END is corrected. resolveHtmlNodeSpan() ignores columns and slices
+// whole LINES, which is right for a scanner reading source back but wrong for a
+// highlight: a container prefix belongs to the quote or the list item, and
+// painting it in the monospace face would step the marker sideways.
+void TestMarkdownParser::testHtmlBlockKeepsContainerPrefixUnstyled() {
+  const QString input = QStringLiteral("> <div>\n\n- <div>\n");
+  auto result = parse(input);
+
+  auto elems = findElements(result, HLT_HTMLBLOCK, input);
+  QCOMPARE(elems.size(), 2);
+  std::sort(elems.begin(), elems.end());
+
+  QCOMPARE((int)elems[0].first, input.indexOf(QStringLiteral("<div>")));
+  QCOMPARE((int)elems[1].first, input.lastIndexOf(QStringLiteral("<div>")));
+}
+
 void TestMarkdownParser::testLists() {
   const QString input = QStringLiteral("- item 1\n- item 2\n\n1. first\n2. second\n");
   auto result = parse(input);
