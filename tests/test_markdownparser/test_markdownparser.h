@@ -17,6 +17,7 @@ private slots:
   void testHorizontalRules();
   void testFencedCodeBlocks();
   void testFencedCodeBlockIndentationFormat();
+  void testHTMLNodesAreStyledLikeCode();
   void testIndentedCodeBlocks();
   void testHTMLBlocks();
   void testLists();

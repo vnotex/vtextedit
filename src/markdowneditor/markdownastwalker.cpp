@@ -29,6 +29,25 @@ static int numberWidth(int p_num) {
   return w;
 }
 
+// Whether a multi-line unit of @p_style must leave the leading indentation of
+// its 2nd..Nth lines unstyled.
+//
+// These are the styles the theme gives a MONOSPACE font family to and which can
+// span several lines. Indentation is whitespace, and whitespace rendered at a
+// monospace advance width is visibly wider than the same whitespace in the body
+// font - so a table or an HTML block sitting inside a list item would have its
+// continuation lines step sideways relative to the item's first line. Colour
+// alone was invisible on whitespace, which is why this only became a problem
+// once these styles carried a font.
+//
+// STYLE_HTML is deliberately absent: an inline HTML tag opens and closes within
+// one source line by construction (decision D8), so it never reaches the
+// multi-line arm at all.
+static bool skipsLeadingIndentation(int p_style) {
+  return p_style == STYLE_TABLE || p_style == STYLE_TABLEHEADER ||
+         p_style == STYLE_DISPLAYFORMULA || p_style == STYLE_HTMLBLOCK;
+}
+
 static void addHLUnit(ASTWalkResult &p_result, const LineOffsetTable &p_offsets, int p_docStart,
                       int p_docEnd, int p_style, int p_startBlock, int p_numBlocks) {
   // Compute 0-indexed line indices from document-local positions.
@@ -100,21 +119,11 @@ static void addHLUnit(ASTWalkResult &p_result, const LineOffsetTable &p_offsets,
         unit.start = p_docStart - lineStartQChar;
         unit.length = nextLineStartQChar - p_docStart;
       } else if (lineIdx == endLineIdx) {
-        // Skip leading indentation for styles whose monospace font should not bleed into list-item
-        // indentation whitespace.
-        int ls = (p_style == STYLE_TABLE || p_style == STYLE_TABLEHEADER ||
-                  p_style == STYLE_DISPLAYFORMULA)
-                     ? p_offsets.lineLeadingSpaces(lineIdx)
-                     : 0;
+        int ls = skipsLeadingIndentation(p_style) ? p_offsets.lineLeadingSpaces(lineIdx) : 0;
         unit.start = ls;
         unit.length = p_docEnd - lineStartQChar - ls;
       } else {
-        // Skip leading indentation for styles whose monospace font should not bleed into list-item
-        // indentation whitespace.
-        int ls = (p_style == STYLE_TABLE || p_style == STYLE_TABLEHEADER ||
-                  p_style == STYLE_DISPLAYFORMULA)
-                     ? p_offsets.lineLeadingSpaces(lineIdx)
-                     : 0;
+        int ls = skipsLeadingIndentation(p_style) ? p_offsets.lineLeadingSpaces(lineIdx) : 0;
         unit.start = ls;
         unit.length = nextLineStartQChar - lineStartQChar - ls;
       }

@@ -141,10 +141,12 @@
             "text-color" : "#8900b5"
         },
         "HTML" : {
-            "text-color" : "#8900b5"
+            "text-color" : "#8900b5",
+            "font-family" : "YaHei Consolas Hybrid, Consolas, Monaco, Andale Mono, Monospace, Courier New"
         },
         "HTMLBLOCK" : {
-            "text-color" : "#8900b5"
+            "text-color" : "#8900b5",
+            "font-family" : "YaHei Consolas Hybrid, Consolas, Monaco, Andale Mono, Monospace, Courier New"
         },
         "COMMENT" : {
             "text-color" : "#93a1a1"

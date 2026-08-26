@@ -318,6 +318,84 @@ void TestMarkdownParser::testFencedCodeBlockIndentationFormat() {
   QVERIFY(formatAt(nextListItem, 0).background().color() != expected.background().color());
 }
 
+// HTML gets the same monospace treatment as code, both inline and as a block -
+// and the block's continuation lines must not drag that monospace over their
+// leading indentation, the way a table's and a display formula's already must
+// not.
+void TestMarkdownParser::testHTMLNodesAreStyledLikeCode() {
+  // A distinguishing font SIZE and background rather than the family: the
+  // family is resolved against QFontDatabase at parse time and a headless box
+  // need not have any particular one.
+  const QString themeJson = QStringLiteral(R"({
+    "metadata": {"type": "vtextedit", "name": "HtmlStyleTest"},
+    "editor": {"font-family": "Arial", "font-size": 11},
+    "markdown-syntax-styles": {
+      "HTML": {
+        "font-family": "Courier New",
+        "font-size": 19,
+        "background-color": "#123456"
+      },
+      "HTMLBLOCK": {
+        "font-family": "Courier New",
+        "font-size": 21,
+        "background-color": "#654321"
+      }
+    }
+  })");
+  auto theme = vte::Theme::createThemeFromContent(themeJson);
+  QVERIFY(!theme.isNull());
+
+  const auto styles = theme->markdownSyntaxStyles();
+  QVERIFY(styles);
+  // The theme keys already existed; what is new is that they carry a family.
+  QCOMPARE(styles->at(vte::Theme::HTML).m_fontFamilies, QStringList()
+                                                            << QStringLiteral("Courier New"));
+  QCOMPARE(styles->at(vte::Theme::HTMLBLOCK).m_fontFamilies, QStringList()
+                                                                 << QStringLiteral("Courier New"));
+
+  auto textConfig = QSharedPointer<vte::TextEditorConfig>::create();
+  textConfig->m_theme = theme;
+  auto markdownConfig = QSharedPointer<vte::MarkdownEditorConfig>::create(textConfig);
+  markdownConfig->m_inplacePreviewSources = vte::MarkdownEditorConfig::NoInplacePreview;
+  auto parameters = QSharedPointer<vte::TextEditorParameters>::create();
+  vte::VMarkdownEditor editor(markdownConfig, parameters);
+  auto highlighter = editor.getHighlighter();
+  QVERIFY(highlighter);
+
+  QSignalSpy completed(highlighter, &vte::MarkdownHighlighter::highlightCompleted);
+  editor.setText(QStringLiteral("a <b>c</b> d\n"
+                                "\n"
+                                "1. item\n"
+                                "\n"
+                                "    <div>\n"
+                                "    inner\n"
+                                "    </div>\n"));
+  completed.clear();
+  highlighter->updateHighlight();
+  QTRY_VERIFY(completed.count() > 0);
+
+  // Inline: the tags are monospace, the prose around them is not.
+  const QTextBlock inlineBlock = editor.document()->findBlockByNumber(0);
+  QCOMPARE(formatAt(inlineBlock, 2).fontPointSize(), 19.0);
+  QCOMPARE(formatAt(inlineBlock, 2).background().color(), QColor(QStringLiteral("#123456")));
+  QVERIFY(formatAt(inlineBlock, 0).background().color() != QColor(QStringLiteral("#123456")));
+  // "c" between the tags is content, not markup.
+  QVERIFY(formatAt(inlineBlock, 5).background().color() != QColor(QStringLiteral("#123456")));
+
+  // Block: styled from the first non-space character of its opening line.
+  const QTextBlock open = editor.document()->findBlockByNumber(4);
+  QCOMPARE(formatAt(open, 4).fontPointSize(), 21.0);
+  QCOMPARE(formatAt(open, 4).background().color(), QColor(QStringLiteral("#654321")));
+
+  // The CONTINUATION lines keep their list indentation out of it. Monospace
+  // whitespace is wider than body-font whitespace, so styling it would step
+  // the block sideways relative to the list item it belongs to.
+  const QTextBlock inner = editor.document()->findBlockByNumber(5);
+  QVERIFY2(formatAt(inner, 0).background().color() != QColor(QStringLiteral("#654321")),
+           "the block style bled into the continuation line's indentation");
+  QCOMPARE(formatAt(inner, 4).background().color(), QColor(QStringLiteral("#654321")));
+}
+
 void TestMarkdownParser::testIndentedCodeBlocks() {
   const QString input = QStringLiteral("    indented code\n");
   auto result = parse(input);
