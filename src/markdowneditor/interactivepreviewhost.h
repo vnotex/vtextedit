@@ -91,6 +91,65 @@ public:
   // from a zero timer spinning against a held block.
   static const char *c_owedWorkDrainCountProperty;
 
+  // Performance counters, published through the same dynamic-property
+  // mechanism as the three counters above.
+  //
+  // They are the deterministic gates of the preview benchmark: wall clock on a
+  // shared CI runner is only ever logged, never asserted, so every claim the
+  // benchmark makes about how much work a pass does has to be expressed as one
+  // of these. Dynamic properties rather than getters because the benchmark
+  // links the shared VTextEdit and this class is not exported.
+  //
+  // Each is a monotonically increasing int, reset as a group by writing
+  // c_countersResetProperty (see below).
+
+  // Items bound to a snapshot: one per item created, one per item updated in
+  // place. Measures reconcile work, and after lazy realization it is the
+  // denominator c_widgetsRealizedProperty is read against.
+  static const char *c_previewsBoundProperty;
+
+  // Widgets a factory actually constructed.
+  static const char *c_widgetsRealizedProperty;
+
+  // Widgets torn down by removeItem().
+  static const char *c_widgetsDestroyedProperty;
+
+  // publish() bodies that have run.
+  static const char *c_publishesProperty;
+
+  // QWidget::setGeometry() calls issued by the scroll placement pass. The
+  // direct measure of "every scroll tick walks every item".
+  static const char *c_geometrySetCallsProperty;
+
+  // Times findIdentity() fell through the exact-anchor index into the linear
+  // overlap scan. The measurement which decides whether that scan is a real
+  // cost at all.
+  static const char *c_identityFallbackHitsProperty;
+
+  // rebuildAll() bodies that have run (a postponed rebuild does not count).
+  static const char *c_rebuildAllsProperty;
+
+  // Table sheet cells constructed, aggregated from the table layer. Process
+  // wide, because the count originates in TablePreviewDocument, which has no
+  // back pointer to a host; a benchmark drives one editor at a time.
+  static const char *c_tableCellsBuiltProperty;
+
+  // Full cmark parses performed for per-cell table syntax highlighting,
+  // aggregated from the AST walker. Process wide for the same reason, and the
+  // direct measure of what the walker's document-wide cell budget bounds.
+  static const char *c_snippetParsesProperty;
+
+  // Write any value to reset every counter above to zero, including the
+  // process-wide cell counter. A write is only honoured when it lands on this
+  // host, so the property write is also the reset point: anything already
+  // armed and not yet delivered is counted into the next window, which is why
+  // a benchmark scenario settles the event loop before resetting.
+  //
+  // The handler clears the property again, so writing the same value twice
+  // performs two resets. Qt only notifies on a CHANGE, and without the clear
+  // the second write in a row would be silently ignored.
+  static const char *c_countersResetProperty;
+
   // Whether the host may not touch the editor's document right now: either a
   // layout pass is running, or an application-defined callback or a geometry
   // application is on the stack. Every mutating entry point tests this, and
@@ -115,6 +174,8 @@ public slots:
   void schedulePublish();
 
 protected:
+  bool event(QEvent *p_event) Q_DECL_OVERRIDE;
+
   bool eventFilter(QObject *p_obj, QEvent *p_event) Q_DECL_OVERRIDE;
 
 private slots:
@@ -131,7 +192,19 @@ private slots:
 
   void publish();
 
-  void reconcileLater();
+  // Ask for a rebuild, stating whether the reason can WIDEN the set of element
+  // types the highlighter is asked to build snapshots for.
+  //
+  // m_lastPreviews only ever holds snapshots for the types that were enabled
+  // and claimable at the last publication, so a widening change - enabling a
+  // type, registering a factory that newly claims one - cannot be served by
+  // replaying it: the snapshots simply are not there, and the highlighter has
+  // to build them. A NARROWING change - disabling a type, unregistering a
+  // factory - is fully served by the replay, and asking for a reparse there is
+  // pure waste on a document with hundreds of previews.
+  //
+  // Coalescing is an OR: if anything owed may widen, the combined rebuild may.
+  void reconcileLater(bool p_mayWiden);
 
 private:
   // Marks a span during which the host must not mutate the editor's document
@@ -186,6 +259,18 @@ private:
     int m_order = 0;
   };
 
+  // One live element.
+  //
+  // An item is always BOUND: it has an identity, a snapshot, a live anchor, a
+  // fold state and a reserved band. It is additionally REALIZED when a factory
+  // has built a widget for it, which is exactly when m_widget is non-null -
+  // there is no separate flag, because a widget destroyed behind the host's
+  // back must read as unrealized and a bool would disagree with reality at
+  // that moment.
+  //
+  // Realization is demand driven: an item whose band is nowhere near the
+  // viewport stays bound, costing one estimate instead of a QTextDocument and
+  // a QTextTable. See realizeItem().
   struct ActiveItem {
     quint64 m_id = 0;
 
@@ -211,11 +296,20 @@ private:
     // Cached preferred size and the width basis it was measured at. Measuring
     // is expensive (the table sheet scans its contents), so it is redone only
     // when the widget asked for a new layout or the basis changed.
+    //
+    // For an item which is BOUND but not REALIZED this holds the factory's
+    // estimate instead, computed by PreviewSizeEstimator without building
+    // anything. m_sizeIsEstimate says which of the two it is.
     QSizeF m_measuredSize;
 
     qreal m_measuredWidthBasis = -1;
 
     bool m_measureDirty = true;
+
+    // Whether m_measuredSize came from an estimator rather than from the real
+    // widget. Realizing an item clears it, and the difference between the two
+    // is what the scroll pass compensates the scrollbar by.
+    bool m_sizeIsEstimate = false;
 
     // Last published document rectangle, so scrolling does not have to
     // recompute any scroll invariant geometry.
@@ -387,6 +481,141 @@ private:
   QSizeF preferredSize(PreviewWidget *p_widget, PreviewPlacement p_placement, int p_startPos,
                        int p_endPos) const;
 
+  // The horizontal room an element will be given, which is both the input to
+  // its measurement and the key the cached measurement is stored under.
+  //
+  // One helper because there are two callers - publish() and the measurement
+  // realizeVisibleItems() performs - and they MUST agree: the second caches a
+  // basis alongside a size and then clears m_measureDirty, so a basis that
+  // does not describe the size it was stored with would suppress the
+  // re-measurement that would have corrected it.
+  qreal widthBasisFor(const ActiveItem &p_item, qreal p_availableWidth) const;
+
+  // The highest ranking active factory which advertises @p_type, or nullptr.
+  // Advertising is not the same as claiming - a factory may still decline
+  // createWidget() - so this is only ever used to find an estimator and to
+  // decide whether it is worth binding an item at all.
+  //
+  // Not const: supportedTypes() is application code and runs under a
+  // BlockGuard, exactly as isTypeClaimable() does.
+  PreviewWidgetFactory *estimatingFactoryFor(PreviewElementType p_type);
+
+  // The band to reserve for an item which has no widget, or an invalid QSizeF
+  // when no factory offers an estimate. An invalid answer is what keeps a
+  // third-party factory on today's eager path.
+  QSizeF estimatedSize(const ActiveItem &p_item, qreal p_widthBasis);
+
+  // What one realization attempt did to the item. Deliberately three-valued
+  // rather than a bool: "it did not get a widget" and "the item set changed"
+  // are different questions, and answering the second with the first is an
+  // infinite loop.
+  //
+  // A StillBound outcome means the attempt failed but left the item exactly as
+  // it was. Treating that as a change would make realizeVisibleItems() owe a
+  // publication, whose drain re-runs the scroll pass, which re-collects the
+  // same in-band candidate and fails identically - a zero timer spinning
+  // forever on the GUI thread.
+  enum class RealizeOutcome {
+    // A widget was built and attached.
+    Realized,
+
+    // Every factory declined, so the item was removed and the element went
+    // back to the painted fallback. The item set changed.
+    Removed,
+
+    // The attempt failed - a callback destroyed the context or the widget - and
+    // the item is untouched. NOTHING changed, so nothing may be owed for it.
+    StillBound
+  };
+
+  // Build the widget for a bound item. The single realization transition.
+  //
+  // Every failure - the factory was destroyed or unregistered by its own
+  // callback, it declined, its widget refused setPreview(), or the item was
+  // torn down from inside a callback - is reported through the outcome above.
+  // Nothing is ever left half realized.
+  RealizeOutcome realizeItem(quint64 p_id);
+
+  // Realize every bound item whose reserved band is within one viewport height
+  // of the visible area, and record what the correction owes the scrollbar.
+  //
+  // Called from the scroll placement pass. It deliberately does NOT use the
+  // geometry it is standing on afterwards: a realization changes the item's
+  // preferred height, and that height only reaches the document through a new
+  // publication and the relayout it triggers, which moves every later block.
+  // Returns true when something was realized, i.e. when the caller must bail
+  // out and let the owed-work drain re-run it against settled geometry.
+  bool realizeVisibleItems();
+
+  // Apply the scrollbar correction realizeVisibleItems() accumulated, clamped
+  // against the range the relayout has since produced. Runs from the owed-work
+  // drain, after publication and geometry sync, which is the first moment the
+  // new range exists.
+  void applyRealizationScrollCompensation();
+
+  // One entry of the band-ordered geometry index. See m_geometryOrder.
+  struct GeometryEntry {
+    // Top of the item's reserved band, in document coordinates.
+    qreal m_top = 0;
+
+    // The largest band bottom among this entry and every entry before it.
+    //
+    // Bottoms are NOT monotonic in top order - two previews sharing one inline
+    // band, or a tall block preview followed by a short one, both break it -
+    // so a binary search on bottom is only sound against this running maximum.
+    qreal m_maxBottomSoFar = 0;
+
+    quint64 m_id = 0;
+  };
+
+  // Every REALIZED item, ordered by band top with the identity as a stable
+  // tie-breaker, and carrying the prefix maximum of the band bottoms.
+  //
+  // publish() sorts its specs by IDENTITY, and m_items is a hash, so before
+  // this there was no band-ordered sequence anywhere and every scroll tick had
+  // to walk all N items to place the handful that are visible. Rebuilt once
+  // per full geometry sync - which is where the rectangles change - and only
+  // read by the placement pass.
+  QVector<GeometryEntry> m_geometryOrder;
+
+  // The same, over every BOUND but UNREALIZED item.
+  //
+  // A separate index rather than one combined one, because the two passes ask
+  // different questions over disjoint sets: placement walks the realized items
+  // inside the viewport, realization walks the unrealized ones inside a wider
+  // band. Indexing only the realized half would leave the realization scan
+  // walking the whole item hash per scroll tick - and in a large document the
+  // unrealized half IS the large one, so that is the scan that matters.
+  QVector<GeometryEntry> m_realizationOrder;
+
+  // The identities the last placement pass positioned and left visible.
+  //
+  // An item which has left the visible interval must still be hidden, or it
+  // stays painted at the viewport coordinates it had when it was last placed.
+  // Keeping the set is what makes "just exited" cost the same as "just
+  // entered" instead of costing a full walk.
+  QSet<quint64> m_placedIds;
+
+  // Whether the two indices above describe the current item set.
+  //
+  // A bulk teardown sets this instead of erasing from the vectors per item:
+  // removeItem() would otherwise linear-scan and shift an N-element vector for
+  // each of N items, making removeAllItems() - which every widening reconcile
+  // runs - quadratic in the number of previews.
+  bool m_geometryOrderDirty = false;
+
+  // Rebuild both band-ordered indices from the current item rectangles.
+  void rebuildGeometryOrder();
+
+  // Sort one index by band top and turn its bottoms into a running maximum.
+  // Shared by both indices so the ordering and the prefix-maximum rule are
+  // spelled once.
+  static void finalizeGeometryIndex(QVector<GeometryEntry> &p_entries);
+
+  // Drop @p_id from the indices, unless a bulk teardown has already invalidated
+  // them wholesale.
+  void forgetGeometryOrderEntry(quint64 p_id);
+
   QTextCursor makeAnchor(int p_startPos, int p_endPos) const;
 
   // Ask every live table sheet to write back what its debounce still owes,
@@ -408,6 +637,12 @@ private:
     Publish,
     GeometrySync,
     ScrollApply,
+
+    // Ranks below ScrollApply because it corrects the scrollbar against the
+    // range the publication and the geometry sync above have just produced.
+    // Running it any earlier would clamp against the old range.
+    RealizationCompensation,
+
     FoldRefresh,
 
     // The cursor move must observe a settled item set and geometry, so it
@@ -521,6 +756,10 @@ private:
   // already queued, so an unblock hook can re-arm exactly one delivery.
   bool m_reconcilePending = false;
 
+  // Whether the owed rebuild may need snapshots m_lastPreviews does not hold.
+  // See reconcileLater(bool).
+  bool m_reconcileMayWiden = false;
+
   // Whether a preview driven fold re-evaluation is owed.
   bool m_foldRefreshPending = false;
 
@@ -579,6 +818,63 @@ private:
 
   // Published through c_owedWorkDrainCountProperty.
   int m_owedWorkDrainCount = 0;
+
+  // The scrollbar correction owed by realizations that have happened but whose
+  // relayout has not been observed yet.
+  //
+  // Realizing an item above the viewport top replaces its estimated height
+  // with the real one, which moves everything below it - including the text
+  // the user is looking at - by the difference. Correcting inside the scroll
+  // pass would use pre-relayout rectangles and could re-enter valueChanged
+  // while the geometry guard is held, so the delta is accumulated here and
+  // applied by the owed-work drain once the new range exists.
+  //
+  // Accumulated, not overwritten: one pass can realize several items, and a
+  // second pass can run before the first correction has landed.
+  bool m_realizationCompensationPending = false;
+
+  qreal m_realizationCompensationDelta = 0;
+
+  // The scrollbar value the accumulated correction was computed against. The
+  // correction is only valid for that viewport position: if the bar has moved
+  // by the time it is applied, a newer scroll has superseded it and it is
+  // dropped rather than applied to a position nobody chose.
+  int m_realizationCompensationOrigin = 0;
+
+  // The performance counters published through the c_*Property names above.
+  // Mutable because findIdentity() is const and its fallback is precisely the
+  // thing being measured.
+  int m_previewsBound = 0;
+
+  int m_widgetsRealized = 0;
+
+  int m_widgetsDestroyed = 0;
+
+  int m_publishes = 0;
+
+  int m_geometrySetCalls = 0;
+
+  mutable int m_identityFallbackHits = 0;
+
+  int m_rebuildAlls = 0;
+
+  // Write every performance counter out to its dynamic property. Called at the
+  // end of each pass which can have moved one, so a benchmark reading them
+  // from a settled event loop always sees the whole window.
+  void publishCounters();
+
+  // The value of m_geometrySetCalls at the last publishCounters(), used by the
+  // placement pass to skip publishing on a tick that placed nothing.
+  //
+  // The placement pass runs per scroll tick and must not pay nine QVariant
+  // allocations and nine synchronous property-change dispatches for
+  // diagnostics that did not change. It cannot simply skip publishing either:
+  // pure scrolling owes no work, so no drain runs, and the counters would go
+  // stale for the whole gesture.
+  int m_publishedGeometrySetCalls = -1;
+
+  // Zero every counter, including the process-wide table cell counter.
+  void resetCounters();
 
   // Maximum number of times the host retries one postponed replacement on a
   // built-in sheet's behalf. The sheet's own debounce is the backstop after

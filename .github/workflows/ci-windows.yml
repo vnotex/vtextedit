@@ -66,8 +66,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "ctest -N failed with exit code $LASTEXITCODE" }
           $listing | ForEach-Object { Write-Host $_ }
           $total = $listing | Select-String '^Total Tests: (\d+)$'
-          if (-not $total -or [int]$total.Matches[0].Groups[1].Value -ne 14) {
-            throw "Expected exactly 14 registered tests"
+          if (-not $total -or [int]$total.Matches[0].Groups[1].Value -ne 15) {
+            throw "Expected exactly 15 registered tests"
           }
 
       # Ninja is single-config, so no -C Release. Uses the default `windows` QPA

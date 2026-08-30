@@ -265,6 +265,23 @@ void settle(VMarkdownEditor &p_editor) {
 }
 
 void setTextAndSettle(VMarkdownEditor &p_editor, const QString &p_text) {
+  // Shown, deliberately.
+  //
+  // Interactive previews are realized on VIEWPORT DEMAND: a hidden editor - a
+  // background tab, or one never shown - keeps its elements bound (they own
+  // their bands and still fold their source) but builds no widgets, because
+  // building hundreds of sheets nobody can see is the whole cost this design
+  // exists to avoid. Every test below that inspects a live preview widget
+  // therefore needs an editor with a real viewport.
+  //
+  // Guarded rather than unconditional so a test which sized and exposed the
+  // editor itself keeps the geometry it chose.
+  if (!p_editor.isVisible()) {
+    p_editor.resize(600, 400);
+    p_editor.show();
+    QTest::qWaitForWindowExposed(&p_editor);
+  }
+
   p_editor.setText(p_text);
   settle(p_editor);
 }
@@ -1493,13 +1510,23 @@ void TestInteractivePreview::testWidgetGeometryFollowsScrolling() {
   auto vbar = editor.getTextEdit()->verticalScrollBar();
   QVERIFY(vbar->maximum() > 0);
 
-  vbar->setValue(vbar->minimum());
-  QCoreApplication::processEvents();
-  const int topY = widget->y();
-
+  // Both sample points keep the preview ON SCREEN, deliberately.
+  //
+  // The placement pass only repositions the widgets inside the viewport plus
+  // one viewport height of margin; one parked far outside that interval is
+  // hidden and its stale viewport coordinates are not maintained, because
+  // maintaining them is exactly the O(N)-per-scroll-tick cost that was
+  // removed. What has to hold is that a VISIBLE widget tracks the scroll.
   vbar->setValue(vbar->maximum());
   QCoreApplication::processEvents();
-  QVERIFY(widget->y() < topY);
+  QVERIFY2(widget->isVisible(), "the preview is not on screen at the bottom of the document");
+  const int bottomY = widget->y();
+
+  vbar->setValue(qMax(vbar->minimum(), vbar->maximum() - 40));
+  QCoreApplication::processEvents();
+  QVERIFY2(widget->isVisible(), "the preview left the screen after a 40 px scroll");
+  // Scrolling up moves the content down, so the widget's viewport y grows.
+  QVERIFY2(widget->y() > bottomY, "the widget did not follow the scroll");
 
   // The document rect stays stable while only the viewport mapping moves.
   QVERIFY(!widget->previewContext()->assignedPreviewRect().isNull());
@@ -3592,6 +3619,14 @@ void TestInteractivePreview::testAutoFoldIsOptional() {
 void TestInteractivePreview::testCaretInsideKeepsTheSourceOpen() {
   VMarkdownEditor editor(makeAutoFoldConfig(true), QSharedPointer<TextEditorParameters>::create());
 
+  // Shown before the text, so the first parse generation already has a
+  // viewport to realize the preview into. See setTextAndSettle(): this test
+  // cannot use that helper because the caret has to be placed BEFORE the
+  // generation lands, so the setText/settle pair is spelled out here.
+  editor.resize(600, 400);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+
   // The caret is placed before the parse generation lands, so the very first
   // decision sees it inside the table.
   editor.setText(QLatin1String(c_table) + QStringLiteral("\ntail\n"));
@@ -4431,6 +4466,35 @@ void parkCaretOffScreenAtTop(VMarkdownEditor &p_editor) {
   vbar->setValue(vbar->minimum());
   QCoreApplication::processEvents();
 }
+
+// Scroll until the document's single preview has been realized, and return it.
+//
+// A preview whose reserved band is nowhere near the viewport is BOUND but not
+// REALIZED: it owns a band and folds its source, but no widget has been built
+// for it yet. That is the point of lazy realization, and it means a fixture
+// which parks a table 100 lines down has no widget to inspect until something
+// brings it on screen.
+//
+// The scan walks the bar rather than jumping to a computed offset because the
+// band's height is an estimate until the widget exists, so the offset that
+// would centre it is not knowable in advance.
+PreviewWidget *scrollUntilPreviewRealized(VMarkdownEditor &p_editor) {
+  auto vbar = p_editor.getTextEdit()->verticalScrollBar();
+  const int span = vbar->maximum() - vbar->minimum();
+  const int step = qMax(1, span / 40);
+
+  for (int value = vbar->minimum(); value <= vbar->maximum(); value += step) {
+    vbar->setValue(value);
+    QCoreApplication::processEvents();
+    QTest::qWait(20);
+    QCoreApplication::processEvents();
+    if (auto widget = singlePreviewWidget(p_editor)) {
+      return widget;
+    }
+  }
+
+  return nullptr;
+}
 } // namespace
 
 // The reported bug: an in-place edit rewrites the source, the highlighter
@@ -4881,7 +4945,10 @@ void TestInteractivePreview::testFocusingASheetResyncsAClampedScrollRestore() {
   QVERIFY(QTest::qWaitForWindowExposed(&editor));
   setTextAndSettle(editor, tableBetweenFiller());
 
-  auto widget = singlePreviewWidget(editor);
+  // The table is 100 lines down, so it is bound but not realized at scroll
+  // zero. Bring it on screen first; everything below is about what happens to
+  // the scroll position once a live sheet takes the focus.
+  auto widget = scrollUntilPreviewRealized(editor);
   QVERIFY(widget);
   auto sheet = sheetView(widget);
   QVERIFY(sheet);

@@ -24,6 +24,19 @@ namespace vte {
 class InputModeStatusWidget;
 class TablePreviewInputMode;
 
+// Total number of table sheet grid cells constructed by
+// TablePreviewDocument::build() since the last reset. Diagnostics only.
+//
+// Process wide, and deliberately so: the count originates deep inside the
+// document builder, which has no back pointer to the host that would publish
+// it, and threading one down purely for a counter would put a diagnostics
+// concern into the sheet's ownership graph. InteractivePreviewHost mirrors the
+// value into its c_tableCellsBuiltProperty, and the benchmark that reads it
+// drives a single editor at a time.
+quint64 tablePreviewCellsBuilt();
+
+void resetTablePreviewCellsBuilt();
+
 // Why a sheet is handing the caret back to the editor, and where the caret
 // should land when it gets there.
 //
@@ -1512,8 +1525,9 @@ private:
   bool m_committedMarkdownAligned = false;
 };
 
-class TablePreviewWidgetFactory : public PreviewWidgetFactory {
+class TablePreviewWidgetFactory : public PreviewWidgetFactory, public PreviewSizeEstimator {
   Q_OBJECT
+  Q_INTERFACES(vte::PreviewSizeEstimator)
 public:
   explicit TablePreviewWidgetFactory(QObject *p_parent = nullptr);
 
@@ -1522,6 +1536,22 @@ public:
   PreviewWidget *createWidget(PreviewWidgetContext *p_context,
                               const QSharedPointer<const Preview> &p_preview,
                               QWidget *p_parent) Q_DECL_OVERRIDE;
+
+  // How tall the sheet for @p_preview would be, computed from the grid shape
+  // and the font alone - no QTextDocument, no QTextTable, no cell matrix.
+  //
+  // This is what lets the host reserve a band for a table it has not built
+  // yet. It is intentionally an over- rather than an under-estimate where it
+  // has to guess, because a band that is slightly too tall shrinks when the
+  // real widget arrives, whereas one that is too short makes the following
+  // text jump DOWN, which is the more disorienting of the two.
+  //
+  // Returns an invalid QSizeF - i.e. "build me and measure properly" - for a
+  // preview whose shape it cannot read: a non-table snapshot, an empty grid,
+  // or a grid whose cell text is long enough that the wrap estimate below
+  // would be guesswork rather than an approximation.
+  QSizeF estimatedSize(const QSharedPointer<const Preview> &p_preview, qreal p_widthBasis,
+                       const QFont &p_font) const Q_DECL_OVERRIDE;
 
   // Mirror the editor's read-only state onto every live sheet.
   void setReadOnly(bool p_readOnly);

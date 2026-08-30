@@ -97,3 +97,8 @@ PreviewWidgetContext *PreviewWidget::previewContext() const { return m_d->m_cont
 PreviewWidgetFactory::PreviewWidgetFactory(QObject *p_parent) : QObject(p_parent) {}
 
 PreviewWidgetFactory::~PreviewWidgetFactory() {}
+
+// Out of line so the interface has a key function and its typeinfo is emitted
+// in exactly one translation unit, which is what makes the qobject_cast across
+// the library boundary work on every platform.
+PreviewSizeEstimator::~PreviewSizeEstimator() {}

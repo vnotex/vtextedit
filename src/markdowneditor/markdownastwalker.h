@@ -192,6 +192,17 @@ QVector<ImageLinkInfo> buildImageLinks(const QVector<ImageElement> &p_elements);
 // sliceTableCellHighlights() instead, and an HTML-only table gets no runs.
 QVector<HLUnit> highlightInlineSnippet(const QString &p_snippet);
 
+// Total number of full cmark parses highlightInlineSnippet() has performed
+// since the last reset. Diagnostics only, and process wide - a benchmark
+// drives one document at a time.
+//
+// This is the direct measure of the cost CellHighlightBudget bounds, and the
+// only way to see it from outside: the parses happen deep inside the walk and
+// leave no trace in its result. Not thread safe, and deliberately so: it is a
+// counter, not a synchronization primitive.
+quint64 inlineSnippetParseCount();
+
+void resetInlineSnippetParseCount();
 } // namespace md
 } // namespace vte
 

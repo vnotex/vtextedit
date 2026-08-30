@@ -159,6 +159,8 @@ private slots:
   void testCopyActionsStayEnabledOnAReadOnlySheet();
   void testCopyActionsPutThePayloadOnTheClipboard();
   void testTheFactoryPropagatesTheAlignOption();
+  void testEstimatedSizeTracksTheRealizedHeight();
+  void testEstimatedSizeDeclinesWhatTheSheetWouldRefuse();
   void testAlignedDocumentPathsAndHtmlAreUnaffected();
   void testTheMenuActionsMutateTheTable();
   void testAnAlignmentOnlyChangeIsCommitted();

@@ -887,4 +887,89 @@ void TestASTWalker::testHeadingElementsDivergence() {
   }
 }
 
+// Per-cell syntax highlighting parses each cell payload as its own cmark
+// document. The 300-cell ceiling is PER TABLE, so before the document-wide
+// budget a file of many medium tables paid that cost once per table with no
+// upper bound at all.
+//
+// The fixture is deliberately many small tables rather than one huge one: a
+// single 300x300 table trips the per-table guard first and would never reach a
+// document-wide budget, so it cannot test this.
+void TestASTWalker::testHtmlCellHighlightBudgetIsDocumentWide() {
+  // CellHighlightBudget::m_remaining.
+  const int budget = 5000;
+  const int cellsPerTable = 4;
+  const int tablesWithinBudget = budget / cellsPerTable;
+
+  // One table past the budget, so the boundary itself is covered.
+  const int tableCount = tablesWithinBudget + 1;
+
+  QByteArray md;
+  for (int i = 0; i < tableCount; ++i) {
+    md += "para\n\n";
+    md += "<table>\n";
+    md += "<tr><td><!--vte-md:**a**--><p><strong>a</strong></p></td>"
+          "<td><!--vte-md:**b**--><p><strong>b</strong></p></td></tr>\n";
+    md += "<tr><td><!--vte-md:**c**--><p><strong>c</strong></p></td>"
+          "<td><!--vte-md:**d**--><p><strong>d</strong></p></td></tr>\n";
+    md += "</table>\n\n";
+  }
+
+  const int numBlocks = md.count('\n') + 1;
+  auto result = vte::md::walkAndConvert(md, numBlocks);
+  QCOMPARE(result.tableElements.size(), tableCount);
+
+  int highlighted = 0;
+  int bare = 0;
+  for (const auto &table : result.tableElements) {
+    // Every table is captured and every cell is present either way: the budget
+    // only drops the syntax RUNS, never the content.
+    QCOMPARE(table.m_rows.size(), 2);
+    for (const auto &row : table.m_rows) {
+      QCOMPARE(row.m_cells.size(), 2);
+      for (const auto &runs : row.m_cellHighlights) {
+        if (runs.isEmpty()) {
+          ++bare;
+        } else {
+          ++highlighted;
+        }
+      }
+    }
+  }
+
+  // Exact counts either side of the boundary. A table is charged WHOLE, so the
+  // split lands on a table edge, never inside one.
+  QCOMPARE(highlighted, tablesWithinBudget * cellsPerTable);
+  QCOMPARE(bare, cellsPerTable);
+
+  // And a document comfortably inside the budget is completely unaffected.
+  QByteArray small = "para\n\n<table>\n<tr><td><!--vte-md:**a**--><p><strong>a</strong></p></td>"
+                     "</tr>\n</table>\n";
+  auto smallResult = vte::md::walkAndConvert(small, small.count('\n') + 1);
+  QCOMPARE(smallResult.tableElements.size(), 1);
+  QVERIFY(!smallResult.tableElements.first().m_rows.first().m_cellHighlights.first().isEmpty());
+
+  // A table which would never highlight in the first place must not consume
+  // the budget. An HTML-only table (no `<!--vte-md:-->` payload) has literal
+  // text cells and performs no snippet parse at all, so putting a run of them
+  // in front of an eligible table must not change that table's outcome.
+  //
+  // Without this the result would depend on where in the document the
+  // ineligible tables happened to sit, which is not a policy anyone could
+  // reason about.
+  QByteArray mixed;
+  for (int i = 0; i < tablesWithinBudget; ++i) {
+    mixed += "para\n\n<table>\n<tr><td>plain</td><td>plain</td></tr>\n"
+             "<tr><td>plain</td><td>plain</td></tr>\n</table>\n\n";
+  }
+  mixed += "para\n\n<table>\n<tr><td><!--vte-md:**z**--><p><strong>z</strong></p></td></tr>\n"
+           "</table>\n";
+
+  auto mixedResult = vte::md::walkAndConvert(mixed, mixed.count('\n') + 1);
+  QCOMPARE(mixedResult.tableElements.size(), tablesWithinBudget + 1);
+  const auto &trailing = mixedResult.tableElements.last();
+  QVERIFY2(!trailing.m_rows.first().m_cellHighlights.first().isEmpty(),
+           "HTML-only tables consumed the per-cell highlighting budget");
+}
+
 QTEST_MAIN(tests::TestASTWalker)

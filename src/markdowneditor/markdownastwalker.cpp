@@ -11,6 +11,8 @@
 #include <QDebug>
 #endif
 
+#include <QLoggingCategory>
+
 #include <cmark.h>
 #include <node.h>
 
@@ -661,12 +663,66 @@ static bool isTopLevelWholeBlock(const QString &p_text, const LineOffsetTable &p
   return true;
 }
 
+// How many full cmark parses per-cell table highlighting has performed. See
+// inlineSnippetParseCount(); diagnostics only, and the direct measure of what
+// CellHighlightBudget bounds.
+static quint64 s_inlineSnippetParses = 0;
+
+// Defined here rather than in previewlogging.h: this translation unit is also
+// compiled DIRECTLY into the parser-only test targets (test_benchmark,
+// test_markdownparser), which do not link previewlogging.cpp, so a category
+// declared there would not resolve.
+Q_LOGGING_CATEGORY(astWalkerLog, "vte.markdown.astwalker")
+
+// How many HTML table cells one walk of the whole document may still syntax
+// highlight.
+//
+// Highlighting a cell parses its payload as its own cmark document. There is a
+// per-table ceiling of 300 cells, but nothing bounded the number of TABLES, so
+// a document of many medium tables could drive tens of thousands of full cmark
+// parses on every keystroke's parse generation.
+//
+// Past the budget the cells are still captured and the table still renders -
+// only the per-cell syntax colouring is dropped. That is a visible but small
+// degradation, and it is confined to documents which are already far outside
+// what the interactive sheet was designed for.
+//
+// Owned by the OUTER walk and passed by reference. highlightInlineSnippet()
+// recursively calls walkAndConvert(), so a counter created inside
+// walkAndConvert() would be reset once per cell and would bound nothing.
+struct CellHighlightBudget {
+  // Deliberately generous: it is a runaway guard, not a policy. 5 000 cells is
+  // roughly 16 full 300-cell tables, well past any hand-authored document.
+  qint64 m_remaining = 5000;
+
+  bool m_exhaustedReported = false;
+
+  // Charge @p_cells against the budget. Returns whether they fit; an
+  // overshooting table is refused WHOLE rather than half highlighted, so the
+  // result never depends on the order the cells happen to be visited in.
+  bool take(qint64 p_cells) {
+    if (p_cells > m_remaining) {
+      if (!m_exhaustedReported) {
+        m_exhaustedReported = true;
+        qCDebug(astWalkerLog)
+            << "per-cell table highlighting budget exhausted; the remaining tables render "
+               "without cell syntax colouring";
+      }
+      return false;
+    }
+
+    m_remaining -= p_cells;
+    return true;
+  }
+};
+
 // Capture a canonical top-level `<table>` HTML block as a TableElement, so the
 // interactive table preview binds to it exactly as it does to a pipe table.
 static void extractHtmlTables(const QString &p_slice, int p_sliceStart, const QString &p_text,
                               const LineOffsetTable &p_offsets, ASTWalkResult &p_result,
                               int p_offset, int p_startBlock, bool p_isBlock, int p_blockStart,
-                              int p_blockEnd, RawTextState &p_rawText) {
+                              int p_blockEnd, RawTextState &p_rawText,
+                              CellHighlightBudget &p_budget) {
   const auto tables = scanHtmlTables(p_slice, p_sliceStart, &p_rawText);
   if (!p_isBlock) {
     // HTML_INLINE never yields a table (D-a). The scan still ran, purely so its
@@ -702,10 +758,28 @@ static void extractHtmlTables(const QString &p_slice, int p_sliceStart, const QS
     // never gets a widget, so the runs would be paid for on every parse and
     // then thrown away.
     const int c_maxPreviewCells = 300;
-    const bool highlightCells =
-        table.m_markdownBacked &&
-        static_cast<qint64>(html.m_rowCount) * static_cast<qint64>(html.m_columnCount) <=
-            static_cast<qint64>(c_maxPreviewCells);
+    const qint64 tableCells =
+        static_cast<qint64>(html.m_rowCount) * static_cast<qint64>(html.m_columnCount);
+
+    // Whether this table would perform per-cell snippet parses AT ALL. An
+    // HTML-only table never does (its cells are literal text), and a table
+    // past the per-table ceiling never does either.
+    const bool wouldHighlight =
+        table.m_markdownBacked && tableCells <= static_cast<qint64>(c_maxPreviewCells);
+
+    // The per-table limit above is not a document-wide one: a file holding 300
+    // tables of 200 cells each passes it 300 times over and pays 60 000 cmark
+    // parses on EVERY full parse. So the budget is charged here as well, and it
+    // is owned by the outer walk - a counter local to this function, or to
+    // walkAndConvert(), would be reset by the nested walk that
+    // highlightInlineSnippet() itself performs per cell.
+    //
+    // Charged ONLY for a table that would otherwise parse. Charging one that
+    // would not would let a run of HTML-only or oversized tables exhaust the
+    // budget without having cost anything, and starve the eligible tables
+    // after them - making the result depend on where in the document the
+    // ineligible tables happen to sit.
+    const bool highlightCells = wouldHighlight && p_budget.take(tableCells);
 
     table.m_alignments.reserve(html.m_columnCount);
     for (const auto &align : html.m_alignments) {
@@ -789,7 +863,8 @@ static void extractHtmlTables(const QString &p_slice, int p_sliceStart, const QS
 // jumping over a table it captured. The assert is the guard on that invariant.
 static void extractHtmlNode(cmark_node *p_node, const QString &p_text, const QByteArray &p_utf8Text,
                             const LineOffsetTable &p_offsets, ASTWalkResult &p_result, int p_offset,
-                            int p_startBlock, RawTextState &p_rawText) {
+                            int p_startBlock, RawTextState &p_rawText,
+                            CellHighlightBudget &p_budget) {
   const bool isBlock = cmark_node_get_type(p_node) == CMARK_NODE_HTML_BLOCK;
 
   int regionStart = -1;
@@ -820,7 +895,7 @@ static void extractHtmlNode(cmark_node *p_node, const QString &p_text, const QBy
                     resolved ? p_result : discarded, p_offset, imageState);
   extractHtmlTables(slice, sliceStart, p_text, p_offsets, resolved ? p_result : discarded, p_offset,
                     p_startBlock, resolved && isBlock && isDocumentChild(p_node), regionStart,
-                    regionEnd, tableState);
+                    regionEnd, tableState, p_budget);
 
   Q_ASSERT(imageState.m_element == tableState.m_element);
   p_rawText = imageState;
@@ -986,6 +1061,11 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
   // Per-WALK raw-text context; see extractHtmlImages().
   RawTextState rawText;
 
+  // Per-WALK per-cell highlighting budget. Passed by reference into every
+  // extractHtmlNode() below so it spans the whole document; the nested walk
+  // highlightInlineSnippet() performs gets its own and never touches this one.
+  CellHighlightBudget cellBudget;
+
   cmark_iter *iter = cmark_iter_new(doc);
   cmark_event_type ev;
 
@@ -1014,7 +1094,8 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
     // Runs BEFORE the span/style guards below: the raw-text state must advance
     // for every HTML node, including one this walk cannot place.
     if (!p_fast && (type == CMARK_NODE_HTML_INLINE || type == CMARK_NODE_HTML_BLOCK)) {
-      extractHtmlNode(node, text, p_utf8Text, offsets, result, p_offset, p_startBlock, rawText);
+      extractHtmlNode(node, text, p_utf8Text, offsets, result, p_offset, p_startBlock, rawText,
+                      cellBudget);
     }
 
     int style = mapCmarkNodeToStyle(type, node);
@@ -1159,6 +1240,8 @@ QVector<ImageLinkInfo> buildImageLinks(const QVector<ImageElement> &p_elements) 
 }
 
 QVector<HLUnit> highlightInlineSnippet(const QString &p_snippet) {
+  ++s_inlineSnippetParses;
+
   if (p_snippet.isEmpty()) {
     return QVector<HLUnit>();
   }
@@ -1167,6 +1250,10 @@ QVector<HLUnit> highlightInlineSnippet(const QString &p_snippet) {
   // element-extraction path entirely.
   return walkAndConvert(p_snippet.toUtf8(), 1, 0, 0, true).blocksHighlights.value(0);
 }
+
+quint64 inlineSnippetParseCount() { return s_inlineSnippetParses; }
+
+void resetInlineSnippetParseCount() { s_inlineSnippetParses = 0; }
 
 } // namespace md
 } // namespace vte

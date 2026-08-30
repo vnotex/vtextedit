@@ -26,6 +26,7 @@ private slots:
   void testTableCellHighlightsInListAndRaggedRow();
   void testHeadingElements();
   void testHeadingElementsDivergence();
+  void testHtmlCellHighlightBudgetIsDocumentWide();
 };
 
 } // namespace tests

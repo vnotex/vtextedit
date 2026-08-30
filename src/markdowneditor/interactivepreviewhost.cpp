@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <limits>
 
 #include <QApplication>
 #include <QEvent>
@@ -66,6 +67,27 @@ const char *InteractivePreviewHost::c_reconcileDeliveryCountProperty =
 const char *InteractivePreviewHost::c_foldRefreshCountProperty = "vte_preview_fold_refreshes";
 
 const char *InteractivePreviewHost::c_owedWorkDrainCountProperty = "vte_preview_owed_work_drains";
+
+const char *InteractivePreviewHost::c_previewsBoundProperty = "vte_preview_previews_bound";
+
+const char *InteractivePreviewHost::c_widgetsRealizedProperty = "vte_preview_widgets_realized";
+
+const char *InteractivePreviewHost::c_widgetsDestroyedProperty = "vte_preview_widgets_destroyed";
+
+const char *InteractivePreviewHost::c_publishesProperty = "vte_preview_publishes";
+
+const char *InteractivePreviewHost::c_geometrySetCallsProperty = "vte_preview_geometry_set_calls";
+
+const char *InteractivePreviewHost::c_identityFallbackHitsProperty =
+    "vte_preview_identity_fallback_hits";
+
+const char *InteractivePreviewHost::c_rebuildAllsProperty = "vte_preview_rebuild_alls";
+
+const char *InteractivePreviewHost::c_tableCellsBuiltProperty = "vte_preview_table_cells_built";
+
+const char *InteractivePreviewHost::c_snippetParsesProperty = "vte_preview_snippet_parses";
+
+const char *InteractivePreviewHost::c_countersResetProperty = "vte_preview_counters_reset";
 
 const int InteractivePreviewHost::c_replacementRetryBudget = 8;
 
@@ -137,6 +159,11 @@ InteractivePreviewHost::InteractivePreviewHost(VMarkdownEditor *p_editor)
     connect(m_textEdit, &VTextEdit::resized, this, &InteractivePreviewHost::schedulePublish);
     // Read-only is not observable through any signal, so watch the event.
     m_textEdit->installEventFilter(this);
+    // The viewport's Show is the demand edge that realizes the previews of an
+    // editor which was hidden - a background tab, or one never shown yet.
+    if (auto *vp = m_textEdit->viewport()) {
+      vp->installEventFilter(this);
+    }
     // Scrolling only shifts the viewport mapping, so it takes the cheap path.
     if (auto vbar = m_textEdit->verticalScrollBar()) {
       connect(vbar, &QScrollBar::valueChanged, this, &InteractivePreviewHost::applyScrollOffset);
@@ -242,7 +269,12 @@ bool InteractivePreviewHost::registerFactory(PreviewWidgetFactory *p_factory, in
                           << "factory(ies)";
 
   publishEnabledTypeMask();
-  reconcileLater();
+  // A new factory may claim a type nothing claimed before, whose snapshots the
+  // last publication therefore never built. It may also outrank an incumbent
+  // for every type it advertises, which is a rebuild of all of them - but that
+  // half is served by the replay; only the newly claimable types need the
+  // highlighter.
+  reconcileLater(true);
   return true;
 }
 
@@ -265,7 +297,10 @@ bool InteractivePreviewHost::unregisterFactory(PreviewWidgetFactory *p_factory) 
                             << "- now" << m_factories.size() << "factory(ies)";
 
     publishEnabledTypeMask();
-    reconcileLater();
+    // Unregistering can only ever remove a claim, never add one. Whatever
+    // types the remaining factories still claim were already claimable, so
+    // m_lastPreviews holds their snapshots and the replay is sufficient.
+    reconcileLater(false);
     return true;
   }
 
@@ -383,7 +418,9 @@ void InteractivePreviewHost::setEnabled(bool p_enabled) {
 
   m_enabled = p_enabled;
   publishEnabledTypeMask();
-  reconcileLater();
+  // Enabling widens the mask the highlighter builds for; disabling only ever
+  // removes items, which the replay of m_lastPreviews does on its own.
+  reconcileLater(p_enabled);
 }
 
 void InteractivePreviewHost::setTypeEnabled(PreviewElementType p_type, bool p_enabled) {
@@ -394,7 +431,7 @@ void InteractivePreviewHost::setTypeEnabled(PreviewElementType p_type, bool p_en
 
   m_typeEnabled[idx] = p_enabled;
   publishEnabledTypeMask();
-  reconcileLater();
+  reconcileLater(p_enabled);
 }
 
 bool InteractivePreviewHost::isTypeEnabled(PreviewElementType p_type) const {
@@ -441,6 +478,17 @@ void InteractivePreviewHost::rebuildAll() {
     return;
   }
 
+  // A rebuild which actually starts. A postponed one deliberately does not
+  // count: the counter measures teardown/rebuild work performed, and the
+  // re-armed delivery counts itself.
+  ++m_rebuildAlls;
+
+  // Consumed here, so a reason raised DURING this rebuild (a factory
+  // registering from inside a callback) is owed to the next one rather than
+  // being swallowed by this one.
+  const bool mayWiden = m_reconcileMayWiden;
+  m_reconcileMayWiden = false;
+
   // A sheet with a pending write-back applies a document edit when it is
   // flushed, and insertText() over the anchored range collapses that anchor -
   // including the copy carried below, because a QTextCursor copy shares one
@@ -481,17 +529,32 @@ void InteractivePreviewHost::rebuildAll() {
   updatePreviews(m_revision, m_lastPreviews);
   m_carriedItems.clear();
 
-  // The enabled type mask may have grown, in which case the replayed
-  // generation has no snapshots for the newly enabled types. Ask the
-  // highlighter to republish; it re-emits synchronously when its result is
-  // already current.
+  // The enabled type mask may have GROWN, in which case the replayed
+  // generation has no snapshots for the newly enabled types and only the
+  // highlighter can produce them. It re-emits synchronously when its result is
+  // already current, so this is not free: on a document with hundreds of
+  // previews it is a full snapshot rebuild and republication.
+  //
+  // A NARROWING change - a type disabled, a factory unregistered - needs none
+  // of that. m_lastPreviews still holds every snapshot those items were built
+  // from, the replay above has already applied the new mask while filtering
+  // candidates, and the items of the removed type are simply gone.
+  if (!mayWiden) {
+    qCDebug(previewHostLog) << "rebuild replayed" << m_lastPreviews.size()
+                            << "cached snapshot(s); no reparse - the mask only narrowed";
+    return;
+  }
+
   if (auto highlighter = m_editor ? m_editor->getHighlighter() : nullptr) {
     highlighter->updateHighlight();
   }
 }
 
-void InteractivePreviewHost::reconcileLater() {
+void InteractivePreviewHost::reconcileLater(bool p_mayWiden) {
   m_reconcilePending = true;
+  // OR, never assignment: a narrowing reason must not cancel a widening one
+  // that is already owed and has not been delivered yet.
+  m_reconcileMayWiden = m_reconcileMayWiden || p_mayWiden;
   scheduleOwedWork();
 }
 
@@ -509,7 +572,7 @@ void InteractivePreviewHost::scheduleOwedWork() {
 
   if (!m_replacementRetryPending && !m_hasDeferredGeneration && !m_reconcilePending &&
       !m_publishPending && !m_geometrySyncPending && !m_scrollApplyPending &&
-      !m_foldRefreshPending && !m_cursorLineSyncPending) {
+      !m_realizationCompensationPending && !m_foldRefreshPending && !m_cursorLineSyncPending) {
     return;
   }
 
@@ -548,6 +611,12 @@ void InteractivePreviewHost::drainOwedWork() {
     runOwedWorkSteps();
   }
 
+  // Every settled point publishes the counters, not just publish() and the
+  // placement pass. Realization happens in the drain and would otherwise not
+  // reach the properties until the next publication, so an observer reading
+  // them from a settled event loop would see a stale window.
+  publishCounters();
+
   // Whatever a step re-owed, or declined because a pass was running, gets its
   // own delivery - one, not one per owed item.
   scheduleOwedWork();
@@ -580,6 +649,10 @@ InteractivePreviewHost::OwedWork InteractivePreviewHost::highestOwedWork() const
 
   if (m_scrollApplyPending) {
     return OwedWork::ScrollApply;
+  }
+
+  if (m_realizationCompensationPending) {
+    return OwedWork::RealizationCompensation;
   }
 
   if (m_foldRefreshPending && !m_reconciling) {
@@ -661,6 +734,14 @@ void InteractivePreviewHost::runOwedWorkSteps() {
 
   if (m_scrollApplyPending) {
     applyScrollOffset();
+  }
+
+  if (stopOwedWorkBefore(OwedWork::RealizationCompensation)) {
+    return;
+  }
+
+  if (m_realizationCompensationPending) {
+    applyRealizationScrollCompensation();
   }
 
   if (stopOwedWorkBefore(OwedWork::FoldRefresh)) {
@@ -768,7 +849,11 @@ QVector<PreviewedRange> InteractivePreviewHost::previewedRanges() const {
   ranges.reserve(m_items.size());
   for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it) {
     const auto &item = it.value();
-    if (!item.m_widget || !item.m_preview) {
+    // A valid snapshot and a live anchor, NOT a widget. Folding is driven from
+    // these ranges (VMarkdownEditor::applyPreviewFolding), so requiring a
+    // widget would silently stop every unrealized table from auto-folding its
+    // source - and an unrealized table is the common case in a large file.
+    if (!item.m_preview) {
       continue;
     }
 
@@ -952,6 +1037,11 @@ quint64 InteractivePreviewHost::findIdentity(const QSharedPointer<const Preview>
       return id;
     }
   }
+
+  // Counted before the scan, not on a successful match: the cost being
+  // measured is the O(N) walk itself, which is paid whether or not it finds
+  // anything.
+  ++m_identityFallbackHits;
 
   quint64 best = 0;
   int bestOverlap = 0;
@@ -1167,6 +1257,45 @@ void InteractivePreviewHost::createItem(const QSharedPointer<const Preview> &p_p
   connect(context, &PreviewWidgetContext::sourceReplacementRequested, this,
           &InteractivePreviewHost::handleSourceReplacementRequested);
 
+  ActiveItem item;
+  item.m_id = id;
+  item.m_preview = bound;
+  item.m_generationPreview = p_preview;
+  item.m_context = context;
+  item.m_anchor = anchor;
+  item.m_foldState = foldState;
+
+  // Try to bind WITHOUT building anything. The estimate is what reserves the
+  // band, and it is the whole point of the lazy path: a document with hundreds
+  // of tables would otherwise construct hundreds of QTextDocuments and
+  // QTextTables before the first paint, almost all of them off screen.
+  item.m_factory = estimatingFactoryFor(bound->type());
+  // The same basis rule publish() will apply, so a freshly bound item is not
+  // re-estimated on the very next publication.
+  const qreal widthBasis = m_layout ? widthBasisFor(item, m_layout->availableContentWidth()) : -1;
+  const QSizeF estimate = estimatedSize(item, widthBasis);
+  if (estimate.isValid()) {
+    // The anchor and the context were resolved before this point, so the
+    // guarded estimator callback above cannot have stranded either.
+    item.m_measuredSize = estimate;
+    item.m_measuredWidthBasis = widthBasis;
+    item.m_measureDirty = false;
+    item.m_sizeIsEstimate = true;
+    m_items.insert(id, item);
+
+    ++m_previewsBound;
+
+    qCDebug(previewHostLog) << "bound item" << id << previewTypeName(bound->type()) << "at ["
+                            << item.m_anchor.selectionStart() << "," << item.m_anchor.selectionEnd()
+                            << ") without a widget, estimate" << estimate
+                            << (carriedBinding
+                                    ? "(rebuilt, carried the rebased source)"
+                                    : (carriedAnchor ? "(rebuilt, carried the live anchor)" : ""));
+    return;
+  }
+
+  // No estimate: this factory wants to be measured properly, so fall back to
+  // the eager path this host has always taken.
   PreviewWidgetFactory *usedFactory = nullptr;
   PreviewWidget *widget = createWidgetFor(bound, context, &usedFactory);
   if (!widget) {
@@ -1184,16 +1313,12 @@ void InteractivePreviewHost::createItem(const QSharedPointer<const Preview> &p_p
   widget->hide();
   widget->installEventFilter(this);
 
-  ActiveItem item;
-  item.m_id = id;
-  item.m_preview = bound;
-  item.m_generationPreview = p_preview;
-  item.m_context = context;
   item.m_widget = widget;
   item.m_factory = usedFactory;
-  item.m_anchor = anchor;
-  item.m_foldState = foldState;
   m_items.insert(id, item);
+
+  ++m_previewsBound;
+  ++m_widgetsRealized;
 
   qCDebug(previewHostLog) << "created item" << id << previewTypeName(bound->type()) << "at ["
                           << item.m_anchor.selectionStart() << "," << item.m_anchor.selectionEnd()
@@ -1250,6 +1375,21 @@ void InteractivePreviewHost::updateItem(quint64 p_id,
     item.m_context->setPreview(bound);
   }
 
+  // An UNREALIZED item has no widget to hand the snapshot to. Rebinding it is
+  // just the three assignments above plus a re-estimate, which publish()
+  // performs from m_measureDirty. Realizing it here to deliver a setPreview()
+  // nobody is looking at would defeat the whole lazy path - and it is safe
+  // precisely because an unrealized widget cannot hold an edit, a pending
+  // commit or a deferred replacement.
+  if (!item.m_widget) {
+    item.m_measureDirty = true;
+    ++m_previewsBound;
+    qCDebug(previewHostLog) << "rebound unrealized item" << p_id << previewTypeName(bound->type())
+                            << "at [" << item.m_anchor.selectionStart() << ","
+                            << item.m_anchor.selectionEnd() << ")";
+    return;
+  }
+
   // Update in place to preserve focus and editing state. The widget may
   // destroy itself or its factory from inside the callback, so re-validate
   // everything afterwards.
@@ -1272,6 +1412,7 @@ void InteractivePreviewHost::updateItem(quint64 p_id,
     auto &live = it.value();
     // The bound snapshot changed, so the cached measurement is stale.
     live.m_measureDirty = true;
+    ++m_previewsBound;
     qCDebug(previewHostLog) << "updated item" << p_id << previewTypeName(bound->type())
                             << "in place at [" << live.m_anchor.selectionStart() << ","
                             << live.m_anchor.selectionEnd() << ")"
@@ -1370,11 +1511,19 @@ void InteractivePreviewHost::removeItem(quint64 p_id, bool p_synchronous) {
     publishInputModeStatusWidget(0);
   }
 
+  // Drop it from the placement bookkeeping. A stale entry would be tolerated -
+  // both consumers re-resolve through m_items and skip what is gone - but
+  // leaving one behind would let the indices grow without bound across a
+  // document's worth of edits.
+  forgetGeometryOrderEntry(p_id);
+
   qCDebug(previewHostLog) << "removing item" << p_id
                           << (item.m_preview ? previewTypeName(item.m_preview->type()) : "?")
                           << (p_synchronous ? "(synchronously)" : "(deferred)");
 
   if (item.m_widget) {
+    ++m_widgetsDestroyed;
+
     // Move focus back to the editor before destroying a focused widget.
     //
     // ownedFocus is checked as well as the widget subtree, because a sheet's
@@ -1439,6 +1588,15 @@ void InteractivePreviewHost::flushPendingDeletions() {
 }
 
 void InteractivePreviewHost::removeAllItems(bool p_synchronous) {
+  // Invalidate the band-ordered indices wholesale BEFORE the loop, so each
+  // removal skips its per-item scan. Erasing from an N-element vector once per
+  // item makes a full teardown quadratic, and every widening reconcile runs
+  // one. The next geometry sync rebuilds both indices from scratch anyway.
+  m_geometryOrder.clear();
+  m_realizationOrder.clear();
+  m_placedIds.clear();
+  m_geometryOrderDirty = true;
+
   const auto ids = m_items.keys();
   for (quint64 id : ids) {
     removeItem(id, p_synchronous);
@@ -1842,6 +2000,207 @@ QSizeF InteractivePreviewHost::preferredSize(PreviewWidget *p_widget, PreviewPla
   return QSizeF(width, qMax<qreal>(0, height));
 }
 
+qreal InteractivePreviewHost::widthBasisFor(const ActiveItem &p_item,
+                                            qreal p_availableWidth) const {
+  if (!p_item.m_preview || p_item.m_preview->placement() != PreviewPlacement::InlineAboveLine) {
+    return p_availableWidth;
+  }
+
+  // An inline preview is bound to the text span it replaces, so its room is
+  // that span - clamped to the content width, which is the hard limit.
+  const int start = p_item.m_anchor.selectionStart();
+  const int end = p_item.m_anchor.selectionEnd();
+  const qreal spanWidth = m_layout->inlinePlacementWidth(start, end);
+  if (spanWidth <= 0) {
+    return p_availableWidth;
+  }
+
+  return p_availableWidth > 0 ? qMin(spanWidth, p_availableWidth) : spanWidth;
+}
+
+PreviewWidgetFactory *InteractivePreviewHost::estimatingFactoryFor(PreviewElementType p_type) {
+  // Same guarded snapshot walk as isTypeClaimable(): supportedTypes() is
+  // application code and may unregister a factory - itself or a sibling - from
+  // inside the call, which mutates m_factories.
+  const auto factories = orderedFactories();
+  for (const auto &entry : factories) {
+    QPointer<PreviewWidgetFactory> factory = entry.m_factory;
+    if (factory.isNull() || !isFactoryActive(factory.data())) {
+      continue;
+    }
+
+    QVector<PreviewElementType> supported;
+    {
+      BlockGuard guard(this, BlockGuard::Reason::FactoryCallback);
+      supported = factory->supportedTypes();
+    }
+
+    if (factory.isNull() || !isFactoryActive(factory.data())) {
+      continue;
+    }
+
+    if (supported.contains(p_type)) {
+      return factory.data();
+    }
+  }
+
+  return nullptr;
+}
+
+QSizeF InteractivePreviewHost::estimatedSize(const ActiveItem &p_item, qreal p_widthBasis) {
+  if (!p_item.m_preview) {
+    return QSizeF();
+  }
+
+  // The factory remembered on the item wins: it is the one that claimed this
+  // element, and asking the chain again on every publication would put a
+  // guarded callback walk on the hot path.
+  QPointer<PreviewWidgetFactory> factory = p_item.m_factory;
+  if (factory.isNull() || !isFactoryActive(factory.data())) {
+    factory = estimatingFactoryFor(p_item.m_preview->type());
+  }
+
+  if (factory.isNull()) {
+    return QSizeF();
+  }
+
+  auto estimator = qobject_cast<PreviewSizeEstimator *>(factory.data());
+  if (!estimator) {
+    // The factory predates the estimator interface, or declines to implement
+    // it. That is the supported way to keep today's eager behaviour.
+    return QSizeF();
+  }
+
+  QSizeF size;
+  {
+    // estimatedSize() is application code like any other factory callback.
+    BlockGuard guard(this, BlockGuard::Reason::FactoryCallback);
+    size = estimator->estimatedSize(p_item.m_preview, p_widthBasis, editorFont());
+  }
+
+  if (factory.isNull() || !isFactoryActive(factory.data())) {
+    // The callback tore its own factory down. The estimate it produced
+    // describes a renderer which no longer exists.
+    return QSizeF();
+  }
+
+  if (!size.isValid() || size.height() <= 0) {
+    return QSizeF();
+  }
+
+  return size;
+}
+
+InteractivePreviewHost::RealizeOutcome InteractivePreviewHost::realizeItem(quint64 p_id) {
+  auto it = m_items.find(p_id);
+  if (it == m_items.end()) {
+    // Gone. A scroll pass collects candidate ids and they can go stale between
+    // collection and use, so this is not an error - but the item set did
+    // change, and the caller has to observe that.
+    return RealizeOutcome::Removed;
+  }
+
+  if (it.value().m_widget) {
+    // Already realized by an earlier candidate's callbacks.
+    return RealizeOutcome::Realized;
+  }
+
+  auto *vp = viewport();
+  if (!vp) {
+    return RealizeOutcome::StillBound;
+  }
+
+  const auto preview = it.value().m_preview;
+  auto context = it.value().m_context;
+  if (!preview || context.isNull()) {
+    return RealizeOutcome::StillBound;
+  }
+
+  const QSizeF estimate = it.value().m_measuredSize;
+
+  // Everything below can re-enter the host: createWidgetFor() delivers four
+  // separate application callbacks, any of which may unregister a factory,
+  // destroy the widget under construction, or tear this very item down.
+  PreviewWidgetFactory *usedFactory = nullptr;
+  PreviewWidget *widget = createWidgetFor(preview, context.data(), &usedFactory);
+
+  // Re-resolve by id: identities are allocated monotonically and never reused,
+  // so this is exact even if the item was destroyed and another created.
+  it = m_items.find(p_id);
+  if (it == m_items.end()) {
+    // A callback removed the item. The context is owned by the removal path,
+    // but the widget it just built is not reachable from anywhere.
+    delete widget;
+    qCDebug(previewHostLog) << "item" << p_id << "was torn down while it was being realized";
+    return RealizeOutcome::Removed;
+  }
+
+  if (!widget) {
+    // The whole factory chain declined. This is the SAME event as a decline at
+    // bind time, and it has to have the same outcome: the element goes back to
+    // the painted fallback.
+    //
+    // Keeping it bound would be worse than useless - it would hold a claim,
+    // which suppresses the painted rendering, and a reserved band no widget
+    // will ever fill, and every scroll into it would retry the decline. So the
+    // item is removed, exactly as createItem() would have left it had the
+    // estimator not offered a size.
+    qCDebug(previewHostLog) << "no factory claimed" << previewTypeName(preview->type())
+                            << "on realization - dropping item" << p_id
+                            << "back to the painted path";
+    removeItem(p_id);
+    return RealizeOutcome::Removed;
+  }
+
+  if (context.isNull()) {
+    // A callback destroyed the context the widget was built against.
+    delete widget;
+    return RealizeOutcome::StillBound;
+  }
+
+  // setParent(), setFont(), hide() and installEventFilter() all deliver
+  // synchronous events to application code, which may destroy the widget, its
+  // factory, or this item. Guarded and re-validated exactly like every other
+  // callback into a renderer, and the item is deliberately NOT resolved into a
+  // reference until afterwards: a nested event loop opened by one of these can
+  // deliver a parse generation which rehashes m_items.
+  QPointer<PreviewWidget> guarded(widget);
+  {
+    BlockGuard guard(this, BlockGuard::Reason::FactoryCallback);
+    widget->setParent(vp);
+    // Measure and paint with the same font. See applyEditorFont().
+    widget->setFont(editorFont());
+    widget->hide();
+    widget->installEventFilter(this);
+  }
+
+  if (guarded.isNull()) {
+    qCDebug(previewHostLog) << "the widget built for item" << p_id
+                            << "destroyed itself while being parented";
+    return RealizeOutcome::StillBound;
+  }
+
+  it = m_items.find(p_id);
+  if (it == m_items.end()) {
+    delete guarded.data();
+    qCDebug(previewHostLog) << "item" << p_id << "was torn down while it was being parented";
+    return RealizeOutcome::Removed;
+  }
+
+  auto &item = it.value();
+  item.m_widget = guarded.data();
+  item.m_factory = usedFactory;
+  // The estimate has served its purpose; from here the real widget answers.
+  item.m_measureDirty = true;
+  item.m_sizeIsEstimate = false;
+
+  ++m_widgetsRealized;
+
+  qCDebug(previewHostLog) << "realized item" << p_id << previewTypeName(preview->type()) << "widget"
+                          << guarded->metaObject()->className() << "estimate was" << estimate;
+  return RealizeOutcome::Realized;
+}
+
 void InteractivePreviewHost::applyReadOnly() {
   if (!m_tableFactory) {
     return;
@@ -2049,7 +2408,22 @@ void InteractivePreviewHost::applyEditorFont() {
   const QFont font = editorFont();
   for (auto it = m_items.begin(); it != m_items.end(); ++it) {
     auto &item = it.value();
-    if (item.m_widget.isNull() || item.m_widget->font() == font) {
+
+    // An UNREALIZED item has no widget to push the font onto, but its band is
+    // an ESTIMATE computed from that font, so it is just as stale as a real
+    // measurement would be. Skipping it here - which is what a plain
+    // "no widget, nothing to do" would do - leaves a reservation sized for the
+    // old font distorting the document height, the scrollbar range and the
+    // viewport-demand decisions made from them, until something else happens
+    // to realize it.
+    if (item.m_widget.isNull()) {
+      if (item.m_sizeIsEstimate) {
+        item.m_measureDirty = true;
+      }
+      continue;
+    }
+
+    if (item.m_widget->font() == font) {
       continue;
     }
 
@@ -2061,9 +2435,70 @@ void InteractivePreviewHost::applyEditorFont() {
   }
 }
 
+void InteractivePreviewHost::publishCounters() {
+  setProperty(c_previewsBoundProperty, m_previewsBound);
+  setProperty(c_widgetsRealizedProperty, m_widgetsRealized);
+  setProperty(c_widgetsDestroyedProperty, m_widgetsDestroyed);
+  setProperty(c_publishesProperty, m_publishes);
+  setProperty(c_geometrySetCallsProperty, m_geometrySetCalls);
+  setProperty(c_identityFallbackHitsProperty, m_identityFallbackHits);
+  setProperty(c_rebuildAllsProperty, m_rebuildAlls);
+  setProperty(c_tableCellsBuiltProperty, static_cast<qulonglong>(tablePreviewCellsBuilt()));
+  setProperty(c_snippetParsesProperty, static_cast<qulonglong>(md::inlineSnippetParseCount()));
+  m_publishedGeometrySetCalls = m_geometrySetCalls;
+}
+
+void InteractivePreviewHost::resetCounters() {
+  m_previewsBound = 0;
+  m_widgetsRealized = 0;
+  m_widgetsDestroyed = 0;
+  m_publishes = 0;
+  m_geometrySetCalls = 0;
+  m_identityFallbackHits = 0;
+  m_rebuildAlls = 0;
+  resetTablePreviewCellsBuilt();
+  md::resetInlineSnippetParseCount();
+  // Forces the next publication through: the skip guard compares against this.
+  m_publishedGeometrySetCalls = -1;
+  publishCounters();
+}
+
+bool InteractivePreviewHost::event(QEvent *p_event) {
+  // The reset half of the counter protocol. publishCounters() writes the
+  // counter properties from here too, so only the reset name is acted on -
+  // anything else would recurse.
+  if (p_event->type() == QEvent::DynamicPropertyChange) {
+    auto *ev = static_cast<QDynamicPropertyChangeEvent *>(p_event);
+    // Compared against a shared constant rather than a QByteArray built per
+    // event: publishCounters() writes nine properties, each of which lands
+    // here, and constructing a name on every one of them would put a strlen
+    // and a heap allocation on the counter path.
+    static const QByteArray c_resetName(c_countersResetProperty);
+    if (ev->propertyName() == c_resetName) {
+      // Clear the request before resetting, so writing the SAME value again is
+      // still a property change and still delivers an event. Without this the
+      // second reset in a row is silently a no-op - Qt only notifies on a
+      // change - and every measurement window after the first would be
+      // contaminated by the one before it.
+      //
+      // The clearing write is itself a DynamicPropertyChange on this name and
+      // re-enters here; the invalid guard below is what terminates that.
+      if (!property(c_countersResetProperty).isValid()) {
+        return QObject::event(p_event);
+      }
+
+      setProperty(c_countersResetProperty, QVariant());
+      resetCounters();
+    }
+  }
+
+  return QObject::event(p_event);
+}
+
 void InteractivePreviewHost::publish() {
   // Whatever asked for a publication has been served by this run.
   m_publishPending = false;
+  ++m_publishes;
 
   applyReadOnly();
 
@@ -2076,7 +2511,11 @@ void InteractivePreviewHost::publish() {
 
   for (auto it = m_items.begin(); it != m_items.end(); ++it) {
     auto &item = it.value();
-    if (!item.m_widget || !item.m_preview) {
+    // Deliberately NOT gated on m_widget any more. A bound item without a
+    // widget still owns a band - that reservation is what holds the document
+    // layout stable until the widget is built, and without it an unrealized
+    // element would be invisible to the layout, unclaimed, and rendered twice.
+    if (!item.m_preview) {
       continue;
     }
 
@@ -2095,16 +2534,28 @@ void InteractivePreviewHost::publish() {
 
     // Re-measuring is expensive, so only do it when the widget asked for a new
     // layout or the width it will be given changed.
-    qreal widthBasis = availableWidth;
-    if (spec.m_placement == PreviewPlacement::InlineAboveLine) {
-      const qreal spanWidth = m_layout->inlinePlacementWidth(start, end);
-      if (spanWidth > 0) {
-        widthBasis = availableWidth > 0 ? qMin(spanWidth, availableWidth) : spanWidth;
-      }
-    }
+    const qreal widthBasis = widthBasisFor(item, availableWidth);
 
     if (item.m_measureDirty || !qFuzzyCompare(item.m_measuredWidthBasis + 1, widthBasis + 1)) {
-      item.m_measuredSize = preferredSize(item.m_widget.data(), spec.m_placement, start, end);
+      if (item.m_widget) {
+        item.m_measuredSize = preferredSize(item.m_widget.data(), spec.m_placement, start, end);
+        item.m_sizeIsEstimate = false;
+      } else {
+        const QSizeF estimate = estimatedSize(item, widthBasis);
+        if (estimate.isValid()) {
+          item.m_measuredSize = estimate;
+          item.m_sizeIsEstimate = true;
+        } else {
+          // The estimator changed its mind - a factory was swapped out, or the
+          // snapshot grew past what it is willing to predict. Keep the last
+          // band rather than publishing a zero-height one, and let the scroll
+          // pass realize the item, which replaces the estimate with a real
+          // measurement.
+          qCDebug(previewLayoutLog)
+              << "item" << item.m_id << "has no estimate any more; keeping the last band";
+        }
+      }
+
       // Store the input constraint, which is what the guard is keyed on. The
       // width preferredSize() derives is the widget's own, so caching that
       // instead would never compare equal and the measurement would re-run on
@@ -2114,7 +2565,8 @@ void InteractivePreviewHost::publish() {
 
       qCDebug(previewLayoutLog) << "measured item" << item.m_id
                                 << previewTypeName(item.m_preview->type()) << "->"
-                                << item.m_measuredSize << "at width basis" << widthBasis;
+                                << item.m_measuredSize << "at width basis" << widthBasis
+                                << (item.m_sizeIsEstimate ? "(estimate)" : "");
     }
 
     spec.m_width = item.m_measuredSize.width();
@@ -2159,6 +2611,8 @@ void InteractivePreviewHost::publish() {
   // The previews the layout now holds are the ones the fold decision is made
   // from, so this is the point where a re-evaluation is owed.
   scheduleFoldRefresh();
+
+  publishCounters();
 }
 
 void InteractivePreviewHost::syncWidgetGeometry() {
@@ -2201,12 +2655,19 @@ void InteractivePreviewHost::syncWidgetGeometryImpl() {
 
   for (auto it = m_items.begin(); it != m_items.end(); ++it) {
     auto &item = it.value();
+
+    // The rect is stored for EVERY bound item, before any branch on widget
+    // presence. It is what the scroll pass decides realization from, so an
+    // unrealized item without one would never be discovered and would stay
+    // invisible forever.
+    const QRectF docRect = m_layout->widgetPreviewRect(item.m_id);
+    item.m_documentRect = m_enabled ? docRect : QRectF();
+
+    // Everything below this point talks to a widget or to the context a widget
+    // reads, so it is skipped while the item is unrealized.
     if (!item.m_widget) {
       continue;
     }
-
-    const QRectF docRect = m_layout->widgetPreviewRect(item.m_id);
-    item.m_documentRect = m_enabled ? docRect : QRectF();
 
     if (item.m_context) {
       if (item.m_documentRect.isNull()) {
@@ -2249,6 +2710,12 @@ void InteractivePreviewHost::syncWidgetGeometryImpl() {
                               << "source rect" << item.m_sourceTextRect;
   }
 
+  // The rectangles are settled now, so this is the one point where the
+  // band-ordered placement index is rebuilt. Doing it here rather than per
+  // scroll tick is what turns the placement pass from O(N) into
+  // O(log N + visible + just-exited).
+  rebuildGeometryOrder();
+
   applyScrollOffsetImpl();
 }
 
@@ -2265,15 +2732,349 @@ void InteractivePreviewHost::applyScrollOffset() {
   applyScrollOffsetImpl();
 }
 
+bool InteractivePreviewHost::realizeVisibleItems() {
+  auto *vp = viewport();
+  if (!vp || !m_enabled) {
+    return false;
+  }
+
+  if (isBlocked()) {
+    qCDebug(previewLayoutLog) << "realization deferred, host blocked";
+    // Realization runs four application callbacks and must never happen while
+    // a layout pass or the geometry guard is on the stack - which it always is
+    // when this is reached as the tail of syncWidgetGeometryImpl(). Owe a
+    // scroll apply instead and let the placement below run with the bands the
+    // sync just computed; the drain re-runs this pass on a clean stack, and
+    // that is where the widgets are actually built.
+    m_scrollApplyPending = true;
+    scheduleOwedWork();
+    return false;
+  }
+
+  auto *vbar = m_textEdit ? m_textEdit->verticalScrollBar() : nullptr;
+  const qreal vScroll = vbar ? vbar->value() : 0;
+  const qreal viewportHeight = vp->height();
+
+  // A hidden or zero-height viewport shows nothing, so it demands nothing.
+  //
+  // Realizing everything here would be the easy answer, and it is the wrong
+  // one: an editor in a background tab is hidden, and building every sheet in
+  // it is exactly the cost this whole change exists to remove. The items stay
+  // bound - they keep their reserved bands, they still fold their source, and
+  // previewedRanges() still reports them - and the viewport's Show event
+  // (eventFilter()) is what schedules the pass that realizes them.
+  if (!vp->isVisible() || viewportHeight <= 0) {
+    return false;
+  }
+
+  // One viewport height of slack above and below, so an item is built before
+  // it is scrolled into view rather than as it appears.
+  const qreal bandTop = vScroll - viewportHeight;
+  const qreal bandBottom = vScroll + 2 * viewportHeight;
+
+  // Collect first, realize afterwards: realizeItem() runs application
+  // callbacks which can insert into and erase from m_items, and iterating
+  // across that is undefined.
+  //
+  // Binary searched over the unrealized index rather than walked over the item
+  // hash. In a large document the unrealized items ARE the large population -
+  // that is the point of the design - so a full scan here would reintroduce
+  // the O(N)-per-scroll-tick cost the indices exist to remove.
+  QVector<quint64> candidates;
+  const auto first =
+      std::lower_bound(m_realizationOrder.constBegin(), m_realizationOrder.constEnd(), bandTop,
+                       [](const GeometryEntry &p_entry, qreal p_value) {
+                         return p_entry.m_maxBottomSoFar < p_value;
+                       });
+
+  for (auto it = first; it != m_realizationOrder.constEnd(); ++it) {
+    if (it->m_top > bandBottom) {
+      // Tops are sorted, so nothing further down can intersect either.
+      break;
+    }
+
+    // The index is rebuilt per geometry sync, so an entry can name an item
+    // which has since been realized or removed. Both are skipped.
+    const auto item = m_items.constFind(it->m_id);
+    if (item == m_items.constEnd() || item.value().m_widget ||
+        item.value().m_documentRect.isNull()) {
+      continue;
+    }
+
+    candidates.append(it->m_id);
+  }
+
+  if (candidates.isEmpty()) {
+    return false;
+  }
+
+  qCDebug(previewLayoutLog) << "realization pass:" << candidates.size()
+                            << "candidate(s), viewport height" << viewportHeight << "scroll"
+                            << vScroll;
+
+  qreal delta = 0;
+  bool changedAny = false;
+  for (quint64 id : candidates) {
+    // Re-resolved every iteration: a previous realization's callbacks may have
+    // torn this item down.
+    auto it = m_items.constFind(id);
+    if (it == m_items.constEnd() || it.value().m_widget) {
+      continue;
+    }
+
+    const QSizeF estimate = it.value().m_measuredSize;
+    const QRectF band = it.value().m_documentRect;
+
+    const RealizeOutcome outcome = realizeItem(id);
+    if (outcome == RealizeOutcome::StillBound) {
+      // The attempt failed and left the item exactly as it was: a callback
+      // destroyed its context, or the widget destroyed itself while being
+      // parented. NOTHING changed, so nothing may be owed for it.
+      //
+      // Counting this as a change is an infinite loop, not a wasted frame: the
+      // publication it would owe drains into another scroll pass, which
+      // re-collects this same in-band candidate and fails identically, forever.
+      // The item keeps its estimated band and is retried when something else
+      // legitimately re-runs the pass.
+      qCDebug(previewLayoutLog) << "item" << id << "could not be realized; leaving it bound";
+      continue;
+    }
+
+    if (outcome == RealizeOutcome::Removed) {
+      // Declined by every factory, or torn down by a callback. The item set
+      // changed, so the publication below has to observe it - but there is no
+      // widget to measure and no band displacement to compensate for.
+      changedAny = true;
+      continue;
+    }
+
+    changedAny = true;
+
+    // Measure the real widget against the same width basis the estimate used,
+    // so the correction below is the real difference and not the difference
+    // plus a relayout the publication has not performed yet.
+    //
+    // preferredSize() calls sizeHint(), preferredWidthFraction() and
+    // heightForWidth() - all application code - so it is guarded, and NOTHING
+    // is resolved into a reference across it.
+    QSizeF real;
+    QPointer<PreviewWidget> widget;
+    PreviewPlacement placement = PreviewPlacement::BlockAfterSource;
+    int start = 0;
+    int end = 0;
+    {
+      const auto live = m_items.constFind(id);
+      if (live == m_items.constEnd() || !live.value().m_widget || !live.value().m_preview) {
+        continue;
+      }
+
+      widget = live.value().m_widget;
+      placement = live.value().m_preview->placement();
+      start = live.value().m_anchor.selectionStart();
+      end = live.value().m_anchor.selectionEnd();
+    }
+
+    {
+      BlockGuard guard(this, BlockGuard::Reason::FactoryCallback);
+      real = preferredSize(widget.data(), placement, start, end);
+    }
+
+    // Re-resolved after the measurement, for the same reason as above.
+    auto live = m_items.find(id);
+    if (live == m_items.end() || widget.isNull() || live.value().m_widget != widget.data()) {
+      continue;
+    }
+
+    live.value().m_measuredSize = real;
+    // The SAME rule publish() uses, through the same helper: this stores a
+    // basis and then clears m_measureDirty, so a basis that did not describe
+    // this measurement would suppress the correction that would have fixed it.
+    live.value().m_measuredWidthBasis =
+        widthBasisFor(live.value(), m_layout->availableContentWidth());
+    live.value().m_measureDirty = false;
+    live.value().m_sizeIsEstimate = false;
+
+    // Only an item ENTIRELY above the viewport top displaces what the user is
+    // looking at. One straddling the top grows downwards from a fixed top
+    // edge, and one below the top moves nothing above it. An item with no band
+    // yet is not on screen at all, so it displaces nothing either.
+    if (!band.isNull() && band.bottom() <= vScroll) {
+      delta += real.height() - estimate.height();
+    }
+  }
+
+  if (!changedAny) {
+    return false;
+  }
+
+  // The new heights only reach the document through a publication and the
+  // relayout it triggers, which moves every later block offset and the
+  // scrollbar range. Correcting the bar here would clamp against the OLD
+  // range and would re-enter valueChanged while the geometry guard is held.
+  m_publishPending = true;
+  if (!qFuzzyIsNull(delta)) {
+    m_realizationCompensationDelta += delta;
+    // The value the correction was computed against. If the viewport has moved
+    // by the time it is applied - a callback scrolled, or the user did - the
+    // delta describes a displacement of a position nobody is looking at any
+    // more, and applying it would move the view for no reason.
+    if (!m_realizationCompensationPending) {
+      m_realizationCompensationOrigin = qRound(vScroll);
+    }
+    m_realizationCompensationPending = true;
+  }
+
+  scheduleOwedWork();
+
+  qCDebug(previewLayoutLog) << "realization pass settled;" << candidates.size()
+                            << "candidate(s), scrollbar owes" << delta << "px";
+  return true;
+}
+
+void InteractivePreviewHost::applyRealizationScrollCompensation() {
+  m_realizationCompensationPending = false;
+
+  const qreal delta = m_realizationCompensationDelta;
+  const int origin = m_realizationCompensationOrigin;
+  m_realizationCompensationDelta = 0;
+
+  auto *vbar = m_textEdit ? m_textEdit->verticalScrollBar() : nullptr;
+  if (!vbar || qFuzzyIsNull(delta)) {
+    return;
+  }
+
+  // The correction describes how far the content ABOVE a particular viewport
+  // position moved. If the viewport is no longer at that position - a factory
+  // callback scrolled, or the user did while the publication was in flight -
+  // the delta is about a place nobody is looking at any more, and applying it
+  // would yank the view away from wherever they went. A newer scroll always
+  // wins over an older correction; the realization it belonged to has already
+  // been published, so nothing is left inconsistent by dropping it.
+  if (vbar->value() != origin) {
+    qCDebug(previewLayoutLog) << "dropping a" << delta
+                              << "px realization correction: the viewport moved from" << origin
+                              << "to" << vbar->value() << "while it was owed";
+    return;
+  }
+
+  // Clamped against the range the relayout has SINCE produced, which is the
+  // whole reason this runs from the drain and not from the scroll pass. An
+  // unclamped setValue() would be silently clamped by QScrollBar anyway, but
+  // the clamp has to be visible here: it is what makes "the document got
+  // shorter than the correction" a no-op instead of a jump to the end.
+  const int target = qBound(vbar->minimum(), qRound(origin + delta), vbar->maximum());
+  if (target == vbar->value()) {
+    return;
+  }
+
+  qCDebug(previewLayoutLog) << "compensating the scrollbar by" << delta << "px:" << vbar->value()
+                            << "->" << target;
+  vbar->setValue(target);
+}
+
+// Sort by band top with the identity as a stable tie-breaker, then turn the
+// bottoms into a running maximum.
+//
+// The running maximum is what makes a binary search sound: bottoms are NOT
+// monotonic in top order - two previews sharing one inline band, or a tall
+// band followed by a short one, both break it - so searching the bottoms
+// directly would skip entries that do intersect.
+void InteractivePreviewHost::finalizeGeometryIndex(QVector<GeometryEntry> &p_entries) {
+  std::sort(p_entries.begin(), p_entries.end(),
+            [](const GeometryEntry &p_a, const GeometryEntry &p_b) {
+              if (!qFuzzyCompare(p_a.m_top + 1, p_b.m_top + 1)) {
+                return p_a.m_top < p_b.m_top;
+              }
+              return p_a.m_id < p_b.m_id;
+            });
+
+  qreal running = -std::numeric_limits<qreal>::max();
+  for (auto &entry : p_entries) {
+    running = qMax(running, entry.m_maxBottomSoFar);
+    entry.m_maxBottomSoFar = running;
+  }
+}
+
+void InteractivePreviewHost::rebuildGeometryOrder() {
+  m_geometryOrder.clear();
+  m_realizationOrder.clear();
+  m_geometryOrder.reserve(m_items.size());
+  m_realizationOrder.reserve(m_items.size());
+
+  for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it) {
+    const auto &item = it.value();
+    // A null band means "nowhere" - folded, disabled, or not laid out. Neither
+    // pass has anything to do with such an item: it is never placed, and a
+    // collapsed band is never a reason to build a widget.
+    if (item.m_documentRect.isNull()) {
+      continue;
+    }
+
+    GeometryEntry entry;
+    entry.m_top = item.m_documentRect.top();
+    entry.m_maxBottomSoFar = item.m_documentRect.bottom();
+    entry.m_id = item.m_id;
+
+    // Two disjoint indices, one per pass. See m_realizationOrder.
+    if (item.m_widget) {
+      m_geometryOrder.append(entry);
+    } else {
+      m_realizationOrder.append(entry);
+    }
+  }
+
+  finalizeGeometryIndex(m_geometryOrder);
+  finalizeGeometryIndex(m_realizationOrder);
+
+  m_geometryOrderDirty = false;
+}
+
+void InteractivePreviewHost::forgetGeometryOrderEntry(quint64 p_id) {
+  // A bulk teardown has already invalidated both indices wholesale, so there is
+  // nothing to scan. This is what keeps removeAllItems() linear: without it,
+  // removing N items would scan and shift an N-element vector N times.
+  if (m_geometryOrderDirty) {
+    return;
+  }
+
+  m_placedIds.remove(p_id);
+
+  for (int i = 0; i < m_geometryOrder.size(); ++i) {
+    if (m_geometryOrder.at(i).m_id == p_id) {
+      m_geometryOrder.remove(i);
+      return;
+    }
+  }
+
+  for (int i = 0; i < m_realizationOrder.size(); ++i) {
+    if (m_realizationOrder.at(i).m_id == p_id) {
+      m_realizationOrder.remove(i);
+      return;
+    }
+  }
+}
+
 void InteractivePreviewHost::applyScrollOffsetImpl() {
   auto *vp = viewport();
   if (!vp) {
     return;
   }
 
+  // Phase one of the two-phase realization protocol: build the widgets the
+  // viewport now needs. Done BEFORE the guard is taken, because realizeItem()
+  // runs application callbacks which must be free to touch the document, and
+  // because a realization invalidates the very rectangles the placement below
+  // would use - the new heights only reach them through the publication it
+  // owes. Bailing out here is not a lost frame: the owed-work drain re-runs
+  // this pass against the settled geometry.
+  if (realizeVisibleItems()) {
+    return;
+  }
+
   // hide(), show() and setGeometry() are delivered synchronously to the
   // widgets, and hiding a focused sheet makes it write its pending edit back
-  // from inside this call.
+  // from inside this call. That is also why the "just exited" hides below stay
+  // inside this one guard rather than being deferred.
   BlockGuard guard(this, BlockGuard::Reason::GeometryApply);
 
   // Everything below is scroll dependent only; the document rectangles were
@@ -2285,35 +3086,90 @@ void InteractivePreviewHost::applyScrollOffsetImpl() {
       m_textEdit && m_textEdit->verticalScrollBar() ? m_textEdit->verticalScrollBar()->value() : 0;
   const QRect viewportRect(QPoint(0, 0), vp->size());
 
-  for (auto it = m_items.begin(); it != m_items.end(); ++it) {
-    auto &item = it.value();
-    if (!item.m_widget) {
+  // The document interval worth positioning: the viewport plus one viewport
+  // height of margin either side, so a widget is already at its coordinates
+  // when it is scrolled into view rather than jumping there.
+  const qreal margin = qMax<qreal>(vp->height(), 1);
+  const qreal intervalTop = vScroll - margin;
+  const qreal intervalBottom = vScroll + vp->height() + margin;
+
+  // First entry whose prefix-maximum bottom reaches the interval. Everything
+  // before it ends above the interval and cannot intersect it.
+  const auto first = std::lower_bound(m_geometryOrder.constBegin(), m_geometryOrder.constEnd(),
+                                      intervalTop, [](const GeometryEntry &p_entry, qreal p_value) {
+                                        return p_entry.m_maxBottomSoFar < p_value;
+                                      });
+
+  QSet<quint64> placed;
+  for (auto it = first; it != m_geometryOrder.constEnd(); ++it) {
+    if (it->m_top > intervalBottom) {
+      // Tops are sorted, so nothing further down can intersect either.
+      break;
+    }
+
+    auto item = m_items.find(it->m_id);
+    if (item == m_items.end() || !item.value().m_widget || item.value().m_documentRect.isNull()) {
       continue;
     }
 
-    if (item.m_documentRect.isNull()) {
-      // Folded, disabled or not laid out: keep the widget allocated but
-      // hidden off-screen.
-      item.m_widget->hide();
-      continue;
-    }
-
-    const QRect targetRect = item.m_documentRect.translated(-hScroll, -vScroll).toAlignedRect();
-    item.m_widget->setGeometry(targetRect);
-
-    qCDebug(previewLayoutLog) << "  placed item" << item.m_id << "doc" << item.m_documentRect
-                              << "scroll" << hScroll << vScroll << "-> viewport" << targetRect
-                              << (targetRect.intersects(viewportRect) ? "visible" : "off-screen");
+    auto &live = item.value();
+    const QRect targetRect = live.m_documentRect.translated(-hScroll, -vScroll).toAlignedRect();
+    live.m_widget->setGeometry(targetRect);
+    ++m_geometrySetCalls;
 
     if (targetRect.intersects(viewportRect)) {
-      item.m_widget->show();
+      live.m_widget->show();
+      placed.insert(it->m_id);
     } else {
-      item.m_widget->hide();
+      live.m_widget->hide();
     }
+  }
+
+  // Whatever was visible last time and is not now has to be hidden explicitly,
+  // or it stays painted at the coordinates it was last given. This is the
+  // "just exited" half of the cost, and it is proportional to what moved, not
+  // to the number of items in the document.
+  for (quint64 id : m_placedIds) {
+    if (placed.contains(id)) {
+      continue;
+    }
+
+    auto item = m_items.constFind(id);
+    if (item != m_items.constEnd() && item.value().m_widget) {
+      item.value().m_widget->hide();
+    }
+  }
+
+  m_placedIds = placed;
+
+  qCDebug(previewLayoutLog) << "placed" << placed.size() << "of" << m_geometryOrder.size()
+                            << "realized item(s) at scroll" << hScroll << vScroll;
+
+  // Only when this pass actually placed something. This is the per-scroll-tick
+  // path, and nine QVariant allocations plus nine synchronous property-change
+  // dispatches on a tick that moved nothing would be diagnostics paying
+  // themselves out of the budget the placement index exists to save. Skipping
+  // it entirely is not an option: pure scrolling owes no work, so no drain runs
+  // and nothing else would ever publish them.
+  if (m_geometrySetCalls != m_publishedGeometrySetCalls) {
+    publishCounters();
   }
 }
 
 bool InteractivePreviewHost::eventFilter(QObject *p_obj, QEvent *p_event) {
+  // The viewport becoming visible is the demand edge for a hidden editor.
+  //
+  // While the viewport is hidden realizeVisibleItems() builds nothing - a
+  // background tab must not pay for widgets nobody can see - so without this
+  // an editor shown for the first time, or a tab brought to the front, would
+  // display reserved bands with no sheets in them until the user happened to
+  // scroll.
+  if (p_event->type() == QEvent::Show && m_textEdit && p_obj == m_textEdit->viewport()) {
+    m_scrollApplyPending = true;
+    scheduleOwedWork();
+    return QObject::eventFilter(p_obj, p_event);
+  }
+
   if (p_obj == m_textEdit) {
     // QTextEdit::setReadOnly() emits no signal and touches no document, so
     // nothing else would ever re-run the read-only push. Without this a sheet

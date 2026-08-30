@@ -8,6 +8,7 @@
 #include <QContextMenuEvent>
 #include <QFocusEvent>
 #include <QFont>
+#include <QFontMetricsF>
 #include <QGuiApplication>
 #include <QInputMethod>
 #include <QKeyEvent>
@@ -48,6 +49,17 @@
 #include "tablepreviewinputmode.h"
 
 using namespace vte;
+
+namespace {
+// See tablePreviewCellsBuilt(). A plain int, not an atomic: every table sheet
+// is built on the GUI thread, and a diagnostics counter is not worth an
+// ordering guarantee it could never observe.
+quint64 s_tablePreviewCellsBuilt = 0;
+} // namespace
+
+quint64 vte::tablePreviewCellsBuilt() { return s_tablePreviewCellsBuilt; }
+
+void vte::resetTablePreviewCellsBuilt() { s_tablePreviewCellsBuilt = 0; }
 
 // ---------------------------------------------------------------------------
 // TablePreviewSerializer
@@ -629,6 +641,21 @@ const qreal c_cellPadding = 3;
 // whole remaining width, so this is the only gap between the border and the
 // edge of the band.
 const qreal c_documentMargin = 2;
+
+// Width of one cell border, as handed to QTextTableFormat::setBorder() in
+// TablePreviewDocument::build().
+const qreal c_cellBorder = 1;
+
+// Whether neighbouring cells SHARE one border line rather than each drawing
+// its own. Mirrors the QT_VERSION guard around setBorderCollapse() in build();
+// with collapsing off, every interior boundary costs two borders instead of
+// one, which the size estimate has to account for or it under-reserves the
+// band of every table.
+#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+const bool c_bordersCollapsed = true;
+#else
+const bool c_bordersCollapsed = false;
+#endif
 } // namespace
 
 int TablePreviewDocument::normalizedColumnCount(const TablePreview &p_table) {
@@ -812,7 +839,7 @@ void TablePreviewDocument::build() {
       QVector<QTextLength>(m_columnCount, QTextLength(QTextLength::VariableLength, 0)));
   format.setCellPadding(c_cellPadding);
   format.setCellSpacing(0);
-  format.setBorder(1);
+  format.setBorder(c_cellBorder);
   format.setBorderStyle(QTextFrameFormat::BorderStyle_Solid);
   // Not unconditionally 1 any more: an all-`<td>` HTML table has no header row
   // (decision D-i), and giving it one would bold and repeat a row the source
@@ -820,6 +847,8 @@ void TablePreviewDocument::build() {
   format.setHeaderRowCount(m_hasHeaderRow ? 1 : 0);
 #if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
   // One shared line between neighbouring cells rather than two abutting ones.
+  // c_bordersCollapsed mirrors this guard for the size estimator; keep the two
+  // in step.
   format.setBorderCollapse(true);
 #endif
 
@@ -832,6 +861,12 @@ void TablePreviewDocument::build() {
     cursor.endEditBlock();
     return;
   }
+
+  // Diagnostics only: the grid this build just paid for. Counted here rather
+  // than at the per-cell writes below so a merged span is still charged for
+  // every slot it covers - insertTable() allocated them all.
+  s_tablePreviewCellsBuilt +=
+      static_cast<quint64>(m_rowCount) * static_cast<quint64>(m_columnCount);
 
   // Every span is applied BEFORE any text is written. QTextTable::mergeCells()
   // concatenates the covered cells' contents, introducing paragraph breaks
@@ -4771,6 +4806,115 @@ TablePreviewWidgetFactory::TablePreviewWidgetFactory(QObject *p_parent)
 
 QVector<PreviewElementType> TablePreviewWidgetFactory::supportedTypes() const {
   return QVector<PreviewElementType>() << PreviewElementType::Table;
+}
+
+QSizeF TablePreviewWidgetFactory::estimatedSize(const QSharedPointer<const Preview> &p_preview,
+                                                qreal p_widthBasis, const QFont &p_font) const {
+  // "Measure me properly" for anything whose shape cannot be read here.
+  if (!p_preview || p_preview->type() != PreviewElementType::Table || p_widthBasis <= 0) {
+    return QSizeF();
+  }
+
+  auto table = p_preview.dynamicCast<const TablePreview>();
+  if (!table) {
+    return QSizeF();
+  }
+
+  // The same gate TablePreviewWidget::setPreview() applies. Without it a table
+  // past the row/column/cell ceilings would be reserved a band from an
+  // estimate, and then be permanently unrealizable: setPreview() rejects it,
+  // the factory chain declines, and the element would be left claiming a band
+  // no widget will ever fill while the painted source fallback stays
+  // suppressed. Declining here keeps such a table on the eager path, where
+  // "nobody claims it" is decided once, at bind time, exactly as before.
+  if (!TablePreviewDocument::isWithinLimits(*table)) {
+    return QSizeF();
+  }
+
+  const int rows = table->gridRowCount();
+  const int cols = table->gridColumnCount();
+  if (rows <= 0 || cols <= 0) {
+    return QSizeF();
+  }
+
+  // The chrome a live sheet reports comes from its style and its frame, and
+  // there is no widget here to ask. TablePreviewSheet::horizontalChrome()
+  // falls back to frameWidth() * 2 for exactly the same reason, and the frame
+  // of a QTextEdit is 1 px per side in every style this ships with. The band
+  // is corrected against the real measurement the moment the widget is built.
+  const int frame = 2;
+
+  const QFontMetricsF metrics(p_font);
+  const qreal lineHeight = metrics.height();
+
+  // Mirrors the QTextTableFormat TablePreviewDocument::build() applies:
+  // cellPadding on all four sides, plus the border lines between rows. With
+  // collapsing on, neighbouring rows share one line; with it off - Qt < 5.14 -
+  // each row draws its own top and bottom, so a row costs two.
+  const qreal borderPerRow = c_bordersCollapsed ? c_cellBorder : 2 * c_cellBorder;
+  const qreal rowChrome = 2 * c_cellPadding + borderPerRow;
+
+  // Every column is a VariableLength constraint, so Qt shares the width out by
+  // content. Without laying the table out that share is unknowable, and an
+  // equal split is both the cheapest and the least biased approximation.
+  const qreal borderPerColumn = c_bordersCollapsed ? c_cellBorder : 2 * c_cellBorder;
+  const qreal columnWidth = (p_widthBasis - frame - cols * borderPerColumn) / cols;
+  if (columnWidth <= 0) {
+    return QSizeF();
+  }
+
+  // Average character advance, so the wrap estimate below costs one text
+  // measurement for the whole table rather than one per cell.
+  const qreal charWidth = metrics.averageCharWidth();
+  const int charsPerLine = charWidth > 0 ? qMax(1, static_cast<int>(columnWidth / charWidth)) : 1;
+
+  const auto &cells = table->cells();
+  // Frame plus the document margin the sheet keeps above and below the table,
+  // plus the one border line the last row does not share with a successor.
+  qreal height = frame + 2 * c_documentMargin + (c_bordersCollapsed ? c_cellBorder : 0);
+  for (int r = 0; r < rows; ++r) {
+    // The tallest cell of the row decides the row's height, and a cell is as
+    // tall as the number of wrapped lines its text needs.
+    if (r >= cells.size()) {
+      height += lineHeight + rowChrome;
+      continue;
+    }
+
+    // A reference, deliberately: binding this to the result of a conditional
+    // expression would copy the row into a temporary on every iteration, and
+    // this loop runs for every unrealized table on every publication.
+    const auto &row = cells.at(r);
+    int lines = 1;
+    for (int c = 0; c < row.size(); ++c) {
+      const int length = row.at(c).size();
+      if (length <= charsPerLine) {
+        continue;
+      }
+
+      // A cell long enough to wrap many times is where an equal-column-share
+      // approximation stops being an approximation: Qt would have widened
+      // that column at its neighbours' expense instead. Decline rather than
+      // publish a height the realization would visibly correct.
+      const int cellLines = (length + charsPerLine - 1) / charsPerLine;
+      if (cellLines > 4) {
+        return QSizeF();
+      }
+
+      lines = qMax(lines, cellLines);
+    }
+
+    // A cell spanning several grid rows contributes its height once, to the
+    // row it starts in; the covered rows keep the one-line minimum. That is
+    // already what taking the per-row maximum of ORIGIN text does, because a
+    // covered slot holds an empty string.
+    height += lines * lineHeight + rowChrome;
+  }
+
+  // Width: TablePreviewWidget::preferredWidthFraction() is 1.0, so the host
+  // resolves the band to the whole available content width regardless of what
+  // is returned here. Reported as the basis for consistency with what
+  // preferredSize() would compute.
+  return QSizeF(p_widthBasis, height);
 }
 
 PreviewWidget *

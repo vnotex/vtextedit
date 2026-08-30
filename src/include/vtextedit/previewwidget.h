@@ -3,10 +3,12 @@
 
 #include "vtextedit_export.h"
 
+#include <QFont>
 #include <QObject>
 #include <QRectF>
 #include <QScopedPointer>
 #include <QSize>
+#include <QSizeF>
 #include <QVector>
 #include <QWidget>
 
@@ -131,6 +133,45 @@ public:
                                       const QSharedPointer<const Preview> &p_preview,
                                       QWidget *p_parent) = 0;
 };
+
+// Optional companion interface to PreviewWidgetFactory: how tall an element's
+// widget WOULD be, computed without constructing it.
+//
+// This is what makes lazy realization possible. Without an estimate the host
+// has no height to reserve for an element until its widget exists, so it must
+// build every widget in the document up front - which for a file with hundreds
+// of tables is seconds of work and hundreds of live QTextDocuments, almost all
+// of them off screen.
+//
+// A separate interface rather than a new virtual on PreviewWidgetFactory,
+// deliberately: adding a virtual to an exported polymorphic class is source
+// compatible but NOT binary compatible, and it would break every out-of-tree
+// factory compiled against an earlier VTextEdit. Discovery is by
+// qobject_cast, so a factory which does not implement this keeps exactly
+// today's eager behaviour.
+//
+// Implement it as a second base of a PreviewWidgetFactory subclass and declare
+// it with Q_INTERFACES(vte::PreviewSizeEstimator).
+class VTEXTEDIT_EXPORT PreviewSizeEstimator {
+public:
+  virtual ~PreviewSizeEstimator();
+
+  // The size the widget for @p_preview is expected to report when it is given
+  // @p_widthBasis of horizontal room and rendered in @p_font.
+  //
+  // Return an INVALID QSizeF to say "measure me properly": the host then
+  // realizes the widget eagerly, as it always did. That is the supported
+  // answer for an element whose height cannot be predicted cheaply, and it is
+  // better than a wrong estimate, which shows up to the user as the document
+  // jumping when the widget is finally built.
+  //
+  // Must be cheap - it is called for every element of the document on every
+  // publication - and must not touch the editor's document.
+  virtual QSizeF estimatedSize(const QSharedPointer<const Preview> &p_preview, qreal p_widthBasis,
+                               const QFont &p_font) const = 0;
+};
 } // namespace vte
+
+Q_DECLARE_INTERFACE(vte::PreviewSizeEstimator, "org.vnotex.vtextedit.PreviewSizeEstimator/1.0")
 
 #endif // VTEXTEDIT_PREVIEWWIDGET_H

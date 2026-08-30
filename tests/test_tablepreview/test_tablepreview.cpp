@@ -4392,6 +4392,106 @@ void TestTablePreview::testHtmlOnlyTableWritesBackVerbatim() {
 // The flag is forwarded to the Markdown serializer only. An HTML-backed or
 // merged table has to match the scanner's canonical subset exactly, and the
 // rendered HTML is layout independent, so neither is padded.
+void TestTablePreview::testEstimatedSizeTracksTheRealizedHeight() {
+  // The estimator is what reserves a band for a table whose sheet has not been
+  // built yet. Its output and the real measurement are computed by two
+  // completely separate pieces of code from the same geometry constants, so
+  // nothing but this test stops them drifting apart - and drift shows up to the
+  // user as the document jumping when a preview is scrolled into view.
+  const int width = 800;
+  TablePreviewWidgetFactory factory;
+
+  struct Shape {
+    const char *m_name;
+    int m_rows;
+    int m_cols;
+  };
+
+  const QVector<Shape> shapes = {
+      {"2x2", 2, 2}, {"3x4", 3, 4}, {"10x3", 10, 3}, {"1 header only", 1, 3}, {"20x6", 20, 6}};
+
+  for (const auto &shape : shapes) {
+    QVector<QVector<QString>> cells;
+    for (int r = 0; r < shape.m_rows; ++r) {
+      QVector<QString> row;
+      for (int c = 0; c < shape.m_cols; ++c) {
+        row.append(QStringLiteral("r%1c%2").arg(r).arg(c));
+      }
+      cells.append(row);
+    }
+
+    QVector<PreviewTableAlignment> alignments(shape.m_cols, PreviewTableAlignment::None);
+    auto preview = makeTable(cells, alignments);
+
+    QScopedPointer<TablePreviewWidget> widget(
+        static_cast<TablePreviewWidget *>(factory.createWidget(nullptr, preview, nullptr)));
+    QVERIFY(widget);
+    QVERIFY(widget->setPreview(preview));
+    showOffScreen(*widget, width);
+
+    const qreal real = widget->heightForWidth(width);
+    const QSizeF estimate = factory.estimatedSize(preview, width, widget->font());
+
+    QVERIFY2(estimate.isValid(),
+             qPrintable(QStringLiteral("no estimate for %1").arg(QLatin1String(shape.m_name))));
+
+    // A generous tolerance on purpose: the estimate shares the table's chrome
+    // constants but approximates the column split and the frame, so it is an
+    // approximation by construction. What it must not be is wrong by enough to
+    // be visible - and it must never UNDER-estimate badly, because a band that
+    // is too short makes the following text jump down on realization, which is
+    // the more disorienting direction.
+    const qreal tolerance = qMax<qreal>(20, real * 0.25);
+    const qreal delta = estimate.height() - real;
+
+    qInfo() << shape.m_name << "estimate" << estimate.height() << "real" << real << "delta"
+            << delta;
+
+    QVERIFY2(qAbs(delta) <= tolerance,
+             qPrintable(QStringLiteral("%1: estimate %2 vs real %3 (tolerance %4)")
+                            .arg(QLatin1String(shape.m_name))
+                            .arg(estimate.height())
+                            .arg(real)
+                            .arg(tolerance)));
+  }
+}
+
+void TestTablePreview::testEstimatedSizeDeclinesWhatTheSheetWouldRefuse() {
+  TablePreviewWidgetFactory factory;
+  const QFont font;
+
+  // A non-table snapshot, and a zero width, are both "cannot say".
+  QVERIFY(!factory.estimatedSize(nullptr, 800, font).isValid());
+
+  QVector<QVector<QString>> cells;
+  cells.append({QStringLiteral("h1"), QStringLiteral("h2")});
+  cells.append({QStringLiteral("a"), QStringLiteral("b")});
+  auto ordinary = makeTable(cells, {PreviewTableAlignment::None, PreviewTableAlignment::None});
+  QVERIFY(!factory.estimatedSize(ordinary, 0, font).isValid());
+  QVERIFY(factory.estimatedSize(ordinary, 800, font).isValid());
+
+  // A table the sheet itself would refuse MUST NOT get an estimate. If it did,
+  // the host would reserve a band from it and then find that every factory
+  // declines to build the widget - leaving an element claiming a band no widget
+  // will ever fill, with the painted source fallback suppressed behind it.
+  QVector<QVector<QString>> huge;
+  const int columns = TablePreviewDocument::c_maxColumns + 1;
+  QVector<QString> row;
+  for (int c = 0; c < columns; ++c) {
+    row.append(QStringLiteral("c%1").arg(c));
+  }
+  huge.append(row);
+  huge.append(row);
+
+  QVector<PreviewTableAlignment> alignments(columns, PreviewTableAlignment::None);
+  auto oversized = makeTable(huge, alignments);
+
+  QVERIFY2(!TablePreviewDocument::isWithinLimits(*oversized),
+           "the fixture is not actually past the sheet's limits");
+  QVERIFY2(!factory.estimatedSize(oversized, 800, font).isValid(),
+           "a table the sheet would refuse was given an estimate");
+}
+
 void TestTablePreview::testAlignedDocumentPathsAndHtmlAreUnaffected() {
   {
     QVector<QVector<QString>> cells{{QStringLiteral("<b>x</b>"), QStringLiteral("plain")}};
