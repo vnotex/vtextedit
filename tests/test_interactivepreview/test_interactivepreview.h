@@ -294,6 +294,12 @@ private slots:
   void testAutoFoldIsOptional();
   void testCaretInsideKeepsTheSourceOpen();
   void testFoldSurvivesASheetCellEdit();
+  void testNoPaintObservesTheOpenSourceDuringACellEdit();
+  void testNoDocumentSizeIsPublishedForTheOpenSource();
+  void testFoldSurvivesASheetCellEditInAnHtmlTable();
+  void testFoldSurvivesAMergeAction();
+  void testFoldSurvivesASheetCellEditInABlockquotedTable();
+  void testFoldSurvivesADebouncedCommit();
   void testFoldSurvivesARewriteWithTrailingBlankLines();
   void testRewriteKeepsAFoldedTableBelowFolded();
   void testCaretSkippedTableStaysOpenAcrossARewrite();

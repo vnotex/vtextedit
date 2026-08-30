@@ -3521,6 +3521,37 @@ bool toggleFoldFromGutter(VMarkdownEditor &p_editor, int p_blockNumber, int p_pr
 
   return false;
 }
+
+// Records, at every viewport paint, whether the edited element's interior block
+// is visible. A fold which is dropped and restored inside one event-loop turn is
+// invisible to the user; one which a paint straddles is the flash the user
+// reports. Nothing else in this file states that property: the nearest test
+// samples visibility only after the write-back call returns, which cannot see a
+// paint forced from inside it.
+class OpenSourcePaintProbe : public QObject {
+public:
+  OpenSourcePaintProbe(VMarkdownEditor *p_editor, int p_interiorBlock)
+      : m_editor(p_editor), m_interiorBlock(p_interiorBlock) {}
+
+  int m_paints = 0;
+  int m_openPaints = 0;
+
+protected:
+  bool eventFilter(QObject *p_watched, QEvent *p_event) Q_DECL_OVERRIDE {
+    if (p_event->type() == QEvent::Paint) {
+      ++m_paints;
+      if (blockVisible(*m_editor, m_interiorBlock)) {
+        ++m_openPaints;
+      }
+    }
+
+    return QObject::eventFilter(p_watched, p_event);
+  }
+
+private:
+  VMarkdownEditor *m_editor = nullptr;
+  int m_interiorBlock = 0;
+};
 } // namespace
 
 // A previewed table comes up folded: the header row and the last row stay
@@ -3692,6 +3723,328 @@ void TestInteractivePreview::testFoldSurvivesARewriteWithTrailingBlankLines() {
   settleFolding();
   QVERIFY(!blockVisible(editor, 1));
   QVERIFY(blockVisible(editor, 2));
+}
+
+// The property the user actually reports: not "is it folded afterwards", but
+// "was it ever *painted* open".
+//
+// This one is a floor, not the discriminator. Measurement showed it already
+// held before the fix - Qt coalesces the whole edit into a single repaint, so
+// no paint ever observed the interval during which the source was expanded.
+// testNoDocumentSizeIsPublishedForTheOpenSource() below is what actually
+// caught the flash, and what actually fails without the fix. This one pins that
+// no future change starts forcing a repaint or spinning an event loop across
+// the rewrite, which would make that interval visible.
+void TestInteractivePreview::testNoPaintObservesTheOpenSourceDuringACellEdit() {
+  auto config = makeAutoFoldConfig(true);
+  VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 400);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+
+  setTextAndSettle(editor, QLatin1String(c_table) + QStringLiteral("\ntail\n"));
+  settleFolding();
+  QVERIFY(!blockVisible(editor, 1));
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+
+  // Drain everything the initial fold owes before arming, so only paints caused
+  // by the cell edit are counted.
+  settle(editor);
+  settleFolding();
+
+  OpenSourcePaintProbe probe(&editor, 1);
+  editor.getTextEdit()->viewport()->installEventFilter(&probe);
+
+  editCell(sheet, 1, 0, QStringLiteral("zz"));
+  {
+    QFocusEvent out(QEvent::FocusOut);
+    QCoreApplication::sendEvent(sheet, &out);
+  }
+  QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("zz")));
+  QVERIFY2(!blockVisible(editor, 1), "the rewritten table expanded");
+  QVERIFY2(probe.m_openPaints == 0,
+           "a paint was delivered while the rewritten source was still expanded");
+
+  // And across the parse which follows, where updateFoldingRegions() drops and
+  // recreates the range.
+  settle(editor);
+  settleFolding();
+  QVERIFY(!blockVisible(editor, 1));
+
+  // A zero count only means something if paints were delivered at all.
+  QVERIFY2(probe.m_paints > 0, "the viewport never repainted - the probe proves nothing");
+  QCOMPARE(probe.m_openPaints, 0);
+
+  editor.getTextEdit()->viewport()->removeEventFilter(&probe);
+}
+
+// The flash the user reports, measured where it actually is.
+//
+// A paint never observes the expanded source - Qt coalesces the whole edit into
+// one repaint - but the DOCUMENT SIZE did. TextFolding maintains itself from
+// contentsChange, which Qt emits BEFORE it hands the change to the layout
+// (QTextDocumentPrivate::finishEdit()), so a restore made after
+// endEditBlock() returns is one layout pass too late: documentChanged() has
+// already run over a document whose folded-away rows were visible again, and
+// TextDocumentLayout published documentSizeChanged() for that taller document.
+// Every consumer of it - the scroll range, the preview geometry, anything
+// tracking the document height - saw the table open and then closed again.
+//
+// The restore now runs inside the same contentsChange emission, so exactly one
+// size is published and it describes the folded document.
+void TestInteractivePreview::testNoDocumentSizeIsPublishedForTheOpenSource() {
+  VMarkdownEditor editor(makeAutoFoldConfig(true), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 400);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor, QLatin1String(c_table) + QStringLiteral("\ntail\n"));
+  settleFolding();
+  QVERIFY(!blockVisible(editor, 1));
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+
+  // Drain what the initial fold owes, so only the cell edit is measured.
+  settle(editor);
+  settleFolding();
+
+  int publications = 0;
+  int openPublications = 0;
+  QObject::connect(editor.document()->documentLayout(),
+                   &QAbstractTextDocumentLayout::documentSizeChanged, &editor,
+                   [&publications, &openPublications, &editor](const QSizeF &) {
+                     ++publications;
+                     if (blockVisible(editor, 1)) {
+                       ++openPublications;
+                     }
+                   });
+
+  editCell(sheet, 1, 0, QStringLiteral("zz"));
+  {
+    QFocusEvent out(QEvent::FocusOut);
+    QCoreApplication::sendEvent(sheet, &out);
+  }
+  QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("| zz | b |")));
+  QVERIFY(!blockVisible(editor, 1));
+
+  QVERIFY2(publications > 0, "the layout never republished - the probe proves nothing");
+  QVERIFY2(openPublications == 0,
+           "a document size was published while the rewritten source was expanded");
+
+  settle(editor);
+  settleFolding();
+  QVERIFY(!blockVisible(editor, 1));
+  QCOMPARE(openPublications, 0);
+}
+
+// The same continuity, for an HTML-backed table. Its folding region comes from
+// the scanner's own span rather than from the HTML block node, and its commit
+// re-serializes tags instead of pipes, so neither the query nor the restore
+// extent is shared with the Markdown path.
+void TestInteractivePreview::testFoldSurvivesASheetCellEditInAnHtmlTable() {
+  VMarkdownEditor editor(makeAutoFoldConfig(true), QSharedPointer<TextEditorParameters>::create());
+
+  // Blocks: 0..4 the table, 5 "", 6 "tail", 7 "".
+  setTextAndSettle(editor, QStringLiteral("<table>\n"
+                                          "<tr><th>a</th></tr>\n"
+                                          "<tr><td>b</td></tr>\n"
+                                          "<tr><td>c</td></tr>\n"
+                                          "</table>\n\n"
+                                          "tail\n"));
+  settleFolding();
+
+  QCOMPARE(editor.document()->findBlockByNumber(0).text(), QStringLiteral("<table>"));
+  QCOMPARE(editor.document()->findBlockByNumber(4).text(), QStringLiteral("</table>"));
+  QVERIFY2(!blockVisible(editor, 2), "the HTML table's source did not fold");
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+
+  // Row 1 is the first body row; its only cell holds "b".
+  editCell(sheet, 1, 0, QStringLiteral("zz"));
+  {
+    QFocusEvent out(QEvent::FocusOut);
+    QCoreApplication::sendEvent(sheet, &out);
+  }
+  QVERIFY2(editor.document()->toPlainText().contains(QStringLiteral("zz")),
+           qPrintable(editor.document()->toPlainText()));
+
+  // Immediately after the synchronous write-back, before any parse.
+  QVERIFY2(!blockVisible(editor, 2), "the rewritten HTML table expanded");
+
+  settle(editor);
+  settleFolding();
+  QVERIFY2(!blockVisible(editor, 2), "the parse lost the HTML table's fold");
+  QVERIFY(singlePreviewWidget(editor));
+}
+
+// A merge converts a pipe table into HTML, so the replacement is longer, has a
+// different shape and a different backing than the source it replaces. It is
+// driven through the real context-menu action rather than a synthetic
+// requestSourceReplacement(), so the sheet mutation, the arming and the
+// debounced write-back are all the ones a user gets.
+void TestInteractivePreview::testFoldSurvivesAMergeAction() {
+  VMarkdownEditor editor(makeAutoFoldConfig(true), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(700, 500);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+
+  setTextAndSettle(editor, QLatin1String(c_table) + QStringLiteral("\ntail\n"));
+  settleFolding();
+  QVERIFY2(!blockVisible(editor, 1), "the table did not fold");
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+  QTextTable *table = sheetTable(sheet);
+  QVERIFY(table);
+
+  // A rectangle across the two cells of the body row. It survives the sheet's
+  // selection clamp precisely so Merge can read it.
+  QTextCursor selection = table->cellAt(1, 0).firstCursorPosition();
+  selection.setPosition(table->cellAt(1, 1).lastCursorPosition().position(),
+                        QTextCursor::KeepAnchor);
+  sheet->setTextCursor(selection);
+  QCoreApplication::processEvents();
+  QVERIFY2(sheet->textCursor().hasComplexSelection(), "the rectangle did not survive the clamp");
+
+  OpenSourcePaintProbe probe(&editor, 1);
+  editor.getTextEdit()->viewport()->installEventFilter(&probe);
+
+  // contextMenuEvent() runs QMenu::exec(), so the action has to be triggered
+  // from inside that nested loop, and the loop has to be left on EVERY path or
+  // sendEvent() below never returns. Strictly INSIDE the rectangle: a click
+  // outside it retargets the caret and collapses it before Merge is offered.
+  const QPoint inside = sheet->cursorRect(table->cellAt(1, 1).firstCursorPosition()).center();
+  bool merged = false;
+  auto driveMenu = [&merged](int p_attemptsLeft, auto &&p_self) -> void {
+    auto popup = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+    if (!popup) {
+      // The menu is shown before exec() spins its loop, so this should not
+      // happen; retry a bounded number of times rather than hang if it does.
+      if (p_attemptsLeft > 0) {
+        QTimer::singleShot(10, [p_attemptsLeft, &p_self]() { p_self(p_attemptsLeft - 1, p_self); });
+      } else {
+        QApplication::closeAllWindows();
+      }
+      return;
+    }
+
+    QAction *merge =
+        popup->findChild<QAction *>(QStringLiteral("MergeCells"), Qt::FindChildrenRecursively);
+    if (merge && merge->isEnabled()) {
+      merge->trigger();
+      merged = true;
+    }
+
+    popup->close();
+  };
+  QTimer::singleShot(0, sheet, [&driveMenu]() { driveMenu(20, driveMenu); });
+
+  QContextMenuEvent menuEvent(QContextMenuEvent::Mouse, inside,
+                              sheet->viewport()->mapToGlobal(inside));
+  QCoreApplication::sendEvent(sheet->viewport(), &menuEvent);
+  QVERIFY2(merged, "the Merge action was never triggered");
+
+  // The merge is written back through the sheet's own commit, which the merge
+  // arms rather than performs, so let it land.
+  QTRY_VERIFY_WITH_TIMEOUT(editor.document()->toPlainText().contains(QStringLiteral("colspan")),
+                           3000);
+
+  settle(editor);
+  settleFolding();
+  QVERIFY2(!blockVisible(editor, 1), "the merged table lost its fold");
+  QVERIFY2(probe.m_paints > 0, "the viewport never repainted - the probe proves nothing");
+  QVERIFY2(probe.m_openPaints == 0, "a paint observed the merged table's source expanded");
+
+  editor.getTextEdit()->viewport()->removeEventFilter(&probe);
+}
+
+// A table under a blockquote carries a container prefix on every line, and the
+// quote itself is a folding region coextensive with the table. The de-duplication
+// which resolves that has never been exercised across a rewrite.
+void TestInteractivePreview::testFoldSurvivesASheetCellEditInABlockquotedTable() {
+  VMarkdownEditor editor(makeAutoFoldConfig(true), QSharedPointer<TextEditorParameters>::create());
+
+  // Blocks: 0..2 the quoted table, 3 "", 4 "tail", 5 "".
+  setTextAndSettle(editor, QStringLiteral("> | h1 | h2 |\n> | --- | --- |\n> | a | b |\n"
+                                          "\ntail\n"));
+  settleFolding();
+  QVERIFY2(!blockVisible(editor, 1), "the quoted table's source did not fold");
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+
+  editCell(sheet, 1, 0, QStringLiteral("zz"));
+  {
+    QFocusEvent out(QEvent::FocusOut);
+    QCoreApplication::sendEvent(sheet, &out);
+  }
+  // The replacement keeps the "> " prefix, or it would be refused outright.
+  QVERIFY2(editor.document()->toPlainText().contains(QStringLiteral("> | zz | b |")),
+           qPrintable(editor.document()->toPlainText()));
+
+  QVERIFY2(!blockVisible(editor, 1), "the rewritten quoted table expanded");
+
+  settle(editor);
+  settleFolding();
+  QVERIFY2(!blockVisible(editor, 1), "the parse lost the quoted table's fold");
+}
+
+// What a user typing actually hits: the commit is fired by the 400 ms idle
+// timer, from the event loop, with the sheet still focused - not from a
+// focus-out inside a call the test controls. Every other fold test here drives
+// the focus-out path.
+void TestInteractivePreview::testFoldSurvivesADebouncedCommit() {
+  VMarkdownEditor editor(makeAutoFoldConfig(true), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 400);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+
+  setTextAndSettle(editor, QLatin1String(c_table) + QStringLiteral("\ntail\n"));
+  settleFolding();
+  QVERIFY2(!blockVisible(editor, 1), "the table did not fold");
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+  sheet->setFocus();
+  QVERIFY2(sheet->hasFocus(), "the sheet did not take the focus");
+
+  settle(editor);
+  settleFolding();
+
+  OpenSourcePaintProbe probe(&editor, 1);
+  editor.getTextEdit()->viewport()->installEventFilter(&probe);
+
+  editCell(sheet, 1, 0, QStringLiteral("zz"));
+
+  // No flushSheet(): the debounce is the point.
+  QTRY_VERIFY_WITH_TIMEOUT(editor.document()->toPlainText().contains(QStringLiteral("| zz | b |")),
+                           3000);
+  QVERIFY2(!blockVisible(editor, 1), "the debounced commit expanded the source");
+  QVERIFY2(probe.m_openPaints == 0,
+           "a paint observed the source expanded during the debounced commit");
+
+  settle(editor);
+  settleFolding();
+  QVERIFY2(!blockVisible(editor, 1), "the parse after a debounced commit lost the fold");
+  QVERIFY2(probe.m_paints > 0, "the viewport never repainted - the probe proves nothing");
+  QCOMPARE(probe.m_openPaints, 0);
+
+  editor.getTextEdit()->viewport()->removeEventFilter(&probe);
 }
 
 // A rewrite which changes the row count shifts every range below it. Those

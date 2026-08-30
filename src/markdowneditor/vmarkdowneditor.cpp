@@ -257,7 +257,7 @@ void VMarkdownEditor::applyPreviewFolding() {
   }
 }
 
-void VMarkdownEditor::restoreFoldAfterPreviewRewrite(PreviewElementType p_type, int p_startBlock,
+bool VMarkdownEditor::restoreFoldAfterPreviewRewrite(PreviewElementType p_type, int p_startBlock,
                                                      int p_endBlock) {
   if (m_foldingProvider &&
       m_foldingProvider->restoreFoldedRange(p_type, p_startBlock, p_endBlock)) {
@@ -269,7 +269,10 @@ void VMarkdownEditor::restoreFoldAfterPreviewRewrite(PreviewElementType p_type, 
     // when a range was really created: the restore is a no-op for a replacement
     // which collapsed the element onto a single block, and then nothing changed.
     applyPendingExtraSelections();
+    return true;
   }
+
+  return false;
 }
 
 bool VMarkdownEditor::tryPreviewSourceFolded(PreviewElementType p_type, int p_startBlock,

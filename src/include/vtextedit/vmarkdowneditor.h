@@ -112,9 +112,11 @@ private:
   void applyPreviewFolding();
 
   // Re-create, already folded, the range an accepted in-place rewrite just
-  // destroyed. Called by the host from inside the rewrite, so the source never
-  // visibly expands.
-  void restoreFoldAfterPreviewRewrite(PreviewElementType p_type, int p_startBlock, int p_endBlock);
+  // destroyed. Called by the host from inside the rewrite's contentsChange
+  // emission, so the source never visibly expands. Returns whether a range was
+  // really created: the caller falls back to a post-edit attempt when it was
+  // not, which costs an extra layout pass but never leaves the source open.
+  bool restoreFoldAfterPreviewRewrite(PreviewElementType p_type, int p_startBlock, int p_endBlock);
 
   // Whether the region [p_startBlock, p_endBlock] of type @p_type has a live
   // folding range, and if so whether it is folded right now. False means there

@@ -2893,11 +2893,84 @@ void InteractivePreviewHost::handleSourceReplacementRequested(
   // The item's remembered state has to survive that untouched.
 
   QTextCursor cursor(m_doc);
-  cursor.beginEditBlock();
-  cursor.setPosition(start);
-  cursor.setPosition(end, QTextCursor::KeepAnchor);
-  cursor.insertText(p_replacementMarkdown);
-  cursor.endEditBlock();
+
+  // Restore the fold from INSIDE the contentsChange emission, not after the
+  // edit returns.
+  //
+  // QTextDocumentPrivate::finishEdit() emits contentsChange() first and only
+  // then hands the change to the document layout. TextFolding is connected to
+  // contentsChange (src/texteditor/textfolding.cpp:45-59), so by the time the
+  // layout runs, the destroyed range's interior blocks have already been made
+  // visible again (:750-754) - and TextDocumentLayout::documentChanged()
+  // publishes documentSizeChanged() for that EXPANDED height
+  // (src/markdowneditor/textdocumentlayout.cpp:534). Restoring after
+  // endEditBlock() returns therefore always cost two layout passes and two
+  // published document sizes, the first of them describing an unfolded table
+  // the user never asked to unfold. That is the flash: a taller document, a
+  // grown scroll range and a relayout of everything below, undone one pass
+  // later.
+  //
+  // This connection is made AFTER TextFolding's - it is constructed with the
+  // editor, long before this host - so a direct-connected slot runs after its
+  // maintenance has dropped the dead range, which is what makes the new one
+  // insertable, and still before the layout is notified. The two dirty regions
+  // then coalesce into the single documentChanged() Qt was going to deliver
+  // anyway, at the folded height, so nothing intermediate is ever published or
+  // painted.
+  //
+  // That ordering is not enforceable from here, so it is not relied on: when
+  // the in-edit attempt does not produce a range, the post-edit restore below
+  // still runs. It costs the extra layout pass this exists to avoid, which is
+  // the old behaviour, rather than leaving the source open until the parse.
+  //
+  // The connection is owned by a stack QObject, so it cannot outlive the frame
+  // whose locals the lambda captures by reference - including on an exception
+  // out of the edit. contentsChange fires for every keystroke in the document
+  // and m_doc outlives this call, so an escaped connection would be a crash,
+  // not a leak.
+  const int span = trimmedEndOffset(p_replacementMarkdown);
+  const PreviewElementType type = item.m_preview->type();
+  const bool foldOwed = known && folded && span > 0;
+  // Both outlive connectionScope below, and therefore every callback the edit
+  // can deliver. Declaring either inside the arming block would leave the
+  // lambda holding a reference to a dead stack slot by the time the edit runs.
+  bool attempted = false;
+  bool restored = false;
+  {
+    QObject connectionScope;
+    if (foldOwed) {
+      connect(
+          m_doc, &QTextDocument::contentsChange, &connectionScope,
+          [this, &attempted, &restored, type, firstBlock, start, span](int, int, int) {
+            // A nested edit made from another contentsChange consumer would
+            // re-enter this; the fold is owed exactly once.
+            if (attempted) {
+              return;
+            }
+            attempted = true;
+
+            // firstBlock cannot have moved: the edit starts at `start`, so only
+            // the text from there on was rewritten.
+            restored = m_editor->restoreFoldAfterPreviewRewrite(
+                type, firstBlock, m_doc->findBlock(start + span - 1).blockNumber());
+          },
+          Qt::DirectConnection);
+    }
+
+    cursor.beginEditBlock();
+    cursor.setPosition(start);
+    cursor.setPosition(end, QTextCursor::KeepAnchor);
+    cursor.insertText(p_replacementMarkdown);
+    cursor.endEditBlock();
+  }
+
+  // The fallback. Reached when contentsChange was never emitted - a replacement
+  // byte-identical to the source, where nothing was destroyed either and this
+  // is a no-op - or when the in-edit attempt was refused.
+  if (foldOwed && !restored) {
+    m_editor->restoreFoldAfterPreviewRewrite(type, firstBlock,
+                                             m_doc->findBlock(start + span - 1).blockNumber());
+  }
 
   // insertText() removes the selection first, which collapses this anchor, and
   // then advances it past the inserted text. Retarget it explicitly so the
@@ -2921,16 +2994,8 @@ void InteractivePreviewHost::handleSourceReplacementRequested(
                              << (rebased ? "and rebased the bound snapshot"
                                          : "WITHOUT a rebased snapshot");
 
-  // Restore the fold in this very event-loop turn. Waiting for the next parse
-  // would let the source visibly expand and collapse again. The edit is
-  // complete - endEditBlock() has returned - and no repaint can happen before
-  // this returns, so folding here is safe; it dirties the layout, and the
-  // schedulePublish() below resettles the widget geometry.
-  const int span = trimmedEndOffset(p_replacementMarkdown);
-  if (known && folded && span > 0) {
-    m_editor->restoreFoldAfterPreviewRewrite(item.m_preview->type(), firstBlock,
-                                             m_doc->findBlock(start + span - 1).blockNumber());
-  }
+  // The fold was restored from inside the edit, by the scoped connection above,
+  // or by its post-edit fallback.
 
   // The anchors moved: resubmit the reservations without waiting for the next
   // parse generation.
