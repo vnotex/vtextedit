@@ -1485,6 +1485,83 @@ void TestInteractivePreview::testDuplicateTablesGetDistinctIdentities() {
   QVERIFY(first->preview()->startPos() != second->preview()->startPos());
 }
 
+// A rebind that does not change what an element renders must not invalidate
+// its cached preferred size.
+//
+// Every live element is rebound on every parse generation, i.e. on every
+// keystroke anywhere in the note, and measuring a realized table sheet lays its
+// whole QTextDocument out. Without this, typing one character in a paragraph
+// re-measured every table on screen.
+void TestInteractivePreview::testAnUnchangedRebindDoesNotRemeasure() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QStringLiteral("prose\n\n") + QLatin1String(c_table));
+
+  auto host = previewHost(editor);
+  QVERIFY(host);
+  QVERIFY(singlePreviewWidget(editor));
+
+  auto measurements = [host]() { return host->property("vte_preview_measurements").toInt(); };
+  // Rebinds, i.e. how many times updateItem() bound a snapshot to a live item.
+  // This is the precondition of the whole test: without it, "the count did not
+  // rise" would hold for the trivial reason that nothing reached the host.
+  // reconcileDeliveries() is NOT this - it counts rebuilds from factory and
+  // type changes, and a plain text edit produces none.
+  auto binds = [host]() { return host->property("vte_preview_previews_bound").toInt(); };
+
+  // Settle once more so the initial measurement is definitely behind us.
+  settle(editor);
+  const int before = measurements();
+  const int bindsBefore = binds();
+  QVERIFY2(before > 0, "nothing was ever measured, so the counter proves nothing");
+
+  // Type in the prose, far from the table. The table's own source is
+  // untouched, so its rendering - and therefore its size - cannot have changed.
+  for (int i = 0; i < 5; ++i) {
+    QTextCursor cursor(editor.document());
+    cursor.setPosition(QStringLiteral("prose").size());
+    cursor.insertText(QStringLiteral("x"));
+    settle(editor);
+  }
+
+  // The edits really did rebind the item - otherwise the measurement count
+  // below would be unchanged for the trivial reason that nothing happened.
+  QVERIFY2(binds() > bindsBefore, "the edits rebound nothing, so the test proves nothing");
+  QCOMPARE(measurements(), before);
+}
+
+// The other direction, which is the one that would corrupt the layout if the
+// cache were too eager: editing the table's OWN source must re-measure it.
+void TestInteractivePreview::testEditingTheTableDoesRemeasure() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QStringLiteral("prose\n\n") + QLatin1String(c_table));
+
+  auto host = previewHost(editor);
+  QVERIFY(host);
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+
+  auto measurements = [host]() { return host->property("vte_preview_measurements").toInt(); };
+
+  settle(editor);
+  const int before = measurements();
+  const int heightBefore = widget->height();
+
+  // Append two rows to the table itself. The sheet grows, so a stale
+  // measurement would leave the reserved band too short and every following
+  // block overlapping it.
+  QTextCursor cursor(editor.document());
+  cursor.movePosition(QTextCursor::End);
+  cursor.insertText(QStringLiteral("| c | d |\n| e | f |\n"));
+  settle(editor);
+
+  QVERIFY2(measurements() > before, "a table which grew was not re-measured");
+
+  // And the new size actually reached the widget.
+  auto grown = singlePreviewWidget(editor);
+  QVERIFY(grown);
+  QTRY_VERIFY_WITH_TIMEOUT(grown->height() > heightBefore, 5000);
+}
+
 void TestInteractivePreview::testWidgetGeometryFollowsScrolling() {
   VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
 

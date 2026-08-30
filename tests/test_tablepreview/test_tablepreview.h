@@ -161,6 +161,7 @@ private slots:
   void testTheFactoryPropagatesTheAlignOption();
   void testEstimatedSizeTracksTheRealizedHeight();
   void testEstimatedSizeDeclinesWhatTheSheetWouldRefuse();
+  void testRenderEqualsSeparatesSourceFromRenderedState();
   void testAlignedDocumentPathsAndHtmlAreUnaffected();
   void testTheMenuActionsMutateTheTable();
   void testAnAlignmentOnlyChangeIsCommitted();

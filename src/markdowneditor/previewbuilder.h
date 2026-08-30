@@ -10,6 +10,28 @@ namespace vte {
 // normalized to '\n'. Returns an empty string for an unresolvable range.
 QString previewSourceText(const QTextDocument *p_doc, int p_start, int p_end);
 
+// Whether two snapshots would RENDER identically, and therefore measure to the
+// same preferred size at the same width and font.
+//
+// This is the cache key for the host's measurement cache, and it is
+// deliberately far stricter than comparing sourceMarkdown(). A snapshot carries
+// resolved state that its own source does NOT determine:
+//
+//  - an image's destination is resolved against reference definitions that live
+//    elsewhere in the document, so `![a][ref]` can render a different file
+//    while its own source is byte-identical;
+//  - a table's cellFormats() are produced under a DOCUMENT-WIDE per-cell
+//    highlighting budget, so adding tables elsewhere can silently strip an
+//    untouched table's highlight runs - and a run carries weight, italic,
+//    family and point size, any of which changes wrapping and therefore height.
+//
+// So: false for every type whose rendering inputs are not fully enumerated
+// here. That is not a limitation to be removed casually - "I cannot prove these
+// render the same" must keep costing a re-measurement, because the alternative
+// is a reserved band of the wrong height, which shows up as a preview
+// overlapping the text after it.
+bool previewRenderEquals(const Preview *p_a, const Preview *p_b);
+
 // Everything a table snapshot carries beyond the common Preview fields.
 //
 // A struct rather than a long parameter list because the two views of a table

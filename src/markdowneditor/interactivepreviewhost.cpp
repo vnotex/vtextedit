@@ -83,6 +83,8 @@ const char *InteractivePreviewHost::c_identityFallbackHitsProperty =
 
 const char *InteractivePreviewHost::c_rebuildAllsProperty = "vte_preview_rebuild_alls";
 
+const char *InteractivePreviewHost::c_measurementsProperty = "vte_preview_measurements";
+
 const char *InteractivePreviewHost::c_tableCellsBuiltProperty = "vte_preview_table_cells_built";
 
 const char *InteractivePreviewHost::c_snippetParsesProperty = "vte_preview_snippet_parses";
@@ -1348,6 +1350,30 @@ void InteractivePreviewHost::updateItem(quint64 p_id,
 
   const auto bound = keepBinding ? item.m_preview : p_preview;
 
+  // Whether the newly bound snapshot renders differently from the one it
+  // replaces, which is the ONLY reason a rebind can invalidate the cached
+  // preferred size.
+  //
+  // This matters because a rebind happens for EVERY live element on every
+  // parse generation, i.e. on every keystroke anywhere in the note, while a
+  // realized table sheet measures by laying its whole QTextDocument out.
+  // Before this, typing one character in a paragraph re-laid-out every table
+  // on screen.
+  //
+  // The comparison is previewRenderEquals(), NOT equal source text. A snapshot
+  // carries resolved state its own source does not determine - an image's
+  // destination comes from a reference definition elsewhere, and a table's
+  // cell highlight runs are subject to a document-wide budget that other
+  // tables can exhaust - so equal source is not equal rendering. That function
+  // answers false for anything it cannot fully account for, which costs a
+  // re-measurement rather than risking a band of the wrong height.
+  //
+  // The other two inputs to a measurement are covered elsewhere: the width
+  // basis by publish()'s own comparison, and the font by applyEditorFont().
+  // Position is deliberately not an input - an element that merely slid down
+  // the document is the same shape.
+  const bool contentChanged = !previewRenderEquals(item.m_preview.data(), bound.data());
+
   // Resolve the new anchor before rebinding anything: a replayed generation
   // can describe a range the document has outgrown, and rebinding first would
   // leave the item quoting the new source over a collapsed range.
@@ -1382,7 +1408,9 @@ void InteractivePreviewHost::updateItem(quint64 p_id,
   // precisely because an unrealized widget cannot hold an edit, a pending
   // commit or a deferred replacement.
   if (!item.m_widget) {
-    item.m_measureDirty = true;
+    if (contentChanged) {
+      item.m_measureDirty = true;
+    }
     ++m_previewsBound;
     qCDebug(previewHostLog) << "rebound unrealized item" << p_id << previewTypeName(bound->type())
                             << "at [" << item.m_anchor.selectionStart() << ","
@@ -1410,8 +1438,11 @@ void InteractivePreviewHost::updateItem(quint64 p_id,
     }
 
     auto &live = it.value();
-    // The bound snapshot changed, so the cached measurement is stale.
-    live.m_measureDirty = true;
+    // Only a snapshot which renders differently invalidates the measurement.
+    // See contentChanged above.
+    if (contentChanged) {
+      live.m_measureDirty = true;
+    }
     ++m_previewsBound;
     qCDebug(previewHostLog) << "updated item" << p_id << previewTypeName(bound->type())
                             << "in place at [" << live.m_anchor.selectionStart() << ","
@@ -2443,6 +2474,7 @@ void InteractivePreviewHost::publishCounters() {
   setProperty(c_geometrySetCallsProperty, m_geometrySetCalls);
   setProperty(c_identityFallbackHitsProperty, m_identityFallbackHits);
   setProperty(c_rebuildAllsProperty, m_rebuildAlls);
+  setProperty(c_measurementsProperty, m_measurements);
   setProperty(c_tableCellsBuiltProperty, static_cast<qulonglong>(tablePreviewCellsBuilt()));
   setProperty(c_snippetParsesProperty, static_cast<qulonglong>(md::inlineSnippetParseCount()));
   m_publishedGeometrySetCalls = m_geometrySetCalls;
@@ -2456,6 +2488,7 @@ void InteractivePreviewHost::resetCounters() {
   m_geometrySetCalls = 0;
   m_identityFallbackHits = 0;
   m_rebuildAlls = 0;
+  m_measurements = 0;
   resetTablePreviewCellsBuilt();
   md::resetInlineSnippetParseCount();
   // Forces the next publication through: the skip guard compares against this.
@@ -2537,6 +2570,7 @@ void InteractivePreviewHost::publish() {
     const qreal widthBasis = widthBasisFor(item, availableWidth);
 
     if (item.m_measureDirty || !qFuzzyCompare(item.m_measuredWidthBasis + 1, widthBasis + 1)) {
+      ++m_measurements;
       if (item.m_widget) {
         item.m_measuredSize = preferredSize(item.m_widget.data(), spec.m_placement, start, end);
         item.m_sizeIsEstimate = false;
@@ -2876,6 +2910,7 @@ bool InteractivePreviewHost::realizeVisibleItems() {
 
     {
       BlockGuard guard(this, BlockGuard::Reason::FactoryCallback);
+      ++m_measurements;
       real = preferredSize(widget.data(), placement, start, end);
     }
 

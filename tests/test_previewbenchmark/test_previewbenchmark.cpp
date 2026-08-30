@@ -319,12 +319,30 @@ void TestPreviewBenchmark::benchmarkUnchangedRepublish() {
   QCOMPARE(counter(host, "vte_preview_identity_fallback_hits"), qint64(0));
   QCOMPARE(counter(host, "vte_preview_previews_bound"), qint64(tableCount()) * rounds);
 
+  // And the document is not re-measured. This is the assertion that pins the
+  // measurement cache: a realized sheet measures by laying its QTextDocument
+  // out, so re-measuring elements whose source did not change is the single
+  // most expensive thing an unchanged publication could do.
+  //
+  // The gate is "does not SCALE", not "is exactly zero". An uncached
+  // implementation measures every item on every round - tableCount() * rounds -
+  // whereas a small constant residue is legitimate: a late realization or a
+  // width basis that settles once both re-measure a handful of items, and
+  // neither grows with the number of rounds.
+  const qint64 republishMeasurements = counter(host, "vte_preview_measurements");
+  QVERIFY2(republishMeasurements < qint64(tableCount()),
+           qPrintable(QStringLiteral("%1 measurements over %2 unchanged rounds of %3 items")
+                          .arg(republishMeasurements)
+                          .arg(rounds)
+                          .arg(tableCount())));
+
   const double perRound = static_cast<double>(elapsed) / rounds;
   qInfo() << "unchanged republish:" << perRound << "ms/round over" << rounds << "rounds,"
           << counter(host, "vte_preview_geometry_set_calls") << "setGeometry calls";
 
   record(QStringLiteral("republish.rounds"), rounds);
   record(QStringLiteral("republish.msPerRound"), QString::number(perRound, 'f', 2));
+  record(QStringLiteral("republish.measurements"), counter(host, "vte_preview_measurements"));
   record(QStringLiteral("republish.previewsBound"), counter(host, "vte_preview_previews_bound"));
   record(QStringLiteral("republish.publishes"), counter(host, "vte_preview_publishes"));
   record(QStringLiteral("republish.geometrySetCalls"),
@@ -424,15 +442,27 @@ void TestPreviewBenchmark::benchmarkTyping() {
   // character on every keystroke, so if the exact-anchor index is doing its
   // job this is zero, and the linear overlap scan is cold.
   const qint64 fallback = counter(host, "vte_preview_identity_fallback_hits");
+  const qint64 measurements = counter(host, "vte_preview_measurements");
   const double perKeystroke = static_cast<double>(elapsed) / c_typingSteps;
 
+  // Every table is rebound on every keystroke, but none of them changed, so
+  // typing in a paragraph must not lay the tables out. The gate is that the
+  // count does not scale with the keystrokes: an uncached implementation
+  // measures tableCount() items on every one of them.
+  QVERIFY2(measurements < qint64(tableCount()),
+           qPrintable(QStringLiteral("%1 measurements over %2 keystrokes against %3 items")
+                          .arg(measurements)
+                          .arg(c_typingSteps)
+                          .arg(tableCount())));
+
   qInfo() << "typing:" << perKeystroke << "ms/keystroke over" << c_typingSteps << "keystrokes,"
-          << fallback << "identity fallback hits," << counter(host, "vte_preview_widgets_realized")
-          << "widgets realized";
+          << fallback << "identity fallback hits," << measurements << "measurements,"
+          << counter(host, "vte_preview_widgets_realized") << "widgets realized";
 
   record(QStringLiteral("typing.keystrokes"), c_typingSteps);
   record(QStringLiteral("typing.msPerKeystroke"), QString::number(perKeystroke, 'f', 2));
   record(QStringLiteral("typing.identityFallbackHits"), fallback);
+  record(QStringLiteral("typing.measurements"), measurements);
   record(QStringLiteral("typing.widgetsRealized"), counter(host, "vte_preview_widgets_realized"));
   record(QStringLiteral("typing.widgetsDestroyed"), counter(host, "vte_preview_widgets_destroyed"));
   record(QStringLiteral("typing.tableCellsBuilt"), counter(host, "vte_preview_table_cells_built"));

@@ -224,6 +224,8 @@ private slots:
   void testGlobalDisableRemovesWidgets();
   void testDuplicateTablesGetDistinctIdentities();
   void testWidgetGeometryFollowsScrolling();
+  void testAnUnchangedRebindDoesNotRemeasure();
+  void testEditingTheTableDoesRemeasure();
 
   // Regressions.
   void testReplacementRejectedOnChangedContainerChain();

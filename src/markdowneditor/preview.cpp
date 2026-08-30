@@ -27,7 +27,74 @@ QString vte::previewSourceText(const QTextDocument *p_doc, int p_start, int p_en
   return text;
 }
 
+bool vte::previewRenderEquals(const Preview *p_a, const Preview *p_b) {
+  // Null first, so a missing snapshot is never "equal" to anything - including
+  // another missing one. The caller's question is "may I reuse the previous
+  // measurement", and there is nothing to reuse without a previous snapshot.
+  if (!p_a || !p_b) {
+    return false;
+  }
+
+  if (p_a == p_b) {
+    return true;
+  }
+
+  if (p_a->type() != p_b->type() || p_a->placement() != p_b->placement()) {
+    return false;
+  }
+
+  if (p_a->sourceMarkdown() != p_b->sourceMarkdown()) {
+    return false;
+  }
+
+  // Only the table snapshot has its rendering inputs fully enumerated below.
+  // Every other type falls through to "not provably equal", which costs a
+  // re-measurement and is the behaviour this cache replaced. See the header:
+  // an image's destination is resolved from reference definitions elsewhere in
+  // the document, so equal source does NOT imply equal rendering for it.
+  if (p_a->type() != PreviewElementType::Table) {
+    return false;
+  }
+
+  const auto *a = static_cast<const TablePreview *>(p_a);
+  const auto *b = static_cast<const TablePreview *>(p_b);
+
+  if (a->rowCount() != b->rowCount() || a->columnCount() != b->columnCount() ||
+      a->gridRowCount() != b->gridRowCount() || a->gridColumnCount() != b->gridColumnCount()) {
+    return false;
+  }
+
+  if (a->syntax() != b->syntax() || a->isMarkdownBacked() != b->isMarkdownBacked() ||
+      a->hasHeaderRow() != b->hasHeaderRow()) {
+    return false;
+  }
+
+  if (a->alignments() != b->alignments() || a->cells() != b->cells()) {
+    return false;
+  }
+
+  // The one the document-wide highlighting budget can change on its own. A run
+  // carries a QTextCharFormat, so a difference here really can rewrap a cell.
+  if (a->cellFormats() != b->cellFormats()) {
+    return false;
+  }
+
+  // Merged cells: two grids with the same text can still lay out differently.
+  for (int row = 0; row < a->gridRowCount(); ++row) {
+    for (int column = 0; column < a->gridColumnCount(); ++column) {
+      if (a->isOrigin(row, column) != b->isOrigin(row, column) ||
+          a->rowSpan(row, column) != b->rowSpan(row, column) ||
+          a->colSpan(row, column) != b->colSpan(row, column)) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
 namespace vte {
+
 class PreviewPrivate {
 public:
   PreviewElementType m_type = PreviewElementType::Image;

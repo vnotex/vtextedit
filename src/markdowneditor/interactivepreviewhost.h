@@ -129,6 +129,17 @@ public:
   // rebuildAll() bodies that have run (a postponed rebuild does not count).
   static const char *c_rebuildAllsProperty;
 
+  // Preferred sizes actually computed - a real widget measurement or a factory
+  // estimate, counted at BOTH sites that compute one: the publication loop and
+  // the measurement a realization performs. NOT the number of items looked at:
+  // the whole point of the measurement cache is that most publications compute
+  // nothing.
+  //
+  // A realized table sheet measures by laying its QTextDocument out, which is
+  // by far the most expensive thing a publication can do, so this is the
+  // counter that says whether a keystroke was cheap.
+  static const char *c_measurementsProperty;
+
   // Table sheet cells constructed, aggregated from the table layer. Process
   // wide, because the count originates in TablePreviewDocument, which has no
   // back pointer to a host; a benchmark drives one editor at a time.
@@ -857,6 +868,8 @@ private:
   mutable int m_identityFallbackHits = 0;
 
   int m_rebuildAlls = 0;
+
+  int m_measurements = 0;
 
   // Write every performance counter out to its dynamic property. Called at the
   // end of each pass which can have moved one, so a benchmark reading them

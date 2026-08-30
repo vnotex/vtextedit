@@ -4392,6 +4392,61 @@ void TestTablePreview::testHtmlOnlyTableWritesBackVerbatim() {
 // The flag is forwarded to the Markdown serializer only. An HTML-backed or
 // merged table has to match the scanner's canonical subset exactly, and the
 // rendered HTML is layout independent, so neither is padded.
+// previewRenderEquals() is the measurement cache's key, so the thing it must
+// never do is call two snapshots equal when they would render differently.
+//
+// The dangerous case is NOT a changed source - that is obvious and easy. It is
+// a snapshot whose source is byte-identical but whose RESOLVED state differs,
+// because that is what the document-wide per-cell highlighting budget produces:
+// adding enough tables elsewhere strips an untouched table's highlight runs,
+// and a run carries weight, italic, family and point size, any of which
+// rewraps a cell and changes its height.
+void TestTablePreview::testRenderEqualsSeparatesSourceFromRenderedState() {
+  QVector<QVector<QString>> cells;
+  cells.append({QStringLiteral("h1"), QStringLiteral("h2")});
+  cells.append({QStringLiteral("a"), QStringLiteral("b")});
+  const QVector<PreviewTableAlignment> alignments{PreviewTableAlignment::None,
+                                                  PreviewTableAlignment::None};
+
+  auto plain = makeTable(cells, alignments);
+
+  // Same everything, so the cache may reuse the measurement.
+  auto samePlain = makeTable(cells, alignments);
+  QVERIFY(previewRenderEquals(plain.data(), samePlain.data()));
+  QCOMPARE(plain->sourceMarkdown(), samePlain->sourceMarkdown());
+
+  // Identical source, DIFFERENT resolved cell formats. A bold run is wider
+  // than a plain one, so this is exactly the case that must re-measure.
+  PreviewFormatRun bold;
+  bold.m_start = 0;
+  bold.m_length = 1;
+  bold.m_format.setFontWeight(QFont::Bold);
+
+  QVector<QVector<QVector<PreviewFormatRun>>> formats;
+  formats.append({QVector<PreviewFormatRun>(), QVector<PreviewFormatRun>()});
+  formats.append({QVector<PreviewFormatRun>{bold}, QVector<PreviewFormatRun>()});
+
+  auto formatted = makeTable(cells, alignments, QVector<QString>(), QString(), formats);
+
+  QCOMPARE(formatted->sourceMarkdown(), plain->sourceMarkdown());
+  QVERIFY2(!previewRenderEquals(plain.data(), formatted.data()),
+           "two snapshots with identical source but different cell formats compared equal");
+
+  // A changed cell is caught too, which is the easy direction.
+  QVector<QVector<QString>> edited = cells;
+  edited[1][0] = QStringLiteral("aaaaaaaaaaaaaaaaaaaa");
+  auto grown = makeTable(edited, alignments);
+  QVERIFY(!previewRenderEquals(plain.data(), grown.data()));
+
+  // Degenerate inputs. A missing snapshot is never equal to anything, not even
+  // to another missing one: the caller is asking whether a previous
+  // measurement may be reused, and there is none to reuse.
+  QVERIFY(previewRenderEquals(plain.data(), plain.data()));
+  QVERIFY(!previewRenderEquals(plain.data(), nullptr));
+  QVERIFY(!previewRenderEquals(nullptr, plain.data()));
+  QVERIFY(!previewRenderEquals(nullptr, nullptr));
+}
+
 void TestTablePreview::testEstimatedSizeTracksTheRealizedHeight() {
   // The estimator is what reserves a band for a table whose sheet has not been
   // built yet. Its output and the real measurement are computed by two
