@@ -165,6 +165,11 @@ private:
   // AST context of the block holding the cursor, probed in preKeyReturn
   // (before the block insert) and consumed in postKeyReturn.
   md::BlockContext m_returnBlockContext;
+
+  // Re-entrancy guard for the viewport anchor in applyPreviewFolding(): its
+  // setValue() fires a scroll, which can drive preview realization and schedule
+  // more owed work.
+  bool m_inFoldScrollAnchor = false;
 };
 } // namespace vte
 

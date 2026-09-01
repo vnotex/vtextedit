@@ -33,6 +33,19 @@ public:
 
 private:
   VMarkdownEditor *m_editor = nullptr;
+
+  // Whether the caret block was within the visible block range right before the
+  // last relayout(). PreviewMgr::relayout() always calls relayout() immediately
+  // before ensureCursorVisible(), which is what makes this flag describe the
+  // state the caller is asking about. Defaults to true so that any path which
+  // reaches ensureCursorVisible() WITHOUT a preceding relayout() keeps the old
+  // unconditional behaviour.
+  bool m_caretWasVisibleBeforeRelayout = true;
+
+  // Re-entrancy guard for the scroll compensation: the setValue() at the end of
+  // relayout() fires a scroll, which can drive InteractivePreviewHost
+  // realization and, in turn, another preview publication.
+  bool m_inScrollCompensation = false;
 };
 } // namespace vte
 

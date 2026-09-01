@@ -25,6 +25,7 @@
 
 #include <QDebug>
 #include <QFontMetricsF>
+#include <QScrollBar>
 
 using namespace vte;
 
@@ -248,6 +249,39 @@ void VMarkdownEditor::applyPreviewFolding() {
     return;
   }
 
+  auto vbar = m_textEdit->verticalScrollBar();
+  auto layout = documentLayout();
+
+  // Auto-folding a previewed block HIDES its source, so the document gets
+  // SHORTER - the mirror image of the growth EditorPreviewMgr::relayout()
+  // compensates for, and a second, later geometry change that its anchor has
+  // already been retired by the time this runs. QScrollBar keeps its value()
+  // across the range update either way, so without an anchor here every fold
+  // above the viewport slides the visible text UP.
+  //
+  // Anchor on the first visible block, exactly as the relayout path does.
+  // blockBoundingRect() lazily repairs a stale block layout, so it must not be
+  // called from inside a layout pass.
+  int originValue = 0;
+  int anchorBlockNumber = -1;
+  int originRevision = 0;
+  qreal anchorViewportY = 0;
+  bool anchored = false;
+
+  if (!m_inFoldScrollAnchor && vbar && layout && !layout->isBusy()) {
+    originValue = vbar->value();
+    // At the very top nothing above the viewport can displace the content.
+    if (originValue != vbar->minimum()) {
+      const auto anchorBlock = TextEditUtils::firstVisibleBlock(m_textEdit);
+      if (anchorBlock.isValid()) {
+        anchored = true;
+        anchorBlockNumber = anchorBlock.blockNumber();
+        anchorViewportY = layout->blockBoundingRect(anchorBlock).y() - originValue;
+        originRevision = document()->revision();
+      }
+    }
+  }
+
   auto host = interactivePreviewHost();
   const auto ranges = host ? host->previewedRanges() : QVector<PreviewedRange>();
   const auto states =
@@ -255,6 +289,73 @@ void VMarkdownEditor::applyPreviewFolding() {
   if (host) {
     host->setPreviewFoldStates(states);
   }
+
+  if (!anchored) {
+    return;
+  }
+
+  // applyPreviewAutoFold() reaches application code synchronously - foldRange()
+  // emits foldingRangesChanged(), and the geometry that follows hands a context
+  // to every preview widget - so NOTHING captured above may be trusted without
+  // being re-established first. The provider re-resolves its own table across
+  // the same boundary for exactly this reason.
+  //
+  // A replaced scrollbar or layout leaves the captured pointers dangling, and a
+  // document edit makes anchorBlockNumber name a different line. Any of those
+  // means the correction describes a document nobody is looking at any more;
+  // drop it rather than guess.
+  if (m_textEdit->verticalScrollBar() != vbar || documentLayout() != layout ||
+      document()->revision() != originRevision || layout->isBusy()) {
+    return;
+  }
+
+  // The same "user scrolled meanwhile" rule as
+  // InteractivePreviewHost::applyRealizationScrollCompensation(): a newer
+  // scroll always wins over an older correction.
+  if (vbar->value() != originValue) {
+    return;
+  }
+
+  auto anchorBlock = document()->findBlockByNumber(anchorBlockNumber);
+  if (!anchorBlock.isValid()) {
+    return;
+  }
+
+  // The anchor may have been folded away. TextFolding::setRangeFolded() keeps a
+  // region's FIRST and last block visible, so the hidden content collapsed
+  // upwards into a block above; walking backwards lands on it and keeps the
+  // anchor at or above where the user was looking. Walking forward is only the
+  // fallback for a document whose head is entirely hidden, which
+  // blockBoundingRect() could not measure at all.
+  if (!anchorBlock.isVisible()) {
+    auto probe = anchorBlock.previous();
+    while (probe.isValid() && !probe.isVisible()) {
+      probe = probe.previous();
+    }
+
+    if (!probe.isValid()) {
+      probe = anchorBlock.next();
+      while (probe.isValid() && !probe.isVisible()) {
+        probe = probe.next();
+      }
+    }
+
+    if (!probe.isValid()) {
+      return;
+    }
+
+    anchorBlock = probe;
+  }
+
+  const qreal newDocY = layout->blockBoundingRect(anchorBlock).y();
+  const int target = qBound(vbar->minimum(), qRound(newDocY - anchorViewportY), vbar->maximum());
+  if (target == originValue) {
+    return;
+  }
+
+  m_inFoldScrollAnchor = true;
+  vbar->setValue(target);
+  m_inFoldScrollAnchor = false;
 }
 
 bool VMarkdownEditor::restoreFoldAfterPreviewRewrite(PreviewElementType p_type, int p_startBlock,
