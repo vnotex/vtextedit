@@ -316,7 +316,7 @@ int reconcileDeliveries(VMarkdownEditor &p_editor) {
 
 // TablePreviewWidget::c_commitDebounceMs: the idle window after the last
 // keystroke before a sheet writes itself back.
-const int c_commitDebounceMs = 400;
+const int c_commitDebounceMs = 10000;
 
 QTextEdit *sheetView(PreviewWidget *p_widget) {
   return p_widget ? p_widget->findChild<QTextEdit *>() : nullptr;
@@ -495,7 +495,7 @@ void editCell(QTextEdit *p_sheet, int p_row, int p_column, const QString &p_text
   cursor.insertText(p_text);
 }
 
-// Write the pending edit back now. The sheet debounces on a 400 ms idle timer,
+// Write the pending edit back now. The sheet debounces on a 10000 ms idle timer,
 // and losing the focus is one of the triggers which flushes it immediately.
 void flushSheet(QTextEdit *p_sheet) {
   QFocusEvent out(QEvent::FocusOut);
@@ -2793,7 +2793,7 @@ void TestInteractivePreview::testTableWidthFollowsEditorResize() {
 // ---------------------------------------------------------------------------
 
 void TestInteractivePreview::testRemovalDuringTheDebounceKeepsTheEdit() {
-  // The sheet holds an edit for 400 ms before writing it back. If the host
+  // The sheet holds an edit for 10000 ms before writing it back. If the host
   // drops the identity in that window, the flush the removal triggers arrives
   // after the identity is gone and is rejected as an UnknownIdentity, silently
   // losing the edit - unless the host flushes first, while the context and the
@@ -4070,7 +4070,7 @@ void TestInteractivePreview::testFoldSurvivesAMergeAction() {
   // The merge is written back through the sheet's own commit, which the merge
   // arms rather than performs, so let it land.
   QTRY_VERIFY_WITH_TIMEOUT(editor.document()->toPlainText().contains(QStringLiteral("colspan")),
-                           3000);
+                           c_commitDebounceMs + 200);
 
   settle(editor);
   settleFolding();
@@ -4114,7 +4114,7 @@ void TestInteractivePreview::testFoldSurvivesASheetCellEditInABlockquotedTable()
   QVERIFY2(!blockVisible(editor, 1), "the parse lost the quoted table's fold");
 }
 
-// What a user typing actually hits: the commit is fired by the 400 ms idle
+// What a user typing actually hits: the commit is fired by the 10000 ms idle
 // timer, from the event loop, with the sheet still focused - not from a
 // focus-out inside a call the test controls. Every other fold test here drives
 // the focus-out path.
@@ -4145,7 +4145,7 @@ void TestInteractivePreview::testFoldSurvivesADebouncedCommit() {
 
   // No flushSheet(): the debounce is the point.
   QTRY_VERIFY_WITH_TIMEOUT(editor.document()->toPlainText().contains(QStringLiteral("| zz | b |")),
-                           3000);
+                           c_commitDebounceMs + 200);
   QVERIFY2(!blockVisible(editor, 1), "the debounced commit expanded the source");
   QVERIFY2(probe.m_openPaints == 0,
            "a paint observed the source expanded during the debounced commit");
@@ -4599,11 +4599,12 @@ void TestInteractivePreview::testSheetEditDoesNotScrollToTheEditorCaret() {
 
   editCell(sheet, 1, 1, QStringLiteral("changed"));
 
-  // Let the sheet's own 400 ms debounce fire. flushSheet() would fake a
+  // Let the sheet's own 10000 ms debounce fire. flushSheet() would fake a
   // FocusOut without moving the real focus, and the real focus is the very
   // thing under test here.
   QTRY_VERIFY_WITH_TIMEOUT(
-      editor.document()->toPlainText().contains(QStringLiteral("| a | changed |")), 3000);
+      editor.document()->toPlainText().contains(QStringLiteral("| a | changed |")),
+      c_commitDebounceMs + 200);
   QVERIFY(sheet);
   QVERIFY2(sheet->hasFocus(), "the commit moved the focus out of the sheet");
 
@@ -5803,7 +5804,7 @@ void TestInteractivePreview::testConcurrentFlushTriggersSendOneRequest() {
 
   // Let the debounce fire.
   QTRY_VERIFY_WITH_TIMEOUT(editor.document()->toPlainText().contains(QStringLiteral("changed")),
-                           3000);
+                           c_commitDebounceMs + 200);
   QVERIFY2(reentered, "the commit never reached the document");
 
   // Exactly one request was issued for the in-flight generation, and it was
@@ -5814,7 +5815,7 @@ void TestInteractivePreview::testConcurrentFlushTriggersSendOneRequest() {
   // The newer generation was re-armed and lands too, without ever being
   // rejected as a stale or unknown request.
   QTRY_VERIFY_WITH_TIMEOUT(editor.document()->toPlainText().contains(QStringLiteral("later")),
-                           3000);
+                           c_commitDebounceMs + 200);
   QCOMPARE(recorder.count(PreviewReplacementResult::UnknownIdentity), 0);
   QCOMPARE(recorder.count(PreviewReplacementResult::StaleSnapshot), 0);
   QVERIFY2(!warnings.contains(QStringLiteral("UnknownIdentity")),

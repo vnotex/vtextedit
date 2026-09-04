@@ -4071,7 +4071,7 @@ void TablePreviewSheet::insertFromMimeData(const QMimeData *p_source) {
 
 const qreal TablePreviewWidget::c_widthFraction = 1.0;
 
-const int TablePreviewWidget::c_commitDebounceMs = 400;
+const int TablePreviewWidget::c_commitDebounceMs = 10000;
 
 TablePreviewWidget::TablePreviewWidget(PreviewWidgetContext *p_context, QWidget *p_parent)
     : PreviewWidget(p_context, p_parent), m_document(new TablePreviewDocument()) {
