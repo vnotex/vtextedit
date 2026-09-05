@@ -17,6 +17,7 @@ add_executable(test_tablepreviewinputmode
     ${MDEDITOR_FOLDER}/previewwidget.cpp
     ${MDEDITOR_FOLDER}/tablepreviewwidget.cpp ${MDEDITOR_FOLDER}/tablepreviewwidget.h
     ${MDEDITOR_FOLDER}/hlformatresolver.cpp ${MDEDITOR_FOLDER}/hlformatresolver.h
+    ${MDEDITOR_FOLDER}/cmarkadapter.cpp ${MDEDITOR_FOLDER}/cmarkadapter.h
     ${SRC_FOLDER}/utils/htmltablescanner.cpp ${SRC_FOLDER}/include/vtextedit/htmltablescanner.h
     ${SRC_FOLDER}/utils/htmlimgscanner.cpp ${SRC_FOLDER}/include/vtextedit/htmlimgscanner.h
     ${SRC_FOLDER}/utils/htmltagparse.cpp ${SRC_FOLDER}/utils/htmltagparse.h
@@ -31,6 +32,7 @@ add_executable(test_tablepreviewinputmode
     ${SRC_FOLDER}/inputmode/abstractinputmode.cpp ${SRC_FOLDER}/inputmode/abstractinputmode.h
     ${SRC_FOLDER}/utils/texteditutils.cpp ${SRC_FOLDER}/include/vtextedit/texteditutils.h
     ${SRC_FOLDER}/utils/textutils.cpp ${SRC_FOLDER}/include/vtextedit/textutils.h
+    ${SRC_FOLDER}/utils/markdownutils.cpp ${SRC_FOLDER}/include/vtextedit/markdownutils.h
     # The sheet installs one of the three input modes, so the mode registry and
     # all three implementations come with it.
     ${MDEDITOR_FOLDER}/tablepreviewinputmode.cpp ${MDEDITOR_FOLDER}/tablepreviewinputmode.h
