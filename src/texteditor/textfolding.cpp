@@ -696,8 +696,11 @@ void TextFolding::checkAndUpdateFoldings() {
 
   bool needUpdate = checkAndUpdateFoldings(m_foldingRanges);
   if (needUpdate) {
-    markDocumentContentsDirty();
+    // Let observers replace invalidated ranges before the layout sees the
+    // temporarily unfolded blocks. A restoration may emit this signal
+    // recursively, so callers which mutate ranges here must guard re-entry.
     emit foldingRangesChanged();
+    markDocumentContentsDirty();
   }
 }
 

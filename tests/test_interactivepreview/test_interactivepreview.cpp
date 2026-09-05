@@ -4145,6 +4145,9 @@ void TestInteractivePreview::testNoPaintObservesTheOpenSourceDuringACellEdit() {
 // TextDocumentLayout published documentSizeChanged() for that taller document.
 // Every consumer of it - the scroll range, the preview geometry, anything
 // tracking the document height - saw the table open and then closed again.
+// The layout update signal is the stricter probe: TextFolding's own dirty
+// notification is synchronous, so it catches an expanded layout even when the
+// overall document size happens not to change.
 //
 // The restore now runs inside the same contentsChange emission, so exactly one
 // size is published and it describes the folded document.
@@ -4165,6 +4168,16 @@ void TestInteractivePreview::testNoDocumentSizeIsPublishedForTheOpenSource() {
   // Drain what the initial fold owes, so only the cell edit is measured.
   settle(editor);
   settleFolding();
+
+  int layoutUpdates = 0;
+  int openLayoutUpdates = 0;
+  QObject::connect(editor.document()->documentLayout(), &QAbstractTextDocumentLayout::update,
+                   &editor, [&layoutUpdates, &openLayoutUpdates, &editor](const QRectF &) {
+                     ++layoutUpdates;
+                     if (blockVisible(editor, 1)) {
+                       ++openLayoutUpdates;
+                     }
+                   });
 
   int contentChanges = 0;
   int openContentChanges = 0;
@@ -4197,6 +4210,10 @@ void TestInteractivePreview::testNoDocumentSizeIsPublishedForTheOpenSource() {
   }
   QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("| zz | b |")));
   QVERIFY(!blockVisible(editor, 1));
+
+  QVERIFY2(layoutUpdates > 0, "the layout emitted no update - the probe proves nothing");
+  QVERIFY2(openLayoutUpdates == 0,
+           "the layout published an update while the rewritten source was expanded");
 
   QVERIFY2(contentChanges > 0,
            "the document emitted no non-empty change - the probe proves nothing");
