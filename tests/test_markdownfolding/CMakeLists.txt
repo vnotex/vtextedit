@@ -17,6 +17,7 @@ add_executable(test_markdownfolding
     ${EDITOR_FOLDER}/extraselectionmgr.cpp ${EDITOR_FOLDER}/extraselectionmgr.h
     ${EDITOR_FOLDER}/textfolding.cpp ${EDITOR_FOLDER}/textfolding.h
     ${MDEDITOR_FOLDER}/markdownfoldingprovider.cpp ${MDEDITOR_FOLDER}/markdownfoldingprovider.h
+    ${MDEDITOR_FOLDER}/previewlogging.cpp ${MDEDITOR_FOLDER}/previewlogging.h
     ${MDEDITOR_FOLDER}/textdocumentlayout.cpp ${MDEDITOR_FOLDER}/textdocumentlayout.h
     ${MDEDITOR_FOLDER}/documentresourcemgr.cpp ${MDEDITOR_FOLDER}/documentresourcemgr.h
     ${MDEDITOR_FOLDER}/previewdata.cpp

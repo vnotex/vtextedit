@@ -21,6 +21,7 @@
 #include "markdownparser.h"
 #include "markdownsyntaxstyles.h"
 #include "mathblockhighlighter.h"
+#include "previewlogging.h"
 
 // Extension flags (replacing pmh_EXT_* constants).
 // These are kept for config compatibility but cmark enables all extensions by default.
@@ -303,6 +304,11 @@ void MarkdownHighlighter::startParse() {
   config->m_numOfBlocks = document()->blockCount();
   config->m_extensions = m_parserExts;
 
+  qCDebug(previewSnapshotLog) << "parse scheduled" << "timestamp" << m_timeStamp
+                              << "document revision" << document()->revision() << "removed"
+                              << m_lastContentsChange.m_charsRemoved << "added"
+                              << m_lastContentsChange.m_charsAdded;
+
   m_parser->parseAsync(config);
 }
 
@@ -393,6 +399,11 @@ void MarkdownHighlighter::handleParseResult(
     const QSharedPointer<md::MarkdownParseResult> &p_result) {
   if (!m_result.isNull() && p_result->m_timeStamp != m_timeStamp) {
     // Directly skip non-matched results to avoid highlight noise.
+    qCDebug(previewSnapshotLog) << "parse stale" << "timestamp" << p_result->m_timeStamp
+                                << "current timestamp" << m_timeStamp << "document revision"
+                                << document()->revision() << "removed"
+                                << m_lastContentsChange.m_charsRemoved << "added"
+                                << m_lastContentsChange.m_charsAdded;
     return;
   }
 
@@ -424,6 +435,11 @@ void MarkdownHighlighter::handleParseResult(
   }
 
   if (matched) {
+    qCDebug(previewSnapshotLog) << "parse accepted" << "timestamp" << m_timeStamp
+                                << "document revision" << document()->revision() << "removed"
+                                << m_lastContentsChange.m_charsRemoved << "added"
+                                << m_lastContentsChange.m_charsAdded;
+
     completeHighlight(m_result);
   }
 }

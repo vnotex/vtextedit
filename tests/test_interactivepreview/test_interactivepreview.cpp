@@ -4166,6 +4166,19 @@ void TestInteractivePreview::testNoDocumentSizeIsPublishedForTheOpenSource() {
   settle(editor);
   settleFolding();
 
+  int contentChanges = 0;
+  int openContentChanges = 0;
+  QObject::connect(
+      editor.document(), &QTextDocument::contentsChange, &editor,
+      [&contentChanges, &openContentChanges, &editor](int, int p_charsRemoved, int p_charsAdded) {
+        if (p_charsRemoved == 0 && p_charsAdded == 0) {
+          return;
+        }
+        ++contentChanges;
+        if (blockVisible(editor, 1)) {
+          ++openContentChanges;
+        }
+      });
   int publications = 0;
   int openPublications = 0;
   QObject::connect(editor.document()->documentLayout(),
@@ -4185,6 +4198,9 @@ void TestInteractivePreview::testNoDocumentSizeIsPublishedForTheOpenSource() {
   QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("| zz | b |")));
   QVERIFY(!blockVisible(editor, 1));
 
+  QVERIFY2(contentChanges > 0,
+           "the document emitted no non-empty change - the probe proves nothing");
+  QVERIFY2(openContentChanges == 0, "a contentsChange observer saw the rewritten source expanded");
   QVERIFY2(publications > 0, "the layout never republished - the probe proves nothing");
   QVERIFY2(openPublications == 0,
            "a document size was published while the rewritten source was expanded");

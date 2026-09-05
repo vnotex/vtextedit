@@ -16,6 +16,7 @@
 //
 //   QT_LOGGING_RULES="vte.preview.*=true"                 everything
 //   QT_LOGGING_RULES="vte.preview.replace=true"           only source rewrites
+//   QT_LOGGING_RULES="vte.preview.folding=true"           fold rewrite ordering
 //   QT_LOGGING_RULES="vte.preview.*=true;vte.preview.layout=false"
 //
 // or from code with QLoggingCategory::setFilterRules().
@@ -39,6 +40,10 @@ Q_DECLARE_LOGGING_CATEGORY(previewLayoutLog)
 
 // Source replacement requests issued by a widget, with the validation verdict.
 Q_DECLARE_LOGGING_CATEGORY(previewReplaceLog)
+
+// Fold state across source rewrites, parser reconciliation and preview-driven
+// fold refreshes.
+Q_DECLARE_LOGGING_CATEGORY(previewFoldingLog)
 
 // The built-in table sheet: binding decisions, round-trip safety, size limits
 // and measurement.

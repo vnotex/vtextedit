@@ -12,6 +12,7 @@
 
 #include <texteditor/textfolding.h>
 
+#include "previewlogging.h"
 #include "textdocumentlayout.h"
 
 namespace vte {
@@ -108,6 +109,19 @@ int regionRank(const md::FoldingRegion &p_region) {
   PreviewElementType type = PreviewElementType::Image;
   const int group = previewTypeForRegion(p_region.m_type, &type) ? 0 : 1;
   return group * 100 + static_cast<int>(p_region.m_type);
+}
+
+const char *foldStateName(PreviewFoldState p_state) {
+  switch (p_state) {
+  case PreviewFoldState::Undecided:
+    return "Undecided";
+  case PreviewFoldState::Folded:
+    return "Folded";
+  case PreviewFoldState::Unfolded:
+    return "Unfolded";
+  default:
+    return "?";
+  }
 }
 } // namespace
 
@@ -272,6 +286,12 @@ void MarkdownFoldingProvider::updateFoldingRegions(const QVector<md::FoldingRegi
   }
 
   m_entries = newEntries;
+  qCDebug(previewFoldingLog) << "fold-regions reconciled" << "document revision"
+                             << m_document->revision() << "parsed" << p_regions.size() << "valid"
+                             << valid.size() << "live" << live.size() << "retained"
+                             << (valid.size() - missing.size()) << "created"
+                             << (m_entries.size() - valid.size() + missing.size()) << "current"
+                             << m_entries.size();
 }
 
 void MarkdownFoldingProvider::clear() {
@@ -424,6 +444,12 @@ MarkdownFoldingProvider::applyPreviewAutoFold(const QVector<PreviewedRange> &p_w
       // option is never re-read for this range.
       decision.m_settle = true;
     }
+
+    qCDebug(previewFoldingLog) << "fold-refresh decision" << "range" << decision.m_id << "type"
+                               << previewTypeName(type) << "extent" << first << last << "remembered"
+                               << foldStateName(decision.m_remembered) << "current folded"
+                               << m_textFolding->isRangeFolded(decision.m_id) << "fold"
+                               << decision.m_fold << "settle" << decision.m_settle;
 
     pending.append(decision);
   }

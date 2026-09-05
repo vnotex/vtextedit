@@ -14,5 +14,7 @@ Q_LOGGING_CATEGORY(previewLayoutLog, "vte.preview.layout", QtWarningMsg)
 
 Q_LOGGING_CATEGORY(previewReplaceLog, "vte.preview.replace", QtWarningMsg)
 
+Q_LOGGING_CATEGORY(previewFoldingLog, "vte.preview.folding", QtWarningMsg)
+
 Q_LOGGING_CATEGORY(previewTableLog, "vte.preview.table", QtWarningMsg)
 } // namespace vte

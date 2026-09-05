@@ -15,6 +15,7 @@
 
 #include <inputmode/abstractinputmode.h>
 #include <texteditor/inputmodestatuswidget.h>
+#include <texteditor/textfolding.h>
 #include <vtextedit/markdownhighlighter.h>
 #include <vtextedit/theme.h>
 #include <vtextedit/vmarkdowneditor.h>
@@ -3796,10 +3797,12 @@ void InteractivePreviewHost::handleSourceReplacementRequested(
   // element, so the folding region ends at the last non-blank line.
   const int firstBlock = m_doc->findBlock(start).blockNumber();
   const int liveSpan = trimmedEndOffset(live);
+  int oldLastBlock = firstBlock;
   bool folded = false;
   bool known = false;
   if (liveSpan > 0) {
     const int lastBlock = m_doc->findBlock(start + liveSpan - 1).blockNumber();
+    oldLastBlock = lastBlock;
     known =
         m_editor->tryPreviewSourceFolded(item.m_preview->type(), firstBlock, lastBlock, &folded);
   }
@@ -3813,8 +3816,8 @@ void InteractivePreviewHost::handleSourceReplacementRequested(
 
   QTextCursor cursor(m_doc);
 
-  // Restore the fold from INSIDE the contentsChange emission, not after the
-  // edit returns.
+  // Restore before TextFolding's document-change handler returns, not merely
+  // somewhere later in QTextDocument::contentsChange signal order.
   //
   // QTextDocumentPrivate::finishEdit() emits contentsChange() first and only
   // then hands the change to the document layout. TextFolding is connected to
@@ -3829,24 +3832,21 @@ void InteractivePreviewHost::handleSourceReplacementRequested(
   // grown scroll range and a relayout of everything below, undone one pass
   // later.
   //
-  // This connection is made AFTER TextFolding's - it is constructed with the
-  // editor, long before this host - so a direct-connected slot runs after its
-  // maintenance has dropped the dead range, which is what makes the new one
-  // insertable, and still before the layout is notified. The two dirty regions
-  // then coalesce into the single documentChanged() Qt was going to deliver
-  // anyway, at the folded height, so nothing intermediate is ever published or
-  // painted.
+  // TextFolding emits foldingRangesChanged after dropping that range. A direct
+  // callback nested on that signal therefore runs at the boundary which owns
+  // the state change: the old range is gone, the new one is insertable, and no
+  // later document observer or the layout has seen the open source. The two
+  // dirty regions coalesce into the single documentChanged() Qt was going to
+  // deliver anyway, at the folded height, so nothing intermediate is published
+  // or painted.
   //
-  // That ordering is not enforceable from here, so it is not relied on: when
-  // the in-edit attempt does not produce a range, the post-edit restore below
-  // still runs. It costs the extra layout pass this exists to avoid, which is
-  // the old behaviour, rather than leaving the source open until the parse.
+  // Creating the replacement range emits foldingRangesChanged recursively, so
+  // attempted is set before restoring. A missing signal or refused in-edit
+  // attempt still takes the conservative post-edit fallback below.
   //
-  // The connection is owned by a stack QObject, so it cannot outlive the frame
-  // whose locals the lambda captures by reference - including on an exception
-  // out of the edit. contentsChange fires for every keystroke in the document
-  // and m_doc outlives this call, so an escaped connection would be a crash,
-  // not a leak.
+  // The stack-owned connection cannot outlive the frame whose locals the
+  // callback captures by reference. TextFolding outlives this call, so an
+  // escaped connection would be a crash rather than a leak.
   const int span = trimmedEndOffset(p_replacementMarkdown);
   const PreviewElementType type = item.m_preview->type();
   const bool foldOwed = known && folded && span > 0;
@@ -3855,12 +3855,31 @@ void InteractivePreviewHost::handleSourceReplacementRequested(
   // lambda holding a reference to a dead stack slot by the time the edit runs.
   bool attempted = false;
   bool restored = false;
+  const auto logFoldRewrite = [&](const char *p_event) {
+    if (!previewFoldingLog().isDebugEnabled()) {
+      return;
+    }
+
+    int newLastBlock = firstBlock;
+    for (int i = 0; i < span; ++i) {
+      if (p_replacementMarkdown.at(i) == QLatin1Char('\n')) {
+        ++newLastBlock;
+      }
+    }
+    qCDebug(previewFoldingLog) << p_event << "identity" << p_identity << "document revision"
+                               << m_doc->revision() << "old characters" << start
+                               << (start + liveSpan) << "new characters" << start << (start + span)
+                               << "old blocks" << firstBlock << oldLastBlock << "new blocks"
+                               << firstBlock << newLastBlock << "known" << known << "folded"
+                               << folded << "attempted" << attempted << "restored" << restored;
+  };
+  logFoldRewrite("fold-rewrite probe");
   {
     QObject connectionScope;
     if (foldOwed) {
       connect(
-          m_doc, &QTextDocument::contentsChange, &connectionScope,
-          [this, &attempted, &restored, type, firstBlock, start, span](int, int, int) {
+          m_editor->getTextFolding(), &TextFolding::foldingRangesChanged, &connectionScope,
+          [this, &attempted, &restored, &logFoldRewrite, type, firstBlock, start, span]() {
             // A nested edit made from another contentsChange consumer would
             // re-enter this; the fold is owed exactly once.
             if (attempted) {
@@ -3872,6 +3891,10 @@ void InteractivePreviewHost::handleSourceReplacementRequested(
             // the text from there on was rewritten.
             restored = m_editor->restoreFoldAfterPreviewRewrite(
                 type, firstBlock, m_doc->findBlock(start + span - 1).blockNumber());
+            logFoldRewrite("fold-rewrite signal");
+            if (restored) {
+              logFoldRewrite("fold-rewrite preserved");
+            }
           },
           Qt::DirectConnection);
     }
@@ -3883,12 +3906,13 @@ void InteractivePreviewHost::handleSourceReplacementRequested(
     cursor.endEditBlock();
   }
 
-  // The fallback. Reached when contentsChange was never emitted - a replacement
-  // byte-identical to the source, where nothing was destroyed either and this
-  // is a no-op - or when the in-edit attempt was refused.
+  // The fallback. Reached when foldingRangesChanged was not emitted - including
+  // a byte-identical no-op whose old range survived - or when the in-edit
+  // attempt was refused.
   if (foldOwed && !restored) {
-    m_editor->restoreFoldAfterPreviewRewrite(type, firstBlock,
-                                             m_doc->findBlock(start + span - 1).blockNumber());
+    restored = m_editor->restoreFoldAfterPreviewRewrite(
+        type, firstBlock, m_doc->findBlock(start + span - 1).blockNumber());
+    logFoldRewrite("fold-rewrite fallback");
   }
 
   // insertText() removes the selection first, which collapses this anchor, and
