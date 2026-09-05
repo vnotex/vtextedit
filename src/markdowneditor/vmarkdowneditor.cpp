@@ -26,6 +26,7 @@
 #include <QDebug>
 #include <QFontMetricsF>
 #include <QScrollBar>
+#include <QStringList>
 
 using namespace vte;
 
@@ -185,6 +186,125 @@ bool VMarkdownEditor::registerPreviewWidgetFactory(PreviewWidgetFactory *p_facto
 bool VMarkdownEditor::unregisterPreviewWidgetFactory(PreviewWidgetFactory *p_factory) {
   auto host = interactivePreviewHost();
   return host ? host->unregisterFactory(p_factory) : false;
+}
+bool VMarkdownEditor::handleTypeAction(TypeAction p_action, const QVariant &p_data) {
+  if (auto host = interactivePreviewHost()) {
+    if (host->handleTypeAction(p_action, p_data)) {
+      return true;
+    }
+  }
+
+  if (isReadOnly()) {
+    return true;
+  }
+
+  switch (p_action) {
+  case TypeAction::TypeHeading: {
+    if (p_data.userType() != QMetaType::Int) {
+      return false;
+    }
+
+    const int level = p_data.toInt();
+    if (level < 0 || level > 6) {
+      return false;
+    }
+
+    enterInsertModeIfApplicable();
+    MarkdownUtils::typeHeading(getTextEdit(), level);
+    return true;
+  }
+
+  case TypeAction::TypeTodoList:
+    if (p_data.userType() != QMetaType::Bool) {
+      return false;
+    }
+
+    enterInsertModeIfApplicable();
+    MarkdownUtils::typeTodoList(getTextEdit(), p_data.toBool());
+    return true;
+
+  case TypeAction::TypeLink: {
+    if (p_data.userType() != QMetaType::QStringList) {
+      return false;
+    }
+
+    const QStringList link = p_data.toStringList();
+    if (link.size() != 2) {
+      return false;
+    }
+
+    enterInsertModeIfApplicable();
+    MarkdownUtils::typeLink(getTextEdit(), link[0], link[1]);
+    return true;
+  }
+
+  case TypeAction::TypeImage:
+  case TypeAction::TypeTable:
+    return false;
+
+  case TypeAction::TypeBold:
+  case TypeAction::TypeItalic:
+  case TypeAction::TypeStrikethrough:
+  case TypeAction::TypeMark:
+  case TypeAction::TypeUnorderedList:
+  case TypeAction::TypeOrderedList:
+  case TypeAction::TypeCode:
+  case TypeAction::TypeCodeBlock:
+  case TypeAction::TypeMath:
+  case TypeAction::TypeMathBlock:
+  case TypeAction::TypeQuote:
+    if (p_data.isValid()) {
+      return false;
+    }
+    break;
+  default:
+    return false;
+  }
+
+  enterInsertModeIfApplicable();
+  switch (p_action) {
+  case TypeAction::TypeBold:
+    MarkdownUtils::typeBold(getTextEdit());
+    break;
+  case TypeAction::TypeItalic:
+    MarkdownUtils::typeItalic(getTextEdit());
+    break;
+  case TypeAction::TypeStrikethrough:
+    MarkdownUtils::typeStrikethrough(getTextEdit());
+    break;
+  case TypeAction::TypeMark:
+    MarkdownUtils::typeMark(getTextEdit());
+    break;
+  case TypeAction::TypeUnorderedList:
+    MarkdownUtils::typeUnorderedList(getTextEdit());
+    break;
+  case TypeAction::TypeOrderedList:
+    MarkdownUtils::typeOrderedList(getTextEdit());
+    break;
+  case TypeAction::TypeCode:
+    MarkdownUtils::typeCode(getTextEdit());
+    break;
+  case TypeAction::TypeCodeBlock:
+    MarkdownUtils::typeCodeBlock(getTextEdit());
+    break;
+  case TypeAction::TypeMath:
+    MarkdownUtils::typeMath(getTextEdit());
+    break;
+  case TypeAction::TypeMathBlock:
+    MarkdownUtils::typeMathBlock(getTextEdit());
+    break;
+  case TypeAction::TypeQuote:
+    MarkdownUtils::typeQuote(getTextEdit());
+    break;
+  case TypeAction::TypeHeading:
+  case TypeAction::TypeTodoList:
+  case TypeAction::TypeLink:
+  case TypeAction::TypeImage:
+  case TypeAction::TypeTable:
+    Q_UNREACHABLE();
+  }
+
+  return true;
 }
 
 DocumentResourceMgr *VMarkdownEditor::getDocumentResourceMgr() const {

@@ -1667,6 +1667,34 @@ quint64 InteractivePreviewHost::identityForFocusWidget(QWidget *p_focus) const {
   return 0;
 }
 
+bool InteractivePreviewHost::handleTypeAction(TypeAction p_action, const QVariant &p_data) {
+  const quint64 id = identityForFocusWidget(QApplication::focusWidget());
+  if (id == 0) {
+    return false;
+  }
+
+  QPointer<PreviewWidget> widget;
+  {
+    const auto it = m_items.constFind(id);
+    if (it == m_items.constEnd()) {
+      return false;
+    }
+    widget = it.value().m_widget;
+  }
+
+  if (!widget) {
+    return false;
+  }
+
+  auto handler = qobject_cast<PreviewTypeActionHandler *>(widget.data());
+  if (handler) {
+    BlockGuard guard(this, BlockGuard::Reason::FactoryCallback);
+    handler->handleTypeAction(p_action, p_data);
+  }
+
+  return true;
+}
+
 void InteractivePreviewHost::clearPreviewSelections() {
   // Snapshot first: clearSelection() is application-defined and may destroy
   // widgets or mutate m_items, so no iterator may outlive the callback.

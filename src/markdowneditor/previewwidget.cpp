@@ -102,3 +102,5 @@ PreviewWidgetFactory::~PreviewWidgetFactory() {}
 // in exactly one translation unit, which is what makes the qobject_cast across
 // the library boundary work on every platform.
 PreviewSizeEstimator::~PreviewSizeEstimator() {}
+
+PreviewTypeActionHandler::~PreviewTypeActionHandler() {}

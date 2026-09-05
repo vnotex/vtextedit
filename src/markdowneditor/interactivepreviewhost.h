@@ -52,6 +52,9 @@ public:
   bool registerFactory(PreviewWidgetFactory *p_factory, int p_priority);
 
   bool unregisterFactory(PreviewWidgetFactory *p_factory);
+  // Dispatch to the live preview root which owns application focus. A focused
+  // preview consumes the action even when it has no optional handler.
+  bool handleTypeAction(TypeAction p_action, const QVariant &p_data);
 
   // Global switch, mirroring VMarkdownEditor::setInplacePreviewEnabled().
   void setEnabled(bool p_enabled);

@@ -109,6 +109,12 @@ bool RecordingPreviewWidget::setPreview(const QSharedPointer<const vte::Preview>
   return true;
 }
 
+void RecordingPreviewWidget::handleTypeAction(TypeAction p_action, const QVariant &p_data) {
+  m_lastTypeAction = p_action;
+  m_lastTypeActionData = p_data;
+  ++m_typeActionCount;
+}
+
 QSize RecordingPreviewWidget::sizeHint() const {
   ++m_sizeHintCount;
   return m_hint;
@@ -177,6 +183,27 @@ void RecordingPreviewWidget::handleGeometryContextChanged() {
   }
 }
 
+namespace {
+class HandlerlessPreviewWidget : public PreviewWidget {
+public:
+  HandlerlessPreviewWidget(PreviewWidgetContext *p_context, QWidget *p_parent,
+                           const QVector<PreviewElementType> &p_types, const QSize &p_hint)
+      : PreviewWidget(p_context, p_parent), m_types(p_types), m_hint(p_hint) {}
+
+  QVector<PreviewElementType> supportedTypes() const Q_DECL_OVERRIDE { return m_types; }
+
+  bool setPreview(const QSharedPointer<const Preview> &p_preview) Q_DECL_OVERRIDE {
+    return p_preview && m_types.contains(p_preview->type());
+  }
+
+  QSize sizeHint() const Q_DECL_OVERRIDE { return m_hint; }
+
+private:
+  QVector<PreviewElementType> m_types;
+  QSize m_hint;
+};
+} // namespace
+
 RecordingPreviewFactory::RecordingPreviewFactory(const QVector<PreviewElementType> &p_types,
                                                  QObject *p_parent)
     : PreviewWidgetFactory(p_parent), m_types(p_types) {}
@@ -224,6 +251,10 @@ PreviewWidget *RecordingPreviewFactory::createWidget(PreviewWidgetContext *p_con
 
   if (m_decline) {
     return nullptr;
+  }
+
+  if (m_handlerless) {
+    return new HandlerlessPreviewWidget(p_context, p_parent, m_types, m_hint);
   }
 
   auto types = m_refuseSetPreview ? QVector<PreviewElementType>() : m_types;
@@ -481,6 +512,22 @@ void putCaretIn(QTextEdit *p_sheet, int p_row, int p_column) {
   p_sheet->setTextCursor(table->cellAt(p_row, p_column).lastCursorPosition());
 }
 
+void selectCellContents(QTextEdit *p_sheet, int p_row, int p_column) {
+  QTextTable *table = sheetTable(p_sheet);
+  if (!table) {
+    return;
+  }
+
+  const QTextTableCell cell = table->cellAt(p_row, p_column);
+  if (!cell.isValid()) {
+    return;
+  }
+
+  QTextCursor cursor = cell.firstCursorPosition();
+  cursor.setPosition(cell.lastCursorPosition().position(), QTextCursor::KeepAnchor);
+  p_sheet->setTextCursor(cursor);
+}
+
 // Replace a cell's whole contents the way selecting it and typing does.
 void editCell(QTextEdit *p_sheet, int p_row, int p_column, const QString &p_text) {
   QTextTable *table = sheetTable(p_sheet);
@@ -566,6 +613,199 @@ void TestInteractivePreview::testBuiltinTableWidgetCreated() {
   QVERIFY(context->preview());
   QCOMPARE(context->preview()->type(), PreviewElementType::Table);
   QCOMPARE(context->preview()->startPos(), 0);
+}
+
+void TestInteractivePreview::testSourceTypeActionRouting() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+
+  const auto selectSourceA = [&editor]() {
+    editor.setText(QStringLiteral("a"));
+    QTextCursor cursor(editor.document());
+    cursor.setPosition(0);
+    cursor.setPosition(1, QTextCursor::KeepAnchor);
+    editor.getTextEdit()->setTextCursor(cursor);
+  };
+
+  selectSourceA();
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeBold));
+  QCOMPARE(editor.document()->toPlainText(), QStringLiteral("**a**"));
+
+  selectSourceA();
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeHeading, 2));
+  QCOMPARE(editor.document()->toPlainText(), QStringLiteral("## a"));
+
+  selectSourceA();
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeTodoList, false));
+  QCOMPARE(editor.document()->toPlainText(), QStringLiteral("* [ ] a"));
+
+  editor.setText(QString());
+  const QStringList link{QStringLiteral("label"), QStringLiteral("https://example.com")};
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeLink, QVariant::fromValue(link)));
+  QCOMPARE(editor.document()->toPlainText(), QStringLiteral("[label](https://example.com)"));
+
+  editor.setText(QStringLiteral("unchanged"));
+  const QString before = editor.document()->toPlainText();
+  QVERIFY(!editor.handleTypeAction(TypeAction::TypeLink));
+  QVERIFY(!editor.handleTypeAction(TypeAction::TypeImage));
+  QVERIFY(!editor.handleTypeAction(TypeAction::TypeTable));
+  QVERIFY(!editor.handleTypeAction(TypeAction::TypeHeading, QStringLiteral("2")));
+  QVERIFY(!editor.handleTypeAction(TypeAction::TypeTodoList, 1));
+  QVERIFY(!editor.handleTypeAction(TypeAction::TypeLink,
+                                   QVariant::fromValue(QStringList{QStringLiteral("only")})));
+  QVERIFY(!editor.handleTypeAction(TypeAction::TypeBold, true));
+  QCOMPARE(editor.document()->toPlainText(), before);
+
+  selectSourceA();
+  editor.setReadOnly(true);
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeBold));
+  QCOMPARE(editor.document()->toPlainText(), QStringLiteral("a"));
+}
+
+void TestInteractivePreview::testPreviewTypeActionRouting() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
+  QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
+  setTextAndSettle(editor, QLatin1String(c_table));
+
+  QCOMPARE(factory->m_widgets.size(), 1);
+  auto widget = factory->m_widgets.first();
+  const QString before = editor.document()->toPlainText();
+
+  auto child = new QWidget(widget);
+  child->setFocusPolicy(Qt::StrongFocus);
+  child->show();
+  child->setFocus();
+  QTRY_VERIFY(child->hasFocus());
+
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeHeading, 3));
+  QCOMPARE(widget->m_typeActionCount, 1);
+  QCOMPARE(widget->m_lastTypeAction, TypeAction::TypeHeading);
+  QCOMPARE(widget->m_lastTypeActionData, QVariant(3));
+  QCOMPARE(editor.document()->toPlainText(), before);
+
+  editor.getTextEdit()->setFocus();
+  QTRY_VERIFY(editor.getTextEdit()->hasFocus());
+  QVERIFY(!editor.handleTypeAction(TypeAction::TypeImage));
+  QCOMPARE(widget->m_typeActionCount, 1);
+
+  QWidget other;
+  auto elsewhere = new QTextEdit(&other);
+  auto layout = new QVBoxLayout(&other);
+  layout->addWidget(elsewhere);
+  other.resize(200, 100);
+  other.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&other));
+  elsewhere->setFocus();
+  QCoreApplication::processEvents();
+
+  QVERIFY(!editor.handleTypeAction(TypeAction::TypeTable));
+  QCOMPARE(widget->m_typeActionCount, 1);
+}
+
+void TestInteractivePreview::testHandlerlessPreviewConsumesTypeAction() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
+  factory->m_handlerless = true;
+  QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
+  setTextAndSettle(editor, QLatin1String(c_table));
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  QVERIFY(!qobject_cast<PreviewTypeActionHandler *>(widget));
+
+  auto child = new QWidget(widget);
+  child->setFocusPolicy(Qt::StrongFocus);
+  child->show();
+  child->setFocus();
+  QTRY_VERIFY(child->hasFocus());
+
+  const QString before = editor.document()->toPlainText();
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeBold));
+  QCOMPARE(editor.document()->toPlainText(), before);
+}
+
+void TestInteractivePreview::testTableTypeActions_data() {
+  QTest::addColumn<int>("action");
+  QTest::addColumn<QString>("expected");
+
+  QTest::newRow("bold") << static_cast<int>(TypeAction::TypeBold) << QStringLiteral("**a**");
+  QTest::newRow("italic") << static_cast<int>(TypeAction::TypeItalic) << QStringLiteral("*a*");
+  QTest::newRow("strikethrough") << static_cast<int>(TypeAction::TypeStrikethrough)
+                                 << QStringLiteral("~~a~~");
+  QTest::newRow("mark") << static_cast<int>(TypeAction::TypeMark)
+                        << QStringLiteral("<mark>a</mark>");
+  QTest::newRow("code") << static_cast<int>(TypeAction::TypeCode) << QStringLiteral("`a`");
+  QTest::newRow("math") << static_cast<int>(TypeAction::TypeMath) << QStringLiteral("$a$");
+}
+
+void TestInteractivePreview::testTableTypeActions() {
+  QFETCH(int, action);
+  QFETCH(QString, expected);
+
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QLatin1String(c_table));
+
+  auto sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  sheet->setFocus();
+  QTRY_VERIFY(sheet->hasFocus());
+  selectCellContents(sheet, 1, 0);
+
+  QVERIFY(editor.handleTypeAction(static_cast<TypeAction>(action)));
+  QCOMPARE(sheetCell(sheet, 1, 0), expected);
+
+  flushSheet(sheet);
+  const QString row = QStringLiteral("| %1 | b |").arg(expected);
+  QVERIFY2(editor.document()->toPlainText().contains(row),
+           qPrintable(editor.document()->toPlainText()));
+  settle(editor);
+  QCOMPARE(sheetCell(sheetView(singlePreviewWidget(editor)), 1, 0), expected);
+  QVERIFY2(editor.document()->toPlainText().contains(row),
+           qPrintable(editor.document()->toPlainText()));
+}
+
+void TestInteractivePreview::testTableTypeActionToggleAndUndo() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QLatin1String(c_table));
+
+  auto sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  sheet->setFocus();
+  QTRY_VERIFY(sheet->hasFocus());
+  selectCellContents(sheet, 1, 0);
+
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeBold));
+  QCOMPARE(sheetCell(sheet, 1, 0), QStringLiteral("**a**"));
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeBold));
+  QCOMPARE(sheetCell(sheet, 1, 0), QStringLiteral("a"));
+
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeBold));
+  QCOMPARE(sheetCell(sheet, 1, 0), QStringLiteral("**a**"));
+  QTest::keyClick(sheet, Qt::Key_Z, Qt::ControlModifier);
+  QCoreApplication::processEvents();
+  QCOMPARE(sheetCell(sheet, 1, 0), QStringLiteral("a"));
+}
+
+void TestInteractivePreview::testTableConsumesUnsupportedAndReadOnlyActions() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QLatin1String(c_table));
+
+  auto sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  sheet->setFocus();
+  QTRY_VERIFY(sheet->hasFocus());
+  selectCellContents(sheet, 1, 0);
+
+  const QString sourceBefore = editor.document()->toPlainText();
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeHeading, 2));
+  QCOMPARE(sheetCell(sheet, 1, 0), QStringLiteral("a"));
+  QCOMPARE(editor.document()->toPlainText(), sourceBefore);
+
+  editor.setReadOnly(true);
+  QCoreApplication::processEvents();
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeBold));
+  QCOMPARE(sheetCell(sheet, 1, 0), QStringLiteral("a"));
+  QCOMPARE(editor.document()->toPlainText(), sourceBefore);
 }
 
 namespace {

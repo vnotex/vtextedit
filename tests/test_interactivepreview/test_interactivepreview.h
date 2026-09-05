@@ -16,8 +16,9 @@ class VMarkdownEditor;
 
 namespace tests {
 // A renderer which simply records what it was asked to render.
-class RecordingPreviewWidget : public vte::PreviewWidget {
+class RecordingPreviewWidget : public vte::PreviewWidget, public vte::PreviewTypeActionHandler {
   Q_OBJECT
+  Q_INTERFACES(vte::PreviewTypeActionHandler)
 public:
   RecordingPreviewWidget(vte::PreviewWidgetContext *p_context, QWidget *p_parent,
                          const QVector<vte::PreviewElementType> &p_types, const QSize &p_hint);
@@ -25,6 +26,7 @@ public:
   QVector<vte::PreviewElementType> supportedTypes() const Q_DECL_OVERRIDE;
 
   bool setPreview(const QSharedPointer<const vte::Preview> &p_preview) Q_DECL_OVERRIDE;
+  void handleTypeAction(vte::TypeAction p_action, const QVariant &p_data) Q_DECL_OVERRIDE;
 
   // Destroy this instance from inside the second setPreview() call.
   bool m_selfDestructOnUpdate = false;
@@ -80,6 +82,12 @@ public:
   QSharedPointer<const vte::Preview> m_preview;
 
   int m_setPreviewCount = 0;
+
+  vte::TypeAction m_lastTypeAction;
+
+  QVariant m_lastTypeActionData;
+
+  int m_typeActionCount = 0;
 
   vte::PreviewReplacementResult m_lastResult;
 
@@ -150,7 +158,10 @@ public:
   // Create wrapping instances whose height depends on the assigned width.
   bool m_wrapping = false;
 
-  // Handed to every instance this factory creates.
+  // Build a preview without the optional type-action interface.
+  bool m_handlerless = false;
+
+  // Handed to every recording instance this factory creates.
   qreal m_widthFraction = 0;
 
   // Unregister this factory from inside supportedTypes()/createWidget().
@@ -186,6 +197,14 @@ class TestInteractivePreview : public QObject {
   Q_OBJECT
 private slots:
   void testBuiltinTableWidgetCreated();
+  void testSourceTypeActionRouting();
+  void testPreviewTypeActionRouting();
+  void testHandlerlessPreviewConsumesTypeAction();
+  void testTableTypeActions_data();
+  void testTableTypeActions();
+  void testTableTypeActionToggleAndUndo();
+  void testTableConsumesUnsupportedAndReadOnlyActions();
+
   void testTableSourceAlignOptionThreading();
   void testAlignedCommitSurvivesTheRealParser();
   void testCellsCarrySyntaxHighlighting();

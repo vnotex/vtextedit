@@ -9,6 +9,7 @@
 #include <QScopedPointer>
 #include <QSize>
 #include <QSizeF>
+#include <QVariant>
 #include <QVector>
 #include <QWidget>
 
@@ -18,6 +19,7 @@ namespace vte {
 class InteractivePreviewHost;
 class PreviewWidgetContextPrivate;
 class PreviewWidgetPrivate;
+enum class TypeAction;
 
 // Per-widget bridge to the editor.
 //
@@ -114,6 +116,16 @@ private:
   QScopedPointer<PreviewWidgetPrivate> m_d;
 };
 
+// Optional companion interface to PreviewWidget: handle Markdown typing
+// actions while this preview owns focus. A separate interface preserves the
+// ABI of already-built PreviewWidget subclasses.
+class VTEXTEDIT_EXPORT PreviewTypeActionHandler {
+public:
+  virtual ~PreviewTypeActionHandler();
+
+  virtual void handleTypeAction(TypeAction p_action, const QVariant &p_data) = 0;
+};
+
 // Creates PreviewWidget instances for the element types it advertises.
 //
 // Ownership is transferred to the editor on successful registration.
@@ -173,5 +185,7 @@ public:
 } // namespace vte
 
 Q_DECLARE_INTERFACE(vte::PreviewSizeEstimator, "org.vnotex.vtextedit.PreviewSizeEstimator/1.0")
+Q_DECLARE_INTERFACE(vte::PreviewTypeActionHandler,
+                    "org.vnotex.vtextedit.PreviewTypeActionHandler/1.0")
 
 #endif // VTEXTEDIT_PREVIEWWIDGET_H

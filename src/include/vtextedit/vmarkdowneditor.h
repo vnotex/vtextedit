@@ -6,6 +6,7 @@
 #include <vtextedit/vtexteditor.h>
 
 #include <QHash>
+#include <QVariant>
 
 namespace vte {
 class MarkdownHighlighter;
@@ -20,6 +21,24 @@ class MathBlockHighlighter;
 class MarkdownFoldingProvider;
 class PreviewWidgetFactory;
 class InteractivePreviewHost;
+enum class TypeAction {
+  TypeHeading,
+  TypeBold,
+  TypeItalic,
+  TypeStrikethrough,
+  TypeMark,
+  TypeUnorderedList,
+  TypeOrderedList,
+  TypeTodoList,
+  TypeCode,
+  TypeCodeBlock,
+  TypeMath,
+  TypeMathBlock,
+  TypeQuote,
+  TypeLink,
+  TypeImage,
+  TypeTable
+};
 
 class VTEXTEDIT_EXPORT VMarkdownEditor : public VTextEditor {
   Q_OBJECT
@@ -70,6 +89,16 @@ public:
   // Deactivate and destroy a previously registered factory. Ownership never
   // returns to the caller: the pointer is invalid once this returns true.
   bool unregisterPreviewWidgetFactory(PreviewWidgetFactory *p_factory);
+
+  // Route one Markdown typing action to the focused interactive preview, or
+  // apply it to the source editor when no preview owns focus. TypeHeading
+  // requires an int in [0, 6], TypeTodoList requires a bool, and a completed
+  // TypeLink requires a two-item QStringList containing text then URL. An
+  // initial TypeLink probe and every other action use an invalid QVariant.
+  //
+  // On a writable source path, returns false only when the caller must continue
+  // the link, image or table workflow, or when a payload is invalid.
+  bool handleTypeAction(TypeAction p_action, const QVariant &p_data = QVariant());
 
   static void setExternalCodeBlockHighlihgtStyles(const ExternalCodeBlockHighlightStyles &p_styles);
 

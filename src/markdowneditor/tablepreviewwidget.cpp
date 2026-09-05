@@ -44,6 +44,8 @@
 #include <inputmode/inputmodemgr.h>
 #include <texteditor/inputmodestatuswidget.h>
 #include <vtextedit/htmltablescanner.h>
+#include <vtextedit/markdownutils.h>
+#include <vtextedit/vmarkdowneditor.h>
 
 #include "previewlogging.h"
 #include "tablepreviewinputmode.h"
@@ -2679,6 +2681,73 @@ bool TablePreviewSheet::currentCellRange(int &p_first, int &p_last) const {
   return p_first <= p_last;
 }
 
+void TablePreviewSheet::handleTypeAction(TypeAction p_action) {
+  if (!m_document || !m_document->table() || isReadOnly()) {
+    return;
+  }
+
+  switch (p_action) {
+  case TypeAction::TypeBold:
+  case TypeAction::TypeItalic:
+  case TypeAction::TypeStrikethrough:
+  case TypeAction::TypeMark:
+  case TypeAction::TypeCode:
+  case TypeAction::TypeMath:
+    break;
+  default:
+    return;
+  }
+
+  commitPreedit();
+  clampCursorIntoTable();
+  collapseComplexSelectionForMutation();
+
+  int first = 0;
+  int last = 0;
+  if (!currentCellRange(first, last)) {
+    return;
+  }
+
+  const QTextCursor before = textCursor();
+  const bool hadSelection = before.hasSelection();
+  const int selectionStart = before.selectionStart();
+  const int selectionEnd = before.selectionEnd();
+  const int documentLength = document()->characterCount();
+
+  commitUndoCheckpoint();
+  switch (p_action) {
+  case TypeAction::TypeBold:
+    MarkdownUtils::typeBold(this);
+    break;
+  case TypeAction::TypeItalic:
+    MarkdownUtils::typeItalic(this);
+    break;
+  case TypeAction::TypeStrikethrough:
+    MarkdownUtils::typeStrikethrough(this);
+    break;
+  case TypeAction::TypeMark:
+    MarkdownUtils::typeMark(this);
+    break;
+  case TypeAction::TypeCode:
+    MarkdownUtils::typeCode(this);
+    break;
+  case TypeAction::TypeMath:
+    MarkdownUtils::typeMath(this);
+    break;
+  default:
+    Q_UNREACHABLE();
+  }
+  if (hadSelection) {
+    QTextCursor selected(document());
+    selected.setPosition(selectionStart);
+    selected.setPosition(selectionEnd + document()->characterCount() - documentLength,
+                         QTextCursor::KeepAnchor);
+    setTextCursor(selected);
+  }
+
+  commitUndoCheckpoint();
+}
+
 QString TablePreviewSheet::sanitizeCellPayload(const QString &p_text) {
   if (!hasLineSeparator(p_text)) {
     return p_text;
@@ -4148,6 +4217,13 @@ qreal TablePreviewWidget::preferredWidthFraction() const { return c_widthFractio
 void TablePreviewWidget::clearSelection() {
   if (m_sheet) {
     m_sheet->clearSelection();
+  }
+}
+
+void TablePreviewWidget::handleTypeAction(TypeAction p_action, const QVariant &p_data) {
+  Q_UNUSED(p_data);
+  if (m_sheet) {
+    m_sheet->handleTypeAction(p_action);
   }
 }
 

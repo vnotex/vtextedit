@@ -738,6 +738,8 @@ public:
   // this sheet owns the input focus: QInputMethod acts on the application's
   // focus object, and a flush also runs on background sheets.
   void commitPreedit();
+  // Apply a supported inline Markdown action inside the caret cell.
+  void handleTypeAction(TypeAction p_action);
 
   // Cancel an open composition, on the platform and in the text control.
   //
@@ -1280,8 +1282,9 @@ private:
   bool m_replayingRing = false;
 };
 
-class TablePreviewWidget : public PreviewWidget {
+class TablePreviewWidget : public PreviewWidget, public PreviewTypeActionHandler {
   Q_OBJECT
+  Q_INTERFACES(vte::PreviewTypeActionHandler)
 public:
   // Outcome of a write-back attempt.
   enum class FlushOutcome {
@@ -1317,6 +1320,7 @@ public:
   qreal preferredWidthFraction() const Q_DECL_OVERRIDE;
 
   void clearSelection() Q_DECL_OVERRIDE;
+  void handleTypeAction(TypeAction p_action, const QVariant &p_data) Q_DECL_OVERRIDE;
 
   // Mirror the editor's read-only state so the sheet cannot swallow edits the
   // host is going to reject anyway.
