@@ -4169,6 +4169,10 @@ void TestInteractivePreview::testNoDocumentSizeIsPublishedForTheOpenSource() {
   settle(editor);
   settleFolding();
 
+  const QTextBlock firstSourceBlock = editor.document()->findBlockByNumber(0);
+  const QTextBlock interiorSourceBlock = editor.document()->findBlockByNumber(1);
+  const QTextBlock lastSourceBlock = editor.document()->findBlockByNumber(2);
+
   int layoutUpdates = 0;
   int openLayoutUpdates = 0;
   QObject::connect(editor.document()->documentLayout(), &QAbstractTextDocumentLayout::update,
@@ -4210,6 +4214,9 @@ void TestInteractivePreview::testNoDocumentSizeIsPublishedForTheOpenSource() {
   }
   QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("| zz | b |")));
   QVERIFY(!blockVisible(editor, 1));
+  QVERIFY(editor.document()->findBlockByNumber(0) == firstSourceBlock);
+  QVERIFY(editor.document()->findBlockByNumber(1) == interiorSourceBlock);
+  QVERIFY(editor.document()->findBlockByNumber(2) == lastSourceBlock);
 
   QVERIFY2(layoutUpdates > 0, "the layout emitted no update - the probe proves nothing");
   QVERIFY2(openLayoutUpdates == 0,

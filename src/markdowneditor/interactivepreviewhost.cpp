@@ -3816,33 +3816,18 @@ void InteractivePreviewHost::handleSourceReplacementRequested(
 
   QTextCursor cursor(m_doc);
 
-  // Restore before TextFolding's document-change handler returns, not merely
-  // somewhere later in QTextDocument::contentsChange signal order.
+  // Replacing one whole range destroys its QTextBlocks. Qt may lay out the new,
+  // visible blocks before contentsChange consumers can restore their fold.
+  // That expanded geometry is the source flash.
   //
-  // QTextDocumentPrivate::finishEdit() emits contentsChange() first and only
-  // then hands the change to the document layout. TextFolding is connected to
-  // contentsChange (src/texteditor/textfolding.cpp:45-59), so by the time the
-  // layout runs, the destroyed range's interior blocks have already been made
-  // visible again (:750-754) - and TextDocumentLayout::documentChanged()
-  // publishes documentSizeChanged() for that EXPANDED height
-  // (src/markdowneditor/textdocumentlayout.cpp:534). Restoring after
-  // endEditBlock() returns therefore always cost two layout passes and two
-  // published document sizes, the first of them describing an unfolded table
-  // the user never asked to unfold. That is the flash: a taller document, a
-  // grown scroll range and a relayout of everything below, undone one pass
-  // later.
+  // When the line count is unchanged, rewrite each line in reverse order and
+  // leave the paragraph separators intact. The existing blocks and folding
+  // range then survive the edit, so no transient unfolded state exists.
   //
-  // TextFolding emits foldingRangesChanged after dropping that range. A direct
-  // callback nested on that signal therefore runs at the boundary which owns
-  // the state change: the old range is gone, the new one is insertable, and no
-  // later document observer or the layout has seen the open source. The two
-  // dirty regions coalesce into the single documentChanged() Qt was going to
-  // deliver anyway, at the folded height, so nothing intermediate is published
-  // or painted.
-  //
-  // Creating the replacement range emits foldingRangesChanged recursively, so
-  // attempted is set before restoring. A missing signal or refused in-edit
-  // attempt still takes the conservative post-edit fallback below.
+  // Structural replacements still use the scoped foldingRangesChanged
+  // connection and conservative post-edit fallback. Creating the replacement
+  // range emits that signal recursively, so attempted makes the callback
+  // one-shot.
   //
   // The stack-owned connection cannot outlive the frame whose locals the
   // callback captures by reference. TextFolding outlives this call, so an
@@ -3850,6 +3835,8 @@ void InteractivePreviewHost::handleSourceReplacementRequested(
   const int span = trimmedEndOffset(p_replacementMarkdown);
   const PreviewElementType type = item.m_preview->type();
   const bool foldOwed = known && folded && span > 0;
+  const bool preserveBlocks =
+      foldOwed && live.count(QLatin1Char('\n')) == p_replacementMarkdown.count(QLatin1Char('\n'));
   // Both outlive connectionScope below, and therefore every callback the edit
   // can deliver. Declaring either inside the arming block would leave the
   // lambda holding a reference to a dead stack slot by the time the edit runs.
@@ -3871,7 +3858,8 @@ void InteractivePreviewHost::handleSourceReplacementRequested(
                                << (start + liveSpan) << "new characters" << start << (start + span)
                                << "old blocks" << firstBlock << oldLastBlock << "new blocks"
                                << firstBlock << newLastBlock << "known" << known << "folded"
-                               << folded << "attempted" << attempted << "restored" << restored;
+                               << folded << "blocks preserved" << preserveBlocks << "attempted"
+                               << attempted << "restored" << restored;
   };
   logFoldRewrite("fold-rewrite probe");
   {
@@ -3900,15 +3888,48 @@ void InteractivePreviewHost::handleSourceReplacementRequested(
     }
 
     cursor.beginEditBlock();
-    cursor.setPosition(start);
-    cursor.setPosition(end, QTextCursor::KeepAnchor);
-    cursor.insertText(p_replacementMarkdown);
+    if (preserveBlocks) {
+      int oldEnd = live.size();
+      int newEnd = p_replacementMarkdown.size();
+      while (true) {
+        const int oldBreak = live.lastIndexOf(QLatin1Char('\n'), oldEnd - 1);
+        const int newBreak = p_replacementMarkdown.lastIndexOf(QLatin1Char('\n'), newEnd - 1);
+        const int oldStart = oldBreak + 1;
+        const int newStart = newBreak + 1;
+
+        QTextCursor lineCursor(m_doc);
+        lineCursor.setPosition(start + oldStart);
+        lineCursor.setPosition(start + oldEnd, QTextCursor::KeepAnchor);
+        lineCursor.insertText(p_replacementMarkdown.mid(newStart, newEnd - newStart));
+
+        if (oldBreak < 0) {
+          break;
+        }
+        oldEnd = oldBreak;
+        newEnd = newBreak;
+      }
+    } else {
+      cursor.setPosition(start);
+      cursor.setPosition(end, QTextCursor::KeepAnchor);
+      cursor.insertText(p_replacementMarkdown);
+    }
     cursor.endEditBlock();
   }
 
-  // The fallback. Reached when foldingRangesChanged was not emitted - including
-  // a byte-identical no-op whose old range survived - or when the in-edit
-  // attempt was refused.
+  if (foldOwed && !restored && preserveBlocks) {
+    bool stillFolded = false;
+    restored = m_editor->tryPreviewSourceFolded(type, firstBlock,
+                                                m_doc->findBlock(start + span - 1).blockNumber(),
+                                                &stillFolded) &&
+               stillFolded;
+    if (restored) {
+      logFoldRewrite("fold-rewrite preserved");
+    }
+  }
+
+  // Structural rewrites rely on the in-edit signal restoration. A
+  // block-preserving rewrite reaches this fallback only if its range did not
+  // survive as expected.
   if (foldOwed && !restored) {
     restored = m_editor->restoreFoldAfterPreviewRewrite(
         type, firstBlock, m_doc->findBlock(start + span - 1).blockNumber());
@@ -3937,8 +3958,8 @@ void InteractivePreviewHost::handleSourceReplacementRequested(
                              << (rebased ? "and rebased the bound snapshot"
                                          : "WITHOUT a rebased snapshot");
 
-  // The fold was restored from inside the edit, by the scoped connection above,
-  // or by its post-edit fallback.
+  // The fold survived with its blocks, was restored from inside the edit by the
+  // scoped connection above, or was recovered by the post-edit fallback.
 
   // The anchors moved: resubmit the reservations without waiting for the next
   // parse generation.
