@@ -334,6 +334,9 @@ void TestTextFolding::textFoldRange() {
     QCOMPARE(folding.m_idToFoldingRange.value(collapsedId)->last(), 1);
     QCOMPARE(folding.m_idToFoldingRange.value(followingId)->first(), 2);
     QCOMPARE(folding.m_idToFoldingRange.value(followingId)->last(), 4);
+    QVERIFY(folding.m_idToFoldingRange.value(outerId)->isValid());
+    QVERIFY(folding.m_idToFoldingRange.value(collapsedId)->isValid());
+    QVERIFY(folding.m_idToFoldingRange.value(followingId)->isValid());
     QCOMPARE(folding.debugDump(),
              QStringLiteral("tree [0 pf [1 pf 1] [2 pf 4] 5] - folded [0 pf 5]"));
     folding.toggleRange(outerId);

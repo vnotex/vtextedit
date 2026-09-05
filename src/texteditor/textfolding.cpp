@@ -52,11 +52,14 @@ TextFolding::TextFolding(QTextDocument *p_document) : QObject(p_document), m_doc
               if (!m_foldingRanges.isEmpty() && p_position == 0 && p_charsRemoved > 0 &&
                   p_charsAdded + 1 >= m_document->characterCount()) {
                 hardClear();
-              } else {
-                checkAndUpdateFoldings();
               }
             }
           });
+  connect(m_document, &QTextDocument::contentsChanged, this, [this]() {
+    if (!m_foldingRanges.isEmpty()) {
+      checkAndUpdateFoldings();
+    }
+  });
 }
 
 TextFolding::~TextFolding() { qDeleteAll(m_foldingRanges); }
@@ -721,9 +724,28 @@ bool TextFolding::checkAndUpdateFoldings(TextFolding::FoldingRange::Vector &p_ra
     // All of its children have been updated now.
 
     if (range->isValid()) {
-      range->m_range.update();
+      const int first = range->first();
+      const int last = range->last();
+      range->m_range =
+          TextBlockRange(m_document->findBlockByNumber(first), m_document->findBlockByNumber(last));
       newRanges.push_back(range);
     } else {
+      // QTextBlock handles may become invalid only after contentsChange has
+      // returned. If both final block numbers still name a live ordered range,
+      // rebind the endpoints instead of dropping a range which merely
+      // collapsed or shifted with the edit.
+      const int first = range->first();
+      const int last = range->last();
+      if (first <= last) {
+        TextBlockRange rebound(m_document->findBlockByNumber(first),
+                               m_document->findBlockByNumber(last));
+        if (rebound.isValid()) {
+          range->m_range = rebound;
+          newRanges.push_back(range);
+          continue;
+        }
+      }
+
       // Remove this range and expose its children.
       needUpdate = true;
 
