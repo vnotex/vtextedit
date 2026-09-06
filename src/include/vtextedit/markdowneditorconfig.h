@@ -46,11 +46,13 @@ public:
   // affects regions which have not been settled yet.
   bool m_autoFoldPreviewedBlocksEnabled = true;
 
-  // Write a table sheet back as a padded, column-aligned pipe table instead of
-  // the compact one. Off by default, which is the historical output byte for
-  // byte. Changing it at runtime affects subsequent commits only: no existing
-  // table source is ever reformatted on its own.
-  bool m_alignTableSourceEnabled = false;
+  // Format changed pipe table source after 500 ms of source-edit inactivity,
+  // including programmatic cursor edits. Preview commits serialize the aligned
+  // form in their existing transaction. Opt-in: loading documents and toggling
+  // this option never rewrite existing source. Formatting joins the preceding
+  // undo edit block where Qt permits; a bare insertion may retain a separate
+  // formatting undo step.
+  bool m_autoFormatTableSourceEnabled = false;
 
 private:
   void overrideTextStyle();

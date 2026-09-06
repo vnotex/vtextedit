@@ -46,6 +46,11 @@ struct MathElement : public TypedPreviewElement {
   bool m_display = true;
 };
 
+// Split raw source without decoding escapes. Optional borders contain the leading
+// pipe and each unescaped closing pipe: one more entry than cells on success.
+bool splitTableRow(const QString &p_line, QString &p_prefix, QVector<QString> &p_cells,
+                   QVector<int> *p_cellOffsets = nullptr, QVector<int> *p_cellBorders = nullptr);
+
 enum class TableRowType { Header, Delimiter, Data };
 
 struct TableRowElement {

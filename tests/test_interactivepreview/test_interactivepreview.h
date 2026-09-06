@@ -205,7 +205,7 @@ private slots:
   void testTableTypeActionToggleAndUndo();
   void testTableConsumesUnsupportedAndReadOnlyActions();
 
-  void testTableSourceAlignOptionThreading();
+  void testTableSourceFormattingPolicy();
   void testAlignedCommitSurvivesTheRealParser();
   void testCellsCarrySyntaxHighlighting();
   void testHighlightingSurvivesACommit();

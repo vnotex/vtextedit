@@ -22,6 +22,7 @@ class MarkdownHighlighterFastResult;
 class Theme;
 class MarkdownHighlightBlockData;
 class MathBlockHighlighter;
+class TableSourceFormatter;
 
 class MarkdownHighlighterInterface {
 public:
@@ -45,6 +46,8 @@ struct ContentsChange {
 // Markdown syntax highlighter.
 class VTEXTEDIT_EXPORT MarkdownHighlighter : public VSyntaxHighlighter {
   Q_OBJECT
+  friend class TableSourceFormatter;
+
 public:
   MarkdownHighlighter(MarkdownHighlighterInterface *p_interface, QTextDocument *p_doc,
                       const QSharedPointer<Theme> &p_theme,

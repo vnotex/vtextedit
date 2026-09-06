@@ -2,13 +2,16 @@
 
 #include <QBuffer>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QImage>
+#include <QInputMethodEvent>
 #include <QPixmap>
 #include <QSharedPointer>
 #include <QTemporaryDir>
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
+#include <QTextLayout>
 
 #include <vtextedit/markdowneditorconfig.h>
 #include <vtextedit/markdownhighlighter.h>
@@ -982,6 +985,685 @@ void TestMarkdownEditor::testAspectRatioDerivedAxisIsBounded() {
     QVERIFY2(img->width() <= 4096 * 4, qPrintable(QString::number(img->width())));
     QVERIFY2(img->height() <= 4096 * 4, qPrintable(QString::number(img->height())));
   });
+}
+
+namespace {
+const QString c_tableSource = QStringLiteral("| h1 | header2 |\n| --- | --- |\n| a | b |\n");
+const QString c_tableSourceEdited = QStringLiteral("| h1 | header2 |\n| --- | --- |\n| z | b |\n");
+const QString c_tableSourceAligned =
+    QStringLiteral("| h1  | header2 |\n| --- | ------- |\n| z   | b       |\n");
+
+QSharedPointer<MarkdownEditorConfig> makeTableSourceConfig(bool p_enabled = true) {
+  auto config = makeConfig();
+  config->m_autoFormatTableSourceEnabled = p_enabled;
+  // Source formatting must not depend on the preview type mask or a sheet.
+  config->m_inplacePreviewSources = MarkdownEditorConfig::NoInplacePreview;
+  return config;
+}
+
+int tableSourcePosition(QTextDocument *p_doc, int p_block, int p_column) {
+  return p_doc->findBlockByNumber(p_block).position() + p_column;
+}
+
+void selectTableSource(VMarkdownEditor &p_editor, int p_anchorBlock, int p_anchorColumn,
+                       int p_positionBlock, int p_positionColumn) {
+  QTextCursor cursor(p_editor.document());
+  cursor.setPosition(tableSourcePosition(p_editor.document(), p_anchorBlock, p_anchorColumn));
+  cursor.setPosition(tableSourcePosition(p_editor.document(), p_positionBlock, p_positionColumn),
+                     QTextCursor::KeepAnchor);
+  p_editor.getTextEdit()->setTextCursor(cursor);
+}
+
+void replaceTableSource(VMarkdownEditor &p_editor, int p_block, int p_column, int p_length,
+                        const QString &p_text) {
+  // Deliberately use an external cursor, not the widget's key-event pipeline.
+  QTextCursor cursor(p_editor.document());
+  cursor.setPosition(tableSourcePosition(p_editor.document(), p_block, p_column));
+  cursor.setPosition(cursor.position() + p_length, QTextCursor::KeepAnchor);
+  cursor.beginEditBlock();
+  cursor.insertText(p_text);
+  cursor.endEditBlock();
+}
+} // namespace
+
+void TestMarkdownEditor::testTableSourceFormatDebounce() {
+  for (bool enabled : {true, false}) {
+    VMarkdownEditor editor(makeTableSourceConfig(enabled),
+                           QSharedPointer<TextEditorParameters>::create());
+    editor.setText(c_tableSource);
+    QTRY_VERIFY_WITH_TIMEOUT(editor.getHighlighter()->getBlockContext(2).m_fresh, 5000);
+    auto edit = editor.getTextEdit();
+    selectTableSource(editor, 2, 2, 2, 3);
+    QTest::keyClicks(edit, QStringLiteral("z"));
+    QCOMPARE(editor.document()->toPlainText(), c_tableSourceEdited);
+    QTest::qWait(200);
+    QCOMPARE(editor.document()->toPlainText(), c_tableSourceEdited);
+
+    const QString twiceEdited = QStringLiteral("| h1 | header2 |\n| --- | --- |\n| zx | b |\n");
+    const QString aligned =
+        QStringLiteral("| h1  | header2 |\n| --- | ------- |\n| zx  | b       |\n");
+    QElapsedTimer sinceLastKey;
+    qint64 firstFormattedAt = -1;
+    const auto transition =
+        connect(editor.document(), &QTextDocument::contentsChanged, &editor, [&]() {
+          if (firstFormattedAt < 0 && editor.document()->toPlainText() == aligned) {
+            firstFormattedAt = sinceLastKey.elapsed();
+          }
+        });
+    sinceLastKey.start();
+    QTest::keyClicks(edit, QStringLiteral("x"));
+    QTest::qWait(200);
+    QCOMPARE(editor.document()->toPlainText(), twiceEdited);
+    if (enabled) {
+      QTRY_COMPARE_WITH_TIMEOUT(editor.document()->toPlainText(), aligned, 5000);
+      QVERIFY2(firstFormattedAt >= 500, qPrintable(QString::number(firstFormattedAt)));
+    } else {
+      QTest::qWait(800);
+      QCOMPARE(editor.document()->toPlainText(), twiceEdited);
+      QCOMPARE(firstFormattedAt, qint64(-1));
+    }
+    disconnect(transition);
+  }
+}
+
+void TestMarkdownEditor::testTableSourceFormatProgrammaticEdits() {
+  const QString firstGap = QStringLiteral("\nBetween first and middle.\n\n");
+  const QString middle = QStringLiteral("| keep | untouched |\n| --- | --- |\n| mid | m |\n");
+  const QString secondGap = QStringLiteral("\nBetween middle and last.\n\n");
+  const QString last = QStringLiteral("| t | tail |\n|---|---|\n| c | d |\n");
+  const QString source = c_tableSource + firstGap + middle + secondGap + last;
+  const QString expected = c_tableSourceAligned + firstGap + middle + secondGap +
+                           QStringLiteral("| t   | tail |\n| --- | ---- |\n| q   | d    |\n");
+  VMarkdownEditor editor(makeTableSourceConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.setText(source);
+  auto doc = editor.document();
+  QTRY_VERIFY_WITH_TIMEOUT(editor.getHighlighter()->getBlockContext(14).m_fresh, 5000);
+  selectTableSource(editor, 8, 3, 8, 3);
+
+  // Qt reports one broad change spanning an untouched table in the middle.
+  QTextCursor cursor(doc);
+  cursor.beginEditBlock();
+  cursor.setPosition(tableSourcePosition(doc, 14, 2));
+  cursor.setPosition(cursor.position() + 1, QTextCursor::KeepAnchor);
+  cursor.insertText(QStringLiteral("q"));
+  cursor.setPosition(tableSourcePosition(doc, 2, 2));
+  cursor.setPosition(cursor.position() + 1, QTextCursor::KeepAnchor);
+  cursor.insertText(QStringLiteral("z"));
+  cursor.endEditBlock();
+  QTRY_COMPARE_WITH_TIMEOUT(doc->toPlainText(), expected, 5000);
+  QCOMPARE(editor.getTextEdit()->textCursor().blockNumber(), 8);
+  QCOMPARE(editor.getTextEdit()->textCursor().positionInBlock(), 3);
+
+  // Retained block identity, rather than old absolute positions, determines dirtiness.
+  cursor.setPosition(0);
+  cursor.insertText(QStringLiteral("Preface.\n\n"));
+  const QString shifted = QStringLiteral("Preface.\n\n") + expected;
+  const int shiftedUndoSteps = doc->availableUndoSteps();
+  QTest::qWait(800);
+  QCOMPARE(doc->toPlainText(), shifted);
+  QCOMPARE(doc->availableUndoSteps(), shiftedUndoSteps);
+  QCOMPARE(editor.getTextEdit()->textCursor().blockNumber(), 10);
+  QCOMPARE(editor.getTextEdit()->textCursor().positionInBlock(), 3);
+
+  // Qt splits the first block when lines are inserted at its column zero.
+  // Its old handle belongs to the prose, not the unchanged header following it.
+  editor.setText(c_tableSource);
+  QTRY_VERIFY_WITH_TIMEOUT(editor.getHighlighter()->getBlockContext(2).m_fresh, 5000);
+  cursor = QTextCursor(doc);
+  cursor.beginEditBlock();
+  cursor.insertText(QStringLiteral("Intro.\n\n"));
+  cursor.movePosition(QTextCursor::End);
+  cursor.insertText(QStringLiteral("\nAfterward.\n"));
+  cursor.endEditBlock();
+  QTest::qWait(800);
+  QCOMPARE(doc->toPlainText(),
+           QStringLiteral("Intro.\n\n") + c_tableSource + QStringLiteral("\nAfterward.\n"));
+  cursor.setPosition(0);
+  cursor.setPosition(8, QTextCursor::KeepAnchor);
+  cursor.removeSelectedText();
+  QTest::qWait(800);
+  QCOMPARE(doc->toPlainText(), c_tableSource + QStringLiteral("\nAfterward.\n"));
+
+  // An inserted duplicate inherits the old header handle, but none of its
+  // following rows. Only the new table formats; the original remains untouched.
+  editor.setText(c_tableSource);
+  QTRY_VERIFY_WITH_TIMEOUT(editor.getHighlighter()->getBlockContext(2).m_fresh, 5000);
+  cursor = QTextCursor(doc);
+  cursor.insertText(c_tableSource + QLatin1Char('\n'));
+  const QString duplicate =
+      QStringLiteral("| h1  | header2 |\n| --- | ------- |\n| a   | b       |\n\n") + c_tableSource;
+  QTRY_COMPARE_WITH_TIMEOUT(doc->toPlainText(), duplicate, 5000);
+
+  editor.setText(c_tableSource);
+  QTRY_VERIFY_WITH_TIMEOUT(editor.getHighlighter()->getBlockContext(2).m_fresh, 5000);
+  doc->setUndoRedoEnabled(false);
+  replaceTableSource(editor, 2, 2, 1, QStringLiteral("z"));
+  selectTableSource(editor, 2, 3, 2, 3);
+  QTRY_COMPARE_WITH_TIMEOUT(doc->toPlainText(), c_tableSourceAligned, 5000);
+  QVERIFY(!doc->isUndoRedoEnabled());
+  QVERIFY(!doc->isUndoAvailable());
+  QVERIFY(!doc->isRedoAvailable());
+}
+
+void TestMarkdownEditor::testTableSourceFormatLoadAndConfig() {
+  // Each replacement clears a populated document, including the terminal character.
+  for (int load = 0; load < 3; ++load) {
+    VMarkdownEditor editor(makeTableSourceConfig(), QSharedPointer<TextEditorParameters>::create());
+    editor.setText(QStringLiteral("previous document\n"));
+    if (load == 0) {
+      editor.setText(c_tableSource);
+    } else if (load == 1) {
+      editor.getTextEdit()->setPlainText(c_tableSource);
+    } else {
+      editor.document()->clear();
+      editor.setText(c_tableSource);
+    }
+    auto doc = editor.document();
+    const bool modified = doc->isModified();
+    const bool undoAvailable = doc->isUndoAvailable();
+    QTest::qWait(800);
+    QCOMPARE(doc->toPlainText(), c_tableSource);
+    QCOMPARE(doc->isModified(), modified);
+    QCOMPARE(doc->isUndoAvailable(), undoAvailable);
+  }
+
+  auto config = makeTableSourceConfig(false);
+  VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+  editor.setText(c_tableSource);
+  auto doc = editor.document();
+  QTRY_VERIFY_WITH_TIMEOUT(editor.getHighlighter()->getBlockContext(2).m_fresh, 5000);
+  config->m_autoFormatTableSourceEnabled = true;
+  editor.setConfig(config);
+  const bool modified = doc->isModified();
+  const int enabledUndoSteps = doc->availableUndoSteps();
+  QTest::qWait(800);
+  QCOMPARE(doc->toPlainText(), c_tableSource);
+  QCOMPARE(doc->isModified(), modified);
+  QCOMPARE(doc->availableUndoSteps(), enabledUndoSteps);
+
+  replaceTableSource(editor, 2, 2, 1, QStringLiteral("z"));
+  QTest::qWait(200);
+  config->m_autoFormatTableSourceEnabled = false;
+  editor.setConfig(config);
+  QTest::qWait(800);
+  QCOMPARE(doc->toPlainText(), c_tableSourceEdited);
+
+  config->m_autoFormatTableSourceEnabled = true;
+  editor.setConfig(config);
+  QTest::qWait(800);
+  QCOMPARE(doc->toPlainText(), c_tableSourceEdited);
+
+  // No event-loop turn or first-parse wait between loading and a real edit.
+  editor.setText(c_tableSource);
+  replaceTableSource(editor, 2, 2, 1, QStringLiteral("z"));
+  selectTableSource(editor, 2, 3, 2, 3);
+  QTRY_COMPARE_WITH_TIMEOUT(doc->toPlainText(), c_tableSourceAligned, 5000);
+
+  // A bare clear has no paired insertion; it must not swallow the next cursor edit.
+  doc->clear();
+  QTest::qWait(800);
+  QCOMPARE(doc->toPlainText(), QString());
+  QTextCursor cursor(doc);
+  cursor.insertText(c_tableSourceEdited);
+  selectTableSource(editor, 2, 3, 2, 3);
+  QTRY_COMPARE_WITH_TIMEOUT(doc->toPlainText(), c_tableSourceAligned, 5000);
+
+  // With undo disabled, bare clear still differs from setPlainText's paired
+  // insertion. Even an immediate external cursor edit must not be swallowed.
+  doc->setUndoRedoEnabled(false);
+  doc->clear();
+  cursor = QTextCursor(doc);
+  cursor.insertText(c_tableSourceEdited);
+  selectTableSource(editor, 2, 3, 2, 3);
+  QTRY_COMPARE_WITH_TIMEOUT(doc->toPlainText(), c_tableSourceAligned, 5000);
+  QVERIFY(!doc->isUndoRedoEnabled());
+  QVERIFY(!doc->isUndoAvailable());
+  doc->setUndoRedoEnabled(true);
+
+  // Removing every visible character does not remove Qt's terminal character.
+  editor.setText(QStringLiteral("replace all this visible source\n"));
+  QTRY_VERIFY_WITH_TIMEOUT(editor.getHighlighter()->getBlockContext(0).m_fresh, 5000);
+  cursor = QTextCursor(doc);
+  cursor.select(QTextCursor::Document);
+  cursor.insertText(c_tableSourceEdited);
+  selectTableSource(editor, 2, 3, 2, 3);
+  QTRY_COMPARE_WITH_TIMEOUT(doc->toPlainText(), c_tableSourceAligned, 5000);
+}
+
+void TestMarkdownEditor::testTableSourceFormatCursorAndSelection_data() {
+  QTest::addColumn<QString>("source");
+  QTest::addColumn<QString>("expected");
+  QTest::addColumn<int>("anchorBlock");
+  QTest::addColumn<int>("anchorColumn");
+  QTest::addColumn<int>("positionBlock");
+  QTest::addColumn<int>("positionColumn");
+  QTest::addColumn<int>("mappedAnchorColumn");
+  QTest::addColumn<int>("mappedPositionColumn");
+  QTest::addColumn<QString>("selected");
+  QTest::addColumn<bool>("overridden");
+
+  QTest::newRow("caret-after-body-value")
+      << c_tableSource << c_tableSourceAligned << 2 << 7 << 2 << 7 << 9 << 9 << QString() << false;
+  QTest::newRow("forward-body-selection") << c_tableSource << c_tableSourceAligned << 2 << 6 << 2
+                                          << 7 << 8 << 9 << QStringLiteral("b") << false;
+  QTest::newRow("backward-body-selection") << c_tableSource << c_tableSourceAligned << 2 << 7 << 2
+                                           << 6 << 9 << 8 << QStringLiteral("b") << false;
+  QTest::newRow("caret-inside-header-content") << c_tableSource << c_tableSourceAligned << 0 << 10
+                                               << 0 << 10 << 11 << 11 << QString() << false;
+  QTest::newRow("cross-table-next-block-column-zero")
+      << c_tableSource << c_tableSourceAligned << 2 << 6 << 3 << 0 << 8 << 0
+      << QStringLiteral("b       |\u2029") << false;
+  QTest::newRow("overridden-selection-with-unselected-caret")
+      << c_tableSource << c_tableSourceAligned << 2 << 3 << 2 << 3 << 3 << 3 << QString() << true;
+
+  QTest::newRow("duplicate-values-use-the-second-occurrence")
+      << QStringLiteral("| h1 | header2 | third |\n| --- | --- | --- |\n| a | same | same |\n")
+      << QStringLiteral("| h1  | header2 | third |\n| --- | ------- | ----- |\n"
+                        "| z   | same    | same  |\n")
+      << 2 << 13 << 2 << 17 << 18 << 22 << QStringLiteral("same") << false;
+  QTest::newRow("escaped-pipe-is-content")
+      << QStringLiteral("| h1 | header2 |\n| --- | --- |\n| a | c\\|d |\n")
+      << QStringLiteral("| h1  | header2 |\n| --- | ------- |\n| z   | c\\|d    |\n") << 2 << 7 << 2
+      << 10 << 9 << 12 << QStringLiteral("\\|d") << false;
+
+  // The second value starts at UTF-16 column 6, then 8 after formatting:
+  // CJK occupies one unit, e + combining acute two, and the emoji two.
+  const QString unicodeSource =
+      QStringLiteral("| h1 | header2 |\n| --- | --- |\n| a | \u4E2De\u0301\U0001F600 |\n");
+  const QString unicodeExpected =
+      QStringLiteral("| h1  | header2 |\n| --- | ------- |\n| z   | \u4E2De\u0301\U0001F600   |\n");
+  QTest::newRow("cjk-code-unit-not-display-width")
+      << unicodeSource << unicodeExpected << 2 << 6 << 2 << 7 << 8 << 9 << QStringLiteral("\u4E2D")
+      << false;
+  QTest::newRow("combining-mark-offset") << unicodeSource << unicodeExpected << 2 << 8 << 2 << 9
+                                         << 10 << 11 << QStringLiteral("\u0301") << false;
+  QTest::newRow("surrogate-pair-endpoints") << unicodeSource << unicodeExpected << 2 << 9 << 2 << 11
+                                            << 11 << 13 << QStringLiteral("\U0001F600") << false;
+
+  QTest::newRow("content-end-wins-over-unpadded-pipe")
+      << QStringLiteral("| h1 | header2 |\n| --- | --- |\n| a |b|\n") << c_tableSourceAligned << 2
+      << 6 << 2 << 6 << 9 << 9 << QString() << false;
+  QTest::newRow("structural-pipe-keeps-its-column")
+      << c_tableSource << c_tableSourceAligned << 2 << 4 << 2 << 4 << 6 << 6 << QString() << false;
+  QTest::newRow("leading-padding-keeps-distance-to-content")
+      << c_tableSource << c_tableSourceAligned << 2 << 5 << 2 << 5 << 7 << 7 << QString() << false;
+  QTest::newRow("trailing-padding-keeps-distance-from-content")
+      << QStringLiteral("| h1 | header2 |\n| --- | --- |\n| a | b  |\n") << c_tableSourceAligned
+      << 2 << 8 << 2 << 8 << 10 << 10 << QString() << false;
+  QTest::newRow("line-end-keeps-distance-after-final-pipe")
+      << c_tableSource << c_tableSourceAligned << 2 << 9 << 2 << 9 << 17 << 17 << QString()
+      << false;
+  QTest::newRow("delimiter-right-colon-keeps-side")
+      << QStringLiteral("| h1 | header2 |\n| :--- | ---: |\n| a | b |\n")
+      << QStringLiteral("| h1   | header2 |\n| :--- | ------: |\n| z    |       b |\n") << 1 << 12
+      << 1 << 12 << 15 << 15 << QString() << false;
+}
+
+void TestMarkdownEditor::testTableSourceFormatCursorAndSelection() {
+  QFETCH(QString, source);
+  QFETCH(QString, expected);
+  QFETCH(int, anchorBlock);
+  QFETCH(int, anchorColumn);
+  QFETCH(int, positionBlock);
+  QFETCH(int, positionColumn);
+  QFETCH(int, mappedAnchorColumn);
+  QFETCH(int, mappedPositionColumn);
+  QFETCH(QString, selected);
+  QFETCH(bool, overridden);
+  VMarkdownEditor editor(makeTableSourceConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.setText(source);
+  auto doc = editor.document();
+  QTRY_VERIFY_WITH_TIMEOUT(editor.getHighlighter()->getBlockContext(2).m_fresh, 5000);
+  replaceTableSource(editor, 2, 2, 1, QStringLiteral("z"));
+  selectTableSource(editor, anchorBlock, anchorColumn, positionBlock, positionColumn);
+  auto edit = editor.getTextEdit();
+  if (overridden) {
+    edit->setOverriddenSelection(tableSourcePosition(doc, 2, 6), tableSourcePosition(doc, 2, 7));
+    QCOMPARE(edit->selectedText(), QStringLiteral("b"));
+    QVERIFY(!edit->textCursor().hasSelection());
+  }
+  QTRY_COMPARE_WITH_TIMEOUT(doc->toPlainText(), expected, 5000);
+  const auto cursor = edit->textCursor();
+  QCOMPARE(cursor.anchor(), tableSourcePosition(doc, anchorBlock, mappedAnchorColumn));
+  QCOMPARE(cursor.position(), tableSourcePosition(doc, positionBlock, mappedPositionColumn));
+  QCOMPARE(cursor.hasSelection(), anchorBlock != positionBlock || anchorColumn != positionColumn);
+  QCOMPARE(cursor.selectedText(), selected);
+  if (overridden) {
+    QCOMPARE(edit->getSelection().start(), tableSourcePosition(doc, 2, 8));
+    QCOMPARE(edit->getSelection().end(), tableSourcePosition(doc, 2, 9));
+    QCOMPARE(edit->selectedText(), QStringLiteral("b"));
+    QVERIFY(!cursor.hasSelection());
+  } else {
+    QCOMPARE(edit->selectedText(), selected);
+  }
+}
+
+void TestMarkdownEditor::testTableSourceFormatProtectedPositions() {
+  struct ProtectedPosition {
+    QString m_source;
+    QString m_expected;
+    int m_block;
+    int m_column;
+    int m_retainedColumn;
+  };
+  const ProtectedPosition cases[] = {
+      {QStringLiteral("| h1 | header2 |\n| --- | --- |\n| a          | b |\n"),
+       c_tableSourceAligned, 2, 10, 3},
+      {QStringLiteral("| h1 | header2 |\n| --- | --- |\n| a |              |\n"),
+       QStringLiteral("| h1  | header2 |\n| --- | ------- |\n| z   |         |\n"), 2, 15, 3},
+      {QStringLiteral("| h1 | header2 |\n| ---------- | --- |\n| a | b |\n"), c_tableSourceAligned,
+       1, 10, 3},
+  };
+  for (const auto &item : cases) {
+    VMarkdownEditor editor(makeTableSourceConfig(), QSharedPointer<TextEditorParameters>::create());
+    editor.setText(item.m_source);
+    auto doc = editor.document();
+    QTRY_VERIFY_WITH_TIMEOUT(editor.getHighlighter()->getBlockContext(2).m_fresh, 5000);
+    replaceTableSource(editor, 2, 2, 1, QStringLiteral("z"));
+    selectTableSource(editor, item.m_block, item.m_column, item.m_block, item.m_column);
+    const QString edited = doc->toPlainText();
+    const int position = editor.getTextEdit()->textCursor().position();
+    QTest::qWait(800);
+    QCOMPARE(doc->toPlainText(), edited);
+    QCOMPARE(editor.getTextEdit()->textCursor().position(), position);
+    QCOMPARE(editor.getTextEdit()->textCursor().anchor(), position);
+
+    // Cursor movement, with no new source edit, releases only the deferred table.
+    selectTableSource(editor, item.m_block, item.m_retainedColumn, item.m_block,
+                      item.m_retainedColumn);
+    QTRY_COMPARE_WITH_TIMEOUT(doc->toPlainText(), item.m_expected, 5000);
+    QCOMPARE(editor.getTextEdit()->textCursor().position(),
+             tableSourcePosition(doc, item.m_block, item.m_retainedColumn));
+    QVERIFY(!editor.getTextEdit()->textCursor().hasSelection());
+  }
+
+  // An empty field maps by distance from its preceding pipe, not a guessed value start.
+  {
+    VMarkdownEditor editor(makeTableSourceConfig(), QSharedPointer<TextEditorParameters>::create());
+    editor.setText(QStringLiteral("| h1 | header2 |\n| --- | --- |\n| a |  |\n"));
+    QTRY_VERIFY_WITH_TIMEOUT(editor.getHighlighter()->getBlockContext(2).m_fresh, 5000);
+    replaceTableSource(editor, 2, 2, 1, QStringLiteral("z"));
+    selectTableSource(editor, 2, 6, 2, 6);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        editor.document()->toPlainText(),
+        QStringLiteral("| h1  | header2 |\n| --- | ------- |\n| z   |         |\n"), 5000);
+    QCOMPARE(editor.getTextEdit()->textCursor().positionInBlock(), 8);
+  }
+
+  VMarkdownEditor editor(makeTableSourceConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(640, 480);
+  editor.show();
+  editor.activateWindow();
+  auto edit = editor.getTextEdit();
+  edit->setFocus();
+  QTRY_VERIFY_WITH_TIMEOUT(edit->hasFocus(), 5000);
+  editor.setText(c_tableSource);
+  auto doc = editor.document();
+  QTRY_VERIFY_WITH_TIMEOUT(editor.getHighlighter()->getBlockContext(2).m_fresh, 5000);
+  replaceTableSource(editor, 2, 2, 1, QStringLiteral("z"));
+  selectTableSource(editor, 2, 3, 2, 3);
+  QInputMethodEvent preedit(QStringLiteral("\u3042"), QList<QInputMethodEvent::Attribute>());
+  QCoreApplication::sendEvent(edit, &preedit);
+  const auto body = doc->findBlockByNumber(2);
+  QVERIFY(body.layout());
+  QCOMPARE(body.layout()->preeditAreaText(), QStringLiteral("\u3042"));
+  const int preeditPosition = edit->textCursor().position();
+  QTest::qWait(800);
+  QCOMPARE(doc->toPlainText(), c_tableSourceEdited);
+  QCOMPARE(body.layout()->preeditAreaText(), QStringLiteral("\u3042"));
+  QCOMPARE(edit->textCursor().position(), preeditPosition);
+  QVERIFY(edit->hasFocus());
+
+  QInputMethodEvent commit;
+  commit.setCommitString(QStringLiteral("\u3042"));
+  QCoreApplication::sendEvent(edit, &commit);
+  const QString committed = QStringLiteral("| h1 | header2 |\n| --- | --- |\n| z\u3042 | b |\n");
+  const QString aligned =
+      QStringLiteral("| h1  | header2 |\n| --- | ------- |\n| z\u3042 | b       |\n");
+  QCOMPARE(doc->toPlainText(), committed);
+  QTest::qWait(200);
+  QCOMPARE(doc->toPlainText(), committed);
+  QTRY_COMPARE_WITH_TIMEOUT(doc->toPlainText(), aligned, 5000);
+  QCOMPARE(doc->findBlockByNumber(2).layout()->preeditAreaText(), QString());
+  QCOMPARE(edit->textCursor().positionInBlock(), 4);
+}
+
+void TestMarkdownEditor::testTableSourceFormatUndoRedo() {
+  for (bool programmatic : {false, true}) {
+    VMarkdownEditor editor(makeTableSourceConfig(), QSharedPointer<TextEditorParameters>::create());
+    editor.setText(c_tableSource);
+    auto doc = editor.document();
+    auto edit = editor.getTextEdit();
+    QTRY_VERIFY_WITH_TIMEOUT(editor.getHighlighter()->getBlockContext(2).m_fresh, 5000);
+    replaceTableSource(editor, 2, 2, 1, QStringLiteral("z"));
+    selectTableSource(editor, 2, 3, 2, 3);
+    QTRY_COMPARE_WITH_TIMEOUT(doc->toPlainText(), c_tableSourceAligned, 5000);
+
+    if (programmatic) {
+      doc->undo();
+    } else {
+      edit->undo();
+    }
+    QCOMPARE(doc->toPlainText(), c_tableSource);
+    QVERIFY(doc->isRedoAvailable());
+    const int redoSteps = doc->availableRedoSteps();
+    QTest::qWait(800);
+    QCOMPARE(doc->toPlainText(), c_tableSource);
+    QCOMPARE(doc->availableRedoSteps(), redoSteps);
+    QVERIFY(doc->isRedoAvailable());
+
+    if (programmatic) {
+      doc->redo();
+    } else {
+      edit->redo();
+    }
+    QCOMPARE(doc->toPlainText(), c_tableSourceAligned);
+    const int undoSteps = doc->availableUndoSteps();
+    QTest::qWait(800);
+    QCOMPARE(doc->toPlainText(), c_tableSourceAligned);
+    QCOMPARE(doc->availableUndoSteps(), undoSteps);
+    QVERIFY(!doc->isRedoAvailable());
+
+    // Undo a real edit before its debounce, then branch from the undone state.
+    editor.setText(c_tableSource);
+    QTRY_VERIFY_WITH_TIMEOUT(editor.getHighlighter()->getBlockContext(2).m_fresh, 5000);
+    replaceTableSource(editor, 2, 2, 1, QStringLiteral("z"));
+    QTest::qWait(200);
+    if (programmatic) {
+      doc->undo();
+    } else {
+      edit->undo();
+    }
+    QCOMPARE(doc->toPlainText(), c_tableSource);
+    QVERIFY(doc->isRedoAvailable());
+    QTest::qWait(800);
+    QCOMPARE(doc->toPlainText(), c_tableSource);
+    QVERIFY(doc->isRedoAvailable());
+
+    replaceTableSource(editor, 2, 2, 1, QStringLiteral("y"));
+    selectTableSource(editor, 2, 3, 2, 3);
+    QVERIFY(!doc->isRedoAvailable());
+    const QString branched =
+        QStringLiteral("| h1  | header2 |\n| --- | ------- |\n| y   | b       |\n");
+    QTRY_COMPARE_WITH_TIMEOUT(doc->toPlainText(), branched, 5000);
+    if (programmatic) {
+      doc->undo();
+    } else {
+      edit->undo();
+    }
+    QCOMPARE(doc->toPlainText(), c_tableSource);
+  }
+}
+
+void TestMarkdownEditor::testTableSourceFormatSyntaxBoundaries() {
+  {
+    VMarkdownEditor editor(makeTableSourceConfig(), QSharedPointer<TextEditorParameters>::create());
+    const QString source = QStringLiteral("> | left | center | right | \u4E2D\u6587 |\n"
+                                          "> | :--- | :---: | ---: | --- |\n"
+                                          "> | a | b | c\\|d | e |\n");
+    // The existing sheet/parser fixture, with explicit full-source expectations.
+    const QString expected =
+        QStringLiteral("> | left               | center | right | \u4E2D\u6587 |\n"
+                       "> | :----------------- | :----: | ----: | ---- |\n"
+                       "> | a much wider value |   b    |  c\\|d | e    |\n");
+    editor.setText(source);
+    QTRY_VERIFY_WITH_TIMEOUT(editor.getHighlighter()->getBlockContext(2).m_fresh, 5000);
+    replaceTableSource(editor, 2, 4, 1, QStringLiteral("a much wider value"));
+    selectTableSource(editor, 2, 1, 2, 1);
+    QTRY_COMPARE_WITH_TIMEOUT(editor.document()->toPlainText(), expected, 5000);
+    QCOMPARE(editor.getTextEdit()->textCursor().positionInBlock(), 1);
+    QTRY_VERIFY_WITH_TIMEOUT(editor.getHighlighter()->getBlockContext(2).m_fresh, 5000);
+  }
+
+  {
+    VMarkdownEditor editor(makeTableSourceConfig(), QSharedPointer<TextEditorParameters>::create());
+    editor.setText(QStringLiteral("| h1 | header2 |\n| --- |  |\n| a | b |\n"));
+    QTRY_VERIFY_WITH_TIMEOUT(editor.getHighlighter()->getBlockContext(2).m_fresh, 5000);
+    replaceTableSource(editor, 1, 8, 0, QStringLiteral("---"));
+    selectTableSource(editor, 2, 3, 2, 3);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        editor.document()->toPlainText(),
+        QStringLiteral("| h1  | header2 |\n| --- | ------- |\n| a   | b       |\n"), 5000);
+  }
+
+  struct UnsupportedSource {
+    QString m_source;
+    QString m_edited;
+    int m_block;
+    int m_column;
+  };
+  const UnsupportedSource unsupported[] = {
+      {QStringLiteral("| h1 | header2 |\n| --- |  |\n| a | b |\n"),
+       QStringLiteral("| h1 | header2 |\n| --- |  |\n| z | b |\n"), 2, 2},
+      {QStringLiteral("| h1 | header2 |\nnot a delimiter\n| a | b |\n"),
+       QStringLiteral("| h1 | header2 |\nnot a delimiter\n| z | b |\n"), 2, 2},
+      {QStringLiteral("```markdown\n| h1 | header2 |\n| --- | --- |\n| a | b |\n```\n"),
+       QStringLiteral("```markdown\n| h1 | header2 |\n| --- | --- |\n| z | b |\n```\n"), 3, 2},
+      {QStringLiteral("<table>\n<tr><th>h1</th><th>header2</th></tr>\n"
+                      "<tr><td>a</td><td>b</td></tr>\n</table>\n"),
+       QStringLiteral("<table>\n<tr><th>h1</th><th>header2</th></tr>\n"
+                      "<tr><td>z</td><td>b</td></tr>\n</table>\n"),
+       2, 8},
+      // These valid quote spellings have different continuation prefixes. Copying
+      // the delimiter's prefix over the body would silently rewrite the container.
+      {QStringLiteral("> | h1 | header2 |\n> | --- | --- |\n>| a | b |\n"),
+       QStringLiteral("> | h1 | header2 |\n> | --- | --- |\n>| z | b |\n"), 2, 3},
+      {QStringLiteral("| h1 | header2 |\n| --- | --- |\n| a | b | excess |\n"),
+       QStringLiteral("| h1 | header2 |\n| --- | --- |\n| z | b | excess |\n"), 2, 2},
+  };
+  for (const auto &item : unsupported) {
+    VMarkdownEditor editor(makeTableSourceConfig(), QSharedPointer<TextEditorParameters>::create());
+    editor.setText(item.m_source);
+    QTRY_VERIFY_WITH_TIMEOUT(editor.getHighlighter()->getBlockContext(item.m_block).m_fresh, 5000);
+    replaceTableSource(editor, item.m_block, item.m_column, 1, QStringLiteral("z"));
+    selectTableSource(editor, item.m_block, item.m_column + 1, item.m_block, item.m_column + 1);
+    auto doc = editor.document();
+    QCOMPARE(doc->toPlainText(), item.m_edited);
+    const int undoSteps = doc->availableUndoSteps();
+    QTest::qWait(800);
+    QCOMPARE(doc->toPlainText(), item.m_edited);
+    QCOMPARE(doc->availableUndoSteps(), undoSteps);
+  }
+
+  {
+    VMarkdownEditor editor(makeTableSourceConfig(), QSharedPointer<TextEditorParameters>::create());
+    editor.setText(QStringLiteral("| h1 | header2 |\n| --- | --- |\n| a |\n"));
+    QTRY_VERIFY_WITH_TIMEOUT(editor.getHighlighter()->getBlockContext(2).m_fresh, 5000);
+    replaceTableSource(editor, 2, 2, 1, QStringLiteral("z"));
+    // The old last pipe closes the first field, not the newly inserted empty one.
+    selectTableSource(editor, 2, 4, 2, 4);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        editor.document()->toPlainText(),
+        QStringLiteral("| h1  | header2 |\n| --- | ------- |\n| z   |         |\n"), 5000);
+    QCOMPARE(editor.getTextEdit()->textCursor().positionInBlock(), 6);
+  }
+
+  {
+    VMarkdownEditor editor(makeTableSourceConfig(), QSharedPointer<TextEditorParameters>::create());
+    // 100 CJK characters (200 columns) plus one ASCII character exceed the
+    // display-width ceiling despite taking only 101 UTF-16 code units.
+    const QString wide = QString(100, QChar(0x4E2D)) + QLatin1Char('w');
+    const QString source = QStringLiteral("| h1 | header2 |\n| --- | ------- |\n| a | ") + wide +
+                           QStringLiteral(" |\n");
+    const QString expected =
+        QStringLiteral("| h1 | header2 |\n| --- | --- |\n| z | ") + wide + QStringLiteral(" |\n");
+    editor.setText(source);
+    QTRY_VERIFY_WITH_TIMEOUT(editor.getHighlighter()->getBlockContext(2).m_fresh, 5000);
+    replaceTableSource(editor, 2, 2, 1, QStringLiteral("z"));
+    selectTableSource(editor, 2, 3, 2, 3);
+    QTRY_COMPARE_WITH_TIMEOUT(editor.document()->toPlainText(), expected, 5000);
+  }
+}
+
+void TestMarkdownEditor::testTableSourceFormatIdempotence() {
+  auto config = makeTableSourceConfig();
+  VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+  editor.setText(c_tableSource);
+  auto doc = editor.document();
+  auto edit = editor.getTextEdit();
+  QTRY_VERIFY_WITH_TIMEOUT(editor.getHighlighter()->getBlockContext(2).m_fresh, 5000);
+  replaceTableSource(editor, 2, 2, 1, QStringLiteral("z"));
+  selectTableSource(editor, 2, 7, 2, 6);
+  QTest::qWait(200);
+  // Applying the same enabled value must not cancel genuine pending work.
+  editor.setConfig(config);
+  QTRY_COMPARE_WITH_TIMEOUT(doc->toPlainText(), c_tableSourceAligned, 5000);
+  QTRY_VERIFY_WITH_TIMEOUT(editor.getHighlighter()->getBlockContext(2).m_fresh, 5000);
+  const auto cursor = edit->textCursor();
+  // Fresh AST delivery precedes queued rehighlight/layout work, which itself
+  // advances QTextDocument::revision() without changing source. Settle it first.
+  QTest::qWait(250);
+  const int revision = doc->revision();
+  const int undoSteps = doc->availableUndoSteps();
+  const int redoSteps = doc->availableRedoSteps();
+  const bool undoAvailable = doc->isUndoAvailable();
+  const bool redoAvailable = doc->isRedoAvailable();
+  QTest::qWait(800);
+  QCOMPARE(doc->toPlainText(), c_tableSourceAligned);
+  QCOMPARE(edit->textCursor().anchor(), cursor.anchor());
+  QCOMPARE(edit->textCursor().position(), cursor.position());
+  QCOMPARE(doc->revision(), revision);
+  QCOMPARE(doc->availableUndoSteps(), undoSteps);
+  QCOMPARE(doc->availableRedoSteps(), redoSteps);
+  QCOMPARE(doc->isUndoAvailable(), undoAvailable);
+  QCOMPARE(doc->isRedoAvailable(), redoAvailable);
+
+  editor.getHighlighter()->rehighlight();
+  editor.setConfig(config);
+  QTest::qWait(250);
+  const int rehighlightRevision = doc->revision();
+  const int reconfiguredUndoSteps = doc->availableUndoSteps();
+  const int reconfiguredRedoSteps = doc->availableRedoSteps();
+  QTest::qWait(800);
+  QCOMPARE(doc->toPlainText(), c_tableSourceAligned);
+  QCOMPARE(edit->textCursor().anchor(), cursor.anchor());
+  QCOMPARE(edit->textCursor().position(), cursor.position());
+  QCOMPARE(edit->textCursor().selectedText(), QStringLiteral("b"));
+  QCOMPARE(doc->revision(), rehighlightRevision);
+  QCOMPARE(doc->availableUndoSteps(), reconfiguredUndoSteps);
+  QCOMPARE(doc->availableRedoSteps(), reconfiguredRedoSteps);
+
+  // A real insert/delete sequence can finish at exactly the loaded baseline.
+  // It must not align that otherwise-unaligned table or add an empty command.
+  editor.setText(c_tableSource);
+  QTRY_VERIFY_WITH_TIMEOUT(editor.getHighlighter()->getBlockContext(2).m_fresh, 5000);
+  QTextCursor cancelling(doc);
+  cancelling.setPosition(tableSourcePosition(doc, 2, 3));
+  cancelling.insertText(QStringLiteral("x"));
+  cancelling.deletePreviousChar();
+  selectTableSource(editor, 2, 3, 2, 3);
+  QTRY_VERIFY_WITH_TIMEOUT(editor.getHighlighter()->getBlockContext(2).m_fresh, 5000);
+  QTest::qWait(250);
+  const int cancelledRevision = doc->revision();
+  const int cancelledUndoSteps = doc->availableUndoSteps();
+  const int cancelledRedoSteps = doc->availableRedoSteps();
+  QTest::qWait(800);
+  QCOMPARE(doc->toPlainText(), c_tableSource);
+  QCOMPARE(doc->revision(), cancelledRevision);
+  QCOMPARE(doc->availableUndoSteps(), cancelledUndoSteps);
+  QCOMPARE(doc->availableRedoSteps(), cancelledRedoSteps);
+  QCOMPARE(edit->textCursor().positionInBlock(), 3);
+  QVERIFY(!edit->textCursor().hasSelection());
 }
 
 QTEST_MAIN(tests::TestMarkdownEditor)

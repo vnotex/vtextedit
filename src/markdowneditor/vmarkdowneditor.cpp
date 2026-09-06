@@ -18,17 +18,609 @@
 #include "editorpreviewmgr.h"
 #include "interactivepreviewhost.h"
 #include "ksyntaxcodeblockhighlighter.h"
+#include "markdownastwalker.h"
 #include "markdownfoldingprovider.h"
+#include "markdownhighlighterresult.h"
 #include "mathblockhighlighter.h"
+#include "previewbuilder.h"
+#include "previewfromast.h"
+#include "tablepreviewwidget.h"
 #include "textdocumentlayout.h"
 #include "webcodeblockhighlighter.h"
 
 #include <QDebug>
 #include <QFontMetricsF>
+#include <QScopedValueRollback>
 #include <QScrollBar>
 #include <QStringList>
+#include <QTextLayout>
+#include <QTimer>
+
+#include <utility>
 
 using namespace vte;
+
+namespace vte {
+// Scheduling and source positions belong to the editor, not to a preview sheet.
+// This QObject child deliberately adds no state to an exported class.
+class TableSourceFormatter final : public QObject {
+  Q_OBJECT
+public:
+  explicit TableSourceFormatter(VMarkdownEditor *p_editor)
+      : QObject(p_editor), m_editor(p_editor), m_doc(p_editor->document()) {
+    setObjectName(QStringLiteral("vte_table_source_formatter"));
+    m_timer.setSingleShot(true);
+    m_timer.setTimerType(Qt::PreciseTimer);
+    m_timer.setInterval(500);
+    connect(&m_timer, &QTimer::timeout, this, &TableSourceFormatter::attempt);
+    connect(m_doc, &QTextDocument::contentsChange, this, &TableSourceFormatter::contentsChange);
+    connect(m_doc, &QTextDocument::contentsChanged, this, &TableSourceFormatter::contentsChanged);
+    connect(m_doc, &QTextDocument::undoCommandAdded, this, [this]() {
+      if (!m_applying) {
+        m_newUndoCommand = true;
+      }
+    });
+    connect(p_editor->getHighlighter(), &MarkdownHighlighter::highlightCompleted, this,
+            &TableSourceFormatter::queueAttempt);
+    connect(p_editor->documentLayout(), &TextDocumentLayout::becameIdle, this,
+            &TableSourceFormatter::queueAttempt);
+    auto edit = p_editor->getTextEdit();
+    connect(edit, &QTextEdit::cursorPositionChanged, this, &TableSourceFormatter::queueAttempt);
+    connect(edit, &QTextEdit::selectionChanged, this, &TableSourceFormatter::queueAttempt);
+    edit->installEventFilter(this);
+    edit->viewport()->installEventFilter(this);
+    observeDocument();
+  }
+
+  void setEnabled(bool p_enabled) {
+    if (m_enabled == p_enabled) {
+      return;
+    }
+    m_enabled = p_enabled;
+    cancel();
+    m_baseline.clear();
+    m_nextBaseline.clear();
+    if (m_enabled) {
+      captureBaseline();
+    }
+    observeDocument();
+  }
+
+protected:
+  bool eventFilter(QObject *p_object, QEvent *p_event) Q_DECL_OVERRIDE {
+    Q_UNUSED(p_object);
+    if (p_event->type() == QEvent::InputMethod || p_event->type() == QEvent::FocusIn ||
+        p_event->type() == QEvent::FocusOut) {
+      queueAttempt();
+    }
+    return false;
+  }
+
+private:
+  struct Baseline {
+    QTextBlock m_block;
+    QString m_text;
+  };
+
+  struct Row {
+    int m_position = 0;
+    QString m_before;
+    QString m_after;
+    QVector<QString> m_cellsBefore;
+    QVector<QString> m_cellsAfter;
+    QVector<int> m_offsetsBefore;
+    QVector<int> m_offsetsAfter;
+    QVector<int> m_bordersBefore;
+    QVector<int> m_bordersAfter;
+    bool m_delimiter = false;
+
+    bool map(int p_position, int &p_mapped) const;
+  };
+
+  void observeDocument() {
+    m_revision = m_doc->revision();
+    m_characters = m_doc->characterCount();
+    m_undoSteps = m_doc->availableUndoSteps();
+    m_redoSteps = m_doc->availableRedoSteps();
+    m_newUndoCommand = false;
+    m_sourceChanged = false;
+  }
+
+  void cancel() {
+    ++m_generation;
+    m_pending = false;
+    m_timer.stop();
+  }
+
+  QHash<int, int> baselinePositions() const {
+    QHash<int, int> positions;
+    positions.reserve(m_baseline.size());
+    for (int i = 0; i < m_baseline.size(); ++i) {
+      if (m_baseline[i].m_block.isValid()) {
+        positions.insert(m_baseline[i].m_block.position(), i);
+      }
+    }
+    return positions;
+  }
+
+  void captureBaseline(const QSet<int> &p_deferredBlocks = QSet<int>()) {
+    const auto positions = baselinePositions();
+    m_nextBaseline.resize(0);
+    m_nextBaseline.reserve(m_doc->blockCount());
+    for (auto block = m_doc->begin(); block.isValid(); block = block.next()) {
+      const int old = positions.value(block.position(), -1);
+      const bool retained = old >= 0 && m_baseline[old].m_block == block;
+      if (p_deferredBlocks.contains(block.blockNumber())) {
+        if (retained) {
+          m_nextBaseline.append(m_baseline[old]);
+        }
+        continue;
+      }
+      const QString text = block.text();
+      if (retained && m_baseline[old].m_text == text) {
+        m_nextBaseline.append(m_baseline[old]);
+      } else {
+        m_nextBaseline.append({block, text});
+      }
+    }
+    m_baseline.swap(m_nextBaseline);
+  }
+
+  void contentsChange(int p_position, int p_removed, int p_added) {
+    // Qt clear removes the terminal character as well. Cursor select-all does
+    // not, and a rehighlight does not leave a now-empty document.
+    const bool reset = p_position == 0 && p_added == 0 && p_removed > m_characters - 1 &&
+                       m_doc->characterCount() == 1;
+    if (reset) {
+      cancel();
+      m_baseline.clear();
+      m_nextBaseline.clear();
+      m_reset = !m_doc->isUndoRedoEnabled();
+      if (m_enabled) {
+        captureBaseline();
+      }
+      observeDocument();
+      return;
+    }
+    // The paired setPlainText insertion includes Qt's terminal character;
+    // an ordinary cursor insertion after bare clear never does. Clear itself
+    // need not emit a final contentsChanged, even with undo disabled.
+    if (m_reset && (p_position != 0 || p_removed != 0 || p_added != m_doc->characterCount())) {
+      m_reset = false;
+    }
+    if (!m_applying && (p_removed != 0 || p_added != 0) && m_doc->revision() != m_revision) {
+      m_sourceChanged = true;
+    }
+    m_characters = m_doc->characterCount();
+  }
+
+  void contentsChanged() {
+    if (m_reset) {
+      // setPlainText's paired insertion is complete, still with undo disabled.
+      // No queued reset flag may consume a cursor edit after the load returns.
+      m_reset = false;
+      if (m_enabled) {
+        captureBaseline();
+      }
+      observeDocument();
+      return;
+    }
+    if (m_applying || !m_enabled) {
+      observeDocument();
+      return;
+    }
+    if (!m_sourceChanged || m_doc->revision() == m_revision) {
+      // A nested highlight notification may precede our contentsChange slot.
+      // Do not consume its revision or undo-command evidence here.
+      return;
+    }
+    const int undo = m_doc->availableUndoSteps();
+    const int redo = m_doc->availableRedoSteps();
+    const bool replay =
+        m_doc->isUndoRedoEnabled() &&
+        (undo < m_undoSteps || (undo > m_undoSteps && redo < m_redoSteps && !m_newUndoCommand));
+    if (replay || m_editor->isReadOnly()) {
+      cancel();
+      captureBaseline();
+    } else {
+      ++m_generation;
+      m_pending = true;
+      m_idle.restart();
+      m_timer.start();
+    }
+    observeDocument();
+  }
+
+  void queueAttempt() {
+    if (!m_pending || m_applying || m_queued) {
+      return;
+    }
+    m_queued = true;
+    const auto generation = m_generation;
+    QTimer::singleShot(0, this, [this, generation]() {
+      m_queued = false;
+      if (generation == m_generation) {
+        attempt();
+      } else if (m_pending) {
+        queueAttempt();
+      }
+    });
+  }
+
+  void attempt() {
+    if (!m_enabled || !m_pending || m_applying) {
+      return;
+    }
+    if (m_editor->isReadOnly()) {
+      cancel();
+      captureBaseline();
+      return;
+    }
+    if (m_idle.elapsed() < 500) {
+      m_timer.start(500 - int(m_idle.elapsed()));
+      return;
+    }
+    auto layout = m_editor->documentLayout();
+    if (layout->isBusy()) {
+      layout->requestIdleNotification();
+      return;
+    }
+    auto edit = m_editor->getTextEdit();
+    if (edit->isViewportWidgetFocused() ||
+        !edit->getSelections().getAdditionalSelections().isEmpty()) {
+      return;
+    }
+    for (auto block = m_doc->begin(); block.isValid(); block = block.next()) {
+      if (block.layout() && !block.layout()->preeditAreaText().isEmpty()) {
+        return;
+      }
+    }
+    const auto highlighter = m_editor->getHighlighter();
+    // Highlight-only edit blocks advance document revision without invalidating
+    // the AST. formatTables snapshots and rechecks the live revision at apply.
+    if (!highlighter->m_result || !highlighter->m_result->matched(highlighter->m_timeStamp)) {
+      return;
+    }
+    formatTables(highlighter->m_result->m_tableElements);
+  }
+
+  bool prepareTable(const md::TableElement &p_table, QVector<Row> &p_rows) const;
+  void formatTables(const QVector<md::TableElement> &p_tables);
+
+  VMarkdownEditor *m_editor;
+  QTextDocument *m_doc;
+  QTimer m_timer;
+  QElapsedTimer m_idle;
+  QVector<Baseline> m_baseline;
+  QVector<Baseline> m_nextBaseline;
+  quint64 m_generation = 0;
+  int m_revision = 0;
+  int m_characters = 1;
+  int m_undoSteps = 0;
+  int m_redoSteps = 0;
+  bool m_enabled = false;
+  bool m_pending = false;
+  bool m_queued = false;
+  bool m_applying = false;
+  bool m_reset = false;
+  bool m_sourceChanged = false;
+  bool m_newUndoCommand = false;
+};
+
+bool TableSourceFormatter::prepareTable(const md::TableElement &p_table,
+                                        QVector<Row> &p_rows) const {
+  if (p_table.m_syntax != md::TableElement::Syntax::Markdown || p_table.m_columns <= 0 ||
+      p_table.m_rows.size() < 2 || p_table.m_alignments.size() != p_table.m_columns) {
+    return false;
+  }
+  const auto first = m_doc->findBlockByNumber(p_table.m_startBlock);
+  if (!first.isValid() || first.position() != p_table.m_startPos) {
+    return false;
+  }
+  const auto lines =
+      previewSourceText(m_doc, p_table.m_startPos, p_table.m_endPos).split(QLatin1Char('\n'));
+  if (lines.size() != p_table.m_rows.size()) {
+    return false;
+  }
+  QVector<QVector<QString>> cells;
+  QVector<QString> prefixes;
+  QString delimiterPrefix;
+  auto block = first;
+  for (int r = 0; r < lines.size(); ++r, block = block.next()) {
+    const auto &parsed = p_table.m_rows[r];
+    Row row;
+    row.m_position = block.position();
+    row.m_before = lines[r];
+    row.m_delimiter = r == 1;
+    QString prefix;
+    if (!block.isValid() || block.text() != row.m_before ||
+        !md::splitTableRow(row.m_before, prefix, row.m_cellsBefore, &row.m_offsetsBefore,
+                           &row.m_bordersBefore) ||
+        prefix != parsed.m_prefix || row.m_cellsBefore != parsed.m_cells ||
+        row.m_offsetsBefore != parsed.m_cellOffsets ||
+        row.m_cellsBefore.size() > p_table.m_columns ||
+        (r < 2 && row.m_cellsBefore.size() != p_table.m_columns)) {
+      return false;
+    }
+    if (row.m_delimiter) {
+      if (parsed.m_type != md::TableRowType::Delimiter) {
+        return false;
+      }
+      delimiterPrefix = prefix;
+    } else {
+      if (parsed.m_type != (r == 0 ? md::TableRowType::Header : md::TableRowType::Data)) {
+        return false;
+      }
+      for (const auto &cell : row.m_cellsBefore) {
+        if (TablePreviewSerializer::escapeCell(cell) != cell) {
+          return false;
+        }
+      }
+      cells.append(row.m_cellsBefore);
+      prefixes.append(prefix);
+    }
+    p_rows.append(std::move(row));
+  }
+  QVector<PreviewTableAlignment> alignments;
+  alignments.reserve(p_table.m_columns);
+  for (int alignment : p_table.m_alignments) {
+    alignments.append(toPreviewAlignment(alignment));
+  }
+  // This also rejects unsafe prefixes and line separators. The raw-source
+  // caller above rejects escape changes rather than authoring new Markdown.
+  const QString output =
+      TablePreviewSerializer::serialize(cells, alignments, prefixes, delimiterPrefix, true);
+  const auto formatted = output.split(QLatin1Char('\n'));
+  if (output.isEmpty() || formatted.size() != p_rows.size()) {
+    return false;
+  }
+  for (int r = 0; r < p_rows.size(); ++r) {
+    auto &row = p_rows[r];
+    row.m_after = formatted[r];
+    QString prefix;
+    if (!md::splitTableRow(row.m_after, prefix, row.m_cellsAfter, &row.m_offsetsAfter,
+                           &row.m_bordersAfter) ||
+        prefix != p_table.m_rows[r].m_prefix || row.m_cellsAfter.size() != p_table.m_columns) {
+      return false;
+    }
+    if (!row.m_delimiter) {
+      auto normalized = row.m_cellsBefore;
+      normalized.resize(p_table.m_columns);
+      if (normalized != row.m_cellsAfter) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// Positions are UTF-16 boundaries, not display columns. A boundary belonging
+// to retained cell text wins over the pipe immediately following that text.
+bool TableSourceFormatter::Row::map(int p_position, int &p_mapped) const {
+  if (m_before == m_after || p_position < m_bordersBefore[0]) {
+    p_mapped = p_position;
+    return true;
+  }
+  for (int c = 0; c < m_cellsBefore.size(); ++c) {
+    const auto &before = m_cellsBefore[c];
+    if (before.isEmpty()) {
+      continue;
+    }
+    const int offset = p_position - m_offsetsBefore[c];
+    if (offset < 0 || offset > before.size()) {
+      continue;
+    }
+    int mapped = offset;
+    if (m_delimiter) {
+      const auto &after = m_cellsAfter[c];
+      const bool left = before.startsWith(QLatin1Char(':'));
+      const bool right = before.endsWith(QLatin1Char(':'));
+      if (left != after.startsWith(QLatin1Char(':')) || right != after.endsWith(QLatin1Char(':'))) {
+        return false;
+      }
+      if (left && offset == 0) {
+        mapped = 0;
+      } else if (right && offset >= before.size() - 1) {
+        mapped = after.size() - (before.size() - offset);
+      } else {
+        const int dashOffset = offset - int(left);
+        const int dashCount = after.size() - int(left) - int(right);
+        if (dashOffset < 0 || dashOffset > dashCount) {
+          return false;
+        }
+        mapped = int(left) + dashOffset;
+      }
+    }
+    p_mapped = m_offsetsAfter[c] + mapped;
+    return true;
+  }
+  for (int pipe = 0; pipe < m_bordersBefore.size(); ++pipe) {
+    if (p_position == m_bordersBefore[pipe]) {
+      // The old closing pipe still closes the same field, even when missing
+      // body fields are appended after it.
+      p_mapped = m_bordersAfter[pipe];
+      return true;
+    }
+  }
+  if (p_position > m_bordersBefore.last()) {
+    p_mapped = m_bordersAfter.last() + p_position - m_bordersBefore.last();
+    return p_mapped <= m_after.size();
+  }
+  for (int c = 0; c < m_cellsBefore.size(); ++c) {
+    if (p_position <= m_bordersBefore[c] || p_position >= m_bordersBefore[c + 1]) {
+      continue;
+    }
+    if (m_cellsBefore[c].isEmpty()) {
+      p_mapped = m_bordersAfter[c] + p_position - m_bordersBefore[c];
+      return p_mapped < m_bordersAfter[c + 1];
+    }
+    if (p_position < m_offsetsBefore[c]) {
+      p_mapped = m_offsetsAfter[c] - (m_offsetsBefore[c] - p_position);
+      return p_mapped > m_bordersAfter[c];
+    }
+    const int endBefore = m_offsetsBefore[c] + m_cellsBefore[c].size();
+    const int endAfter = m_offsetsAfter[c] + m_cellsAfter[c].size();
+    p_mapped = endAfter + p_position - endBefore;
+    return p_mapped < m_bordersAfter[c + 1];
+  }
+  return false;
+}
+
+void TableSourceFormatter::formatTables(const QVector<md::TableElement> &p_tables) {
+  const auto generation = m_generation;
+  const int revision = m_doc->revision();
+  const int undoSteps = m_undoSteps;
+  auto edit = m_editor->getTextEdit();
+  const QTextCursor original = edit->textCursor();
+  const auto selection = edit->getSelection();
+  const bool overridden =
+      selection.isValid() &&
+      !(selection == VTextEdit::Selection(original.anchor(), original.position()));
+  QVector<int> endpoints{original.anchor(), original.position()};
+  if (overridden) {
+    endpoints.append(selection.start());
+    endpoints.append(selection.end());
+  }
+  const auto positions = baselinePositions();
+  QSet<int> deferred;
+  QVector<Row> rows;
+  for (const auto &table : p_tables) {
+    if (table.m_syntax != md::TableElement::Syntax::Markdown) {
+      continue;
+    }
+    bool changed = false;
+    int baselineStart = -1;
+    auto block = m_doc->findBlockByNumber(table.m_startBlock);
+    for (int r = 0; r < table.m_rows.size() && block.isValid(); ++r, block = block.next()) {
+      const int old = positions.value(block.position(), -1);
+      if (old < 0 || m_baseline[old].m_block != block || m_baseline[old].m_text != block.text()) {
+        changed = true;
+      } else if (r > 0 && baselineStart < 0) {
+        baselineStart = old - r;
+      }
+    }
+    if (changed && baselineStart >= 0 && table.m_rows.size() <= m_baseline.size() - baselineStart) {
+      // Qt can leave a split header's old handle on preceding prose. A broad
+      // edit-block notification cannot locate that split. Instead, a surviving
+      // non-header row anchors the original baseline; every row must still
+      // match exactly. A newly inserted identical table has no such anchor.
+      bool sameRun = true;
+      block = m_doc->findBlockByNumber(table.m_startBlock);
+      for (int r = 0; r < table.m_rows.size(); ++r, block = block.next()) {
+        const int old = positions.value(block.position(), -1);
+        if (!block.isValid() || m_baseline[baselineStart + r].m_text != block.text() ||
+            (old >= 0 && old != baselineStart + r)) {
+          sameRun = false;
+          break;
+        }
+      }
+      changed = !sameRun;
+    }
+    if (!changed) {
+      continue;
+    }
+    QVector<Row> tableRows;
+    if (!prepareTable(table, tableRows)) {
+      continue;
+    }
+    bool representable = true;
+    for (const auto &row : tableRows) {
+      for (int endpoint : endpoints) {
+        if (endpoint >= row.m_position && endpoint <= row.m_position + row.m_before.size()) {
+          int mapped = 0;
+          if (!row.map(endpoint - row.m_position, mapped)) {
+            representable = false;
+          }
+        }
+      }
+    }
+    if (!representable) {
+      for (int r = 0; r < table.m_rows.size(); ++r) {
+        deferred.insert(table.m_startBlock + r);
+      }
+      continue;
+    }
+    for (auto &row : tableRows) {
+      if (row.m_before != row.m_after) {
+        rows.append(std::move(row));
+      }
+    }
+  }
+  // Mapping all endpoints against one immutable set of row rewrites preserves
+  // direction and positions outside tables, including the next block's zero.
+  for (auto &endpoint : endpoints) {
+    int delta = 0;
+    for (const auto &row : rows) {
+      if (endpoint < row.m_position) {
+        break;
+      }
+      if (endpoint <= row.m_position + row.m_before.size()) {
+        int mapped = 0;
+        if (!row.map(endpoint - row.m_position, mapped)) {
+          return;
+        }
+        endpoint = row.m_position + mapped;
+        break;
+      }
+      delta += row.m_after.size() - row.m_before.size();
+    }
+    endpoint += delta;
+  }
+  if (!m_enabled || generation != m_generation || revision != m_doc->revision() ||
+      m_editor->isReadOnly() || m_applying || m_idle.elapsed() < 500) {
+    return;
+  }
+  if (m_editor->documentLayout()->isBusy()) {
+    m_editor->documentLayout()->requestIdleNotification();
+    return;
+  }
+  if (!rows.isEmpty()) {
+    QScopedValueRollback<bool> applying(m_applying, true);
+    const int horizontal = edit->horizontalScrollBar()->value();
+    const int vertical = edit->verticalScrollBar()->value();
+    QTextCursor cursor(m_doc);
+    // Qt can reopen an edit block but cannot promote a bare insert into one.
+    // Preserve that grouping rather than undoing and replaying user input.
+    if (m_doc->isUndoRedoEnabled() && undoSteps > 0 && undoSteps == m_doc->availableUndoSteps() &&
+        m_doc->availableRedoSteps() == 0) {
+      cursor.joinPreviousEditBlock();
+    } else {
+      cursor.beginEditBlock();
+    }
+    for (int r = rows.size() - 1; r >= 0; --r) {
+      const auto &row = rows[r];
+      int prefix = 0;
+      const int beforeSize = row.m_before.size();
+      const int afterSize = row.m_after.size();
+      while (prefix < beforeSize && prefix < afterSize &&
+             row.m_before[prefix] == row.m_after[prefix]) {
+        ++prefix;
+      }
+      int suffix = 0;
+      while (suffix < beforeSize - prefix && suffix < afterSize - prefix &&
+             row.m_before[beforeSize - suffix - 1] == row.m_after[afterSize - suffix - 1]) {
+        ++suffix;
+      }
+      cursor.setPosition(row.m_position + prefix);
+      cursor.setPosition(row.m_position + beforeSize - suffix, QTextCursor::KeepAnchor);
+      cursor.insertText(row.m_after.mid(prefix, afterSize - prefix - suffix));
+    }
+    cursor.endEditBlock();
+    QTextCursor restored(m_doc);
+    restored.setPosition(endpoints[0]);
+    restored.setPosition(endpoints[1], QTextCursor::KeepAnchor);
+    edit->setTextCursor(restored);
+    if (overridden) {
+      edit->setOverriddenSelection(endpoints[2], endpoints[3]);
+    }
+    edit->horizontalScrollBar()->setValue(horizontal);
+    edit->verticalScrollBar()->setValue(vertical);
+  }
+  m_pending = !deferred.isEmpty();
+  captureBaseline(deferred);
+  observeDocument();
+}
+} // namespace vte
 
 VMarkdownEditor::VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_config,
                                  const QSharedPointer<TextEditorParameters> &p_paras,
@@ -77,6 +669,7 @@ VMarkdownEditor::VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_c
   connect(m_textEdit, &VTextEdit::preKeyTab, this, &VMarkdownEditor::preKeyTab);
   connect(m_textEdit, &VTextEdit::preKeyBacktab, this, &VMarkdownEditor::preKeyBacktab);
 
+  new TableSourceFormatter(this);
   updateFromConfig();
 
   // Trigger update of stuffs after init.
@@ -84,6 +677,8 @@ VMarkdownEditor::VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_c
 }
 
 VMarkdownEditor::~VMarkdownEditor() {
+  delete findChild<TableSourceFormatter *>(QStringLiteral("vte_table_source_formatter"),
+                                           Qt::FindDirectChildrenOnly);
   // The host is an ordinary QObject child, and QObject destroys its children
   // in creation order - which puts m_textEdit, its viewport and every preview
   // widget parented to it *before* the host. Its destructor asks a dirty sheet
@@ -356,7 +951,12 @@ void VMarkdownEditor::updateFromConfig() {
   // Also deliberately not retroactive: a table which is already in the
   // document keeps the shape it has until the user edits it.
   if (auto host = interactivePreviewHost()) {
-    host->setTableSourceAlignEnabled(m_config->m_alignTableSourceEnabled);
+    host->setTableSourceAlignEnabled(m_config->m_autoFormatTableSourceEnabled);
+  }
+
+  if (auto formatter = findChild<TableSourceFormatter *>(
+          QStringLiteral("vte_table_source_formatter"), Qt::FindDirectChildrenOnly)) {
+    formatter->setEnabled(m_config->m_autoFormatTableSourceEnabled);
   }
 
   applyLineSpacing();
@@ -885,3 +1485,5 @@ void VMarkdownEditor::handleExternalMathHighlightData(int p_idx, TimeStamp p_tim
   Q_ASSERT(m_mathBlockHighlighter);
   m_mathBlockHighlighter->handleExternalMathHighlightData(p_idx, p_timeStamp, p_html);
 }
+
+#include "vmarkdowneditor.moc"

@@ -111,6 +111,17 @@ private slots:
   void testOrderedListSingleLine();
 
   void testAspectRatioDerivedAxisIsBounded();
+
+  // Automatic, opt-in formatting of directly edited Markdown table source.
+  void testTableSourceFormatDebounce();
+  void testTableSourceFormatProgrammaticEdits();
+  void testTableSourceFormatLoadAndConfig();
+  void testTableSourceFormatCursorAndSelection_data();
+  void testTableSourceFormatCursorAndSelection();
+  void testTableSourceFormatProtectedPositions();
+  void testTableSourceFormatUndoRedo();
+  void testTableSourceFormatSyntaxBoundaries();
+  void testTableSourceFormatIdempotence();
 };
 } // namespace tests
 

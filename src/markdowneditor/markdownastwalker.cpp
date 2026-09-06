@@ -261,14 +261,17 @@ static QString lineText(const QByteArray &p_utf8Text, const LineOffsetTable &p_o
 // cells, mirroring cmark's scanner (blocks.c scan_table_row_helper): the row
 // starts with '|' right after the prefix, a pipe preceded by an odd number of
 // backslashes is escaped, and only whitespace may follow the trailing pipe.
-static bool splitTableRow(const QString &p_line, QString &p_prefix, QVector<QString> &p_cells,
-                          QVector<int> *p_cellOffsets = nullptr) {
+bool splitTableRow(const QString &p_line, QString &p_prefix, QVector<QString> &p_cells,
+                   QVector<int> *p_cellOffsets, QVector<int> *p_cellBorders) {
   const int firstPipe = p_line.indexOf(QLatin1Char('|'));
   if (firstPipe < 0) {
     return false;
   }
 
   p_prefix = p_line.left(firstPipe);
+  if (p_cellBorders) {
+    p_cellBorders->append(firstPipe);
+  }
 
   // Offset of the first character of the trimmed slice [p_start, p_end).
   // Must use the very same whitespace semantics as QString::trimmed().
@@ -297,6 +300,9 @@ static bool splitTableRow(const QString &p_line, QString &p_prefix, QVector<QStr
 
     if (ch == QLatin1Char('|')) {
       p_cells.append(p_line.mid(cellStart, i - cellStart).trimmed());
+      if (p_cellBorders) {
+        p_cellBorders->append(i);
+      }
       if (p_cellOffsets) {
         p_cellOffsets->append(trimmedOffset(cellStart, i));
       }

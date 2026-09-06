@@ -832,10 +832,10 @@ QString commitFirstCell(VMarkdownEditor &p_editor, const QString &p_text) {
 }
 } // namespace
 
-// MarkdownEditorConfig::m_alignTableSourceEnabled reaches the sheet through the
-// host and the built-in factory, and only ever changes what a SUBSEQUENT commit
-// writes.
-void TestInteractivePreview::testTableSourceAlignOptionThreading() {
+// Preview policy: MarkdownEditorConfig::m_autoFormatTableSourceEnabled reaches
+// the sheet through the host and built-in factory. A toggle leaves clean source
+// untouched; subsequent preview commits serialize their final compact/aligned form.
+void TestInteractivePreview::testTableSourceFormattingPolicy() {
   // 1. The default config commits the compact form.
   {
     VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
@@ -847,7 +847,7 @@ void TestInteractivePreview::testTableSourceAlignOptionThreading() {
   // 2. A config with the option on up front commits the padded form.
   {
     auto config = makeConfig();
-    config->m_alignTableSourceEnabled = true;
+    config->m_autoFormatTableSourceEnabled = true;
     VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
     setTextAndSettle(editor, QLatin1String(c_raggedTable));
     QVERIFY2(commitFirstCell(editor, QStringLiteral("z")).contains(QLatin1String(c_alignedCommit)),
@@ -860,11 +860,11 @@ void TestInteractivePreview::testTableSourceAlignOptionThreading() {
   setTextAndSettle(editor, QLatin1String(c_raggedTable));
 
   const QString before = editor.document()->toPlainText();
-  config->m_alignTableSourceEnabled = true;
+  config->m_autoFormatTableSourceEnabled = true;
   editor.setConfig(config);
   settle(editor);
 
-  // 3. Existing source is never reformatted on its own.
+  // 3. Enabling the option does not reformat existing source.
   QCOMPARE(editor.document()->toPlainText(), before);
 
   // Nor is it by an edit which cancels out: the commit path asks whether
@@ -885,7 +885,7 @@ void TestInteractivePreview::testTableSourceAlignOptionThreading() {
   // cannot see: the edit is already pending, and only cancels out, when the
   // option changes underneath it.
   {
-    config->m_alignTableSourceEnabled = false;
+    config->m_autoFormatTableSourceEnabled = false;
     editor.setConfig(config);
     settle(editor);
     QCOMPARE(editor.document()->toPlainText(), before);
@@ -897,7 +897,7 @@ void TestInteractivePreview::testTableSourceAlignOptionThreading() {
 
     // Still inside the debounce: the sheet is dirty by generation, settled by
     // content.
-    config->m_alignTableSourceEnabled = true;
+    config->m_autoFormatTableSourceEnabled = true;
     editor.setConfig(config);
     settle(editor);
 
@@ -919,7 +919,7 @@ void TestInteractivePreview::testTableSourceAlignOptionThreading() {
 
   // 6. And flipping it back affects subsequent commits only - on the very same
   // live sheet, without replacing the editor's contents first.
-  config->m_alignTableSourceEnabled = false;
+  config->m_autoFormatTableSourceEnabled = false;
   editor.setConfig(config);
   settle(editor);
   QVERIFY2(editor.document()->toPlainText().contains(QLatin1String(c_alignedCommit)),
@@ -936,7 +936,7 @@ void TestInteractivePreview::testTableSourceAlignOptionThreading() {
 // and still shows the same cells after the commit is that round trip.
 void TestInteractivePreview::testAlignedCommitSurvivesTheRealParser() {
   auto config = makeConfig();
-  config->m_alignTableSourceEnabled = true;
+  config->m_autoFormatTableSourceEnabled = true;
   VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
 
   // Every alignment, an escaped pipe, a CJK cell measured two columns per
@@ -946,15 +946,33 @@ void TestInteractivePreview::testAlignedCommitSurvivesTheRealParser() {
                                         "> | a | b | c\\|d | e |\n");
   setTextAndSettle(editor, source);
 
-  auto sheet = sheetView(singlePreviewWidget(editor));
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
   QVERIFY(sheet);
+  sheet->setFocus();
+  QTRY_VERIFY_WITH_TIMEOUT(sheet->hasFocus(), 5000);
   // A cell holds RAW Markdown, so the escape is part of it and the serializer's
   // escaping is idempotent over it.
   QCOMPARE(sheetCell(sheet, 1, 2), QStringLiteral("c\\|d"));
 
   editCell(sheet, 1, 0, QStringLiteral("a much wider value"));
-  flushSheet(sheet);
-  settle(editor);
+  selectCellContents(sheet, 1, 2);
+  const int selectedAnchor = sheet->textCursor().anchor();
+  const int selectedPosition = sheet->textCursor().position();
+  QCOMPARE(sheet->textCursor().selectedText(), QStringLiteral("c\\|d"));
+
+  // Unlike flushSheet(), this does not pump events: both commits below must
+  // use the synchronous rebased snapshot, before any new parse is delivered.
+  {
+    QFocusEvent out(QEvent::FocusOut);
+    QCoreApplication::sendEvent(sheet, &out);
+  }
+  QCOMPARE(singlePreviewWidget(editor), widget);
+  QCOMPARE(sheetView(widget), sheet);
+  QCOMPARE(sheet->textCursor().anchor(), selectedAnchor);
+  QCOMPARE(sheet->textCursor().position(), selectedPosition);
+  QCOMPARE(sheet->textCursor().selectedText(), QStringLiteral("c\\|d"));
 
   const QString written = editor.document()->toPlainText();
   QVERIFY2(written.contains(QStringLiteral("> | a much wider value |   b    |  c\\|d | e    |")),
@@ -963,21 +981,97 @@ void TestInteractivePreview::testAlignedCommitSurvivesTheRealParser() {
   QVERIFY2(written.contains(QStringLiteral("> | :----------------- | :----: | ----: | ---- |")),
            qPrintable(written));
 
-  // The re-parse accepted it: a sheet is bound again, over the same cells and
-  // with the blockquote prefix still carried.
+  // A second real edit is accepted without waiting for the full parse to catch
+  // up to the first aligned commit. Its unchanged-width value leaves the
+  // selected escaped cell at exactly the same sheet-document positions.
+  editCell(sheet, 1, 1, QStringLiteral("y"));
+  selectCellContents(sheet, 1, 2);
+  {
+    QFocusEvent out(QEvent::FocusOut);
+    QCoreApplication::sendEvent(sheet, &out);
+  }
+  const QString secondWritten =
+      QStringLiteral("> | left               | center | right | \u4E2D\u6587 |\n"
+                     "> | :----------------- | :----: | ----: | ---- |\n"
+                     "> | a much wider value |   y    |  c\\|d | e    |\n");
+  QCOMPARE(editor.document()->toPlainText(), secondWritten);
+  QCOMPARE(singlePreviewWidget(editor), widget);
+  QCOMPARE(sheetView(widget), sheet);
+  QCOMPARE(sheet->textCursor().anchor(), selectedAnchor);
+  QCOMPARE(sheet->textCursor().position(), selectedPosition);
+  QCOMPARE(sheet->textCursor().selectedText(), QStringLiteral("c\\|d"));
+
+  const int committedUndoSteps = editor.document()->availableUndoSteps();
+  const int committedRedoSteps = editor.document()->availableRedoSteps();
+  settle(editor);
+  // Rehighlighting itself advances revision without changing source.
+  QTest::qWait(250);
+  const int committedRevision = editor.document()->revision();
+
+  // The re-parse accepted it: the same sheet remains bound over the same cells,
+  // with the blockquote prefix, active caret and selected raw Markdown intact.
   auto rebound = sheetView(singlePreviewWidget(editor));
-  QVERIFY(rebound);
+  QCOMPARE(singlePreviewWidget(editor), widget);
+  QCOMPARE(rebound, sheet);
   QCOMPARE(sheetCell(rebound, 0, 0), QStringLiteral("left"));
   QCOMPARE(sheetCell(rebound, 1, 0), QStringLiteral("a much wider value"));
+  QCOMPARE(sheetCell(rebound, 1, 1), QStringLiteral("y"));
   QCOMPARE(sheetCell(rebound, 1, 2), QStringLiteral("c\\|d"));
   QCOMPARE(sheetCell(rebound, 0, 3), QStringLiteral("\u4E2D\u6587"));
+  QCOMPARE(rebound->textCursor().anchor(), selectedAnchor);
+  QCOMPARE(rebound->textCursor().position(), selectedPosition);
+  QCOMPARE(rebound->textCursor().selectedText(), QStringLiteral("c\\|d"));
 
-  // And a second commit is stable rather than growing the padding again.
+  // Preview commits already contain their final aligned bytes. The source
+  // formatter must not append another rewrite or undo command after its pause.
+  QTest::qWait(800);
+  QCOMPARE(editor.document()->toPlainText(), secondWritten);
+  QCOMPARE(editor.document()->revision(), committedRevision);
+  QCOMPARE(editor.document()->availableUndoSteps(), committedUndoSteps);
+  QCOMPARE(editor.document()->availableRedoSteps(), committedRedoSteps);
+  QCOMPARE(singlePreviewWidget(editor), widget);
+  QCOMPARE(sheetView(widget), sheet);
+  QCOMPARE(sheet->textCursor().anchor(), selectedAnchor);
+  QCOMPARE(sheet->textCursor().position(), selectedPosition);
+  QCOMPARE(sheet->textCursor().selectedText(), QStringLiteral("c\\|d"));
+  QVERIFY(sheet->hasFocus());
+
+  // Recommitting the same value is stable rather than growing padding again.
   const QString beforeSecond = editor.document()->toPlainText();
-  editCell(rebound, 1, 1, QStringLiteral("b"));
+  editCell(rebound, 1, 1, QStringLiteral("y"));
   flushSheet(rebound);
   settle(editor);
   QCOMPARE(editor.document()->toPlainText(), beforeSecond);
+
+  // Releasing preview focus must not merely release a deferred second rewrite.
+  auto textEdit = editor.getTextEdit();
+  textEdit->setFocus();
+  QTRY_VERIFY_WITH_TIMEOUT(textEdit->hasFocus(), 5000);
+  QTest::qWait(800);
+  QCOMPARE(editor.document()->toPlainText(), secondWritten);
+  QCOMPARE(editor.document()->revision(), committedRevision);
+  QCOMPARE(editor.document()->availableUndoSteps(), committedUndoSteps);
+  QCOMPARE(editor.document()->availableRedoSteps(), committedRedoSteps);
+
+  // Now edit the source itself. Shrinking the widest cell makes alignment
+  // observable again, using the same quote, alignment, escape and CJK rules.
+  QTextCursor cursor(editor.document());
+  cursor.setPosition(editor.document()->findBlockByNumber(2).position() + 4);
+  cursor.setPosition(cursor.position() + 18, QTextCursor::KeepAnchor);
+  QCOMPARE(cursor.selectedText(), QStringLiteral("a much wider value"));
+  cursor.insertText(QStringLiteral("a"));
+  textEdit->setTextCursor(cursor);
+  const QString sourceWritten = QStringLiteral("> | left | center | right | \u4E2D\u6587 |\n"
+                                               "> | :--- | :----: | ----: | ---- |\n"
+                                               "> | a    |   y    |  c\\|d | e    |\n");
+  QTRY_COMPARE_WITH_TIMEOUT(editor.document()->toPlainText(), sourceWritten, 5000);
+  settle(editor);
+  auto sourceRebound = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sourceRebound);
+  QCOMPARE(sheetCell(sourceRebound, 1, 0), QStringLiteral("a"));
+  QCOMPARE(sheetCell(sourceRebound, 1, 1), QStringLiteral("y"));
+  QCOMPARE(sheetCell(sourceRebound, 1, 2), QStringLiteral("c\\|d"));
+  QCOMPARE(sheetCell(sourceRebound, 0, 3), QStringLiteral("\u4E2D\u6587"));
 }
 
 namespace {
