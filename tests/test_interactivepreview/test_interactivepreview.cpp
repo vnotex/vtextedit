@@ -347,7 +347,7 @@ int reconcileDeliveries(VMarkdownEditor &p_editor) {
 
 // TablePreviewWidget::c_commitDebounceMs: the idle window after the last
 // keystroke before a sheet writes itself back.
-const int c_commitDebounceMs = 10000;
+const int c_commitDebounceMs = 3000;
 
 QTextEdit *sheetView(PreviewWidget *p_widget) {
   return p_widget ? p_widget->findChild<QTextEdit *>() : nullptr;
@@ -542,7 +542,7 @@ void editCell(QTextEdit *p_sheet, int p_row, int p_column, const QString &p_text
   cursor.insertText(p_text);
 }
 
-// Write the pending edit back now. The sheet debounces on a 10000 ms idle timer,
+// Write the pending edit back now. The sheet debounces on a 3000 ms idle timer,
 // and losing the focus is one of the triggers which flushes it immediately.
 void flushSheet(QTextEdit *p_sheet) {
   QFocusEvent out(QEvent::FocusOut);
@@ -3127,7 +3127,7 @@ void TestInteractivePreview::testTableWidthFollowsEditorResize() {
 // ---------------------------------------------------------------------------
 
 void TestInteractivePreview::testRemovalDuringTheDebounceKeepsTheEdit() {
-  // The sheet holds an edit for 10000 ms before writing it back. If the host
+  // The sheet holds an edit for 3000 ms before writing it back. If the host
   // drops the identity in that window, the flush the removal triggers arrives
   // after the identity is gone and is rejected as an UnknownIdentity, silently
   // losing the edit - unless the host flushes first, while the context and the
@@ -4488,7 +4488,7 @@ void TestInteractivePreview::testFoldSurvivesASheetCellEditInABlockquotedTable()
   QVERIFY2(!blockVisible(editor, 1), "the parse lost the quoted table's fold");
 }
 
-// What a user typing actually hits: the commit is fired by the 10000 ms idle
+// What a user typing actually hits: the commit is fired by the 3000 ms idle
 // timer, from the event loop, with the sheet still focused - not from a
 // focus-out inside a call the test controls. Every other fold test here drives
 // the focus-out path.
@@ -4973,7 +4973,7 @@ void TestInteractivePreview::testSheetEditDoesNotScrollToTheEditorCaret() {
 
   editCell(sheet, 1, 1, QStringLiteral("changed"));
 
-  // Let the sheet's own 10000 ms debounce fire. flushSheet() would fake a
+  // Let the sheet's own 3000 ms debounce fire. flushSheet() would fake a
   // FocusOut without moving the real focus, and the real focus is the very
   // thing under test here.
   QTRY_VERIFY_WITH_TIMEOUT(

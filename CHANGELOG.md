@@ -42,5 +42,5 @@
 - The table sheet behaves like a Word/OneNote table rather than a spreadsheet:
   one caret roams every cell with no edit mode, a click puts the caret at the
   exact character under the pointer, cells wrap natively, and edits are written
-  back on a 400 ms idle debounce (flushed immediately on cell-leave, focus-out
+  back on a 1-second idle debounce (flushed immediately on cell-leave, focus-out
   and Escape). Selections are confined to a single cell.
