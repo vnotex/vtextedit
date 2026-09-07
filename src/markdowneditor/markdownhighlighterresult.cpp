@@ -67,8 +67,7 @@ MarkdownHighlighterResult::MarkdownHighlighterResult(
 }
 
 QVector<QSharedPointer<const Preview>>
-MarkdownHighlighterResult::buildPreviews(const QTextDocument *p_doc, int p_typeMask,
-                                         const QVector<QTextCharFormat> &p_styles) const {
+MarkdownHighlighterResult::buildPreviews(const QTextDocument *p_doc, int p_typeMask) const {
   QVector<QSharedPointer<const Preview>> previews;
   if (!p_doc || p_typeMask == 0) {
     // The host publishes an empty mask when the feature is off or when no
@@ -140,7 +139,7 @@ MarkdownHighlighterResult::buildPreviews(const QTextDocument *p_doc, int p_typeM
       }
 
       previews.append(
-          createTablePreview(revision, table.m_startPos, table.m_endPos, source, table, p_styles));
+          createTablePreview(revision, table.m_startPos, table.m_endPos, source, table));
     }
   }
 

@@ -4,6 +4,10 @@
 
 ### Breaking changes
 
+- **`TablePreview::cellFormats()` has been removed.** Table snapshots carry text
+  and structure, not resolved syntax formats. `MarkdownHighlighter::getSyntaxStyles()`
+  exposes the current, zoom-adjusted formats; `syntaxStylesChanged()` reports updates.
+
 - **`VMarkdownEditor::tablePreviewVisibleRows()` and `setTablePreviewVisibleRows()`
   have been removed.** The built-in table preview no longer scrolls internally, so
   there is no visible-row budget to configure: the sheet renders at its full
@@ -14,6 +18,12 @@
   link time rather than resolving against an incompatible build.
 
 ### Behavior changes
+
+- Table cells highlight their current Markdown synchronously while editing, before
+  source write-back. Each realized table caches parsed units by live cell text;
+  unchanged source parses and theme/zoom changes do not reparse those cells.
+  Markdown-backed HTML cells use decoded comment payloads, while HTML-only cells
+  remain literal. Theme changes preserve uncommitted text, selection and merged geometry.
 
 - **The interactive table sheet is now offered only for tables of at most 300
   cells** (previously 200 000). Larger tables fall back to the static source

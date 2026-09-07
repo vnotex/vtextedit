@@ -145,12 +145,8 @@ QString TestPreviewBenchmark::manyHtmlTables(int p_count, int p_rows, int p_cols
       const QString tag = r == 0 ? QStringLiteral("th") : QStringLiteral("td");
       text += QStringLiteral("<tr>\n");
       for (int c = 0; c < p_cols; ++c) {
-        // The `<!--vte-md:...-->` payload is what makes the table MARKDOWN
-        // BACKED, and Markdown backing is the only thing that makes the walker
-        // parse each cell as its own cmark document. Without a payload the
-        // table is HTML-only, its cells are literal text, and this fixture
-        // would exercise none of the per-cell snippet parsing it exists to
-        // measure.
+        // Payloads make these tables Markdown-backed. Realized cells parse
+        // their decoded Markdown once; full note parses must not repeat it.
         text += QStringLiteral("<%1><!--vte-md:**t%2r%3c%4**--><p><strong>t%2r%3c%4</strong>"
                                "</p></%1>\n")
                     .arg(tag)
@@ -243,9 +239,6 @@ void TestPreviewBenchmark::benchmarkOpen() {
   settle(editor);
   const qint64 elapsed = timer.elapsed();
 
-  // Every table is claimed by the built-in factory, so the eager pipeline
-  // realizes exactly one widget per table. This is the assertion a lazy
-  // realization change is expected to move.
   // Every table is BOUND - that is what reserves its band and what makes it
   // fold - but only the handful within a viewport height of the top is
   // REALIZED. This is the assertion that states the whole point of the lazy
@@ -272,6 +265,10 @@ void TestPreviewBenchmark::benchmarkOpen() {
       cells <= realized * c_tableRows * c_tableCols,
       qPrintable(QStringLiteral("%1 cells built for %2 realized tables").arg(cells).arg(realized)));
 
+  const qint64 snippetParses = counter(host, "vte_preview_snippet_parses");
+  QVERIFY2(snippetParses > 0, "realized cells performed no initial highlighting");
+  QVERIFY2(snippetParses <= cells, "snippet work exceeded the cells actually built");
+
   qInfo() << "open:" << elapsed << "ms," << tableCount() << "tables bound," << realized
           << "realized," << cells << "cells," << counter(host, "vte_preview_publishes")
           << "publishes";
@@ -280,6 +277,7 @@ void TestPreviewBenchmark::benchmarkOpen() {
   record(QStringLiteral("open.widgetsRealized"), realized);
   record(QStringLiteral("open.previewsBound"), counter(host, "vte_preview_previews_bound"));
   record(QStringLiteral("open.tableCellsBuilt"), cells);
+  record(QStringLiteral("open.snippetParses"), snippetParses);
   record(QStringLiteral("open.tablesBound"), tableCount());
   record(QStringLiteral("open.publishes"), counter(host, "vte_preview_publishes"));
   record(QStringLiteral("open.geometrySetCalls"), counter(host, "vte_preview_geometry_set_calls"));
@@ -318,6 +316,7 @@ void TestPreviewBenchmark::benchmarkUnchangedRepublish() {
   QCOMPARE(counter(host, "vte_preview_table_cells_built"), qint64(0));
   QCOMPARE(counter(host, "vte_preview_identity_fallback_hits"), qint64(0));
   QCOMPARE(counter(host, "vte_preview_previews_bound"), qint64(tableCount()) * rounds);
+  QCOMPARE(counter(host, "vte_preview_snippet_parses"), qint64(0));
 
   // And the document is not re-measured. This is the assertion that pins the
   // measurement cache: a realized sheet measures by laying its QTextDocument
@@ -341,6 +340,7 @@ void TestPreviewBenchmark::benchmarkUnchangedRepublish() {
           << counter(host, "vte_preview_geometry_set_calls") << "setGeometry calls";
 
   record(QStringLiteral("republish.rounds"), rounds);
+  record(QStringLiteral("republish.snippetParses"), counter(host, "vte_preview_snippet_parses"));
   record(QStringLiteral("republish.msPerRound"), QString::number(perRound, 'f', 2));
   record(QStringLiteral("republish.measurements"), counter(host, "vte_preview_measurements"));
   record(QStringLiteral("republish.previewsBound"), counter(host, "vte_preview_previews_bound"));
@@ -350,8 +350,8 @@ void TestPreviewBenchmark::benchmarkUnchangedRepublish() {
 }
 
 void TestPreviewBenchmark::benchmarkUnchangedFullParse() {
-  // HTML tables, because their cells are the ones that reach the per-cell
-  // cmark snippet parse this scenario is meant to isolate.
+  // Keep the Markdown-backed HTML fixture: full note parsing used to parse
+  // every payload again, including tables whose widgets were never realized.
   const QString text = manyHtmlTables(tableCount(), c_tableRows, c_tableCols);
 
   VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
@@ -386,16 +386,10 @@ void TestPreviewBenchmark::benchmarkUnchangedFullParse() {
 
   QCOMPARE(editor.document()->toPlainText(), before);
 
-  // The cost this scenario isolates. Cell syntax highlighting parses each
-  // Markdown-backed cell as its own cmark document, so a full parse of a
-  // document of HTML tables pays one parse per cell - and the walker's
-  // document-wide budget is what stops that growing without bound.
-  //
-  // tableCellsBuilt is deliberately NOT the measure here: it counts widget
-  // construction, which an unchanged parse does not perform at all.
+  // Unchanged live texts retain cached units; unrealized tables never parse
+  // snippets at all. Source parsing and cell parsing are independent.
   const qint64 snippetParses = counter(host, "vte_preview_snippet_parses");
-  QVERIFY2(snippetParses > 0,
-           "no per-cell snippet parses at all - the fixture is not Markdown backed");
+  QCOMPARE(snippetParses, qint64(0));
 
   const double perParse = static_cast<double>(elapsed) / (rounds * 2);
   qInfo() << "unchanged full parse:" << perParse << "ms/parse over" << (rounds * 2) << "parses,"

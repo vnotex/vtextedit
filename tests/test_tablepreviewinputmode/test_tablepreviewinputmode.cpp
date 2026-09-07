@@ -29,8 +29,7 @@ QSharedPointer<const TablePreview> makeTable(const QVector<QVector<QString>> &p_
   const QString source =
       TablePreviewSerializer::serialize(p_cells, alignments, prefixes, QString());
   auto preview = PreviewBuilder::createTable(1, 0, source.size(), source, alignments.size(),
-                                             p_cells, alignments, prefixes, QString(),
-                                             QVector<QVector<QVector<PreviewFormatRun>>>());
+                                             p_cells, alignments, prefixes, QString());
   return preview.staticCast<const TablePreview>();
 }
 

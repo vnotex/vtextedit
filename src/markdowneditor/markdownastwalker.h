@@ -66,10 +66,6 @@ struct TableRowElement {
   // Parallel to m_cells.
   QVector<int> m_cellOffsets;
 
-  // Highlight units of each cell, in cell-local coordinates. Parallel to
-  // m_cells; an empty entry means the cell carries no inline highlighting.
-  QVector<QVector<HLUnit>> m_cellHighlights;
-
   // --- HTML syntax only; empty for a Markdown table. ---
 
   // Column span of each cell in the logical grid. Parallel to m_cells.
@@ -192,19 +188,14 @@ QVector<ImageLinkInfo> buildImageLinks(const QVector<ImageElement> &p_elements);
 // payload that happens to parse as a block construct (`# x`) is highlighted as
 // one. There is no way to ask cmark for inline-only parsing, and a cell's
 // source is by definition detached from its surrounding block context, so this
-// is the closest honest answer. Used only for the Markdown-backed cells of an
-// HTML table; a pipe table's cells are sliced out of their own source line by
-// sliceTableCellHighlights() instead, and an HTML-only table gets no runs.
+// is the closest honest answer. Used by the live table document's cache for
+// Markdown and Markdown-backed HTML cells; an HTML-only table gets no runs.
 QVector<HLUnit> highlightInlineSnippet(const QString &p_snippet);
 
-// Total number of full cmark parses highlightInlineSnippet() has performed
-// since the last reset. Diagnostics only, and process wide - a benchmark
-// drives one document at a time.
-//
-// This is the direct measure of the cost CellHighlightBudget bounds, and the
-// only way to see it from outside: the parses happen deep inside the walk and
-// leave no trace in its result. Not thread safe, and deliberately so: it is a
-// counter, not a synchronization primitive.
+// Total number of nonempty snippet parse attempts highlightInlineSnippet() has
+// performed since the last reset. Measures live-cell cache misses. Diagnostics
+// only, and process wide - a benchmark drives one document at a time.
+// Not thread safe: it is a counter, not a synchronization primitive.
 quint64 inlineSnippetParseCount();
 
 void resetInlineSnippetParseCount();

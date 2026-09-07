@@ -10,8 +10,8 @@ QVector<PreviewFormatRun> resolveFormatRuns(const QVector<HLUnit> &p_units,
     return runs;
   }
 
-  // Drop units we cannot resolve a format for. The snapshot path is not
-  // covered by the highlighter's own asserts.
+  // Drop units we cannot resolve a format for. Standalone table widgets may
+  // supply fewer styles than the source highlighter.
   QVector<HLUnit> units;
   units.reserve(p_units.size());
   for (const auto &unit : p_units) {

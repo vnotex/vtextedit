@@ -209,6 +209,8 @@ private slots:
   void testAlignedCommitSurvivesTheRealParser();
   void testCellsCarrySyntaxHighlighting();
   void testHighlightingSurvivesACommit();
+  void testHtmlCellHighlightingUsesCommentPayload();
+  void testCellHighlightingFollowsHighlighterStyles();
   void testHighlightingStopsAtTheRunEnd();
   void testNoWidgetForImageCodeMathByDefault();
   void testCustomFactoryOverridesBuiltin();

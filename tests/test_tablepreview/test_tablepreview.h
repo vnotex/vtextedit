@@ -41,12 +41,15 @@ private slots:
   void testRaggedTableIsNotRoundTrippable();
   void testFormatRefreshKeepsTheCaret();
   void testCellSyntaxFormatsArePainted();
-  void testSameSourceSnapshotRepaintsTheCells();
-  void testFormatOnlyDifferenceIsDetected();
+  void testSyntaxStylesRepaintTheCells();
+  void testCellHighlightingOnlyParsesChangedText();
+  void testIdenticalCellReplacementKeepsHighlighting();
+  void testStructuralChangesReuseCellHighlighting();
   void testResolveFormatRunsMergesOverlaps();
   void testResolveFormatRunsSkipsUnknownStyles();
   void testStaleEchoDoesNotRepaintTheCells();
   void testARunDoesNotBleedIntoTheRestOfTheCell();
+  void testNestedCellSyntaxKeepsUtf16Boundaries();
   void testTypingAfterARunIsNotHighlighted();
   void testTypingIntoAHeaderCellStaysBold();
 
@@ -83,7 +86,7 @@ private slots:
   void testEnterRespectsCellBound();
   void testEnterInReadOnlySheetDoesNothing();
   void testTheAppendedRowKeepsTheTableFormat();
-  void testTheAppendIsObservedAsOneChange();
+  void testAppendObserversSeeAnIntactGrid();
   void testEnterAppendedRowIsCommitted();
   void testSelectAllCannotTakeTheTableApart();
   void testCutAndDeleteStayInsideOneCell();

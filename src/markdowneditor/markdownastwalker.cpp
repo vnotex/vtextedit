@@ -11,8 +11,6 @@
 #include <QDebug>
 #endif
 
-#include <QLoggingCategory>
-
 #include <cmark.h>
 #include <node.h>
 
@@ -669,66 +667,16 @@ static bool isTopLevelWholeBlock(const QString &p_text, const LineOffsetTable &p
   return true;
 }
 
-// How many full cmark parses per-cell table highlighting has performed. See
-// inlineSnippetParseCount(); diagnostics only, and the direct measure of what
-// CellHighlightBudget bounds.
+// How many nonempty snippet parse attempts live-cell highlighting has performed.
+// See inlineSnippetParseCount(); diagnostics only, measuring live-cell cache misses.
 static quint64 s_inlineSnippetParses = 0;
-
-// Defined here rather than in previewlogging.h: this translation unit is also
-// compiled DIRECTLY into the parser-only test targets (test_benchmark,
-// test_markdownparser), which do not link previewlogging.cpp, so a category
-// declared there would not resolve.
-Q_LOGGING_CATEGORY(astWalkerLog, "vte.markdown.astwalker")
-
-// How many HTML table cells one walk of the whole document may still syntax
-// highlight.
-//
-// Highlighting a cell parses its payload as its own cmark document. There is a
-// per-table ceiling of 300 cells, but nothing bounded the number of TABLES, so
-// a document of many medium tables could drive tens of thousands of full cmark
-// parses on every keystroke's parse generation.
-//
-// Past the budget the cells are still captured and the table still renders -
-// only the per-cell syntax colouring is dropped. That is a visible but small
-// degradation, and it is confined to documents which are already far outside
-// what the interactive sheet was designed for.
-//
-// Owned by the OUTER walk and passed by reference. highlightInlineSnippet()
-// recursively calls walkAndConvert(), so a counter created inside
-// walkAndConvert() would be reset once per cell and would bound nothing.
-struct CellHighlightBudget {
-  // Deliberately generous: it is a runaway guard, not a policy. 5 000 cells is
-  // roughly 16 full 300-cell tables, well past any hand-authored document.
-  qint64 m_remaining = 5000;
-
-  bool m_exhaustedReported = false;
-
-  // Charge @p_cells against the budget. Returns whether they fit; an
-  // overshooting table is refused WHOLE rather than half highlighted, so the
-  // result never depends on the order the cells happen to be visited in.
-  bool take(qint64 p_cells) {
-    if (p_cells > m_remaining) {
-      if (!m_exhaustedReported) {
-        m_exhaustedReported = true;
-        qCDebug(astWalkerLog)
-            << "per-cell table highlighting budget exhausted; the remaining tables render "
-               "without cell syntax colouring";
-      }
-      return false;
-    }
-
-    m_remaining -= p_cells;
-    return true;
-  }
-};
 
 // Capture a canonical top-level `<table>` HTML block as a TableElement, so the
 // interactive table preview binds to it exactly as it does to a pipe table.
 static void extractHtmlTables(const QString &p_slice, int p_sliceStart, const QString &p_text,
                               const LineOffsetTable &p_offsets, ASTWalkResult &p_result,
                               int p_offset, int p_startBlock, bool p_isBlock, int p_blockStart,
-                              int p_blockEnd, RawTextState &p_rawText,
-                              CellHighlightBudget &p_budget) {
+                              int p_blockEnd, RawTextState &p_rawText) {
   const auto tables = scanHtmlTables(p_slice, p_sliceStart, &p_rawText);
   if (!p_isBlock) {
     // HTML_INLINE never yields a table (D-a). The scan still ran, purely so its
@@ -757,36 +705,6 @@ static void extractHtmlTables(const QString &p_slice, int p_sliceStart, const QS
     // cell and a half-decoded table can never be written back.
     table.m_markdownBacked = html.m_anyPayloadPresent && !html.m_anyPayloadMalformed;
 
-    // Per-cell highlighting parses each payload as its own cmark document, so
-    // it is bounded by the very limit that decides whether an interactive sheet
-    // is possible at all (TablePreviewWidget::c_maxCells, which
-    // sliceTableCellHighlights() mirrors for the same reason). A table past it
-    // never gets a widget, so the runs would be paid for on every parse and
-    // then thrown away.
-    const int c_maxPreviewCells = 300;
-    const qint64 tableCells =
-        static_cast<qint64>(html.m_rowCount) * static_cast<qint64>(html.m_columnCount);
-
-    // Whether this table would perform per-cell snippet parses AT ALL. An
-    // HTML-only table never does (its cells are literal text), and a table
-    // past the per-table ceiling never does either.
-    const bool wouldHighlight =
-        table.m_markdownBacked && tableCells <= static_cast<qint64>(c_maxPreviewCells);
-
-    // The per-table limit above is not a document-wide one: a file holding 300
-    // tables of 200 cells each passes it 300 times over and pays 60 000 cmark
-    // parses on EVERY full parse. So the budget is charged here as well, and it
-    // is owned by the outer walk - a counter local to this function, or to
-    // walkAndConvert(), would be reset by the nested walk that
-    // highlightInlineSnippet() itself performs per cell.
-    //
-    // Charged ONLY for a table that would otherwise parse. Charging one that
-    // would not would let a run of HTML-only or oversized tables exhaust the
-    // budget without having cost anything, and starve the eligible tables
-    // after them - making the result depend on where in the document the
-    // ineligible tables happen to sit.
-    const bool highlightCells = wouldHighlight && p_budget.take(tableCells);
-
     table.m_alignments.reserve(html.m_columnCount);
     for (const auto &align : html.m_alignments) {
       table.m_alignments.append(alignmentOrdinal(align));
@@ -805,11 +723,9 @@ static void extractHtmlTables(const QString &p_slice, int p_sliceStart, const QS
         const QString text =
             (table.m_markdownBacked && cell.m_hasPayload) ? cell.m_payload : cell.m_inner;
         row.m_cells.append(text);
-        // Markdown-only: there is no one-source-line-per-row correspondence to
-        // slice highlights out of, so no cell offset is meaningful here.
+        // Markdown-only: there is no one-source-line-per-row correspondence, so
+        // no cell offset is meaningful here.
         row.m_cellOffsets.append(-1);
-        row.m_cellHighlights.append(highlightCells ? highlightInlineSnippet(text)
-                                                   : QVector<HLUnit>());
         row.m_colSpans.append(cell.m_colSpan);
         row.m_rowSpans.append(cell.m_rowSpan);
         row.m_slotColumns.append(cell.m_origin.x());
@@ -869,8 +785,7 @@ static void extractHtmlTables(const QString &p_slice, int p_sliceStart, const QS
 // jumping over a table it captured. The assert is the guard on that invariant.
 static void extractHtmlNode(cmark_node *p_node, const QString &p_text, const QByteArray &p_utf8Text,
                             const LineOffsetTable &p_offsets, ASTWalkResult &p_result, int p_offset,
-                            int p_startBlock, RawTextState &p_rawText,
-                            CellHighlightBudget &p_budget) {
+                            int p_startBlock, RawTextState &p_rawText) {
   const bool isBlock = cmark_node_get_type(p_node) == CMARK_NODE_HTML_BLOCK;
 
   int regionStart = -1;
@@ -901,7 +816,7 @@ static void extractHtmlNode(cmark_node *p_node, const QString &p_text, const QBy
                     resolved ? p_result : discarded, p_offset, imageState);
   extractHtmlTables(slice, sliceStart, p_text, p_offsets, resolved ? p_result : discarded, p_offset,
                     p_startBlock, resolved && isBlock && isDocumentChild(p_node), regionStart,
-                    regionEnd, tableState, p_budget);
+                    regionEnd, tableState);
 
   Q_ASSERT(imageState.m_element == tableState.m_element);
   p_rawText = imageState;
@@ -969,80 +884,6 @@ static void extractTypedElement(cmark_node *p_node, cmark_node_type p_type, int 
   }
 }
 
-// Slice the per-block highlight units of a table's source lines into per-cell,
-// cell-local units. Must run after blocksHighlights has been sorted, so the
-// relative order the merge algorithm depends on is already final.
-static void sliceTableCellHighlights(ASTWalkResult &p_result) {
-  // Mirrors TablePreviewWidget::c_maxCells: bigger tables never get a widget,
-  // so there is no point in paying for the slicing.
-  const int c_maxPreviewCells = 300;
-
-  for (auto &table : p_result.tableElements) {
-    // An HTML table has no one-source-line-per-row correspondence: the loop
-    // below indexes m_startBlock + r and assumes one source block per row,
-    // which no HTML table satisfies. Its cells' runs come from
-    // highlightInlineSnippet() at extraction time instead.
-    if (table.m_syntax != TableElement::Syntax::Markdown || table.m_startBlock < 0) {
-      continue;
-    }
-
-    int cellCount = 0;
-    for (const auto &row : table.m_rows) {
-      cellCount += row.m_cells.size();
-    }
-    if (cellCount > c_maxPreviewCells) {
-      continue;
-    }
-
-    for (int r = 0; r < table.m_rows.size(); ++r) {
-      auto &row = table.m_rows[r];
-      const int blockNum = table.m_startBlock + r;
-      if (blockNum < 0 || blockNum >= p_result.blocksHighlights.size()) {
-        continue;
-      }
-
-      const auto &units = p_result.blocksHighlights.at(blockNum);
-      // Kept parallel to m_cells even when there is nothing to slice.
-      row.m_cellHighlights.resize(row.m_cells.size());
-      if (units.isEmpty()) {
-        continue;
-      }
-
-      for (int c = 0; c < row.m_cells.size(); ++c) {
-        const int off = row.m_cellOffsets.value(c, -1);
-        const int len = row.m_cells.at(c).size();
-        if (off < 0 || len <= 0) {
-          continue;
-        }
-
-        const long long cellStart = off;
-        const long long cellEnd = static_cast<long long>(off) + len;
-        auto &cellUnits = row.m_cellHighlights[c];
-        for (const auto &unit : units) {
-          const int styleIdx = static_cast<int>(unit.styleIndex);
-          if (styleIdx == STYLE_TABLE || styleIdx == STYLE_TABLEHEADER ||
-              styleIdx == STYLE_BLOCKQUOTE) {
-            continue;
-          }
-
-          const long long s = qMax<long long>(static_cast<long long>(unit.start), cellStart);
-          const long long e = qMin<long long>(
-              static_cast<long long>(unit.start) + static_cast<long long>(unit.length), cellEnd);
-          if (e <= s) {
-            continue;
-          }
-
-          HLUnit sliced;
-          sliced.start = static_cast<unsigned long>(s - cellStart);
-          sliced.length = static_cast<unsigned long>(e - s);
-          sliced.styleIndex = unit.styleIndex;
-          cellUnits.append(sliced);
-        }
-      }
-    }
-  }
-}
-
 ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int p_offset,
                              int p_startBlock, bool p_fast) {
   ASTWalkResult result;
@@ -1066,11 +907,6 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
 
   // Per-WALK raw-text context; see extractHtmlImages().
   RawTextState rawText;
-
-  // Per-WALK per-cell highlighting budget. Passed by reference into every
-  // extractHtmlNode() below so it spans the whole document; the nested walk
-  // highlightInlineSnippet() performs gets its own and never touches this one.
-  CellHighlightBudget cellBudget;
 
   cmark_iter *iter = cmark_iter_new(doc);
   cmark_event_type ev;
@@ -1100,8 +936,7 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
     // Runs BEFORE the span/style guards below: the raw-text state must advance
     // for every HTML node, including one this walk cannot place.
     if (!p_fast && (type == CMARK_NODE_HTML_INLINE || type == CMARK_NODE_HTML_BLOCK)) {
-      extractHtmlNode(node, text, p_utf8Text, offsets, result, p_offset, p_startBlock, rawText,
-                      cellBudget);
+      extractHtmlNode(node, text, p_utf8Text, offsets, result, p_offset, p_startBlock, rawText);
     }
 
     int style = mapCmarkNodeToStyle(type, node);
@@ -1221,10 +1056,6 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
     std::sort(
         result.headingElements.begin(), result.headingElements.end(),
         [](const HeadingInfo &a, const HeadingInfo &b) { return a.m_startPos < b.m_startPos; });
-
-    // Runs after the blocksHighlights sort so the sliced units keep the final
-    // relative order the format-merge algorithm depends on.
-    sliceTableCellHighlights(result);
   }
 
   cmark_node_free(doc);
@@ -1246,14 +1077,13 @@ QVector<ImageLinkInfo> buildImageLinks(const QVector<ImageElement> &p_elements) 
 }
 
 QVector<HLUnit> highlightInlineSnippet(const QString &p_snippet) {
-  ++s_inlineSnippetParses;
-
   if (p_snippet.isEmpty()) {
     return QVector<HLUnit>();
   }
+  ++s_inlineSnippetParses;
+
   // One block, no regions, no typed elements: the fast path is exactly what
-  // per-cell highlighting needs, and it also keeps this off the recursive
-  // element-extraction path entirely.
+  // per-cell highlighting needs, without collecting preview elements.
   return walkAndConvert(p_snippet.toUtf8(), 1, 0, 0, true).blocksHighlights.value(0);
 }
 

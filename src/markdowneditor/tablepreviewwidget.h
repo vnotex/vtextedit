@@ -1,6 +1,7 @@
 #ifndef TABLEPREVIEWWIDGET_H
 #define TABLEPREVIEWWIDGET_H
 
+#include <QHash>
 #include <QMetaType>
 #include <QPoint>
 #include <QPointer>
@@ -11,6 +12,7 @@
 #include <QTextEdit>
 #include <QVector>
 
+#include <vtextedit/markdownhighlighterdata.h>
 #include <vtextedit/preview.h>
 #include <vtextedit/previewwidget.h>
 #include <vtextedit/vtextedit.h>
@@ -484,32 +486,20 @@ public:
   // The character format a cell of @p_row starts from, before any syntax run
   // is merged over it: the header weight and nothing else.
   //
-  // This is what newly typed or pasted text must carry. Qt otherwise gives an
-  // insertion the format of the character to its left, so typing right after a
-  // highlighted span - '**bold**' - would silently extend that span's colour
-  // and weight over the new text, which the next parse does not necessarily
-  // undo: a run whose start and length did not move leaves the format matrix
-  // unchanged, and the refresh pass then has nothing to do.
+  // Typed and pasted text starts here; the synchronous live-cell refresh then
+  // overlays syntax without inheriting a neighbouring span's format.
   QTextCharFormat baselineCellFormat(int p_row) const;
 
-  // Re-apply the per-cell formats - the column alignment and the header
-  // weight - without touching a single character of cell text.
-  //
-  // A font, palette or style change has to be answered without rebuilding the
-  // document: rebuilding would destroy the caret and any selection, which for
-  // a theme switch during typing is a silent loss of the user's place.
-  //
-  // The per-character syntax highlight runs are deliberately not re-applied
-  // here: they are owned by build() and refreshCellSyntaxFormats(), and
-  // re-applying a stored matrix from a font or palette change would paint a
-  // stale row/column/offset mapping after in-cell typing or a row/column
-  // insert or delete.
+  // Structural alignment/header formatting. The coherent-change refresh adds
+  // syntax after the complete mutation, without rebuilding the document.
   void applyCellFormats();
 
-  // Re-apply the per-cell syntax highlight runs of a snapshot which describes
-  // exactly the live cells, without rebuilding the document. Returns false
-  // when the matrix is already the applied one and nothing was done.
-  bool refreshCellSyntaxFormats(const QVector<QVector<QVector<PreviewFormatRun>>> &p_cellFormats);
+  void setSyntaxStyles(const QVector<QTextCharFormat> &p_styles);
+
+  // Inclusive document interval; either negative endpoint repaints all origins.
+  // Structure/style changes also force a full repaint. Returns whether any
+  // formats were written; unchanged live text always reuses its parsed units.
+  bool refreshCellSyntaxFormats(int p_start = -1, int p_end = -1);
 
   // The one colour the table itself owns. Separate from applyCellFormats()
   // because a rebuild has just written every per-cell format and only this is
@@ -523,7 +513,6 @@ private:
   // path a fresh bind does.
   struct GridSnapshot {
     QVector<QVector<QString>> m_source;
-    QVector<QVector<QVector<PreviewFormatRun>>> m_cellFormats;
     QVector<QVector<TablePreviewCellMeta>> m_cellMeta;
     QVector<QVector<QPoint>> m_spans; // (colSpan, rowSpan) at each origin.
     QVector<PreviewTableAlignment> m_alignments;
@@ -574,18 +563,9 @@ private:
   // cannot drift apart.
   void applyCellFormat(int p_row, int p_column);
 
-  // Overlay the resolved syntax highlight runs of one cell. Runs are merged,
-  // in order, over whatever applyCellFormat() has just written, so the header
-  // weight survives while inline styles win on overlap. A run whose range does
-  // not fit the cell text exactly is skipped entirely rather than clipped: the
-  // walker already clipped to the cell, so a bad range means offset drift and
-  // clipping would paint the wrong substring.
-  void applyCellSyntaxFormats(int p_row, int p_column);
-
-  // Normalize a snapshot's run matrix onto the current m_rowCount/m_columnCount
-  // shape, so a padded cell gets an empty run list.
-  QVector<QVector<QVector<PreviewFormatRun>>>
-  normalizeCellFormats(const QVector<QVector<QVector<PreviewFormatRun>>> &p_cellFormats) const;
+  // Merge already-resolved runs sequentially. Reject invalid ranges whole;
+  // clipping would hide offset drift and paint the wrong substring.
+  void applyCellSyntaxFormats(int p_row, int p_column, const QVector<PreviewFormatRun> &p_runs);
 
   // The block format one column's cells carry.
   Qt::Alignment blockAlignment(int p_column) const;
@@ -609,11 +589,15 @@ private:
   // document; cells() reads the document itself afterwards.
   QVector<QVector<QString>> m_source;
 
-  // The syntax highlight runs currently written into the document, normalized
-  // onto the same shape as m_source. Compared against an incoming matrix to
-  // decide whether a refresh has anything to do: a theme or font-size change
-  // keeps every start, length and count identical and only changes the format.
-  QVector<QVector<QVector<PreviewFormatRun>>> m_appliedCellFormats;
+  struct CellHighlightCacheEntry {
+    QVector<md::HLUnit> m_units;
+    bool m_used = false;
+  };
+  // Exact live strings only, shared by duplicate origins and retained on rebuild.
+  QHash<QString, CellHighlightCacheEntry> m_cellHighlightCache;
+  QVector<QTextCharFormat> m_syntaxStyles;
+  quint64 m_highlightedStructureGeneration = 0;
+  bool m_syntaxStylesDirty = true;
 
   QVector<PreviewTableAlignment> m_alignments;
 
@@ -813,9 +797,8 @@ public:
   //
   // Qt gives an insertion the character format of the text to its left, so
   // typing or pasting right after a highlighted span - '**bold**' - would
-  // extend that span's colour and weight over the new characters. The next
-  // parse does not necessarily undo it: when the run's start and length do not
-  // move, the format matrix is unchanged and the refresh pass is skipped.
+  // extend that span's colour and weight over the new characters. Keep the
+  // insertion baseline clean before the synchronous live-cell refresh.
   void resetInsertionFormat();
 
   // Collapse any selection onto the caret, without moving the caret.
@@ -1317,6 +1300,8 @@ public:
 
   bool setPreview(const QSharedPointer<const Preview> &p_preview) Q_DECL_OVERRIDE;
 
+  void setSyntaxStyles(const QVector<QTextCharFormat> &p_styles);
+
   qreal preferredWidthFraction() const Q_DECL_OVERRIDE;
 
   void clearSelection() Q_DECL_OVERRIDE;
@@ -1411,18 +1396,6 @@ private slots:
 private:
   void resetFromSource();
 
-  // Repaint the cells with the syntax runs of @p_table without rebuilding the
-  // document, so the caret and the selection survive.
-  //
-  // Only applied when the snapshot's normalized cell matrix is equal, cell by
-  // cell, to what the document currently holds: the unchanged-source path of
-  // setPreview() also accepts the echo of a commit which the user has already
-  // typed past, and painting that snapshot's offsets over newer text would
-  // highlight the wrong characters. A theme change landing during an
-  // uncommitted cell edit therefore stays stale until that edit is committed
-  // and re-parsed.
-  void refreshCellSyntaxFormats(const vte::TablePreview &p_table);
-
   // Take the bound snapshot from the context, which is the authoritative
   // binding: an accepted replacement rebases it onto the text now in the
   // document, and the cached one still describes the pre-commit source.
@@ -1457,6 +1430,10 @@ private:
   // contentsChanged raised by an empty edit block or by a rehighlight is not
   // counted as an edit. See handleContentsChanged().
   int m_lastDocumentRevisionWithChanges = 0;
+
+  int m_pendingHighlightStart = -1;
+  int m_pendingHighlightEnd = -1;
+  bool m_pendingHighlightAll = false;
 
   bool m_readOnly = false;
 
@@ -1568,6 +1545,8 @@ public:
   // sheet created afterwards.
   void setSourceAlignEnabled(bool p_enabled);
 
+  bool setSyntaxStyles(const QVector<QTextCharFormat> &p_styles);
+
 signals:
   // Relayed from a live sheet, carrying the widget so the host can resolve the
   // identity - and therefore the live anchor - it belongs to.
@@ -1594,6 +1573,8 @@ private:
   bool m_inputModeApplied = false;
 
   bool m_alignSource = false;
+
+  QVector<QTextCharFormat> m_syntaxStyles;
 
   QVector<QPointer<TablePreviewWidget>> m_widgets;
 };

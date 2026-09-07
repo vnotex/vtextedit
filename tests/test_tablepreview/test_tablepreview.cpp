@@ -28,6 +28,8 @@
 #include <vtextedit/preview.h>
 
 #include "hlformatresolver.h"
+#include "markdownastwalker.h"
+#include "markdownsyntaxstyles.h"
 #include "previewbuilder.h"
 #include "tablepreviewwidget.h"
 
@@ -63,9 +65,7 @@ QSharedPointer<const TablePreview>
 makeTable(const QVector<QVector<QString>> &p_cells,
           const QVector<PreviewTableAlignment> &p_alignments,
           const QVector<QString> &p_rowPrefixes = QVector<QString>(),
-          const QString &p_delimiterPrefix = QString(),
-          const QVector<QVector<QVector<PreviewFormatRun>>> &p_cellFormats =
-              QVector<QVector<QVector<PreviewFormatRun>>>()) {
+          const QString &p_delimiterPrefix = QString()) {
   QVector<QString> prefixes = p_rowPrefixes;
   while (prefixes.size() < p_cells.size()) {
     prefixes.append(QString());
@@ -73,24 +73,22 @@ makeTable(const QVector<QVector<QString>> &p_cells,
 
   auto preview =
       PreviewBuilder::createTable(1, 0, 10, QStringLiteral("source"), p_alignments.size(), p_cells,
-                                  p_alignments, prefixes, p_delimiterPrefix, p_cellFormats);
+                                  p_alignments, prefixes, p_delimiterPrefix);
   return preview.staticCast<const TablePreview>();
 }
 
 // The same table, but with the source Markdown the serializer would emit for
 // it. Only a snapshot whose source really describes its cells can exercise the
 // echo path, which compares exactly that string.
-QSharedPointer<const TablePreview>
-makeSnapshot(const QVector<QVector<QString>> &p_cells,
-             const QVector<PreviewTableAlignment> &p_alignments, quint64 p_revision = 1,
-             const QVector<QVector<QVector<PreviewFormatRun>>> &p_cellFormats =
-                 QVector<QVector<QVector<PreviewFormatRun>>>()) {
+QSharedPointer<const TablePreview> makeSnapshot(const QVector<QVector<QString>> &p_cells,
+                                                const QVector<PreviewTableAlignment> &p_alignments,
+                                                quint64 p_revision = 1) {
   const QVector<QString> prefixes(p_cells.size(), QString());
   const QString source =
       TablePreviewSerializer::serialize(p_cells, p_alignments, prefixes, QString());
   auto preview =
       PreviewBuilder::createTable(p_revision, 0, source.size(), source, p_alignments.size(),
-                                  p_cells, p_alignments, prefixes, QString(), p_cellFormats);
+                                  p_cells, p_alignments, prefixes, QString());
   return preview.staticCast<const TablePreview>();
 }
 
@@ -157,9 +155,9 @@ QSharedPointer<const TablePreview> parseCanonical(const QString &p_markdown, qui
   }
 
   const QVector<QString> prefixes(cells.size(), QString());
-  auto preview = PreviewBuilder::createTable(
-      p_revision, 0, p_markdown.size(), p_markdown, alignments.size(), cells, alignments, prefixes,
-      QString(), QVector<QVector<QVector<PreviewFormatRun>>>());
+  auto preview =
+      PreviewBuilder::createTable(p_revision, 0, p_markdown.size(), p_markdown, alignments.size(),
+                                  cells, alignments, prefixes, QString());
   return preview.staticCast<const TablePreview>();
 }
 
@@ -1050,22 +1048,12 @@ void TestTablePreview::testFormatRefreshKeepsTheCaret() {
 // ---------------------------------------------------------------------------
 
 namespace {
-QVector<QVector<QVector<PreviewFormatRun>>> makeRuns(const QColor &p_color) {
-  PreviewFormatRun bold;
-  bold.m_start = 0;
-  bold.m_length = 5; // "**a**"
-  bold.m_format.setForeground(p_color);
-  bold.m_format.setFontItalic(true);
-
-  PreviewFormatRun code;
-  code.m_start = 0;
-  code.m_length = 3; // "`b`"
-  code.m_format.setForeground(p_color);
-
-  QVector<QVector<QVector<PreviewFormatRun>>> matrix;
-  matrix.append({QVector<PreviewFormatRun>(), QVector<PreviewFormatRun>()});
-  matrix.append({{bold}, {code}});
-  return matrix;
+QVector<QTextCharFormat> makeSyntaxStyles(const QColor &p_color) {
+  QVector<QTextCharFormat> styles(STYLE_TABLEHEADER + 1);
+  styles[STYLE_STRONG].setForeground(p_color);
+  styles[STYLE_STRONG].setFontWeight(QFont::Bold);
+  styles[STYLE_CODE].setForeground(p_color);
+  return styles;
 }
 
 QVector<QVector<QString>> syntaxCells() {
@@ -1092,13 +1080,10 @@ QTextCharFormat formatAt(const QTextDocument *p_doc, int p_row, int p_column, in
 void TestTablePreview::testCellSyntaxFormatsArePainted() {
   const QVector<PreviewTableAlignment> alignments{PreviewTableAlignment::Left,
                                                   PreviewTableAlignment::Left};
-  auto snapshot = makeSnapshot(syntaxCells(), alignments, 1, makeRuns(Qt::red));
-
-  // The matrix has the same shape as the cells.
-  QCOMPARE(snapshot->cellFormats().size(), snapshot->cells().size());
-  QCOMPARE(snapshot->cellFormats().at(1).size(), snapshot->cells().at(1).size());
+  auto snapshot = makeSnapshot(syntaxCells(), alignments);
 
   TablePreviewWidget widget(nullptr, nullptr);
+  widget.setSyntaxStyles(makeSyntaxStyles(Qt::red));
   QVERIFY(widget.setPreview(snapshot));
   auto sheet = sheetOf(widget);
   QVERIFY(sheet);
@@ -1121,39 +1106,179 @@ void TestTablePreview::testCellSyntaxFormatsArePainted() {
            Qt::Alignment(Qt::AlignLeft));
 }
 
-void TestTablePreview::testSameSourceSnapshotRepaintsTheCells() {
+void TestTablePreview::testSyntaxStylesRepaintTheCells() {
   const QVector<PreviewTableAlignment> alignments{PreviewTableAlignment::Left,
                                                   PreviewTableAlignment::Left};
-  TablePreviewWidget widget(nullptr, nullptr);
-  QVERIFY(widget.setPreview(makeSnapshot(syntaxCells(), alignments, 1, makeRuns(Qt::red))));
-  showOffScreen(widget, 600);
+  const auto snapshot = makeSnapshot(syntaxCells(), alignments);
+  SheetHarness harness(snapshot);
+  auto widget = harness.widget();
+  widget->setSyntaxStyles(makeSyntaxStyles(Qt::red));
+  showOffScreen(*widget, 600);
   settle();
-
-  auto sheet = sheetOf(widget);
+  auto sheet = harness.sheet();
   QVERIFY(sheet);
-  putCaretIn(sheet, 1, 0);
+  auto document = sheet->tableDocument();
+  QVERIFY(document);
+
+  const QString edited = QStringLiteral("**uncommitted**");
+  const QTextTableCell cell = document->table()->cellAt(1, 0);
+  QTextCursor cursor = cell.firstCursorPosition();
+  cursor.setPosition(cell.lastCursorPosition().position(), QTextCursor::KeepAnchor);
+  sheet->setTextCursor(cursor);
+  cursor.insertText(edited);
+  QCOMPARE(formatAt(sheet->document(), 1, 0, 2).foreground().color(), QColor(Qt::red));
+  QCOMPARE(harness.requestCount(), 0);
+  QCOMPARE(harness.boundSource(), snapshot->sourceMarkdown());
+
+  // Preserve a backwards selection, not just a collapsed caret.
+  const int start = cell.firstCursorPosition().position();
+  cursor.setPosition(start + edited.size() - 2);
+  cursor.setPosition(start + 2, QTextCursor::KeepAnchor);
+  sheet->setTextCursor(cursor);
   const int caret = sheet->textCursor().position();
+  const int anchor = sheet->textCursor().anchor();
+  const QString selected = sheet->textCursor().selectedText();
+  const QString source = document->toMarkdown();
+  const quint64 parses = md::inlineSnippetParseCount();
 
-  // Same source, same cells, different formats - a theme switch.
-  QVERIFY(widget.setPreview(makeSnapshot(syntaxCells(), alignments, 2, makeRuns(Qt::blue))));
-  settle();
-
+  // Colour changes must repaint current text, not the older bound snapshot.
+  auto styles = makeSyntaxStyles(Qt::blue);
+  widget->setSyntaxStyles(styles);
+  QCOMPARE(md::inlineSnippetParseCount(), parses);
   QCOMPARE(sheet->textCursor().position(), caret);
-  QCOMPARE(cellText(sheet->document(), 1, 0), QStringLiteral("**a**"));
-  QCOMPARE(formatAt(sheet->document(), 1, 0, 0).foreground().color(), QColor(Qt::blue));
+  QCOMPARE(sheet->textCursor().anchor(), anchor);
+  QCOMPARE(sheet->textCursor().selectedText(), selected);
+  QCOMPARE(cellText(sheet->document(), 1, 0), edited);
+  QCOMPARE(formatAt(sheet->document(), 1, 0, 2).foreground().color(), QColor(Qt::blue));
+  QCOMPARE(formatAt(sheet->document(), 1, 1, 1).foreground().color(), QColor(Qt::blue));
+
+  // A size-only change uses the same cached units and keeps selection direction.
+  styles[STYLE_STRONG].setFontPointSize(23.0);
+  widget->setSyntaxStyles(styles);
+  QCOMPARE(md::inlineSnippetParseCount(), parses);
+  QCOMPARE(sheet->textCursor().position(), caret);
+  QCOMPARE(sheet->textCursor().anchor(), anchor);
+  QCOMPARE(sheet->textCursor().selectedText(), selected);
+  QCOMPARE(cellText(sheet->document(), 1, 0), edited);
+  QCOMPARE(formatAt(sheet->document(), 1, 0, 2).foreground().color(), QColor(Qt::blue));
+  QCOMPARE(formatAt(sheet->document(), 1, 0, 2).fontPointSize(), 23.0);
+  QCOMPARE(document->toMarkdown(), source);
+  QCOMPARE(harness.requestCount(), 0);
+  QCOMPARE(harness.boundSource(), snapshot->sourceMarkdown());
 }
 
-void TestTablePreview::testFormatOnlyDifferenceIsDetected() {
-  // Identical shapes, starts, lengths and run counts; only the format differs.
-  const auto red = makeRuns(Qt::red);
-  const auto blue = makeRuns(Qt::blue);
-  QCOMPARE(red.size(), blue.size());
-  QCOMPARE(red.at(1).at(0).size(), blue.at(1).at(0).size());
-  QCOMPARE(red.at(1).at(0).first().m_start, blue.at(1).at(0).first().m_start);
-  QCOMPARE(red.at(1).at(0).first().m_length, blue.at(1).at(0).first().m_length);
-  QVERIFY(red != blue);
-  QVERIFY(red.at(1).at(0).first() != blue.at(1).at(0).first());
-  QVERIFY(red == makeRuns(Qt::red));
+void TestTablePreview::testCellHighlightingOnlyParsesChangedText() {
+  const auto snapshot =
+      makeSnapshot(syntaxCells(), {PreviewTableAlignment::Left, PreviewTableAlignment::Left});
+  const quint64 before = md::inlineSnippetParseCount();
+  TablePreviewWidget widget(nullptr, nullptr);
+  QVERIFY(widget.setPreview(snapshot));
+  auto sheet = sheetOf(widget);
+  QVERIFY(sheet);
+  auto document = sheet->tableDocument();
+  QVERIFY(document);
+
+  // Standalone widgets do no snippet work until actual syntax styles arrive.
+  QCOMPARE(md::inlineSnippetParseCount(), before);
+  QVERIFY(!formatAt(sheet->document(), 1, 0, 2).hasProperty(QTextFormat::ForegroundBrush));
+  QVERIFY(formatAt(sheet->document(), 1, 0, 2).fontWeight() != QFont::Bold);
+  QVERIFY(!formatAt(sheet->document(), 1, 1, 1).hasProperty(QTextFormat::ForegroundBrush));
+  QCOMPARE(formatAt(sheet->document(), 0, 0, 0).fontWeight(), static_cast<int>(QFont::Bold));
+  const auto styles = makeSyntaxStyles(Qt::red);
+  widget.setSyntaxStyles(styles);
+  // Four distinct nonempty live strings, including the two plain headers.
+  QCOMPARE(md::inlineSnippetParseCount(), before + 4);
+  QCOMPARE(formatAt(sheet->document(), 1, 0, 2).foreground().color(), QColor(Qt::red));
+  QCOMPARE(formatAt(sheet->document(), 1, 1, 1).foreground().color(), QColor(Qt::red));
+  quint64 parses = md::inlineSnippetParseCount();
+
+  putCaretIn(sheet, 1, 0);
+  putCaretIn(sheet, 1, 1);
+  QCOMPARE(md::inlineSnippetParseCount(), parses);
+  QVERIFY(widget.setPreview(snapshot));
+  QCOMPARE(md::inlineSnippetParseCount(), parses);
+  widget.setSyntaxStyles(styles);
+  QCOMPARE(md::inlineSnippetParseCount(), parses);
+  document->refreshCellSyntaxFormats();
+  QCOMPARE(md::inlineSnippetParseCount(), parses);
+
+  auto replace = [document](int p_column, const QString &p_text) {
+    const QTextTableCell cell = document->table()->cellAt(1, p_column);
+    QTextCursor cursor = cell.firstCursorPosition();
+    cursor.setPosition(cell.lastCursorPosition().position(), QTextCursor::KeepAnchor);
+    cursor.insertText(p_text, document->baselineCellFormat(1));
+  };
+  const QString changed = QStringLiteral("**changed** tail");
+  replace(0, changed);
+  QCOMPARE(md::inlineSnippetParseCount(), parses + 1);
+  ++parses;
+  QCOMPARE(cellText(sheet->document(), 1, 0), changed);
+  QCOMPARE(formatAt(sheet->document(), 1, 0, 2).foreground().color(), QColor(Qt::red));
+  QVERIFY(!formatAt(sheet->document(), 1, 0, 12).hasProperty(QTextFormat::ForegroundBrush));
+  QCOMPARE(formatAt(sheet->document(), 1, 1, 1).foreground().color(), QColor(Qt::red));
+
+  // Cache sharing is by exact live text, not by the cell's coordinates.
+  replace(1, changed);
+  QCOMPARE(md::inlineSnippetParseCount(), parses);
+  QCOMPARE(cellText(sheet->document(), 1, 1), changed);
+  QCOMPARE(formatAt(sheet->document(), 1, 1, 2).foreground().color(), QColor(Qt::red));
+  QVERIFY(!formatAt(sheet->document(), 1, 1, 12).hasProperty(QTextFormat::ForegroundBrush));
+  replace(0, QString());
+  QCOMPARE(md::inlineSnippetParseCount(), parses);
+  QVERIFY(cellText(sheet->document(), 1, 0).isEmpty());
+  QVERIFY(!document->table()->cellAt(1, 0).firstCursorPosition().blockCharFormat().hasProperty(
+      QTextFormat::ForegroundBrush));
+
+  // An empty parse result is cached too, and replacing styled text clears it.
+  const QString plain = QStringLiteral("plain replacement");
+  replace(1, plain);
+  QCOMPARE(md::inlineSnippetParseCount(), parses + 1);
+  ++parses;
+  QCOMPARE(cellText(sheet->document(), 1, 1), plain);
+  for (int i = 0; i < plain.size(); ++i) {
+    QVERIFY(!formatAt(sheet->document(), 1, 1, i).hasProperty(QTextFormat::ForegroundBrush));
+    QVERIFY(formatAt(sheet->document(), 1, 1, i).fontWeight() != QFont::Bold);
+  }
+  document->refreshCellSyntaxFormats();
+  QCOMPARE(md::inlineSnippetParseCount(), parses);
+  replace(0, plain);
+  QCOMPARE(md::inlineSnippetParseCount(), parses);
+  QCOMPARE(cellText(sheet->document(), 1, 0), plain);
+  QVERIFY(!formatAt(sheet->document(), 1, 0, 0).hasProperty(QTextFormat::ForegroundBrush));
+}
+
+void TestTablePreview::testIdenticalCellReplacementKeepsHighlighting() {
+  TablePreviewWidget widget(nullptr, nullptr);
+  widget.setSyntaxStyles(makeSyntaxStyles(Qt::red));
+  QVERIFY(widget.setPreview(
+      makeSnapshot(syntaxCells(), {PreviewTableAlignment::Left, PreviewTableAlignment::Left})));
+  auto sheet = sheetOf(widget);
+  QVERIFY(sheet);
+  auto document = sheet->tableDocument();
+  QVERIFY(document);
+  const QString source = document->toMarkdown();
+  const quint64 parses = md::inlineSnippetParseCount();
+  const QTextTableCell cell = document->table()->cellAt(1, 0);
+  QTextCursor cursor = cell.firstCursorPosition();
+  cursor.setPosition(cell.lastCursorPosition().position(), QTextCursor::KeepAnchor);
+  cursor.beginEditBlock();
+  cursor.insertText(QStringLiteral("**a**"), document->baselineCellFormat(1));
+  sheet->setTextCursor(cursor);
+  const int caret = sheet->textCursor().position();
+  const bool wasBaseline =
+      !formatAt(sheet->document(), 1, 0, 2).hasProperty(QTextFormat::ForegroundBrush);
+  cursor.endEditBlock();
+
+  QVERIFY(wasBaseline);
+  QCOMPARE(md::inlineSnippetParseCount(), parses);
+  QCOMPARE(cellText(sheet->document(), 1, 0), QStringLiteral("**a**"));
+  for (int i = 0; i < 5; ++i) {
+    QCOMPARE(formatAt(sheet->document(), 1, 0, i).foreground().color(), QColor(Qt::red));
+    QCOMPARE(formatAt(sheet->document(), 1, 0, i).fontWeight(), static_cast<int>(QFont::Bold));
+  }
+  QCOMPARE(sheet->textCursor().position(), caret);
+  QVERIFY(!sheet->textCursor().hasSelection());
+  QCOMPARE(document->toMarkdown(), source);
 }
 
 void TestTablePreview::testResolveFormatRunsMergesOverlaps() {
@@ -1212,7 +1337,8 @@ void TestTablePreview::testStaleEchoDoesNotRepaintTheCells() {
   const QVector<PreviewTableAlignment> alignments{PreviewTableAlignment::Left,
                                                   PreviewTableAlignment::Left};
   TablePreviewWidget widget(nullptr, nullptr);
-  QVERIFY(widget.setPreview(makeSnapshot(syntaxCells(), alignments, 1, makeRuns(Qt::red))));
+  widget.setSyntaxStyles(makeSyntaxStyles(Qt::red));
+  QVERIFY(widget.setPreview(makeSnapshot(syntaxCells(), alignments)));
   showOffScreen(widget, 600);
   settle();
 
@@ -1225,11 +1351,12 @@ void TestTablePreview::testStaleEchoDoesNotRepaintTheCells() {
   sheet->textCursor().insertText(QStringLiteral("Z"));
   QCOMPARE(cellText(sheet->document(), 1, 0), QStringLiteral("**a**Z"));
 
-  // The echo of the previous commit, with different formats. It must be
-  // refused by the applicability guard rather than painted over newer text.
-  QVERIFY(widget.setPreview(makeSnapshot(syntaxCells(), alignments, 2, makeRuns(Qt::blue))));
+  const quint64 parses = md::inlineSnippetParseCount();
+  // A stale echo cannot repaint or parse the newer live text.
+  QVERIFY(widget.setPreview(makeSnapshot(syntaxCells(), alignments, 2)));
   settle();
 
+  QCOMPARE(md::inlineSnippetParseCount(), parses);
   QCOMPARE(cellText(sheet->document(), 1, 0), QStringLiteral("**a**Z"));
   QCOMPARE(formatAt(sheet->document(), 1, 0, 0).foreground().color(), QColor(Qt::red));
 }
@@ -1238,20 +1365,11 @@ void TestTablePreview::testARunDoesNotBleedIntoTheRestOfTheCell() {
   // A run in the middle of a cell must leave the text on both sides alone.
   QVector<QVector<QString>> cells;
   cells.append({QStringLiteral("h1")});
-  cells.append({QStringLiteral("lead **bold** tail")});
+  cells.append({QStringLiteral("\u00e9\U0001f600 lead **bold** tail")});
 
-  PreviewFormatRun run;
-  run.m_start = 5;
-  run.m_length = 8; // "**bold**"
-  run.m_format.setFontWeight(QFont::Bold);
-  run.m_format.setForeground(Qt::red);
-
-  QVector<QVector<QVector<PreviewFormatRun>>> matrix;
-  matrix.append({QVector<PreviewFormatRun>()});
-  matrix.append({{run}});
-
-  auto snapshot = makeSnapshot(cells, {PreviewTableAlignment::Left}, 1, matrix);
+  auto snapshot = makeSnapshot(cells, {PreviewTableAlignment::Left});
   TablePreviewWidget widget(nullptr, nullptr);
+  widget.setSyntaxStyles(makeSyntaxStyles(Qt::red));
   QVERIFY(widget.setPreview(snapshot));
   auto sheet = sheetOf(widget);
   QVERIFY(sheet);
@@ -1259,13 +1377,53 @@ void TestTablePreview::testARunDoesNotBleedIntoTheRestOfTheCell() {
   const QString text = cells.at(1).at(0);
   for (int i = 0; i < text.size(); ++i) {
     const QTextCharFormat format = formatAt(sheet->document(), 1, 0, i);
-    const bool inside = i >= run.m_start && i < run.m_start + run.m_length;
+    const bool inside = i >= 9 && i < 17;
     QVERIFY2(format.hasProperty(QTextFormat::ForegroundBrush) == inside,
              qPrintable(QStringLiteral("character %1 ('%2') is painted %3")
                             .arg(i)
                             .arg(text.at(i))
                             .arg(inside ? QStringLiteral("plain") : QStringLiteral("styled"))));
   }
+}
+
+void TestTablePreview::testNestedCellSyntaxKeepsUtf16Boundaries() {
+  // A surrogate pair and an escaped pipe precede nested inline spans. Use
+  // distinct formats so both UTF-16 offsets and overlap precedence are visible.
+  const QString text = QStringLiteral("\u00e9\U0001f600 \\| lead **bold *em `code`* end** tail");
+  auto styles = makeSyntaxStyles(Qt::red);
+  styles[STYLE_EMPH].setForeground(Qt::green);
+  styles[STYLE_EMPH].setFontItalic(true);
+  styles[STYLE_CODE].setForeground(Qt::blue);
+  TablePreviewWidget widget(nullptr, nullptr);
+  widget.setSyntaxStyles(styles);
+  QVERIFY(widget.setPreview(
+      makeSnapshot({{QStringLiteral("header")}, {text}}, {PreviewTableAlignment::Left})));
+  auto sheet = sheetOf(widget);
+  QVERIFY(sheet);
+  QCOMPARE(cellText(sheet->document(), 1, 0), text);
+  QCOMPARE(sheet->tableDocument()->columnCount(), 1);
+
+  const int strongStart = text.indexOf(QStringLiteral("**"));
+  const int strongEnd = text.lastIndexOf(QStringLiteral("**")) + 2;
+  const int emphasisStart = text.indexOf(QStringLiteral("*em"));
+  const int emphasisEnd = text.indexOf(QStringLiteral("* end")) + 1;
+  const int codeStart = text.indexOf(QLatin1Char('`'));
+  const int codeEnd = text.lastIndexOf(QLatin1Char('`')) + 1;
+  for (int i = 0; i < text.size(); ++i) {
+    const QTextCharFormat format = formatAt(sheet->document(), 1, 0, i);
+    const bool strong = i >= strongStart && i < strongEnd;
+    const bool emphasis = i >= emphasisStart && i < emphasisEnd;
+    const bool code = i >= codeStart && i < codeEnd;
+    QCOMPARE(format.hasProperty(QTextFormat::ForegroundBrush), strong);
+    QCOMPARE(format.fontWeight() == QFont::Bold, strong);
+    QCOMPARE(format.fontItalic(), emphasis);
+    if (strong) {
+      QCOMPARE(format.foreground().color(), QColor(code       ? Qt::blue
+                                                   : emphasis ? Qt::green
+                                                              : Qt::red));
+    }
+  }
+  QVERIFY(sheet->tableDocument()->toMarkdown().contains(QStringLiteral("\\| lead")));
 }
 
 void TestTablePreview::testTypingAfterARunIsNotHighlighted() {
@@ -1275,7 +1433,8 @@ void TestTablePreview::testTypingAfterARunIsNotHighlighted() {
   const QVector<PreviewTableAlignment> alignments{PreviewTableAlignment::Left,
                                                   PreviewTableAlignment::Left};
   TablePreviewWidget widget(nullptr, nullptr);
-  QVERIFY(widget.setPreview(makeSnapshot(syntaxCells(), alignments, 1, makeRuns(Qt::red))));
+  widget.setSyntaxStyles(makeSyntaxStyles(Qt::red));
+  QVERIFY(widget.setPreview(makeSnapshot(syntaxCells(), alignments)));
   showOffScreen(widget, 600);
   settle();
 
@@ -1304,7 +1463,8 @@ void TestTablePreview::testTypingIntoAHeaderCellStaysBold() {
   const QVector<PreviewTableAlignment> alignments{PreviewTableAlignment::Left,
                                                   PreviewTableAlignment::Left};
   TablePreviewWidget widget(nullptr, nullptr);
-  QVERIFY(widget.setPreview(makeSnapshot(syntaxCells(), alignments, 1, makeRuns(Qt::red))));
+  widget.setSyntaxStyles(makeSyntaxStyles(Qt::red));
+  QVERIFY(widget.setPreview(makeSnapshot(syntaxCells(), alignments)));
   showOffScreen(widget, 600);
   settle();
 
@@ -2096,7 +2256,7 @@ void TestTablePreview::testTheAppendedRowKeepsTheTableFormat() {
   QCOMPARE(after.cellSpacing(), before.cellSpacing());
 }
 
-void TestTablePreview::testTheAppendIsObservedAsOneChange() {
+void TestTablePreview::testAppendObserversSeeAnIntactGrid() {
   QScopedPointer<TablePreviewWidget> holder;
   auto widget = buildEditableSheet(holder);
   QVERIFY(widget);
@@ -2109,14 +2269,12 @@ void TestTablePreview::testTheAppendIsObservedAsOneChange() {
   const int rows = table->rows();
   const int columns = table->columns();
 
-  // The row, its prefix and its formats reach the commit machinery as one
-  // change: handleContentsChanged() re-runs isIntact() and rebuilds from
-  // source when the table looks gone, so a half-applied state seen here would
-  // be a real risk of losing the edit.
-  int changes = 0;
+  // Both the structural edit and its synchronous formatting notification must
+  // expose the complete grid: observing a partial append could lose the edit.
+  bool observed = false;
   bool complete = true;
   QObject::connect(doc, &QTextDocument::contentsChanged, sheet, [&]() {
-    ++changes;
+    observed = true;
     QTextTable *live = tableOf(doc);
     if (!live || live->rows() != rows + 1 || live->columns() != columns) {
       complete = false;
@@ -2126,7 +2284,7 @@ void TestTablePreview::testTheAppendIsObservedAsOneChange() {
   putCaretIn(sheet, rows - 1, columns - 1);
   QTest::keyClick(sheet, Qt::Key_Return);
 
-  QCOMPARE(changes, 1);
+  QVERIFY(observed);
   QVERIFY(complete);
 }
 
@@ -4200,6 +4358,132 @@ void TestTablePreview::testHtmlSnapshotBuildsSpanningGrid() {
   QCOMPARE(document.document()->rootFrame()->childFrames().size(), 1);
 }
 
+void TestTablePreview::testStructuralChangesReuseCellHighlighting() {
+  // Exercise both conversion from a pipe table and preservation of authored
+  // HTML metadata. In both cases the widget owns the coherent-change refresh.
+  for (bool html : {false, true}) {
+    auto styles = makeSyntaxStyles(Qt::red);
+    styles[STYLE_CODE].setForeground(Qt::blue);
+    TablePreviewWidget widget(nullptr, nullptr);
+    widget.setSyntaxStyles(styles);
+    QSharedPointer<const TablePreview> snapshot;
+    if (html) {
+      const QVector<QVector<QPoint>> spans{{QPoint(1, 1), QPoint(1, 1)},
+                                           {QPoint(1, 1), QPoint(1, 1)}};
+      const QVector<QVector<QString>> tags{{QStringLiteral("<th>"), QStringLiteral("<th>")},
+                                           {QStringLiteral("<td class=\"keep\" data-x=\"1\">"),
+                                            QStringLiteral("<td class=\"other\">")}};
+      snapshot = makeHtmlSnapshot(syntaxCells(), spans, true, true, tags);
+    } else {
+      snapshot =
+          makeSnapshot(syntaxCells(), {PreviewTableAlignment::Left, PreviewTableAlignment::Left});
+    }
+    QVERIFY(widget.setPreview(snapshot));
+    auto sheet = sheetOf(widget);
+    QVERIFY(sheet);
+    auto document = sheet->tableDocument();
+    QVERIFY(document);
+    quint64 parses = md::inlineSnippetParseCount();
+    QCOMPARE(formatAt(sheet->document(), 1, 0, 2).foreground().color(), QColor(Qt::red));
+    QCOMPARE(formatAt(sheet->document(), 1, 1, 1).foreground().color(), QColor(Qt::blue));
+
+    QVERIFY(document->insertRow(1));
+    QCOMPARE(md::inlineSnippetParseCount(), parses);
+    QCOMPARE(cellText(sheet->document(), 2, 0), QStringLiteral("**a**"));
+    QCOMPARE(formatAt(sheet->document(), 2, 0, 2).foreground().color(), QColor(Qt::red));
+    QVERIFY(document->insertColumn(0));
+    QCOMPARE(md::inlineSnippetParseCount(), parses);
+    QCOMPARE(cellText(sheet->document(), 2, 2), QStringLiteral("`b`"));
+    QCOMPARE(formatAt(sheet->document(), 2, 1, 2).foreground().color(), QColor(Qt::red));
+    QCOMPARE(formatAt(sheet->document(), 2, 2, 1).foreground().color(), QColor(Qt::blue));
+    QVERIFY(document->removeRow(1));
+    QCOMPARE(md::inlineSnippetParseCount(), parses);
+    QCOMPARE(formatAt(sheet->document(), 1, 1, 2).foreground().color(), QColor(Qt::red));
+    QVERIFY(document->removeColumn(0));
+    QCOMPARE(md::inlineSnippetParseCount(), parses);
+    QCOMPARE(document->cells(), syntaxCells());
+    QCOMPARE(formatAt(sheet->document(), 1, 0, 2).foreground().color(), QColor(Qt::red));
+    QCOMPARE(formatAt(sheet->document(), 1, 1, 1).foreground().color(), QColor(Qt::blue));
+    if (html) {
+      const QString shifted = document->toMarkdown();
+      QVERIFY2(shifted.contains(QStringLiteral("class=\"keep\"")), qPrintable(shifted));
+      QVERIFY2(shifted.contains(QStringLiteral("data-x=\"1\"")), qPrintable(shifted));
+      QVERIFY2(shifted.contains(QStringLiteral("class=\"other\"")), qPrintable(shifted));
+    }
+
+    // Text added AFTER a nested structural edit still belongs to the one
+    // outer change. Refreshing at insertRow() alone would miss this new cell.
+    QTextCursor edit(sheet->document());
+    edit.beginEditBlock();
+    const bool inserted = document->insertRow(1);
+    if (inserted) {
+      document->table()->cellAt(1, 0).firstCursorPosition().insertText(
+          QStringLiteral("`late`"), document->baselineCellFormat(1));
+    }
+    edit.endEditBlock();
+    QVERIFY(inserted);
+    QCOMPARE(md::inlineSnippetParseCount(), parses + 1);
+    ++parses;
+    QCOMPARE(cellText(sheet->document(), 1, 0), QStringLiteral("`late`"));
+    QCOMPARE(formatAt(sheet->document(), 1, 0, 1).foreground().color(), QColor(Qt::blue));
+    QCOMPARE(formatAt(sheet->document(), 2, 0, 2).foreground().color(), QColor(Qt::red));
+    QCOMPARE(formatAt(sheet->document(), 2, 1, 1).foreground().color(), QColor(Qt::blue));
+    QVERIFY(document->removeRow(1));
+    QCOMPARE(md::inlineSnippetParseCount(), parses);
+
+    QVERIFY(document->mergeCells(selectCells(*document, 1, 0, 1, 1)));
+    QCOMPARE(md::inlineSnippetParseCount(), parses + 1);
+    ++parses;
+    const QString joined = QStringLiteral("**a** `b`");
+    QCOMPARE(cellText(sheet->document(), 1, 0), joined);
+    QCOMPARE(document->colSpanAt(1, 0), 2);
+    QVERIFY(!document->isOrigin(1, 1));
+    for (int i = 0; i < 5; ++i) {
+      QCOMPARE(formatAt(sheet->document(), 1, 0, i).foreground().color(), QColor(Qt::red));
+      QCOMPARE(formatAt(sheet->document(), 1, 0, i).fontWeight(), static_cast<int>(QFont::Bold));
+    }
+    QVERIFY(!formatAt(sheet->document(), 1, 0, 5).hasProperty(QTextFormat::ForegroundBrush));
+    for (int i = 6; i < joined.size(); ++i) {
+      QCOMPARE(formatAt(sheet->document(), 1, 0, i).foreground().color(), QColor(Qt::blue));
+      QVERIFY(formatAt(sheet->document(), 1, 0, i).fontWeight() != QFont::Bold);
+    }
+    QCOMPARE(document->syntax(), PreviewTableSyntax::Html);
+    QVERIFY(document->isMarkdownBacked());
+    const QString merged = document->toMarkdown();
+    QVERIFY2(merged.contains(QStringLiteral("colspan=\"2\"")), qPrintable(merged));
+    const auto rescanned = scanHtmlTables(merged, 0, nullptr);
+    QCOMPARE(rescanned.size(), 1);
+    QVERIFY(rescanned.first().cellAt(1, 0));
+    QCOMPARE(rescanned.first().cellAt(1, 0)->m_payload, joined);
+    if (html) {
+      QVERIFY2(merged.contains(QStringLiteral("class=\"keep\"")), qPrintable(merged));
+      QVERIFY2(merged.contains(QStringLiteral("data-x=\"1\"")), qPrintable(merged));
+      QVERIFY2(!merged.contains(QStringLiteral("class=\"other\"")), qPrintable(merged));
+    }
+
+    QVERIFY(document->splitCell(1, 0));
+    QCOMPARE(md::inlineSnippetParseCount(), parses);
+    QVERIFY(document->isOrigin(1, 1));
+    QVERIFY(cellText(sheet->document(), 1, 1).isEmpty());
+    const QTextCursor exposed = document->table()->cellAt(1, 1).firstCursorPosition();
+    QVERIFY(!exposed.charFormat().hasProperty(QTextFormat::ForegroundBrush));
+    QVERIFY(!exposed.blockCharFormat().hasProperty(QTextFormat::ForegroundBrush));
+    QVERIFY(exposed.charFormat().fontWeight() != QFont::Bold);
+    QCOMPARE(cellText(sheet->document(), 1, 0), joined);
+    QCOMPARE(formatAt(sheet->document(), 1, 0, 2).foreground().color(), QColor(Qt::red));
+    QCOMPARE(formatAt(sheet->document(), 1, 0, 7).foreground().color(), QColor(Qt::blue));
+    QCOMPARE(document->syntax(), PreviewTableSyntax::Html);
+    const QString split = document->toMarkdown();
+    QCOMPARE(scanHtmlTables(split, 0, nullptr).size(), 1);
+    if (html) {
+      QVERIFY2(split.contains(QStringLiteral("class=\"keep\"")), qPrintable(split));
+      QVERIFY2(split.contains(QStringLiteral("data-x=\"1\"")), qPrintable(split));
+    }
+    document->refreshCellSyntaxFormats();
+    QCOMPARE(md::inlineSnippetParseCount(), parses);
+  }
+}
+
 void TestTablePreview::testMergeJoinsTextAndConvertsToHtml() {
   QVector<QVector<QString>> cells;
   cells.append({QStringLiteral("h1"), QStringLiteral("h2")});
@@ -4273,8 +4557,7 @@ void TestTablePreview::testMergeRefusals() {
     const QVector<QString> prefixes{QStringLiteral("> "), QStringLiteral("> ")};
     auto preview = PreviewBuilder::createTable(
         1, 0, 10, QStringLiteral("source"), 2, cells,
-        {PreviewTableAlignment::None, PreviewTableAlignment::None}, prefixes, QStringLiteral("> "),
-        QVector<QVector<QVector<PreviewFormatRun>>>());
+        {PreviewTableAlignment::None, PreviewTableAlignment::None}, prefixes, QStringLiteral("> "));
 
     TablePreviewDocument document;
     document.setTable(preview.staticCast<const TablePreview>());
@@ -4395,12 +4678,6 @@ void TestTablePreview::testHtmlOnlyTableWritesBackVerbatim() {
 // previewRenderEquals() is the measurement cache's key, so the thing it must
 // never do is call two snapshots equal when they would render differently.
 //
-// The dangerous case is NOT a changed source - that is obvious and easy. It is
-// a snapshot whose source is byte-identical but whose RESOLVED state differs,
-// because that is what the document-wide per-cell highlighting budget produces:
-// adding enough tables elsewhere strips an untouched table's highlight runs,
-// and a run carries weight, italic, family and point size, any of which
-// rewraps a cell and changes its height.
 void TestTablePreview::testRenderEqualsSeparatesSourceFromRenderedState() {
   QVector<QVector<QString>> cells;
   cells.append({QStringLiteral("h1"), QStringLiteral("h2")});
@@ -4414,23 +4691,6 @@ void TestTablePreview::testRenderEqualsSeparatesSourceFromRenderedState() {
   auto samePlain = makeTable(cells, alignments);
   QVERIFY(previewRenderEquals(plain.data(), samePlain.data()));
   QCOMPARE(plain->sourceMarkdown(), samePlain->sourceMarkdown());
-
-  // Identical source, DIFFERENT resolved cell formats. A bold run is wider
-  // than a plain one, so this is exactly the case that must re-measure.
-  PreviewFormatRun bold;
-  bold.m_start = 0;
-  bold.m_length = 1;
-  bold.m_format.setFontWeight(QFont::Bold);
-
-  QVector<QVector<QVector<PreviewFormatRun>>> formats;
-  formats.append({QVector<PreviewFormatRun>(), QVector<PreviewFormatRun>()});
-  formats.append({QVector<PreviewFormatRun>{bold}, QVector<PreviewFormatRun>()});
-
-  auto formatted = makeTable(cells, alignments, QVector<QString>(), QString(), formats);
-
-  QCOMPARE(formatted->sourceMarkdown(), plain->sourceMarkdown());
-  QVERIFY2(!previewRenderEquals(plain.data(), formatted.data()),
-           "two snapshots with identical source but different cell formats compared equal");
 
   // A changed cell is caught too, which is the easy direction.
   QVector<QVector<QString>> edited = cells;

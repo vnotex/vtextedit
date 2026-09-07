@@ -188,10 +188,6 @@ public:
   // be ragged: a body row may have fewer or more cells than columnCount().
   const QVector<QVector<QString>> &cells() const;
 
-  // Resolved syntax highlight runs of every cell, row major and parallel to
-  // cells(). An empty inner vector means the cell carries no highlighting.
-  const QVector<QVector<QVector<PreviewFormatRun>>> &cellFormats() const;
-
   // Column alignments. Size equals columnCount().
   const QVector<PreviewTableAlignment> &alignments() const;
 

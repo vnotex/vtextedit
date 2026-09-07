@@ -16,13 +16,9 @@ PreviewTableAlignment toPreviewAlignment(int p_cmarkAlignment);
 // indexes TablePreview::rowPrefixes() assuming this layout, and the sheet
 // compares its own serialized output against the bound source. Two copies of
 // the conversion would let the two snapshots diverge for the same table.
-//
-// @p_styles maps HLUnit::styleIndex to a concrete format. Pass an empty vector
-// to produce a snapshot without any syntax runs.
 QSharedPointer<const Preview> createTablePreview(quint64 p_revision, int p_startPos, int p_endPos,
                                                  const QString &p_source,
-                                                 const md::TableElement &p_element,
-                                                 const QVector<QTextCharFormat> &p_styles);
+                                                 const md::TableElement &p_element);
 } // namespace vte
 
 #endif // PREVIEWFROMAST_H

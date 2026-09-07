@@ -57,6 +57,8 @@ public:
 
   void setTheme(const QSharedPointer<Theme> &p_theme);
 
+  const QVector<QTextCharFormat> &getSyntaxStyles() const;
+
   const QSet<int> &getPossiblePreviewBlocks() const;
 
   void clearPossiblePreviewBlocks(const QVector<int> &p_blocksToClear);
@@ -89,6 +91,8 @@ public slots:
   void updateHighlight();
 
 signals:
+  void syntaxStylesChanged();
+
   void highlightCompleted();
 
   // QVector is implicitly shared.
@@ -172,10 +176,6 @@ private:
   bool rehighlightBlockRange(int p_first, int p_last);
 
   void completeHighlight(QSharedPointer<MarkdownHighlighterResult> p_result);
-
-  // Re-emit the preview snapshots of the current, matched parse result after
-  // m_styles has been rebuilt. Does nothing when there is no matched result.
-  void republishPreviewElements();
 
   bool isMathEnabled() const;
 

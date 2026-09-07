@@ -18,6 +18,7 @@ add_executable(test_tablepreview
     ${MDEDITOR_FOLDER}/tablepreviewwidget.cpp ${MDEDITOR_FOLDER}/tablepreviewwidget.h
     ${MDEDITOR_FOLDER}/hlformatresolver.cpp ${MDEDITOR_FOLDER}/hlformatresolver.h
     ${MDEDITOR_FOLDER}/cmarkadapter.cpp ${MDEDITOR_FOLDER}/cmarkadapter.h
+    ${MDEDITOR_FOLDER}/markdownastwalker.cpp ${MDEDITOR_FOLDER}/markdownastwalker.h
     ${SRC_FOLDER}/utils/htmltablescanner.cpp ${SRC_FOLDER}/include/vtextedit/htmltablescanner.h
     ${SRC_FOLDER}/utils/htmlimgscanner.cpp ${SRC_FOLDER}/include/vtextedit/htmlimgscanner.h
     ${SRC_FOLDER}/utils/htmltagparse.cpp ${SRC_FOLDER}/utils/htmltagparse.h

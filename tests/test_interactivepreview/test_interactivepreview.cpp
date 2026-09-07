@@ -26,6 +26,7 @@
 
 #include <inputmode/abstractinputmode.h>
 #include <texteditor/inputmodestatuswidget.h>
+#include <vtextedit/htmltablescanner.h>
 #include <vtextedit/markdowneditorconfig.h>
 #include <vtextedit/markdownhighlighter.h>
 #include <vtextedit/texteditorconfig.h>
@@ -1124,6 +1125,10 @@ void TestInteractivePreview::testHighlightingSurvivesACommit() {
   editCell(sheet, 1, 1, QStringLiteral("`x`"));
   // Still inside the debounce: nothing has been written back yet.
   QVERIFY(!editor.document()->toPlainText().contains(QStringLiteral("`x`")));
+  QVERIFY2(sheetFormatAt(sheet, 1, 1, 0) != plainBefore,
+           "the edited cell must be highlighted before committing or parsing the note");
+  QCOMPARE(sheetCell(sheet, 1, 0), QStringLiteral("**a**"));
+  QVERIFY(sheetFormatAt(sheet, 1, 0, 0) != plainBefore);
 
   flushSheet(sheet);
   QTest::qWait(c_commitDebounceMs + 200);
@@ -1137,15 +1142,227 @@ void TestInteractivePreview::testHighlightingSurvivesACommit() {
   QVERIFY(rebound);
   QCOMPARE(sheetCell(rebound, 1, 1), QStringLiteral("`x`"));
 
-  // The full-parse snapshot which follows the run-less rebase brings the runs
-  // back: the committed code span is painted differently from a plain cell,
-  // and the untouched emphasized cell kept its own style.
+  // A source round trip keeps the live formats and the untouched cell's style.
   const QTextCharFormat code = sheetFormatAt(rebound, 1, 1, 0);
   const QTextCharFormat plainAfter = sheetFormatAt(rebound, 1, 2, 0);
   const QTextCharFormat emphasized = sheetFormatAt(rebound, 1, 0, 0);
   QCOMPARE(plainAfter, plainBefore);
   QVERIFY2(code != plainAfter, "the committed code cell was not highlighted");
   QVERIFY2(emphasized != plainAfter, "the untouched cell lost its highlighting");
+
+  editCell(rebound, 1, 1, QStringLiteral("x"));
+  QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("`x`")));
+  QCOMPARE(sheetFormatAt(rebound, 1, 1, 0), plainBefore);
+  QCOMPARE(sheetFormatAt(rebound, 1, 0, 0), emphasized);
+}
+
+void TestInteractivePreview::testHtmlCellHighlightingUsesCommentPayload() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  auto host = previewHost(editor);
+  QVERIFY(host);
+  host->setProperty("vte_preview_counters_reset", true);
+
+  const QString source =
+      QStringLiteral("<table>\n"
+                     "<tr><td colspan=\"2\"><!--vte-md:**payload**--><em>different</em></td>"
+                     "<td>**neighbor**</td><td>plain</td></tr>\n"
+                     "</table>\n");
+  setTextAndSettle(editor, source);
+
+  auto sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  auto table = sheetTable(sheet);
+  QVERIFY(table);
+  QCOMPARE(table->rows(), 1);
+  QCOMPARE(table->columns(), 4);
+  QCOMPARE(table->cellAt(0, 0).columnSpan(), 2);
+  QCOMPARE(table->cellAt(0, 1).firstCursorPosition().position(),
+           table->cellAt(0, 0).firstCursorPosition().position());
+  QCOMPARE(sheetCell(sheet, 0, 0), QStringLiteral("**payload**"));
+  QCOMPARE(sheetCell(sheet, 0, 2), QStringLiteral("**neighbor**"));
+  QCOMPARE(sheetCell(sheet, 0, 3), QStringLiteral("plain"));
+
+  const auto &styles = editor.getHighlighter()->getSyntaxStyles();
+  const QTextCharFormat strong = styles.at(Theme::STRONG);
+  const QTextCharFormat code = styles.at(Theme::CODE);
+  const QTextCharFormat plain = sheetFormatAt(sheet, 0, 3, 0);
+  QVERIFY(strong.fontWeight() != plain.fontWeight());
+  for (int column : {0, 2}) {
+    const QString text = sheetCell(sheet, 0, column);
+    for (int offset = 0; offset < text.size(); ++offset) {
+      const auto format = sheetFormatAt(sheet, 0, column, offset);
+      QCOMPARE(format.fontWeight(), strong.fontWeight());
+      QCOMPARE(format.fontItalic(), plain.fontItalic());
+    }
+  }
+  // Three distinct origins, not four grid slots; the rendered half is never
+  // another snippet, and the comment-less neighbor is Markdown too.
+  QCOMPARE(host->property("vte_preview_snippet_parses").toULongLong(), qulonglong(3));
+
+  const QString before = editor.document()->toPlainText();
+  editCell(sheet, 0, 0, QStringLiteral("`edited`"));
+  QCOMPARE(editor.document()->toPlainText(), before);
+  QCOMPARE(sheetCell(sheet, 0, 0), QStringLiteral("`edited`"));
+  QVERIFY(code.foreground() != plain.foreground());
+  for (int offset = 0; offset < sheetCell(sheet, 0, 0).size(); ++offset) {
+    const auto format = sheetFormatAt(sheet, 0, 0, offset);
+    QCOMPARE(format.foreground(), code.foreground());
+    QCOMPARE(format.fontWeight(), plain.fontWeight());
+  }
+  QCOMPARE(sheetFormatAt(sheet, 0, 2, 0).fontWeight(), strong.fontWeight());
+
+  flushSheet(sheet);
+  settle(editor);
+  const QString committed = editor.document()->toPlainText();
+  const auto scanned = scanHtmlTables(committed, 0, nullptr);
+  QCOMPARE(scanned.size(), 1);
+  QVERIFY(scanned.first().m_anyPayloadPresent);
+  QVERIFY(!scanned.first().m_anyPayloadMalformed);
+  const auto committedCell = scanned.first().cellAt(0, 0);
+  QVERIFY(committedCell);
+  QVERIFY(committedCell->m_hasPayload);
+  QCOMPARE(committedCell->m_payload, QStringLiteral("`edited`"));
+  QCOMPARE(committedCell->m_colSpan, 2);
+  QCOMPARE(scanned.first().cellAt(0, 1), committedCell);
+
+  auto rebound = sheetView(singlePreviewWidget(editor));
+  QVERIFY(rebound);
+  QCOMPARE(sheetCell(rebound, 0, 0), QStringLiteral("`edited`"));
+  QCOMPARE(sheetFormatAt(rebound, 0, 0, 0).foreground(), code.foreground());
+  QCOMPARE(sheetCell(rebound, 0, 2), QStringLiteral("**neighbor**"));
+  QCOMPARE(sheetFormatAt(rebound, 0, 2, 0).fontWeight(), strong.fontWeight());
+
+  // A dangling escape makes the entire table HTML-only, including both the
+  // otherwise-valid payload and the comment-less Markdown-looking neighbor.
+  host->setProperty("vte_preview_counters_reset", true);
+  const QString validInner = QStringLiteral("<!--vte-md:**payload**--><em>different</em>");
+  const QString malformedInner = QStringLiteral("<!--vte-md:bad\\--><em>broken</em>");
+  setTextAndSettle(editor, QStringLiteral("<table>\n<tr><td>%1</td><td>%2</td>"
+                                          "<td>**neighbor**</td><td>plain</td></tr>\n</table>\n")
+                               .arg(validInner, malformedInner));
+  sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  QCOMPARE(sheetCell(sheet, 0, 0), validInner);
+  QCOMPARE(sheetCell(sheet, 0, 1), malformedInner);
+  QCOMPARE(sheetCell(sheet, 0, 2), QStringLiteral("**neighbor**"));
+  const QTextCharFormat literal = sheetFormatAt(sheet, 0, 3, 0);
+  for (int column = 0; column < 4; ++column) {
+    const QString text = sheetCell(sheet, 0, column);
+    for (int offset = 0; offset < text.size(); ++offset) {
+      QCOMPARE(sheetFormatAt(sheet, 0, column, offset), literal);
+    }
+  }
+  QVERIFY(host->property("vte_preview_publishes").toInt() > 0);
+  QCOMPARE(host->property("vte_preview_snippet_parses").toULongLong(), qulonglong(0));
+
+  const QString literalSource = editor.document()->toPlainText();
+  editCell(sheet, 0, 2, QStringLiteral("`edited`"));
+  QCOMPARE(editor.document()->toPlainText(), literalSource);
+  QCOMPARE(sheetCell(sheet, 0, 2), QStringLiteral("`edited`"));
+  QCOMPARE(sheetFormatAt(sheet, 0, 2, 0), literal);
+}
+
+void TestInteractivePreview::testCellHighlightingFollowsHighlighterStyles() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QLatin1String(c_styledTable));
+
+  // Keep a real source undo entry: restyling must neither add to nor discard it.
+  QTextCursor sourceCursor(editor.document());
+  sourceCursor.movePosition(QTextCursor::End);
+  sourceCursor.insertText(QStringLiteral("\ntail"));
+  settle(editor);
+  QVERIFY(editor.document()->availableUndoSteps() > 0);
+
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+  auto table = sheetTable(sheet);
+  QVERIFY(table);
+  auto host = previewHost(editor);
+  QVERIFY(host);
+  auto highlighter = editor.getHighlighter();
+  QVERIFY(highlighter);
+  QVERIFY(host->property("vte_preview_snippet_parses").toULongLong() > 0);
+
+  sheet->setFocus(Qt::OtherFocusReason);
+  const QString editedText = QStringLiteral("**uncommitted**");
+  editCell(sheet, 1, 0, editedText);
+  const auto cell = table->cellAt(1, 0);
+  QTextCursor selection = cell.lastCursorPosition();
+  selection.setPosition(selection.position() - 2);
+  selection.setPosition(cell.firstCursorPosition().position() + 2, QTextCursor::KeepAnchor);
+  sheet->setTextCursor(selection);
+  QCOMPARE(sheet->textCursor().selectedText(), QStringLiteral("uncommitted"));
+  const int position = sheet->textCursor().position();
+  const int anchor = sheet->textCursor().anchor();
+  const QTextCharFormat plain = sheetFormatAt(sheet, 1, 2, 0);
+  const QString source = editor.document()->toPlainText();
+  QVERIFY(!source.contains(editedText));
+  const int undoSteps = editor.document()->availableUndoSteps();
+  const int redoSteps = editor.document()->availableRedoSteps();
+  QSignalSpy completed(highlighter, &MarkdownHighlighter::highlightCompleted);
+  host->setProperty("vte_preview_counters_reset", true);
+
+  const QString themeJson = QStringLiteral(R"({
+    "metadata": {"type": "vtextedit", "name": "LiveCellStyles"},
+    "editor-styles": {"Text": {"font-family": "Arial", "font-size": 11}},
+    "markdown-syntax-styles": {
+      "STRONG": {"text-color": "#b31d65", "font-size": 30, "bold": true}
+    }
+  })");
+  auto theme = Theme::createThemeFromContent(themeJson);
+  QVERIFY(theme);
+
+  auto verifyRestyle = [&](const QTextCharFormat &p_expected, int p_publishesBefore) {
+    // Wait only for the normal publish drain, never settle()/updateHighlight():
+    // the live text is intentionally newer than the note's parse snapshot.
+    QTRY_VERIFY_WITH_TIMEOUT(host->property("vte_preview_publishes").toInt() > p_publishesBefore,
+                             500);
+    QCOMPARE(singlePreviewWidget(editor), widget);
+    QCOMPARE(sheetView(widget), sheet);
+    QCOMPARE(sheetCell(sheet, 1, 0), editedText);
+    for (int offset = 0; offset < editedText.size(); ++offset) {
+      const auto format = sheetFormatAt(sheet, 1, 0, offset);
+      QCOMPARE(format.foreground(), p_expected.foreground());
+      QCOMPARE(format.fontPointSize(), p_expected.fontPointSize());
+      QCOMPARE(format.fontWeight(), p_expected.fontWeight());
+    }
+    QCOMPARE(sheetFormatAt(sheet, 1, 2, 0), plain);
+    QCOMPARE(sheet->textCursor().position(), position);
+    QCOMPARE(sheet->textCursor().anchor(), anchor);
+    QCOMPARE(sheet->textCursor().selectedText(), QStringLiteral("uncommitted"));
+    QCOMPARE(editor.document()->toPlainText(), source);
+    QCOMPARE(editor.document()->availableUndoSteps(), undoSteps);
+    QCOMPARE(editor.document()->availableRedoSteps(), redoSteps);
+    QCOMPARE(completed.count(), 0);
+    QCOMPARE(host->property("vte_preview_snippet_parses").toULongLong(), qulonglong(0));
+
+    QTRY_VERIFY_WITH_TIMEOUT(sheet->document()->documentLayout()->documentSize().height() <=
+                                 sheet->viewport()->height(),
+                             500);
+    const QRectF assigned = widget->previewContext()->assignedPreviewRect();
+    QVERIFY(!assigned.isEmpty());
+    QCOMPARE(widget->height(), qRound(assigned.height()));
+    QCOMPARE(widget->height(), sheet->height());
+    QCOMPARE(sheet->verticalScrollBar()->maximum(), 0);
+  };
+
+  highlighter->setTheme(theme);
+  const QTextCharFormat themed = highlighter->getSyntaxStyles().at(Theme::STRONG);
+  QCOMPARE(themed.foreground().color(), QColor(QStringLiteral("#b31d65")));
+  QCOMPARE(themed.fontPointSize(), qreal(30));
+  verifyRestyle(themed, 0);
+  if (QTest::currentTestFailed()) {
+    return;
+  }
+
+  const int publishesBefore = host->property("vte_preview_publishes").toInt();
+  highlighter->updateStylesFontSize(6);
+  const QTextCharFormat zoomed = highlighter->getSyntaxStyles().at(Theme::STRONG);
+  QCOMPARE(zoomed.foreground(), themed.foreground());
+  QCOMPARE(zoomed.fontPointSize(), themed.fontPointSize() + 6);
+  verifyRestyle(zoomed, publishesBefore);
 }
 
 void TestInteractivePreview::testHighlightingStopsAtTheRunEnd() {

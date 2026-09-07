@@ -175,6 +175,32 @@ vectors, but the editor does not connect an internal renderer to those slots. Li
 `requestUpdateCodeBlocks()` and `requestUpdateMathBlocks()` require host connections if refreshes
 are expected.
 
+### Interactive table-cell highlighting
+
+The opt-in table sheet is a live `QTextDocument`, separate from the note's source
+highlighting. `TablePreview` snapshots carry text, grid and source metadata, but no
+resolved character formats. `TablePreviewDocument` highlights each origin's current
+single-line Markdown through `md::highlightInlineSnippet()` and the editor's shared
+`md::resolveFormatRuns()` precedence rules.
+
+Each table caches style-indexed units by exact live text, including empty parse
+results. Duplicate texts share an entry; entries absent from the live grid are pruned.
+Rebuilds retain matching entries. A coherent cell edit refreshes synchronously before
+source commit; structural changes repaint the final grid while reusing unchanged text.
+Physical formatting is restored even for a byte-identical replacement. Resetting the
+first block uses `QTextTableCell::setFormat()` so Qt's row/column spans survive.
+
+`MarkdownHighlighter::getSyntaxStyles()` supplies the existing zoom-adjusted vector.
+`syntaxStylesChanged()` schedules the host's blocked-aware publication drain, which
+restyles realized tables and invalidates their measurements without rebuilding cells
+or moving the caret. Style-only changes reuse cached units. Empty style vectors skip
+snippet parsing and leave the baseline alignment/header formatting.
+
+For Markdown-backed HTML tables, decoded `vte-md` payloads remain authoritative;
+comment-less cells in a backed table are Markdown too. One malformed payload leaves
+the whole table HTML-only and unhighlighted. Covered slots, empty cells and unexpected
+multiline text do no snippet work. Full note parses and unrealized tables do none either.
+
 ## Image preview lifecycle
 
 ### Region to resource

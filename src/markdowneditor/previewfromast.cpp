@@ -1,6 +1,5 @@
 #include "previewfromast.h"
 
-#include "hlformatresolver.h"
 #include "previewbuilder.h"
 
 using namespace vte;
@@ -21,16 +20,14 @@ PreviewTableAlignment vte::toPreviewAlignment(int p_cmarkAlignment) {
 // Project an HTML table's source-order rows onto the rectangular logical grid.
 //
 // The scanner has already proved the grid tiles exactly (decision D-i), so this
-// only has to place what it was given: the origin's text, formats and verbatim
-// tag at its origin slot, and an EMPTY string at every covered slot -- which is
+// only has to place what it was given: the origin's text and verbatim tag at its
+// origin slot, and an EMPTY string at every covered slot -- which is
 // exactly what TablePreview::cells() is documented to hold for an HTML table.
 static void buildHtmlGrid(const md::TableElement &p_element, TableSnapshotData &p_data) {
   const int rows = p_data.m_gridRowCount;
   const int cols = p_data.m_gridColumnCount;
 
   QVector<QVector<QString>> cells(rows, QVector<QString>(cols));
-  QVector<QVector<QVector<PreviewFormatRun>>> cellFormats(rows,
-                                                          QVector<QVector<PreviewFormatRun>>(cols));
   QVector<QVector<QString>> cellTags(rows, QVector<QString>(cols));
 
   p_data.m_rowTags.resize(rows);
@@ -48,7 +45,6 @@ static void buildHtmlGrid(const md::TableElement &p_element, TableSnapshotData &
       }
 
       cells[r][col] = row.m_cells.at(i);
-      cellFormats[r][col] = p_data.m_cellFormats.value(r).value(i);
       cellTags[r][col] = row.m_cellTags.value(i);
 
       for (int dr = 0; dr < rowSpan && r + dr < rows; ++dr) {
@@ -64,14 +60,12 @@ static void buildHtmlGrid(const md::TableElement &p_element, TableSnapshotData &
   }
 
   p_data.m_cells = cells;
-  p_data.m_cellFormats = cellFormats;
   p_data.m_cellTags = cellTags;
 }
 
 QSharedPointer<const Preview> vte::createTablePreview(quint64 p_revision, int p_startPos,
                                                       int p_endPos, const QString &p_source,
-                                                      const md::TableElement &p_element,
-                                                      const QVector<QTextCharFormat> &p_styles) {
+                                                      const md::TableElement &p_element) {
   TableSnapshotData data;
   data.m_syntax = p_element.m_syntax == md::TableElement::Syntax::Html
                       ? PreviewTableSyntax::Html
@@ -93,14 +87,6 @@ QSharedPointer<const Preview> vte::createTablePreview(quint64 p_revision, int p_
 
     data.m_cells.append(row.m_cells);
     data.m_rowPrefixes.append(row.m_prefix);
-
-    // Same order and raggedness as the cells of this row.
-    QVector<QVector<PreviewFormatRun>> rowFormats;
-    rowFormats.reserve(row.m_cells.size());
-    for (int c = 0; c < row.m_cells.size(); ++c) {
-      rowFormats.append(md::resolveFormatRuns(row.m_cellHighlights.value(c), p_styles));
-    }
-    data.m_cellFormats.append(rowFormats);
   }
 
   data.m_alignments.reserve(p_element.m_alignments.size());

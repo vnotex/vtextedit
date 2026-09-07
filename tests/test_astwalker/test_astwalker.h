@@ -21,12 +21,10 @@ private slots:
   void testMultilineInlineInContainer();
   void testImageStandaloneMatchesPaintedPath();
   void testTableCellOffsets();
-  void testTableCellHighlights();
-  void testTableCellHighlightsInBlockquote();
-  void testTableCellHighlightsInListAndRaggedRow();
+  void testTableCellOffsetsInBlockquote();
+  void testTableCellOffsetsInListAndRaggedRow();
   void testHeadingElements();
   void testHeadingElementsDivergence();
-  void testHtmlCellHighlightBudgetIsDocumentWide();
 };
 
 } // namespace tests

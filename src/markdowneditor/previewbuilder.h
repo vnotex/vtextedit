@@ -17,13 +17,10 @@ QString previewSourceText(const QTextDocument *p_doc, int p_start, int p_end);
 // deliberately far stricter than comparing sourceMarkdown(). A snapshot carries
 // resolved state that its own source does NOT determine:
 //
-//  - an image's destination is resolved against reference definitions that live
-//    elsewhere in the document, so `![a][ref]` can render a different file
-//    while its own source is byte-identical;
-//  - a table's cellFormats() are produced under a DOCUMENT-WIDE per-cell
-//    highlighting budget, so adding tables elsewhere can silently strip an
-//    untouched table's highlight runs - and a run carries weight, italic,
-//    family and point size, any of which changes wrapping and therefore height.
+// An image's destination can change with reference definitions elsewhere in
+// the document, even when its own source is byte-identical. Table text, grid
+// and alignment are compared here; live syntax styles invalidate measurements
+// independently through the host's style channel.
 //
 // So: false for every type whose rendering inputs are not fully enumerated
 // here. That is not a limitation to be removed casually - "I cannot prove these
@@ -53,8 +50,6 @@ struct TableSnapshotData {
   QVector<QString> m_rowPrefixes;
 
   QString m_delimiterPrefix;
-
-  QVector<QVector<QVector<PreviewFormatRun>>> m_cellFormats;
 
   // --- The logical grid; always rectangular, always tiles exactly. ---
 
@@ -102,17 +97,13 @@ public:
                                                   const QString &p_source,
                                                   const QString &p_expression, bool p_displayMath);
 
-  // @p_cellFormats is row major and parallel to @p_cells; pass an empty vector
-  // when no resolved highlighting is available.
-  //
   // The MARKDOWN-only convenience overload: it derives the 1x1 logical grid
   // itself, normalizing to the widest row exactly as TablePreviewDocument does.
   static QSharedPointer<const Preview>
   createTable(quint64 p_revision, int p_startPos, int p_endPos, const QString &p_source,
               int p_columnCount, const QVector<QVector<QString>> &p_cells,
               const QVector<PreviewTableAlignment> &p_alignments,
-              const QVector<QString> &p_rowPrefixes, const QString &p_delimiterPrefix,
-              const QVector<QVector<QVector<PreviewFormatRun>>> &p_cellFormats);
+              const QVector<QString> &p_rowPrefixes, const QString &p_delimiterPrefix);
 
   static QSharedPointer<const Preview> createTable(quint64 p_revision, int p_startPos, int p_endPos,
                                                    const QString &p_source,

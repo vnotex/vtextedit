@@ -148,9 +148,8 @@ public:
   // back pointer to a host; a benchmark drives one editor at a time.
   static const char *c_tableCellsBuiltProperty;
 
-  // Full cmark parses performed for per-cell table syntax highlighting,
-  // aggregated from the AST walker. Process wide for the same reason, and the
-  // direct measure of what the walker's document-wide cell budget bounds.
+  // Full cmark parses caused by live table-cell highlight cache misses,
+  // aggregated from the snippet helper. Process wide for the same reason.
   static const char *c_snippetParsesProperty;
 
   // Write any value to reset every counter above to zero, including the

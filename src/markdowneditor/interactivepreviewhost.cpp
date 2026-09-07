@@ -193,6 +193,9 @@ InteractivePreviewHost::InteractivePreviewHost(VMarkdownEditor *p_editor)
 
   // Built-in renderers use priority 0 so applications can override them.
   m_tableFactory = new TablePreviewWidgetFactory(this);
+  m_tableFactory->setSyntaxStyles(m_editor->getHighlighter()->getSyntaxStyles());
+  connect(m_editor->getHighlighter(), &MarkdownHighlighter::syntaxStylesChanged, this,
+          &InteractivePreviewHost::schedulePublish);
   connect(m_tableFactory.data(), &TablePreviewWidgetFactory::focusEscapeRequested, this,
           [this](TablePreviewWidget *p_widget, FocusEscapeDirection p_direction) {
             handleFocusEscape(p_widget, p_direction);
@@ -2562,6 +2565,15 @@ void InteractivePreviewHost::publish() {
   m_publishPending = false;
   ++m_publishes;
 
+  if (m_tableFactory &&
+      m_tableFactory->setSyntaxStyles(m_editor->getHighlighter()->getSyntaxStyles())) {
+    for (auto &item : m_items) {
+      if (qobject_cast<TablePreviewWidget *>(item.m_widget.data())) {
+        item.m_measureDirty = true;
+      }
+    }
+  }
+
   applyReadOnly();
 
   QVector<TextDocumentLayout::WidgetPreviewSpec> specs;
@@ -3445,11 +3457,9 @@ static QSharedPointer<const Preview> rebaseMath(const QSharedPointer<const Previ
 static QSharedPointer<const Preview> rebaseTable(const QSharedPointer<const Preview> &p_original,
                                                  int p_startPos, const QString &p_text,
                                                  const md::TableElement &p_element) {
-  // No highlighter styles are available on the rebase path, so the rebased
-  // snapshot deliberately carries no syntax runs: the widget keeps its current
-  // physical formats until the next full-parse snapshot brings correct ones.
+  // Cell syntax highlighting belongs to the live document, not this snapshot.
   return createTablePreview(p_original->revision(), p_startPos, p_startPos + p_text.size(), p_text,
-                            p_element, QVector<QTextCharFormat>());
+                            p_element);
 }
 
 // Per-type dispatch onto the snapshot builders above. Returns a null pointer

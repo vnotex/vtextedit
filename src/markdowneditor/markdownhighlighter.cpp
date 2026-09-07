@@ -710,10 +710,10 @@ void MarkdownHighlighter::setTheme(const QSharedPointer<Theme> &p_theme) {
     }
   }
 
-  // Snapshots carry concrete formats resolved from m_styles, and rehighlight()
-  // never re-enters completeHighlight(), so they have to be republished here.
-  republishPreviewElements();
+  emit syntaxStylesChanged();
 }
+
+const QVector<QTextCharFormat> &MarkdownHighlighter::getSyntaxStyles() const { return m_styles; }
 
 bool MarkdownHighlighter::rehighlightBlockRange(int p_first, int p_last) {
   bool highlighted = false;
@@ -833,29 +833,10 @@ void MarkdownHighlighter::completeHighlight(QSharedPointer<MarkdownHighlighterRe
   const QVariant maskValue = property(InteractivePreviewHost::c_enabledTypeMaskProperty);
   const int typeMask = maskValue.isValid() ? maskValue.toInt() : 0;
   emit previewElementsUpdated(static_cast<quint64>(p_result->m_timeStamp),
-                              p_result->buildPreviews(document(), typeMask, m_styles));
+                              p_result->buildPreviews(document(), typeMask));
 }
 
 bool MarkdownHighlighter::isMathEnabled() const { return m_parserExts & EXT_MATH; }
-
-void MarkdownHighlighter::republishPreviewElements() {
-  // setTheme() is called from the constructor before m_result exists, and an
-  // unmatched result would hand stale source positions to the preview host.
-  if (m_result.isNull() || !m_result->matched(m_timeStamp)) {
-    return;
-  }
-
-  const QVariant maskValue = property(InteractivePreviewHost::c_enabledTypeMaskProperty);
-  const int typeMask = maskValue.isValid() ? maskValue.toInt() : 0;
-  if (typeMask == 0) {
-    return;
-  }
-
-  // Deliberately not completeHighlight(): that republishes unrelated regions
-  // and mutates m_notifyHighlightComplete.
-  emit previewElementsUpdated(static_cast<quint64>(m_result->m_timeStamp),
-                              m_result->buildPreviews(document(), typeMask, m_styles));
-}
 
 void MarkdownHighlighter::rehighlightSensitiveBlocks() {
   QTextBlock cb = m_interface->textCursor().block();
@@ -1118,7 +1099,7 @@ void MarkdownHighlighter::updateStylesFontSize(int p_delta) {
     style.setFontPointSize(ptSize);
   }
 
-  republishPreviewElements();
+  emit syntaxStylesChanged();
 
   rehighlight();
 }

@@ -73,12 +73,6 @@ bool vte::previewRenderEquals(const Preview *p_a, const Preview *p_b) {
     return false;
   }
 
-  // The one the document-wide highlighting budget can change on its own. A run
-  // carries a QTextCharFormat, so a difference here really can rewrap a cell.
-  if (a->cellFormats() != b->cellFormats()) {
-    return false;
-  }
-
   // Merged cells: two grids with the same text can still lay out differently.
   for (int row = 0; row < a->gridRowCount(); ++row) {
     for (int column = 0; column < a->gridColumnCount(); ++column) {
@@ -138,8 +132,6 @@ public:
   int m_columnCount = 0;
 
   QVector<QVector<QString>> m_cells;
-
-  QVector<QVector<QVector<PreviewFormatRun>>> m_cellFormats;
 
   QVector<PreviewTableAlignment> m_alignments;
 
@@ -246,10 +238,6 @@ int TablePreview::rowCount() const { return m_tableData->m_cells.size(); }
 int TablePreview::columnCount() const { return m_tableData->m_columnCount; }
 
 const QVector<QVector<QString>> &TablePreview::cells() const { return m_tableData->m_cells; }
-
-const QVector<QVector<QVector<PreviewFormatRun>>> &TablePreview::cellFormats() const {
-  return m_tableData->m_cellFormats;
-}
 
 const QVector<PreviewTableAlignment> &TablePreview::alignments() const {
   return m_tableData->m_alignments;
@@ -429,12 +417,10 @@ QSharedPointer<const Preview> PreviewBuilder::createMath(quint64 p_revision, int
 QSharedPointer<const Preview> PreviewBuilder::createTable(
     quint64 p_revision, int p_startPos, int p_endPos, const QString &p_source, int p_columnCount,
     const QVector<QVector<QString>> &p_cells, const QVector<PreviewTableAlignment> &p_alignments,
-    const QVector<QString> &p_rowPrefixes, const QString &p_delimiterPrefix,
-    const QVector<QVector<QVector<PreviewFormatRun>>> &p_cellFormats) {
+    const QVector<QString> &p_rowPrefixes, const QString &p_delimiterPrefix) {
   TableSnapshotData data;
   data.m_columnCount = p_columnCount;
   data.m_cells = p_cells;
-  data.m_cellFormats = p_cellFormats;
   data.m_alignments = p_alignments;
   data.m_rowPrefixes = p_rowPrefixes;
   data.m_delimiterPrefix = p_delimiterPrefix;
@@ -468,7 +454,6 @@ QSharedPointer<const Preview> PreviewBuilder::createTable(quint64 p_revision, in
   auto tableData = new TablePreviewPrivate();
   tableData->m_columnCount = p_data.m_columnCount;
   tableData->m_cells = p_data.m_cells;
-  tableData->m_cellFormats = p_data.m_cellFormats;
   tableData->m_alignments = p_data.m_alignments;
   tableData->m_rowPrefixes = p_data.m_rowPrefixes;
   tableData->m_delimiterPrefix = p_data.m_delimiterPrefix;
