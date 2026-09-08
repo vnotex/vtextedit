@@ -9,6 +9,7 @@
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
+#include <QTextLayout>
 #include <QVector>
 
 #include <vtextedit/markdowneditorconfig.h>
@@ -359,6 +360,132 @@ void TestPreviewScrollStability::testAutoFoldOfTheAnchorBlockItself() {
   // block - the one setRangeFolded() keeps visible - so the collapsed range
   // sits at the top of the viewport instead of the view jumping elsewhere.
   QCOMPARE(TextEditUtils::firstVisibleBlock(textEdit).blockNumber(), openBlock);
+}
+
+void TestPreviewScrollStability::testLogicalImageSizePreservesLayout() {
+  for (auto source : {PreviewData::Source::CodeBlock, PreviewData::Source::MathBlock}) {
+    auto config = makeConfig();
+    config->m_textEditorConfig->m_scaleFactor = 1.25;
+    VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+    setUpEditor(editor);
+    editor.getPreviewMgr()->setPreviewEnabled(source, true);
+    auto publish = [&](const QSharedPointer<PreviewItem> &p_item) {
+      if (source == PreviewData::Source::CodeBlock) {
+        editor.getPreviewMgr()->updateCodeBlocks({p_item});
+      } else {
+        editor.getPreviewMgr()->updateMathBlocks({p_item});
+      }
+      QCoreApplication::processEvents();
+    };
+
+    auto item = makeItem(editor.document(), 2, 120);
+    item->m_image = QPixmap(400, 120);
+    item->m_image.fill(Qt::red);
+    publish(item);
+    const auto block = editor.document()->findBlockByNumber(2);
+    const auto legacyRect = editor.document()->documentLayout()->blockBoundingRect(block);
+    const auto legacyY = blockDocY(editor, 3);
+
+    item->m_name += QStringLiteral("_dense");
+    item->m_image = QPixmap(800, 240);
+    item->m_image.fill(Qt::red);
+    item->m_logicalSize = QSize(320, 96);
+    publish(item);
+    QCOMPARE(blockDocY(editor, 3), legacyY);
+    QCOMPARE(editor.document()->documentLayout()->blockBoundingRect(block), legacyRect);
+    const auto previews = BlockPreviewData::get(block)->getPreviewData();
+    QCOMPARE(previews.size(), 1);
+    const auto image =
+        editor.findImageFromDocumentResourceMgr(previews.first()->getImageData()->m_imageName);
+    QVERIFY(image);
+    QCOMPARE(image->size(), QSize(800, 240));
+  }
+}
+
+void TestPreviewScrollStability::testLogicalImageSizeChangeRelayoutsSharedResource() {
+  auto config = makeConfig();
+  config->m_textEditorConfig->m_scaleFactor = 1.25;
+  VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+  setUpEditor(editor);
+  auto item = makeItem(editor.document(), 2, 240);
+  item->m_image = QPixmap(800, 240);
+  item->m_image.fill(Qt::red);
+  auto publish = [&]() {
+    editor.getPreviewMgr()->updateCodeBlocks({item});
+    QCoreApplication::processEvents();
+  };
+  publish();
+  const auto intrinsicY = blockDocY(editor, 3);
+  item->m_logicalSize = QSize(320, 96);
+  publish();
+  const auto originalY = blockDocY(editor, 3);
+  item->m_logicalSize.setHeight(144);
+  publish();
+  QCOMPARE(blockDocY(editor, 3), originalY + 48);
+  publish();
+  QCOMPARE(blockDocY(editor, 3), originalY + 48);
+
+  for (const auto &size : {QSize(), QSize(0, 0), QSize(320, 0), QSize(0, 96)}) {
+    item->m_logicalSize = size;
+    publish();
+    QCOMPARE(blockDocY(editor, 3), intrinsicY);
+  }
+
+  item->m_logicalSize = QSize(320, 96);
+  publish();
+  item->clear();
+  auto replacement = makeItem(editor.document(), 2, 240);
+  item->m_blockNumber = replacement->m_blockNumber;
+  item->m_blockPos = replacement->m_blockPos;
+  item->m_startPos = replacement->m_startPos;
+  item->m_endPos = replacement->m_endPos;
+  item->m_isBlockwise = true;
+  item->m_name = replacement->m_name;
+  item->m_image = QPixmap(800, 240);
+  item->m_image.fill(Qt::red);
+  publish();
+  QCOMPARE(blockDocY(editor, 3), intrinsicY);
+}
+
+void TestPreviewScrollStability::testInlineLogicalImageSizePreservesLayout() {
+  auto config = makeConfig();
+  config->m_textEditorConfig->m_scaleFactor = 1.25;
+  VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+  editor.resize(900, 600);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  editor.setText(
+      QStringLiteral("Before a sufficiently wide inline source span after.\nFollowing."));
+  settle(editor);
+  editor.getPreviewMgr()->setPreviewEnabled(PreviewData::Source::MathBlock, true);
+  auto item = makeItem(editor.document(), 0, 30);
+  item->m_isBlockwise = false;
+  item->m_startPos = 7;
+  item->m_endPos = 45;
+  item->m_image = QPixmap(100, 30);
+  item->m_image.fill(Qt::red);
+  editor.getPreviewMgr()->updateMathBlocks({item});
+  QCoreApplication::processEvents();
+  const auto block = editor.document()->firstBlock();
+  const auto legacyRect = editor.document()->documentLayout()->blockBoundingRect(block);
+  const auto legacyLineRect = block.layout()->lineAt(0).rect();
+  const auto legacyY = blockDocY(editor, 1);
+
+  item->m_name += QStringLiteral("_dense");
+  item->m_image = QPixmap(200, 60);
+  item->m_image.fill(Qt::red);
+  item->m_logicalSize = QSize(80, 24);
+  editor.getPreviewMgr()->updateMathBlocks({item});
+  QCoreApplication::processEvents();
+  QCOMPARE(blockDocY(editor, 1), legacyY);
+  QCOMPARE(editor.document()->documentLayout()->blockBoundingRect(block), legacyRect);
+  QCOMPARE(block.layout()->lineAt(0).rect(), legacyLineRect);
+  const auto previews = BlockPreviewData::get(block)->getPreviewData();
+  QCOMPARE(previews.size(), 1);
+  const auto image =
+      editor.findImageFromDocumentResourceMgr(previews.first()->getImageData()->m_imageName);
+  QVERIFY(image);
+  QCOMPARE(image->size(), QSize(200, 60));
 }
 
 QTEST_MAIN(tests::TestPreviewScrollStability)

@@ -7,6 +7,7 @@
 #include <QPair>
 #include <QPixmap>
 #include <QSharedPointer>
+#include <QSize>
 #include <QString>
 #include <QTextBlock>
 #include <QVector>
@@ -30,6 +31,7 @@ struct VTEXTEDIT_EXPORT PreviewItem {
     m_startPos = m_endPos = m_blockPos = m_blockNumber = -1;
     m_padding = 0;
     m_image = QPixmap();
+    m_logicalSize = QSize();
     m_name.clear();
     m_backgroundColor = 0;
     m_isBlockwise = false;
@@ -48,6 +50,10 @@ struct VTEXTEDIT_EXPORT PreviewItem {
   int m_padding = 0;
 
   QPixmap m_image;
+
+  // Optional layout size at the requested editor zoom, excluding DPI and raster density.
+  // Both dimensions must be positive; otherwise intrinsic sizing is used.
+  QSize m_logicalSize;
 
   // If @m_name are the same, then they are the same imges.
   QString m_name;

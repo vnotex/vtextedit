@@ -28,6 +28,10 @@ public:
   TestPreviewScrollStability() = default;
 
 private slots:
+  void testLogicalImageSizePreservesLayout();
+  void testLogicalImageSizeChangeRelayoutsSharedResource();
+  void testInlineLogicalImageSizePreservesLayout();
+
   // Previews arriving above the viewport, one relayout each: the first visible
   // block and its viewport y must not move, while the document grows.
   void testPreviewAboveViewportDoesNotMoveContent();

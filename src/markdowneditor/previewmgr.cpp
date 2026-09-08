@@ -578,10 +578,11 @@ void PreviewMgr::updateBlockPreview(TimeStamp p_timeStamp, Source p_source,
     m_previewData[p_source].m_images.insert(name, p_timeStamp);
 
     auto previewData = BlockPreviewData::get(block);
-    auto data =
-        new PreviewData(p_source, p_timeStamp, item->m_startPos - item->m_blockPos,
-                        item->m_endPos - item->m_blockPos, item->m_padding, !item->m_isBlockwise,
-                        name, imageResourceSize(name), item->m_backgroundColor);
+    auto data = new PreviewData(
+        p_source, p_timeStamp, item->m_startPos - item->m_blockPos,
+        item->m_endPos - item->m_blockPos, item->m_padding, !item->m_isBlockwise, name,
+        item->m_logicalSize.isEmpty() ? imageResourceSize(name) : item->m_logicalSize,
+        item->m_backgroundColor);
     bool tsUpdated = previewData->insert(data);
     if (!tsUpdated) {
       // No need to relayout the block if only timestamp is updated.

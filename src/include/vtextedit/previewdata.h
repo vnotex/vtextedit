@@ -45,7 +45,7 @@ struct VTEXTEDIT_EXPORT PreviewImageData {
   // Image name in the resource manager.
   QString m_imageName;
 
-  // Image size of the image. Cache for performance.
+  // Cached logical layout geometry, not the resource's raster dimensions.
   QSize m_imageSize;
 
   // Forced background before drawing this image.
