@@ -79,6 +79,26 @@ static QString previewResourceName(const QString &p_shortUrl, int p_width, int p
 PreviewMgr::PreviewMgr(PreviewMgrInterface *p_interface, QObject *p_parent)
     : QObject(p_parent), m_interface(p_interface), m_previewData(Source::MaxSource) {}
 
+void PreviewMgr::setResourceReader(ResourceReader p_reader, bool p_exclusive) {
+  ++m_resourceGeneration;
+  m_resourceReader = std::move(p_reader);
+  m_exclusiveResourceReader = p_exclusive;
+  // Destroy the old request owner as well as its pending map. A reply from a
+  // previous policy must not satisfy a newly issued request for the same URL.
+  delete m_downloader;
+  m_downloader = nullptr;
+  m_urlMap.clear();
+  m_seededImages.clear();
+  clearPreview();
+  // A completed download may not yet have been attached to a preview block.
+  m_interface->documentResourceMgr()->clear();
+  if (isAnyPreviewEnabled()) {
+    emit requestUpdateImageLinks();
+    emit requestUpdateCodeBlocks();
+    emit requestUpdateMathBlocks();
+  }
+}
+
 void PreviewMgr::setPreviewEnabled(Source p_source, bool p_enabled) {
   auto &data = m_previewData[p_source];
   if (data.m_enabled != p_enabled) {
@@ -194,12 +214,18 @@ void PreviewMgr::buildImageLinksForLayout(const QVector<md::ImageLinkInfo> &p_li
       continue;
     }
     if (info.m_destination.contains(QLatin1Char('\\'))) {
-      qWarning() << "skipped local image with `\\` in path (use `/` instead)" << info.m_destination;
+      if (!m_exclusiveResourceReader) {
+        qWarning() << "skipped local image with `\\` in path (use `/` instead)"
+                   << info.m_destination;
+      }
       continue;
     }
 
     link.m_linkShortUrl = info.m_destination;
-    link.m_linkUrl = MarkdownUtils::linkUrlToPath(m_interface->basePath(), info.m_destination);
+    link.m_linkUrl =
+        m_exclusiveResourceReader
+            ? info.m_destination
+            : MarkdownUtils::linkUrlToPath(m_interface->basePath(), info.m_destination);
     link.m_width = clampPreviewDimension(info.m_width);
     link.m_height = clampPreviewDimension(info.m_height);
     if (link.m_linkUrl.isEmpty()) {
@@ -268,8 +294,24 @@ QString PreviewMgr::imageResourceName(const ImageLink &p_link) {
 
   // Add it to the resource.
   QPixmap image;
+  if (m_resourceReader || m_exclusiveResourceReader) {
+    const auto generation = m_resourceGeneration;
+    // The callback may change the policy; keep its callable alive until return.
+    const auto reader = m_resourceReader;
+    QByteArray bytes;
+    const bool read = reader && reader(p_link.m_linkShortUrl, bytes);
+    if (generation == m_resourceGeneration && read) {
+      image.loadFromData(bytes);
+    }
+    bytes.fill('\0');
+    if (generation != m_resourceGeneration || (m_exclusiveResourceReader && image.isNull())) {
+      return QString();
+    }
+  }
   QString imgPath = p_link.m_linkUrl;
-  if (QFileInfo::exists(imgPath)) {
+  if (!image.isNull()) {
+    // Authenticated memory supplied by the current reader; no path fallback.
+  } else if (QFileInfo::exists(imgPath)) {
     // Local file.
     // Sometimes the suffix of the image may mislead the codec. Directly load
     // from the data and then load from file path.
@@ -353,7 +395,7 @@ int PreviewMgr::indexOfSeededImage(const QString &p_normalizedPath) const {
 }
 
 void PreviewMgr::seedImageData(const QString &p_url, const QByteArray &p_data) {
-  if (p_url.isEmpty() || p_data.isEmpty()) {
+  if (m_exclusiveResourceReader || p_url.isEmpty() || p_data.isEmpty()) {
     return;
   }
 
@@ -435,13 +477,22 @@ void PreviewMgr::relayout(const OrderedIntSet &p_blocks) {
 NetworkAccess *PreviewMgr::downloader() {
   if (!m_downloader) {
     m_downloader = new NetworkAccess(this);
-    connect(m_downloader, &NetworkAccess::requestFinished, this, &PreviewMgr::imageDownloaded);
+    const auto generation = m_resourceGeneration;
+    connect(m_downloader, &NetworkAccess::requestFinished, this,
+            [this, generation](const NetworkReply &p_data, const QString &p_url) {
+              if (generation == m_resourceGeneration && !m_exclusiveResourceReader) {
+                imageDownloaded(p_data, p_url);
+              }
+            });
   }
 
   return m_downloader;
 }
 
 void PreviewMgr::imageDownloaded(const NetworkReply &p_data, const QString &p_url) {
+  if (m_exclusiveResourceReader) {
+    return;
+  }
   // Retire the pending entry FIRST, whatever happens next. `imageResourceName()`
   // treats a non-empty pending vector as "a request is already in flight" and
   // issues no new one, so bailing out before the erase would strand this URL

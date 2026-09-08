@@ -1,6 +1,9 @@
 #ifndef PREVIEWMGR_H
 #define PREVIEWMGR_H
 
+#include <functional>
+
+#include <QByteArray>
 #include <QDebug>
 #include <QHash>
 #include <QObject>
@@ -106,6 +109,13 @@ public:
 
   // Clear all the preview.
   void clearPreview();
+
+  using ResourceReader = std::function<bool(const QString &, QByteArray &)>;
+
+  // The reader receives the parsed destination, never a filesystem-resolved path.
+  // Exclusive failure is terminal, including when the reader is empty (revoked).
+  // Changing this policy discards every preview resource and pending download.
+  void setResourceReader(ResourceReader p_reader, bool p_exclusive);
 
   // Hand over the bytes of an image that the application already has in memory
   // (typically the payload it just uploaded to an image host), so that the
@@ -263,6 +273,10 @@ private:
 
   // Managed by QObject.
   NetworkAccess *m_downloader = nullptr;
+
+  ResourceReader m_resourceReader;
+  bool m_exclusiveResourceReader = false;
+  quint64 m_resourceGeneration = 0;
 
   // Map from URL to the pending resource entries for that URL.
   // Used for downloading images.

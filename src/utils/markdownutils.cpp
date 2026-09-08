@@ -19,6 +19,7 @@
 
 // CMAKE_INCLUDE_CURRENT_DIR puts `src` on the include path, not
 // `src/markdowneditor`, so the directory has to be spelled out.
+#include "htmltagparse.h"
 #include "markdowneditor/cmarkadapter.h"
 
 using namespace vte;
@@ -1183,9 +1184,10 @@ static MarkdownLink::TypeFlags classifyUrl(const QString &p_url, bool p_isIntern
                       : MarkdownLink::TypeFlag::LocalRelativeExternal;
 }
 
-QVector<MarkdownLink> MarkdownUtils::fetchImageLinks(const QString &p_content,
-                                                     const QString &p_contentBasePath,
-                                                     MarkdownLink::TypeFlags p_flags) {
+template <bool ResolvePaths>
+QVector<MarkdownLink> MarkdownUtils::fetchImageLinksImpl(const QString &p_content,
+                                                         const QString &p_contentBasePath,
+                                                         MarkdownLink::TypeFlags p_flags) {
   QVector<MarkdownLink> images;
   if (p_content.isEmpty()) {
     return images;
@@ -1219,10 +1221,18 @@ QVector<MarkdownLink> MarkdownUtils::fetchImageLinks(const QString &p_content,
       // `![a]()` points at nothing; it has no type and no path.
       return;
     }
+    if (!ResolvePaths) {
+      link.m_type = classifyUrl(link.m_urlInLink, true);
+      if (link.m_type & p_flags) {
+        images.push_back(link);
+      }
+      return;
+    }
 
-    const QString resolved = linkUrlToPath(p_contentBasePath, link.m_urlInLink);
+    const QString resolved = MarkdownUtils::linkUrlToPath(p_contentBasePath, link.m_urlInLink);
     link.m_type =
-        classifyUrl(link.m_urlInLink, pathContains(p_contentBasePath, QDir::cleanPath(resolved)));
+        classifyUrl(link.m_urlInLink,
+                    MarkdownUtils::pathContains(p_contentBasePath, QDir::cleanPath(resolved)));
     if (link.m_type & MarkdownLink::TypeFlag::Remote) {
       link.m_path = QUrl(link.m_urlInLink).toString();
       link.m_exists = false;
@@ -1337,6 +1347,363 @@ QVector<MarkdownLink> MarkdownUtils::fetchImageLinks(const QString &p_content,
   // across syntaxes.
   std::stable_sort(images.begin(), images.end(), markdownLinkCmp);
   return images;
+}
+
+QVector<MarkdownLink> MarkdownUtils::fetchImageLinks(const QString &p_content,
+                                                     const QString &p_contentBasePath,
+                                                     MarkdownLink::TypeFlags p_flags) {
+  return fetchImageLinksImpl<true>(p_content, p_contentBasePath, p_flags);
+}
+
+QVector<MarkdownLink> MarkdownUtils::fetchResourceLinks(const QString &p_content,
+                                                        const QString &p_contentBasePath,
+                                                        MarkdownLink::TypeFlags p_flags,
+                                                        bool p_resolvePaths) {
+  // Preserve the image-only parser's rules. Resource closure uses a second AST;
+  // images still come from the shared scanner, with the same path policy.
+  const auto allFlags = MarkdownLink::LocalRelativeInternal | MarkdownLink::LocalRelativeExternal |
+                        MarkdownLink::LocalAbsolute | MarkdownLink::QtResource |
+                        MarkdownLink::Remote;
+  auto links = p_resolvePaths ? fetchImageLinksImpl<true>(p_content, p_contentBasePath, allFlags)
+                              : fetchImageLinksImpl<false>(p_content, p_contentBasePath, allFlags);
+  if (p_content.isEmpty()) {
+    return links;
+  }
+  const auto unsupported = [&](int p_start, int p_end) {
+    MarkdownLink link;
+    link.m_regionStart = p_start;
+    link.m_regionEnd = p_end;
+    link.m_rewriteSupported = false;
+    links.append(link);
+  };
+  const QByteArray utf8 = p_content.toUtf8();
+  cmark_node *doc = cmark_parse_document(utf8.constData(), utf8.size(), CMARK_OPT_DEFAULT);
+  if (!doc) {
+    unsupported(0, p_content.size());
+    return links;
+  }
+  const LineOffsetTable offsets(utf8);
+  cmark_iter *iter = cmark_iter_new(doc);
+  if (!iter) {
+    cmark_node_free(doc);
+    unsupported(0, p_content.size());
+    return links;
+  }
+  const auto htmlValueIsExact = [](const QString &p_raw) {
+    for (int pos = p_raw.indexOf(QLatin1Char('&')); pos >= 0;
+         pos = p_raw.indexOf(QLatin1Char('&'), pos + 1)) {
+      const int end = p_raw.indexOf(QLatin1Char(';'), pos + 1);
+      if (end < 0) {
+        return false;
+      }
+      const QString entity = p_raw.mid(pos, end - pos + 1);
+      if (htmltag::decodeEntities(entity) == entity) {
+        return false;
+      }
+      if (entity.startsWith(QLatin1String("&#"))) {
+        bool ok = false;
+        const bool hex = entity.size() > 3 && entity.at(2).toLower() == QLatin1Char('x');
+        const uint value =
+            entity.mid(hex ? 3 : 2, entity.size() - (hex ? 4 : 3)).toUInt(&ok, hex ? 16 : 10);
+        if (!ok || (value >= 0x80 && value <= 0x9f)) {
+          return false; // HTML remaps C1 values; cmark deliberately does not.
+        }
+      }
+      pos = end;
+    }
+    return true;
+  };
+  RawTextState rawText;
+  cmark_event_type event;
+  while ((event = cmark_iter_next(iter)) != CMARK_EVENT_DONE) {
+    if (event != CMARK_EVENT_ENTER) {
+      continue;
+    }
+    cmark_node *node = cmark_iter_get_node(iter);
+    const auto type = cmark_node_get_type(node);
+    if (type == CMARK_NODE_HTML_INLINE || type == CMARK_NODE_HTML_BLOCK) {
+      int start = -1;
+      int end = -1;
+      if (!resolveHtmlNodeSpan(p_content, node, offsets, start, end)) {
+        unsupported(start, end);
+        continue;
+      }
+      const QString slice = p_content.mid(start, end - start);
+      // Generic attribute validation uses the shared lexer, NOT a second image
+      // scanner. A src is supported only if scanHtmlImgTags already supplied it.
+      int pos = 0;
+      while (pos < slice.size()) {
+        if (!rawText.m_element.isEmpty()) {
+          pos = htmltag::findRawTextClose(slice, pos, rawText.m_element);
+          if (pos < 0) {
+            break;
+          }
+          rawText.m_element.clear();
+        }
+        pos = slice.indexOf(QLatin1Char('<'), pos);
+        if (pos < 0) {
+          break;
+        }
+        if (slice.mid(pos, 4) == QLatin1String("<!--")) {
+          const int close = slice.indexOf(QLatin1String("-->"), pos + 4);
+          if (close < 0) {
+            break;
+          }
+          pos = close + 3;
+          continue;
+        }
+        int nameStart = pos + 1;
+        const bool closing = nameStart < slice.size() && slice.at(nameStart) == QLatin1Char('/');
+        if (closing) {
+          ++nameStart;
+        }
+        if (nameStart >= slice.size() || !htmltag::isNameStart(slice.at(nameStart))) {
+          ++pos;
+          continue;
+        }
+        int nameEnd = nameStart;
+        while (nameEnd < slice.size() && htmltag::isNameChar(slice.at(nameEnd))) {
+          ++nameEnd;
+        }
+        const QString name = slice.mid(nameStart, nameEnd - nameStart).toLower();
+        const int newline = slice.indexOf(QLatin1Char('\n'), nameEnd);
+        QVector<HtmlAttr> attrs;
+        int tagEnd = -1;
+        if (!htmltag::parseAttrs(slice, nameEnd, newline < 0 ? slice.size() : newline, start, attrs,
+                                 tagEnd)) {
+          unsupported(start + pos, end);
+          break;
+        }
+        if (!closing) {
+          if (htmltag::isRawTextElement(name)) {
+            rawText.m_element = name;
+            // These elements can contain CSS/JS or a second HTML document.
+            // Their resource grammar is not Markdown and is not guessed.
+            unsupported(start + pos, start + tagEnd);
+          }
+          const bool active = name == QLatin1String("iframe") || name == QLatin1String("object") ||
+                              name == QLatin1String("embed") || name == QLatin1String("svg") ||
+                              name == QLatin1String("math");
+          if (active) {
+            unsupported(start + pos, start + tagEnd);
+          }
+          QSet<QString> seen;
+          for (const auto &attr : attrs) {
+            const bool resource =
+                attr.m_name == QLatin1String("src") || attr.m_name == QLatin1String("href");
+            if (resource && !attr.m_value.isEmpty()) {
+              bool imageSource = false;
+              for (const auto &image : links) {
+                if (image.m_syntax == MarkdownLink::Syntax::Html &&
+                    image.m_urlStart == attr.m_valueStart && image.m_urlEnd == attr.m_valueEnd) {
+                  imageSource = true;
+                  break;
+                }
+              }
+              if (!seen.contains(attr.m_name) && !imageSource && name == QLatin1String("a") &&
+                  attr.m_name == QLatin1String("href")) {
+                MarkdownLink link;
+                link.m_syntax = MarkdownLink::Syntax::Html;
+                link.m_isImage = false;
+                link.m_regionStart = start + pos;
+                link.m_regionEnd = start + tagEnd;
+                link.m_urlStart = attr.m_valueStart;
+                link.m_urlEnd = attr.m_valueEnd;
+                link.m_urlInLink = attr.m_value;
+                links.append(link);
+              } else if (!imageSource) {
+                unsupported(start + pos, start + tagEnd);
+              }
+              // Semicolon-less HTML entities have browser-dependent meaning.
+              if (!htmlValueIsExact(
+                      p_content.mid(attr.m_valueStart, attr.m_valueEnd - attr.m_valueStart))) {
+                unsupported(start + pos, start + tagEnd);
+              }
+            } else if (attr.m_name == QLatin1String("srcset") ||
+                       attr.m_name == QLatin1String("poster") ||
+                       attr.m_name == QLatin1String("background") ||
+                       attr.m_name == QLatin1String("data") ||
+                       attr.m_name == QLatin1String("action") ||
+                       attr.m_name == QLatin1String("formaction") ||
+                       attr.m_name == QLatin1String("xlink:href") ||
+                       attr.m_name.startsWith(QLatin1String("on")) ||
+                       (attr.m_name == QLatin1String("style") &&
+                        (attr.m_value.contains(QLatin1Char('(')) ||
+                         attr.m_value.contains(QLatin1Char('\\')) ||
+                         attr.m_value.contains(QLatin1Char('@'))))) {
+              unsupported(start + pos, start + tagEnd);
+            }
+            seen.insert(attr.m_name);
+          }
+        }
+        pos = tagEnd;
+      }
+      continue;
+    }
+    if (type == CMARK_NODE_WIKILINK) {
+      // This extension has a different destination grammar. Do not interpret
+      // an unverified wiki embed as an ordinary attachment.
+      int start = -1;
+      int end = -1;
+      cmarkNodeSpan(node, offsets, start, end);
+      unsupported(start, end);
+      continue;
+    }
+    if (type != CMARK_NODE_IMAGE && type != CMARK_NODE_LINK) {
+      continue;
+    }
+    MarkdownLink link;
+    link.m_isImage = type == CMARK_NODE_IMAGE;
+    const char *url = cmark_node_get_url(node);
+    link.m_urlInLink = url ? QString::fromUtf8(url) : QString();
+    if (link.m_urlInLink.isEmpty()) {
+      continue;
+    }
+    link.m_rewriteSupported = cmarkNodeSpan(node, offsets, link.m_regionStart, link.m_regionEnd) &&
+                              link.m_regionStart >= 0 && link.m_regionEnd <= p_content.size();
+    cmarkNodeUrlSpan(node, offsets, link.m_urlStart, link.m_urlEnd);
+    const char *title = cmark_node_get_title(node);
+    link.m_title = title ? QString::fromUtf8(title) : QString();
+    link.m_width = cmark_node_get_image_width(node);
+    link.m_height = cmark_node_get_image_height(node);
+    const int labelStart = link.m_regionStart + (link.m_isImage ? 2 : 1);
+    int labelEnd = labelStart;
+    if (cmark_node *last = cmark_node_last_child(node)) {
+      int childStart = -1;
+      if (!cmarkNodeSpan(last, offsets, childStart, labelEnd)) {
+        link.m_rewriteSupported = false;
+      }
+    }
+    while (labelEnd >= 0 && labelEnd < link.m_regionEnd && p_content.at(labelEnd).isSpace()) {
+      ++labelEnd;
+    }
+    if (labelStart > 0 && labelEnd >= labelStart && labelEnd < link.m_regionEnd &&
+        p_content.at(labelStart - 1) == QLatin1Char('[') &&
+        p_content.at(labelEnd) == QLatin1Char(']')) {
+      link.m_labelEnd = labelEnd + 1;
+      link.m_alt = p_content.mid(labelStart, labelEnd - labelStart);
+    } else if (!link.hasUrlSpan()) {
+      // Autolinks are navigation, never rewritable local resources.
+      link.m_rewriteSupported = false;
+    }
+    if (link.hasUrlSpan()) {
+      if (link.m_urlStart < link.m_regionStart || link.m_urlEnd > link.m_regionEnd) {
+        link.m_rewriteSupported = false;
+      } else {
+        // Reparse the exact raw destination to reject approximate container
+        // columns rather than editing another occurrence of the same spelling.
+        const QByteArray probe =
+            (QStringLiteral("[x](") +
+             p_content.mid(link.m_urlStart, link.m_urlEnd - link.m_urlStart) + QLatin1Char(')'))
+                .toUtf8();
+        cmark_node *probeDoc =
+            cmark_parse_document(probe.constData(), probe.size(), CMARK_OPT_DEFAULT);
+        cmark_node *paragraph = probeDoc ? cmark_node_first_child(probeDoc) : nullptr;
+        cmark_node *probeLink = paragraph ? cmark_node_first_child(paragraph) : nullptr;
+        if (!probeLink || cmark_node_get_type(probeLink) != CMARK_NODE_LINK ||
+            QString::fromUtf8(cmark_node_get_url(probeLink)) != link.m_urlInLink) {
+          link.m_rewriteSupported = false;
+        }
+        if (probeDoc) {
+          cmark_node_free(probeDoc);
+        }
+      }
+    }
+    if (link.m_isImage) {
+      bool replaced = false;
+      for (auto &image : links) {
+        if (image.m_syntax == MarkdownLink::Syntax::Markdown &&
+            image.m_regionStart == link.m_regionStart && image.m_regionEnd == link.m_regionEnd) {
+          image = link;
+          replaced = true;
+          break;
+        }
+      }
+      if (!replaced) {
+        links.append(link);
+      }
+    } else {
+      links.append(link);
+    }
+  }
+  cmark_iter_free(iter);
+  cmark_node_free(doc);
+
+  QVector<MarkdownLink> result;
+  for (auto &link : links) {
+    if (link.m_urlInLink.isEmpty()) {
+      if (!link.m_rewriteSupported) {
+        result.append(link);
+      }
+      continue;
+    }
+    const QUrl url(link.m_urlInLink, QUrl::TolerantMode);
+    const bool drive =
+        link.m_urlInLink.size() > 2 && link.m_urlInLink.at(0).isLetter() &&
+        link.m_urlInLink.at(1) == QLatin1Char(':') &&
+        (link.m_urlInLink.at(2) == QLatin1Char('/') || link.m_urlInLink.at(2) == QLatin1Char('\\'));
+    if (link.m_urlInLink.startsWith(QLatin1String("//"))) {
+      link.m_type = MarkdownLink::Remote;
+    } else {
+      link.m_type = classifyUrl(link.m_urlInLink, true);
+    }
+    if (link.m_type & (MarkdownLink::LocalAbsolute | MarkdownLink::LocalRelativeInternal |
+                       MarkdownLink::LocalRelativeExternal)) {
+      if (!drive && (!url.isValid() || (!url.authority().isEmpty() && !url.isLocalFile()))) {
+        link.m_rewriteSupported = false;
+      }
+      for (int pos = 0; pos < link.m_urlInLink.size(); ++pos) {
+        if (link.m_urlInLink.at(pos) != QLatin1Char('%')) {
+          continue;
+        }
+        const auto hex = [](QChar p_char) {
+          const ushort ch = p_char.toLower().unicode();
+          return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+        };
+        if (pos + 2 >= link.m_urlInLink.size() || !hex(link.m_urlInLink.at(pos + 1)) ||
+            !hex(link.m_urlInLink.at(pos + 2))) {
+          link.m_rewriteSupported = false;
+          break;
+        }
+        pos += 2;
+      }
+      QString path = drive               ? QUrl::fromPercentEncoding(link.m_urlInLink.toUtf8())
+                     : url.isLocalFile() ? url.toLocalFile()
+                                         : url.path(QUrl::FullyDecoded);
+      if (!path.isEmpty()) {
+        if (p_resolvePaths) {
+          if (QDir::isRelativePath(path)) {
+            path = QDir(p_contentBasePath).absoluteFilePath(path);
+          }
+          link.m_path = QDir::cleanPath(path);
+          link.m_exists = QFileInfo::exists(link.m_path);
+          if (!(link.m_type & MarkdownLink::LocalAbsolute)) {
+            link.m_type = pathContains(p_contentBasePath, link.m_path)
+                              ? MarkdownLink::LocalRelativeInternal
+                              : MarkdownLink::LocalRelativeExternal;
+          }
+        }
+      } else if (!link.m_isImage) {
+        // Empty-path anchors and queries are in-document navigation.
+        continue;
+      } else {
+        link.m_rewriteSupported = false;
+      }
+    } else {
+      // Remote navigation is preserved and is never fetched by this API.
+      link.m_rewriteSupported = true;
+    }
+    if (!link.m_rewriteSupported || (link.m_type & p_flags)) {
+      result.append(link);
+    }
+  }
+  std::stable_sort(result.begin(), result.end(),
+                   [](const MarkdownLink &p_a, const MarkdownLink &p_b) {
+                     const int a = p_a.hasUrlSpan() ? p_a.m_urlStart : p_a.m_labelEnd;
+                     const int b = p_b.hasUrlSpan() ? p_b.m_urlStart : p_b.m_labelEnd;
+                     return a > b;
+                   });
+  return result;
 }
 
 QString MarkdownUtils::relativePath(const QString &p_dir, const QString &p_path) {
