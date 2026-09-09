@@ -130,22 +130,11 @@ MarkdownFoldingProvider::MarkdownFoldingProvider(TextFolding *p_textFolding,
     : m_textFolding(p_textFolding), m_document(p_document) {}
 
 void MarkdownFoldingProvider::updateFoldingRegions(const QVector<md::FoldingRegion> &p_regions) {
-  // 0. Drop the ranges the document has invalidated behind TextFolding's back.
-  //
-  // Replacing the whole source of an element in one edit - what the preview
-  // write-back path does when a table cell is edited, and what a paste or an
-  // undo over the element does - destroys the blocks a range spans. The range
-  // survives that edit holding stale endpoints and stops matching the block it
-  // is supposed to start on, so the gutter loses its folding marker. A parse
-  // result always describes a settled document, which makes this the right
-  // moment to re-validate.
-  m_textFolding->checkAndUpdateFoldings();
-
   // 1. Filter out regions that span fewer than 2 blocks.
   QVector<md::FoldingRegion> valid;
   valid.reserve(p_regions.size());
   for (const auto &r : p_regions) {
-    if (r.m_endBlock - r.m_startBlock >= 1) {
+    if (r.m_endBlock > r.m_startBlock) {
       valid.append(r);
     }
   }
@@ -161,8 +150,8 @@ void MarkdownFoldingProvider::updateFoldingRegions(const QVector<md::FoldingRegi
   // De-duplicating here rather than merely ordering the loser later is also
   // what lets a live wrapper entry be replaced when a table grows into exactly
   // its extent: the wrapper region is gone from the parsed set, so nothing
-  // matches the live wrapper entry, it is removed below and the table is
-  // created in its place.
+  // matches the live wrapper entry, and the rebuilt tree contains a new table
+  // range in its place.
   {
     QHash<QPair<int, int>, int> extentIndex;
     QVector<md::FoldingRegion> unique;
@@ -189,121 +178,103 @@ void MarkdownFoldingProvider::updateFoldingRegions(const QVector<md::FoldingRegi
     if (a.m_startBlock != b.m_startBlock) {
       return a.m_startBlock < b.m_startBlock;
     }
-    return (a.m_endBlock - a.m_startBlock) > (b.m_endBlock - b.m_startBlock);
+    return a.m_endBlock > b.m_endBlock;
   });
 
-  // 3. Snapshot the live entries at their *current* positions.
-  //
-  // The table's keys describe where each region was at the last
-  // reconciliation. Any edit above a range shifts its block numbers without
-  // telling anyone, so matching the parsed regions against those keys would
-  // drop and recreate every range below the edit - and lose its fold state
-  // with it. TextFolding knows where each range lives now, so ask it.
+  // 3. Snapshot only surviving ranges, at their safely remapped live extents.
+  // Cached keys describe the previous parse, not the current document. No
+  // maintenance or notifications may run between this snapshot and commit.
   struct LiveEntry {
     Entry m_entry;
 
-    int m_first = 0;
-
-    int m_last = 0;
-
-    bool m_matched = false;
+    bool m_folded = false;
   };
 
-  QVector<LiveEntry> live;
+  QHash<QPair<int, int>, LiveEntry> live;
   live.reserve(m_entries.size());
-  QHash<QPair<int, int>, int> liveIndex;
   for (auto it = m_entries.cbegin(); it != m_entries.cend(); ++it) {
     int first = 0;
     int last = 0;
     if (!m_textFolding->foldingRangeBlocks(it.value().m_id, &first, &last)) {
-      // The range is gone: the entry has nothing left to describe.
       continue;
     }
 
     const auto key = qMakePair(first, last);
-    if (liveIndex.contains(key)) {
-      // Two live ranges can never share an extent - identical extents imply
-      // identical start blocks, which TextFolding rejects - so this can only
-      // be a stale duplicate entry. Keep the first one.
+    if (live.contains(key)) {
+      // Identical live extents can only be stale aliases of the same range.
+      // Retain at most one, even if multiple old keys still name that id.
       continue;
     }
 
     LiveEntry entry;
     entry.m_entry = it.value();
-    entry.m_first = first;
-    entry.m_last = last;
-    liveIndex.insert(key, live.size());
-    live.append(entry);
+    entry.m_folded = m_textFolding->isRangeFolded(entry.m_entry.m_id);
+    live.insert(key, entry);
   }
 
-  // 4. Match every parsed region against the snapshot, on the extent *and* the
-  // type. A hit carries the entry over unchanged, which is what preserves the
-  // fold state and the settled decision across a re-parse and across any edit
-  // that only shifted block numbers. The type is compared rather than being
-  // part of the key so a fenced code block edited into a table at the same
-  // extent is treated as the new element it is.
+  // 4. Describe the complete new tree. Only the same semantic region at a
+  // surviving extent inherits its id, folded flag and initial-fold decision.
+  // Rebuilding even retained ranges lets new parents adopt existing children.
+  QVector<TextFolding::RangeSpec> ranges(valid.size());
+  QVector<Entry> entries(valid.size());
+  for (int i = 0; i < valid.size(); ++i) {
+    const auto &region = valid[i];
+    auto &range = ranges[i];
+    range.m_first = region.m_startBlock;
+    range.m_last = region.m_endBlock;
+    range.m_flags = TextFolding::Persistent;
+
+    auto &entry = entries[i];
+    entry.m_type = region.m_type;
+    entry.m_level = region.m_level;
+    const auto previous = live.constFind(qMakePair(range.m_first, range.m_last));
+    if (previous != live.cend() && previous.value().m_entry.m_type == region.m_type &&
+        (region.m_type != md::Heading || previous.value().m_entry.m_level == region.m_level)) {
+      entry = previous.value().m_entry;
+      range.m_id = entry.m_id;
+      if (previous.value().m_folded) {
+        range.m_flags |= TextFolding::Folded;
+      }
+    }
+  }
+
+  // 5. Replace once, without callbacks; publish only after the provider's
+  // index describes every accepted range. The parser owns the whole tree, so
+  // ranges absent from this snapshot are retired, including orphan aliases.
+  m_textFolding->replaceFoldingRanges(ranges);
   QHash<QPair<int, int>, Entry> newEntries;
-  newEntries.reserve(valid.size());
-  QVector<md::FoldingRegion> missing;
-  for (const auto &r : valid) {
-    const auto key = qMakePair(r.m_startBlock, r.m_endBlock);
-    const int idx = liveIndex.value(key, -1);
-    if (idx >= 0 && !live[idx].m_matched && live[idx].m_entry.m_type == r.m_type) {
-      live[idx].m_matched = true;
-      newEntries.insert(key, live[idx].m_entry);
+  newEntries.reserve(ranges.size());
+  int retained = 0;
+  for (int i = 0; i < ranges.size(); ++i) {
+    const auto &range = ranges[i];
+    if (range.m_id == TextFolding::InvalidRangeId) {
       continue;
     }
 
-    missing.append(r);
-  }
-
-  // 5. Remove every unmatched live range.
-  //
-  // Removal must precede creation: TextFolding refuses a new range starting on
-  // the same block as an existing one, so a region which only changed one
-  // endpoint would otherwise be refused and left with no range at all until
-  // some later parse which may never come.
-  for (const auto &entry : live) {
-    if (!entry.m_matched) {
-      m_textFolding->removeFoldingRange(entry.m_entry.m_id);
+    auto &entry = entries[i];
+    if (entry.m_id == range.m_id) {
+      ++retained;
     }
+    entry.m_id = range.m_id;
+    newEntries.insert(qMakePair(range.m_first, range.m_last), entry);
   }
 
-  // 6. Only then create the missing ranges, outermost-first.
-  //
-  // Creation can simply fail, e.g. when the range is not well nested with an
-  // existing one; retrying it on the next parse costs nothing.
-  for (const auto &r : missing) {
-    TextBlockRange range(m_document->findBlockByNumber(r.m_startBlock),
-                         m_document->findBlockByNumber(r.m_endBlock));
-    qint64 id = m_textFolding->newFoldingRange(range, TextFolding::Persistent);
-    if (id != TextFolding::InvalidRangeId) {
-      Entry entry;
-      entry.m_id = id;
-      entry.m_type = r.m_type;
-      newEntries.insert(qMakePair(r.m_startBlock, r.m_endBlock), entry);
-    }
-  }
-
-  m_entries = newEntries;
+  m_entries.swap(newEntries);
   qCDebug(previewFoldingLog) << "fold-regions reconciled" << "document revision"
                              << m_document->revision() << "parsed" << p_regions.size() << "valid"
-                             << valid.size() << "live" << live.size() << "retained"
-                             << (valid.size() - missing.size()) << "created"
-                             << (m_entries.size() - valid.size() + missing.size()) << "current"
+                             << valid.size() << "live" << live.size() << "retained" << retained
+                             << "created" << (m_entries.size() - retained) << "current"
                              << m_entries.size();
+  // Observers may disable folding or reset/rebuild the provider. Do not touch
+  // the committed state or a remembered iterator after this notification.
+  m_textFolding->notifyFoldingRangesChanged();
 }
 
 void MarkdownFoldingProvider::clear() {
-  QVector<qint64> ids;
-  ids.reserve(m_entries.size());
-  for (auto it = m_entries.cbegin(); it != m_entries.cend(); ++it) {
-    ids.append(it.value().m_id);
-  }
+  QVector<TextFolding::RangeSpec> ranges;
+  m_textFolding->replaceFoldingRanges(ranges);
   m_entries.clear();
-  for (qint64 id : ids) {
-    m_textFolding->removeFoldingRange(id);
-  }
+  m_textFolding->notifyFoldingRangesChanged();
 }
 
 void MarkdownFoldingProvider::resetState() { m_entries.clear(); }
@@ -492,11 +463,9 @@ MarkdownFoldingProvider::applyPreviewAutoFold(const QVector<PreviewedRange> &p_w
 
 bool MarkdownFoldingProvider::tryRegionFolded(PreviewElementType p_type, int p_startBlock,
                                               int p_endBlock, bool *p_folded) const {
-  // With text folding switched off there is no range a caller may act on, even
-  // though a parse still creates them: newFoldingRange() is not gated on the
-  // switch, only TextFolding's own maintenance is. Reporting "unfolded" here
-  // would let the rewrite path overwrite what a preview remembers, and
-  // re-enabling folding could then no longer restore it.
+  // With text folding switched off there is no range a caller may act on.
+  // Reporting "unfolded" would overwrite what a preview remembers, preventing
+  // re-enabling folding from restoring it.
   if (!m_textFolding->isEnabled()) {
     return false;
   }

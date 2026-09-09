@@ -19,6 +19,12 @@
 
 ### Behavior changes
 
+- Folding tracks numeric source anchors instead of retaining `QTextBlock` handles across
+  edits, fixing crashes and unrelated folds after bulk deletion. Parser reconciliation
+  replaces the whole folding tree atomically, preserving state only for surviving regions
+  with matching extents, types and heading levels. Deleted or replaced endpoints never
+  transfer their fold state to unrelated text.
+
 - Table cells highlight their current Markdown synchronously while editing, before
   source write-back. Each realized table caches parsed units by live cell text;
   unchanged source parses and theme/zoom changes do not reparse those cells.

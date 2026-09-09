@@ -43,6 +43,8 @@ class MarkdownFoldingProvider {
 public:
   MarkdownFoldingProvider(TextFolding *p_textFolding, QTextDocument *p_document);
 
+  // Rebuild the complete parser-owned tree, then publish once with the entry
+  // index already installed for synchronous observers.
   void updateFoldingRegions(const QVector<md::FoldingRegion> &p_regions);
 
   void clear();
@@ -82,6 +84,9 @@ private:
     qint64 m_id = -1;
 
     md::FoldingRegionType m_type = md::Heading;
+
+    // A heading level change denotes a new semantic region at the same extent.
+    int m_level = 0;
 
     // Whether the initial state of *this range* has already been settled.
     bool m_autoFoldDecided = false;

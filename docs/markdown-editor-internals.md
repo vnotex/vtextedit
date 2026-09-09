@@ -444,13 +444,24 @@ a valid preview.
 
 ### Reconciliation
 
-`updateFoldingRegions()` matches each parsed region against the *live* extent of the ranges
-it already owns, asked from `TextFolding::foldingRangeBlocks()`, not against the block
-numbers of the previous parse. An edit which only shifts block numbers therefore keeps
-every range, its id and its fold state. Matching compares the region type as well, so a
-fenced code block edited into a table at the same extent is treated as the new element it
-is. Removal of unmatched ranges precedes creation of missing ones, because `TextFolding`
-refuses a new range starting on the same block as an existing one.
+`TextFolding` stores numeric character anchors and block extents, never persistent
+`QTextBlock` handles. A deleted handle can still pass `QTextBlock::isValid()`; neither that
+check nor a plausible `blockNumber()` establishes surviving source identity. Edit deltas
+move anchors with right insertion affinity and invalidate an endpoint inside the removed
+half-open span. At `contentsChanged`, surviving ranges are reinserted into a sorted,
+non-overlapping tree; deleted endpoints, collapsed ranges and conflicting extents are
+dropped. Visibility walks resolve fresh blocks from the current document. Layout-only
+revision changes without edit deltas do not move anchors or discard folds. An aggregate
+edit span that covers an anchor is treated conservatively as deleting it.
+
+`updateFoldingRegions()` rebuilds the complete parser-owned tree from each settled parse.
+It matches prior entries by surviving live extents from `TextFolding::foldingRangeBlocks()`,
+region type, and heading level. Only these survivors retain their ids, fold state and
+settled auto-fold decisions; replaced source does not inherit state merely by occupying
+the old extent. A `RangeSpec` snapshot replaces all three core indexes without callbacks,
+then the provider installs its accepted-entry index before one change notification.
+Unmatched and orphan ranges are retired together, with no intermediate removal signals.
+Ids are never recycled, and parsing while folding is disabled does not create ranges.
 
 Two regions covering exactly the same blocks - a blockquote wrapping nothing but a table,
 for instance - are de-duplicated before matching, in favour of the preview-bearing type

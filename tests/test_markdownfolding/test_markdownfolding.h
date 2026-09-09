@@ -115,6 +115,14 @@ private slots:
   // Reconciliation from the ranges' live positions.
   void testReconcileSurvivesBlockShift();
 
+  void testBulkDeletionReconcilesAtomically();
+
+  void testEndpointReplacementDoesNotInheritFoldState();
+
+  void testReconcileHeadingLevelChange();
+
+  void testReconcileNotificationCanDisableFolding();
+
   void testReconcileEndBlockChange();
 
   void testReconcileTypeChange();

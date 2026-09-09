@@ -64,6 +64,20 @@ public:
 
   qint64 newFoldingRange(const TextBlockRange &p_range, FoldingRangeFlags p_flags);
 
+  struct RangeSpec {
+    int m_first = -1;
+    int m_last = -1;
+    FoldingRangeFlags m_flags;
+    qint64 m_id = InvalidRangeId;
+  };
+
+  // Replace the entire tree without signals or layout callbacks. Accepted ids
+  // are written back; rejected entries receive InvalidRangeId. The owner must
+  // install its index before calling notifyFoldingRangesChanged().
+  void replaceFoldingRanges(QVector<RangeSpec> &p_ranges);
+
+  void notifyFoldingRangesChanged();
+
   QVector<QPair<qint64, TextFolding::FoldingRangeFlags>>
   foldingRangesStartingOnBlock(int p_blockNumber) const;
 
@@ -130,7 +144,14 @@ private:
 
     typedef QVector<FoldingRange *> Vector;
 
-    TextBlockRange m_range;
+    // Numeric source anchors only: QTextBlock::isValid() cannot establish
+    // that a saved handle survived a structural document edit.
+    int m_firstBlock = -1;
+    int m_lastBlock = -1;
+    int m_firstPosition = -1;
+    int m_lastPosition = -1;
+
+    TextBlockRange toBlockRange(QTextDocument *p_document) const;
 
     FoldingRange *m_parent = nullptr;
 
@@ -160,7 +181,7 @@ private:
   void foldRange(FoldingRange *p_range);
 
   // Return true if @p_range is removed.
-  // Caller should remove the range from id mappings.
+  // Removes the id mapping before notifying observers.
   bool unfoldRange(FoldingRange *p_range, bool p_remove = false);
 
   QSharedPointer<QPair<qint64, TextBlockRange>>
@@ -183,7 +204,11 @@ private:
       const TextBlockRange &p_range,
       const TextFolding::FoldingRange::Vector &p_foldedChildren) const;
 
-  bool checkAndUpdateFoldings(TextFolding::FoldingRange::Vector &p_ranges);
+  void handleContentsChange(int p_position, int p_charsRemoved, int p_charsAdded);
+
+  bool isCurrent() const;
+
+  qint64 allocateRangeId();
 
   void hardClear();
 
@@ -200,6 +225,9 @@ private:
   QTextDocument *m_document = nullptr;
 
   bool m_enabled = true;
+
+  int m_documentRevision = 0;
+  bool m_contentsChangePending = false;
 
   // Used to highlight folded ranges via extra selection.
   ExtraSelectionMgr *m_extraSelectionMgr = nullptr;

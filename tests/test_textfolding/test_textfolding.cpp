@@ -308,7 +308,7 @@ void TestTextFolding::textFoldRange() {
     m_textFolding->toggleRange(id);
   }
 
-  // A folded range may collapse to one block after an edit and must remain a zero-delta fold.
+  // Deleting an endpoint drops the collapsed fold instead of retaining a stale block alias.
   {
     QTextDocument doc(QStringLiteral("0\n1\n2\n3\n4\n5\n6"));
     TextFolding folding(&doc);
@@ -330,18 +330,24 @@ void TestTextFolding::textFoldRange() {
     cursor.setPosition(doc.findBlockByNumber(2).position(), QTextCursor::KeepAnchor);
     cursor.removeSelectedText();
 
-    QCOMPARE(folding.m_idToFoldingRange.value(collapsedId)->first(), 1);
-    QCOMPARE(folding.m_idToFoldingRange.value(collapsedId)->last(), 1);
-    QCOMPARE(folding.m_idToFoldingRange.value(followingId)->first(), 2);
-    QCOMPARE(folding.m_idToFoldingRange.value(followingId)->last(), 4);
-    QVERIFY(folding.m_idToFoldingRange.value(outerId)->isValid());
-    QVERIFY(folding.m_idToFoldingRange.value(collapsedId)->isValid());
-    QVERIFY(folding.m_idToFoldingRange.value(followingId)->isValid());
-    QCOMPARE(folding.debugDump(),
-             QStringLiteral("tree [0 pf [1 pf 1] [2 pf 4] 5] - folded [0 pf 5]"));
-    folding.toggleRange(outerId);
-    QCOMPARE(folding.debugDump(),
-             QStringLiteral("tree [0 p [1 pf 1] [2 pf 4] 5] - folded [1 pf 1] [2 pf 4]"));
+    int first = -1;
+    int last = -1;
+    QVERIFY(!folding.foldingRangeBlocks(collapsedId, &first, &last));
+    QVERIFY(!folding.isRangeFolded(collapsedId));
+    QVERIFY(folding.foldingRangesStartingOnBlock(1).isEmpty());
+    QVERIFY(!folding.toggleRange(collapsedId));
+    QVERIFY(!folding.foldRange(collapsedId));
+    QVERIFY(!folding.removeFoldingRange(collapsedId));
+    QVERIFY(folding.foldingRangeBlocks(followingId, &first, &last));
+    QCOMPARE(first, 2);
+    QCOMPARE(last, 4);
+    QVERIFY(folding.foldingRangeBlocks(outerId, &first, &last));
+    QCOMPARE(first, 0);
+    QCOMPARE(last, 5);
+    QVERIFY(folding.isRangeFolded(outerId));
+    QVERIFY(folding.isRangeFolded(followingId));
+    QVERIFY(checkTextBlocksInvisible(&doc, 1, 4));
+    QVERIFY(folding.toggleRange(outerId));
 
     QVERIFY(checkTextBlocksVisible(&doc, 0, 2));
     QVERIFY(checkTextBlocksInvisible(&doc, 3, 3));
@@ -473,7 +479,7 @@ void TestTextFolding::testDocumentReplacement() {
   QVERIFY(!m_textFolding->isEmpty());
 
   // Replace document content (simulates setPlainText).
-  // This should trigger hardClear via contentsChange detection.
+  // Every old endpoint anchor is removed by the replacement.
   m_doc->setPlainText(utils::getCppText());
 
   // All folding ranges should be cleared without crash.
@@ -500,7 +506,7 @@ void TestTextFolding::testDocumentClear() {
   // Clear the document entirely.
   m_doc->clear();
 
-  // Folding ranges should be hard-cleared without crash.
+  // Folding ranges should be discarded without traversing deleted blocks.
   QVERIFY(m_textFolding->isEmpty());
   QVERIFY(m_textFolding->m_foldingRanges.isEmpty());
   QVERIFY(m_textFolding->m_foldedFoldingRanges.isEmpty());
@@ -577,15 +583,9 @@ void TestTextFolding::testRangeAccessors() {
   }
 }
 
-// hardClear() drops every range without unfolding it, because after a real
-// document replacement the blocks a range spanned are gone and must not be
-// touched. The replacement heuristic in the contentsChange handler also fires
-// on a full-document *format* change, though - the editor produces one from
-// QSyntaxHighlighter::rehighlight(), which VTextEditor::setConfig() runs on
-// every configuration or theme change - and there the blocks are the very same
-// objects. Leaving them hidden would hide the folded source for good, with no
-// range left for the gutter to unfold it. The end-to-end case is covered by
-// test_interactivepreview's testFoldStateSurvivesAWidgetRebuild.
+// Dropping all ranges must expose source even without a text change, as when
+// folding is disabled. Otherwise hidden blocks would have no gutter action
+// left to unfold them.
 void TestTextFolding::testHardClearRestoresVisibility() {
   m_doc->setPlainText(utils::getCppText());
 
@@ -726,6 +726,171 @@ void TestTextFolding::testOutermostFoldedRangeOnBlock() {
   // unfold command has to open.
   QVERIFY(m_textFolding->foldRange(outerId));
   QCOMPARE(m_textFolding->outermostFoldedRangeOnBlock(15), outerId);
+}
+
+void TestTextFolding::testBulkBlockDeletionRemapsSurvivors() {
+  QString text;
+  for (int i = 0; i < 100; ++i) {
+    if (i > 0) {
+      text += QLatin1Char('\n');
+    }
+    text += QStringLiteral("Line %1").arg(i);
+  }
+  QTextDocument doc(text);
+  TextFolding folding(&doc);
+  auto addRange = [&](int p_first, int p_last, bool p_folded = true) {
+    return folding.newFoldingRange(
+        TextBlockRange(doc.findBlockByNumber(p_first), doc.findBlockByNumber(p_last)),
+        p_folded ? TextFolding::Persistent | TextFolding::Folded : TextFolding::Persistent);
+  };
+  struct Survivor {
+    qint64 m_id;
+    int m_first;
+    int m_last;
+    bool m_folded;
+  };
+  QVector<Survivor> survivors;
+  // Save only IDs and expected post-edit coordinates, never QTextBlock handles.
+  survivors.append({addRange(0, 89), 0, 39, true});
+  survivors.append({addRange(2, 7), 2, 7, true});
+  QVector<qint64> deletedIds;
+  for (int first = 10; first < 60; first += 10) {
+    deletedIds.append(addRange(first, first + 9));
+    deletedIds.append(addRange(first + 2, first + 7));
+  }
+  survivors.append({addRange(60, 68), 10, 18, true});
+  survivors.append({addRange(62, 66), 12, 16, true});
+  survivors.append({addRange(72, 78, false), 22, 28, false});
+  survivors.append({addRange(92, 98), 42, 48, true});
+  for (const auto &range : survivors) {
+    QVERIFY(range.m_id != TextFolding::InvalidRangeId);
+  }
+  for (auto id : deletedIds) {
+    QVERIFY(id != TextFolding::InvalidRangeId);
+  }
+
+  auto checkSnapshot = [&]() {
+    QCOMPARE(doc.blockCount(), 50);
+    for (auto id : deletedIds) {
+      int first = -7;
+      int last = -9;
+      QVERIFY(!folding.foldingRangeBlocks(id, &first, &last));
+      QCOMPARE(first, -7);
+      QCOMPARE(last, -9);
+      QVERIFY(!folding.isRangeFolded(id));
+    }
+    for (const auto &range : survivors) {
+      int first = -1;
+      int last = -1;
+      QVERIFY(folding.foldingRangeBlocks(range.m_id, &first, &last));
+      QCOMPARE(first, range.m_first);
+      QCOMPARE(last, range.m_last);
+      QCOMPARE(folding.isRangeFolded(range.m_id), range.m_folded);
+    }
+    int visibleLine = -1;
+    for (int block = 0; block < doc.blockCount(); ++block) {
+      qint64 startingId = TextFolding::InvalidRangeId;
+      bool visible = true;
+      for (const auto &range : survivors) {
+        if (range.m_first == block) {
+          startingId = range.m_id;
+        }
+        if (range.m_folded && block > range.m_first && block < range.m_last) {
+          visible = false;
+        }
+      }
+      const auto starting = folding.foldingRangesStartingOnBlock(block);
+      QCOMPARE(starting.size(), startingId == TextFolding::InvalidRangeId ? 0 : 1);
+      if (!starting.isEmpty()) {
+        QCOMPARE(starting.first().first, startingId);
+      }
+      QCOMPARE(doc.findBlockByNumber(block).isVisible(), visible);
+      if (visible) {
+        ++visibleLine;
+        QCOMPARE(folding.visibleLineToLine(visibleLine), block);
+      }
+      QCOMPARE(folding.lineToVisibleLine(block), visibleLine);
+    }
+  };
+  int notifications = 0;
+  QObject observer;
+  const auto connection = connect(&folding, &TextFolding::foldingRangesChanged, &observer, [&]() {
+    ++notifications;
+    checkSnapshot();
+  });
+
+  QTextCursor cursor(&doc);
+  cursor.setPosition(doc.findBlockByNumber(10).position());
+  cursor.setPosition(doc.findBlockByNumber(60).position(), QTextCursor::KeepAnchor);
+  cursor.removeSelectedText();
+  QVERIFY(notifications > 0);
+  checkSnapshot();
+  QCOMPARE(doc.findBlockByNumber(10).text(), QStringLiteral("Line 60"));
+  for (auto id : deletedIds) {
+    QVERIFY(!folding.toggleRange(id));
+    QVERIFY(!folding.foldRange(id));
+    QVERIFY(!folding.removeFoldingRange(id));
+  }
+
+  // Rebuilding the flat folded index must retain children hidden by the parent.
+  survivors[0].m_folded = false;
+  QVERIFY(folding.toggleRange(survivors[0].m_id));
+  checkSnapshot();
+  survivors[2].m_folded = false;
+  QVERIFY(folding.toggleRange(survivors[2].m_id));
+  checkSnapshot();
+  disconnect(connection);
+
+  const auto replacementId = addRange(20, 21);
+  QVERIFY(replacementId > survivors.last().m_id);
+  for (auto id : deletedIds) {
+    QVERIFY(!folding.foldingRangeBlocks(id, nullptr, nullptr));
+  }
+}
+
+void TestTextFolding::testGroupedBoundaryInsertionsUndoRedo() {
+  QTextDocument doc(QStringLiteral("0\n1\n2\n3\n4\n5\n6\n7\n8\n9"));
+  TextFolding folding(&doc);
+  const auto id =
+      folding.newFoldingRange(TextBlockRange(doc.findBlockByNumber(3), doc.findBlockByNumber(6)),
+                              TextFolding::Persistent | TextFolding::Folded);
+  QVERIFY(id != TextFolding::InvalidRangeId);
+  auto checkRange = [&](int p_first, int p_last) {
+    int first = -1;
+    int last = -1;
+    QVERIFY(folding.foldingRangeBlocks(id, &first, &last));
+    QCOMPARE(first, p_first);
+    QCOMPARE(last, p_last);
+    QVERIFY(folding.isRangeFolded(id));
+    const auto starting = folding.foldingRangesStartingOnBlock(first);
+    QCOMPARE(starting.size(), 1);
+    QCOMPARE(starting.first().first, id);
+    for (int block = 0; block < doc.blockCount(); ++block) {
+      QCOMPARE(doc.findBlockByNumber(block).isVisible(), block <= first || block >= last);
+    }
+  };
+
+  // Pure insertion at an endpoint moves the original source; it does not delete it.
+  QTextCursor cursor(&doc);
+  cursor.setPosition(doc.findBlockByNumber(3).position());
+  cursor.beginEditBlock();
+  cursor.insertText(QStringLiteral("before A\n"));
+  cursor.insertText(QStringLiteral("before B\n"));
+  cursor.endEditBlock();
+  checkRange(5, 8);
+  doc.undo();
+  checkRange(3, 6);
+  doc.redo();
+  checkRange(5, 8);
+
+  // The last endpoint has the same insertion affinity as the first endpoint.
+  cursor.setPosition(doc.findBlockByNumber(8).position());
+  cursor.insertText(QStringLiteral("inside\n"));
+  checkRange(5, 9);
+  doc.undo();
+  checkRange(5, 8);
+  doc.redo();
+  checkRange(5, 9);
 }
 
 // Disabling must be checked *before* creating the ranges: setEnabled(false)

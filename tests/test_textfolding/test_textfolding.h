@@ -36,6 +36,10 @@ private slots:
 
   void testFoldQueriesWhenDisabled();
 
+  void testBulkBlockDeletionRemapsSurvivors();
+
+  void testGroupedBoundaryInsertionsUndoRedo();
+
   void cleanupTestCase();
 
   // Will be executed before any test function.
