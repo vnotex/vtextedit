@@ -7446,6 +7446,15 @@ void TestInteractivePreview::testTableInlinePreviewObjectsAndGeometry() {
            mathFormat.height());
   QCOMPARE(rowHeights(sheet).at(1), initialRowHeight);
 
+  auto widget = singlePreviewWidget(editor);
+  auto host = previewHost(editor);
+  QVERIFY(widget);
+  QVERIFY(host);
+  const int signal = sheet->metaObject()->indexOfSignal("preferredGeometryChanged()");
+  QVERIFY(signal >= 0);
+  QSignalSpy geometry(sheet, sheet->metaObject()->method(signal));
+  const int measured = host->property("vte_preview_measurements").toInt();
+  const int oldHeight = widget->height();
   math->m_name = QStringLiteral("table-geometry-wide");
   math->m_logicalSize = QSize(640, 320);
   manager->updateMathBlocks({math});
@@ -7454,6 +7463,12 @@ void TestInteractivePreview::testTableInlinePreviewObjectsAndGeometry() {
   QVERIFY(fitted.width() < 640);
   QVERIFY(fitted.width() <= sheet->document()->textWidth() / 2);
   QVERIFY(qAbs(fitted.width() / fitted.height() - 2) < 0.01);
+  QTRY_VERIFY(geometry.count() > 0);
+  QTRY_VERIFY(host->property("vte_preview_measurements").toInt() > measured);
+  QTRY_VERIFY(widget->height() > oldHeight);
+  QTRY_COMPARE(widget->height(), qRound(widget->previewContext()->assignedPreviewRect().height()));
+  QTRY_VERIFY(sheet->viewport()->height() >=
+              sheet->document()->documentLayout()->documentSize().height());
   editor.resize(900, 600);
   QTRY_VERIFY(sheetInlineCell(sheet, 1, 0).m_objects.at(1).m_format.toImageFormat().width() >
               fitted.width());
@@ -7599,6 +7614,52 @@ void TestInteractivePreview::testTableInlinePreviewPresentationHasNoFeedback() {
   QTRY_VERIFY(sheet->hasFocus());
   QTest::keyClick(sheet, Qt::Key_Z, Qt::ControlModifier);
   QCOMPARE(editor.document()->toPlainText(), source);
+}
+
+void TestInteractivePreview::testTableInlinePreviewKeepsEmptyUndoHistory() {
+  const QString source = QStringLiteral("| head | other |\n| --- | --- |\n"
+                                        "| ![x](feedback-empty.png) $x$ | tail |\n\n");
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  auto manager = editor.getPreviewMgr();
+  manager->setPreviewEnabled(false);
+  setTextAndSettle(editor, source);
+  auto widget = singlePreviewWidget(editor);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+  QCOMPARE(sheetInlineObjectCount(sheet), 0);
+  // setText() records source block formatting. Establish an empty source
+  // history before publishing any resources, and require it to stay empty.
+  editor.document()->clearUndoRedoStacks();
+  QVERIFY(!editor.document()->isUndoAvailable());
+  QSignalSpy undoCommands(editor.document(), &QTextDocument::undoCommandAdded);
+  QSignalSpy commits(widget->previewContext(), &PreviewWidgetContext::replacementFinished);
+  manager->seedImageData(QStringLiteral("feedback-empty.png"),
+                         previewImageBytes(QSize(24, 12), qRgb(200, 20, 30)));
+  manager->setPreviewEnabled(true);
+  QTRY_COMPARE(sheetInlineObjectCount(sheet), 1);
+  auto math = mathPreviewItem(editor.document()->findBlockByNumber(2), QStringLiteral("$x$"),
+                              QStringLiteral("table-empty-undo"));
+  manager->updateMathBlocks({math});
+  QTRY_COMPARE(sheetInlineObjectCount(sheet), 2);
+  math->m_logicalSize = QSize(120, 60);
+  math->m_backgroundColor = qRgb(30, 40, 50);
+  manager->updateMathBlocks({math});
+  QTRY_COMPARE(sheetInlineCell(sheet, 1, 0).m_objects.at(1).m_format.toImageFormat().height(),
+               qreal(60));
+  manager->updateMathBlocks({math});
+  manager->updateImageLinks(editor.getHighlighter()->getImageLinks());
+  settle(editor);
+  flushSheet(sheet);
+  QCOMPARE(editor.document()->toPlainText(), source);
+  QCOMPARE(editor.document()->availableUndoSteps(), 0);
+  QVERIFY(!editor.document()->isUndoAvailable());
+  QCOMPARE(undoCommands.count(), 0);
+  QCOMPARE(commits.count(), 0);
+  manager->clearPreview();
+  QTRY_COMPARE(sheetInlineObjectCount(sheet), 0);
+  QCOMPARE(editor.document()->availableUndoSteps(), 0);
+  QVERIFY(!editor.document()->isUndoAvailable());
+  QCOMPARE(undoCommands.count(), 0);
 }
 
 void TestInteractivePreview::testTableInlinePreviewSourceTypeFlags() {

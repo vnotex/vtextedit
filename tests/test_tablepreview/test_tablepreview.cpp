@@ -5633,13 +5633,14 @@ void TestTablePreview::testInlineBindingsFitWidthAndReflow() {
   QVERIFY(widget.heightForWidth(360) < wideHeight);
   const auto bounds = sheet->document()->documentLayout()->frameBoundingRect(document->table());
   QVERIFY(bounds.width() <= sheet->document()->textWidth() + 2);
-  // Host-assigned resize suppresses redundant geometry notifications; the
-  // measured frame and object geometry above are the observable contract.
-
+  // Host-assigned resize suppresses redundant geometry notifications. A
+  // producer size change must notify the host so its reserved band is measured.
+  QSignalSpy geometry(sheet, &TablePreviewSheet::preferredGeometryChanged);
   // A small result is never enlarged to fill the column share.
   image.m_logicalSize = QSize(20, 12);
   widget.setInlinePreviews(PreviewData::ImageLink, {image});
   settle();
+  QTRY_VERIFY(geometry.count() > 0);
   const auto small = inlineObjects(*document, 1, 0);
   QCOMPARE(small.size(), 1);
   QCOMPARE(small[0].m_format.width(), qreal(20));

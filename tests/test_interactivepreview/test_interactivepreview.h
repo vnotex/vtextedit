@@ -230,6 +230,7 @@ private slots:
   void testTableInlinePreviewObjectsAndGeometry();
   void testTableInlinePreviewSourceRoundTrip();
   void testTableInlinePreviewPresentationHasNoFeedback();
+  void testTableInlinePreviewKeepsEmptyUndoHistory();
   void testTableInlinePreviewSourceTypeFlags();
   void testTableInlinePreviewRowMapping_data();
   void testTableInlinePreviewRowMapping();
