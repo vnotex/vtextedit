@@ -8,6 +8,8 @@
 #include <QHash>
 #include <QVariant>
 
+#include <functional>
+
 namespace vte {
 class MarkdownHighlighter;
 class EditorMarkdownHighlighter;
@@ -21,6 +23,7 @@ class MathBlockHighlighter;
 class MarkdownFoldingProvider;
 class PreviewWidgetFactory;
 class InteractivePreviewHost;
+class HeadingSourceNumberer;
 enum class TypeAction {
   TypeHeading,
   TypeBold,
@@ -45,9 +48,12 @@ class VTEXTEDIT_EXPORT VMarkdownEditor : public VTextEditor {
 
   friend class EditorPreviewMgr;
   friend class InteractivePreviewHost;
+  friend class HeadingSourceNumberer;
 
 public:
   typedef QHash<QString, QTextCharFormat> ExternalCodeBlockHighlightStyles;
+  using HeadingSectionNumberProvider =
+      std::function<QVector<QString>(const QVector<md::HeadingInfo> &)>;
 
   VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_config,
                   const QSharedPointer<TextEditorParameters> &p_paras, QWidget *p_parent = nullptr);
@@ -64,6 +70,15 @@ public:
   TextDocumentLayout *documentLayout() const;
 
   MarkdownHighlighter *getHighlighter() const;
+
+  // Supply one number per actual parsed heading, without following whitespace.
+  // Empty entries leave those headings untouched; an empty provider disables
+  // rewriting without removing numbers already in the source.
+  void setHeadingSectionNumberProvider(HeadingSectionNumberProvider p_provider);
+
+  // Initially inactive. Activation queues owed normalization after source
+  // inactivity; it never rewrites synchronously during loading or mode changes.
+  void setHeadingSectionNumberingActive(bool p_active);
 
   PreviewMgr *getPreviewMgr() const;
 
@@ -111,6 +126,10 @@ public slots:
   void handleExternalMathHighlightData(int p_idx, TimeStamp p_timeStamp, const QString &p_html);
 
 signals:
+  // Original full-parse heading data. The guarantee is true only when there
+  // is at least one eligible heading and every requested source prefix matches.
+  void headingsUpdated(const QVector<md::HeadingInfo> &p_headings, bool p_hasSectionNumber);
+
   // Used when using WebCodeBlockHighlighter.
   void externalCodeBlockHighlightRequested(int p_idx, TimeStamp p_timeStamp, const QString &p_text);
 

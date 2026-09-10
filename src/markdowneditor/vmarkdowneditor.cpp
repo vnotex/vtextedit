@@ -16,6 +16,7 @@
 #include "documentresourcemgr.h"
 #include "editormarkdownhighlighter.h"
 #include "editorpreviewmgr.h"
+#include "headingsourcenumberer.h"
 #include "interactivepreviewhost.h"
 #include "ksyntaxcodeblockhighlighter.h"
 #include "markdownastwalker.h"
@@ -670,6 +671,7 @@ VMarkdownEditor::VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_c
   connect(m_textEdit, &VTextEdit::preKeyBacktab, this, &VMarkdownEditor::preKeyBacktab);
 
   new TableSourceFormatter(this);
+  new HeadingSourceNumberer(this);
   updateFromConfig();
 
   // Trigger update of stuffs after init.
@@ -677,6 +679,8 @@ VMarkdownEditor::VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_c
 }
 
 VMarkdownEditor::~VMarkdownEditor() {
+  delete findChild<HeadingSourceNumberer *>(QStringLiteral("vte_heading_source_numberer"),
+                                            Qt::FindDirectChildrenOnly);
   delete findChild<TableSourceFormatter *>(QStringLiteral("vte_table_source_formatter"),
                                            Qt::FindDirectChildrenOnly);
   // The host is an ordinary QObject child, and QObject destroys its children
@@ -694,6 +698,20 @@ void VMarkdownEditor::setSyntax(const QString &p_syntax) {
 }
 
 QString VMarkdownEditor::getSyntax() const { return QStringLiteral("richmarkdown"); }
+
+void VMarkdownEditor::setHeadingSectionNumberProvider(HeadingSectionNumberProvider p_provider) {
+  if (auto numberer = findChild<HeadingSourceNumberer *>(
+          QStringLiteral("vte_heading_source_numberer"), Qt::FindDirectChildrenOnly)) {
+    numberer->setProvider(std::move(p_provider));
+  }
+}
+
+void VMarkdownEditor::setHeadingSectionNumberingActive(bool p_active) {
+  if (auto numberer = findChild<HeadingSourceNumberer *>(
+          QStringLiteral("vte_heading_source_numberer"), Qt::FindDirectChildrenOnly)) {
+    numberer->setActive(p_active);
+  }
+}
 
 void VMarkdownEditor::setupSyntaxHighlighter() {
   m_highlighterInterface.reset(new EditorMarkdownHighlighter(this));
@@ -722,6 +740,11 @@ void VMarkdownEditor::setupSyntaxHighlighter() {
   updateSpellCheck();
   connect(getHighlighter(), &MarkdownHighlighter::highlightCompleted, this, [this]() {
     m_textEdit->updateCursorWidth();
+    auto numberer = findChild<HeadingSourceNumberer *>(
+        QStringLiteral("vte_heading_source_numberer"), Qt::FindDirectChildrenOnly);
+    if (numberer && numberer->restoreViewportAfterHighlight()) {
+      return;
+    }
     if (m_textEdit->isViewportWidgetFocused()) {
       // An in-place preview widget holds the focus. This re-parse is most
       // likely the one its own write-back caused, and the editor's caret is

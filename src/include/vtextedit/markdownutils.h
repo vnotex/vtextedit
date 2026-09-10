@@ -340,7 +340,7 @@ private:
   // 1. Header marker (##);
   // 2. Spaces after marker;
   // 3. Header Title (need to be trimmed, all text after marker and spaces);
-  // 4. Header Sequence (1.1., 1.2., optional);
+  // 4. Optional header sequence ("1", "1.1.", "1.2)");
   // 5. Spaces after header sequence;
   static const QString c_headerRegExp;
 };

@@ -4,8 +4,7 @@
 #include <QtTest>
 
 namespace tests {
-// Integration coverage of the real Enter pipeline of VMarkdownEditor, plus the
-// MarkdownUtils quote helpers it is built on.
+// Integration coverage of VMarkdownEditor source edits and MarkdownUtils actions.
 class TestMarkdownEditor : public QObject {
   Q_OBJECT
 private slots:
@@ -122,6 +121,37 @@ private slots:
   void testTableSourceFormatUndoRedo();
   void testTableSourceFormatSyntaxBoundaries();
   void testTableSourceFormatIdempotence();
+
+  // Opt-in, deferred section numbers written into actual Markdown source.
+  void testHeadingSourceDefaultAndActivation();
+  void testHeadingSourceReadOnly();
+  void testHeadingSourceMaintenance();
+  void testHeadingSourceInvalidProvider_data();
+  void testHeadingSourceInvalidProvider();
+  void testHeadingSourceTitleAndEmpty_data();
+  void testHeadingSourceTitleAndEmpty();
+  void testHeadingSourceExemptTitleTransition();
+  void testHeadingSourceSyntax_data();
+  void testHeadingSourceSyntax();
+  void testHeadingSourceSetextPatterns();
+  void testHeadingSourceUnresolvedSetextBoundary();
+  void testHeadingSourceMarkerActions();
+  void testHeadingSourceDebounce();
+  void testHeadingSourceCancellationAndLoad();
+  void testHeadingSourceFreshParseAndPublication();
+  void testHeadingSourceProviderInvalidation();
+  void testHeadingSourceUndoRedo_data();
+  void testHeadingSourceUndoRedo();
+  void testHeadingSourceUndoBeforeDebounceAndBranch();
+  void testHeadingSourceExplicitHistory();
+  void testHeadingSourceCursorAndSelection_data();
+  void testHeadingSourceCursorAndSelection();
+  void testHeadingSourceOverriddenSelectionAndScroll();
+  void testHeadingSourceInputMethodDeferral();
+  void testHeadingSourcePreviewFocusDeferral();
+  void testHeadingSourceLayoutDeferral();
+  void testHeadingSourceGuaranteeReset();
+  void testHeadingSourceTableCoexistence();
 };
 } // namespace tests
 
