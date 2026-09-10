@@ -23,7 +23,7 @@ public:
   void setProvider(VMarkdownEditor::HeadingSectionNumberProvider p_provider);
   void setActive(bool p_active);
 
-  // Consume viewport restoration for a source-generated full highlight.
+  // Preserve the source edit's viewport until explicit user interaction.
   bool restoreViewportAfterHighlight();
 
 protected:

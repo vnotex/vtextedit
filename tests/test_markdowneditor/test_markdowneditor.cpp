@@ -2608,6 +2608,26 @@ void TestMarkdownEditor::testHeadingSourceOverriddenSelectionAndScroll() {
   QTRY_VERIFY_WITH_TIMEOUT(!completed.isEmpty(), 5000);
   QCOMPARE(edit->verticalScrollBar()->value(), 100);
   QCOMPARE(edit->horizontalScrollBar()->value(), 100);
+  for (int pass = 0; pass < 2; ++pass) {
+    completed.clear();
+    editor->getHighlighter()->updateHighlight();
+    QTRY_VERIFY_WITH_TIMEOUT(!completed.isEmpty(), 5000);
+    QCOMPARE(edit->verticalScrollBar()->value(), 100);
+    QCOMPARE(edit->horizontalScrollBar()->value(), 100);
+    QCOMPARE(edit->textCursor().position(), 6);
+  }
+
+  // User navigation owns the viewport again; later highlighting must not
+  // restore the numbering pass's old scroll position.
+  QTest::keyClick(edit, Qt::Key_End, Qt::ControlModifier);
+  QCOMPARE(edit->textCursor().position(), editor->document()->characterCount() - 1);
+  QVERIFY(edit->viewport()->rect().contains(edit->cursorRect().center()));
+  const int navigationScroll = edit->verticalScrollBar()->value();
+  QVERIFY(navigationScroll > 100);
+  completed.clear();
+  editor->getHighlighter()->updateHighlight();
+  QTRY_VERIFY_WITH_TIMEOUT(!completed.isEmpty(), 5000);
+  QCOMPARE(edit->verticalScrollBar()->value(), navigationScroll);
 }
 
 void TestMarkdownEditor::testHeadingSourceInputMethodDeferral() {
