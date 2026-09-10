@@ -879,7 +879,7 @@ void TestTablePreview::testInlinePreviewFormattingPreservesObjects() {
   TablePreviewSheet sheet;
   sheet.setTableDocument(&doc);
   auto cell = doc.table()->cellAt(1, 0);
-  const QVector<int> ends{source.indexOf(QLatin1Char(')')) + 1, int(source.size())};
+  const QVector<int> ends{int(source.indexOf(QLatin1Char(')')) + 1), int(source.size())};
   {
     TablePreviewDocument::InlinePreviewGuard presentation(&doc);
     for (auto end = ends.crbegin(); end != ends.crend(); ++end) {
