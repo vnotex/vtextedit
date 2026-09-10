@@ -782,6 +782,17 @@ bool VMarkdownEditor::unregisterPreviewWidgetFactory(PreviewWidgetFactory *p_fac
   auto host = interactivePreviewHost();
   return host ? host->unregisterFactory(p_factory) : false;
 }
+bool VMarkdownEditor::completeImageInsertion(quint64 p_requestId, const QString &p_imageSource) {
+  auto host = interactivePreviewHost();
+  return host && host->completeImageInsertion(p_requestId, p_imageSource);
+}
+
+void VMarkdownEditor::cancelImageInsertion(quint64 p_requestId) {
+  if (auto host = interactivePreviewHost()) {
+    host->cancelImageInsertion(p_requestId);
+  }
+}
+
 bool VMarkdownEditor::handleTypeAction(TypeAction p_action, const QVariant &p_data) {
   if (auto host = interactivePreviewHost()) {
     if (host->handleTypeAction(p_action, p_data)) {

@@ -3,6 +3,7 @@
 
 #include <QHash>
 #include <QMetaType>
+#include <QPixmap>
 #include <QPoint>
 #include <QPointer>
 #include <QRect>
@@ -10,12 +11,16 @@
 #include <QSize>
 #include <QString>
 #include <QTextEdit>
+#include <QTextImageFormat>
 #include <QVector>
 
 #include <vtextedit/markdownhighlighterdata.h>
 #include <vtextedit/preview.h>
+#include <vtextedit/previewdata.h>
 #include <vtextedit/previewwidget.h>
 #include <vtextedit/vtextedit.h>
+
+#include "markdownastwalker.h"
 
 class QMenu;
 class QTextDocument;
@@ -84,7 +89,7 @@ class TablePreviewSerializer {
 public:
   // Escape a '|' only when it is preceded by an even number of backslashes.
   // Idempotent: already escaped pipes are left untouched.
-  static QString escapeCell(const QString &p_cell);
+  static QString escapeCell(const QString &p_cell, QVector<int> *p_sourceOffsets = nullptr);
 
   // Whether the row prefixes can be reproduced without corrupting nesting.
   // The first row may carry a list marker; every following row (including the
@@ -173,6 +178,20 @@ struct TablePreviewCellMeta {
   QString m_tag;
 };
 
+// Published trimmed-cell coordinates. The document maps these back to its live source.
+struct TableCellInlinePreview {
+  int m_row = -1;
+  int m_column = -1;
+  int m_start = -1;
+  int m_end = -1;
+  QString m_sourceCell;
+  QString m_elementSource;
+  PreviewData::Source m_source = PreviewData::ImageLink;
+  QPixmap m_image;
+  QSize m_logicalSize;
+  QRgb m_backgroundColor = 0;
+};
+
 // The rich text document behind one editable sheet: a QTextDocument holding a
 // single QTextTable, plus the metadata a QTextTable cannot carry.
 //
@@ -185,6 +204,8 @@ struct TablePreviewCellMeta {
 // or to the left of it. A pipe table is the degenerate case where every slot is
 // a 1x1 origin.
 class TablePreviewDocument {
+  friend class TablePreviewSheet;
+  friend class TablePreviewWidget;
 
 public:
   // Upper bound on the number of cells one sheet materializes.
@@ -293,6 +314,31 @@ public:
 
   // The cell matrix, derived from the live table.
   QVector<QVector<QString>> cells() const;
+
+  // Half-open UTF-16 projection. Only our tagged replacement characters are omitted.
+  static constexpr int c_inlinePreviewProperty = QTextFormat::UserProperty + 1;
+  QString sourceText(int p_start, int p_end) const;
+  int sourceOffset(int p_row, int p_column, int p_documentPosition) const;
+  int documentPosition(int p_row, int p_column, int p_sourceOffset,
+                       bool p_afterPreview = true) const;
+  bool isInlinePreviewAt(int p_position) const;
+  bool isApplyingInlinePreviews() const { return m_applyingInlinePreviews > 0; }
+  void setInlinePreviews(PreviewData::Source p_source,
+                         const QVector<TableCellInlinePreview> &p_previews);
+  void revalidateInlinePreviews();
+
+  class InlinePreviewGuard {
+  public:
+    explicit InlinePreviewGuard(TablePreviewDocument *p_document) : m_document(p_document) {
+      ++m_document->m_applyingInlinePreviews;
+    }
+    ~InlinePreviewGuard() { --m_document->m_applyingInlinePreviews; }
+    InlinePreviewGuard(const InlinePreviewGuard &) = delete;
+    InlinePreviewGuard &operator=(const InlinePreviewGuard &) = delete;
+
+  private:
+    TablePreviewDocument *m_document;
+  };
 
   // Whether the contents can be written back without changing what the table
   // renders to. A body row wider than the header declares would otherwise
@@ -500,6 +546,8 @@ public:
   // Structure/style changes also force a full repaint. Returns whether any
   // formats were written; unchanged live text always reuses its parsed units.
   bool refreshCellSyntaxFormats(int p_start = -1, int p_end = -1);
+  void applySourceCharFormat(int p_start, int p_end, const QTextCharFormat &p_format,
+                             bool p_merge = false);
 
   // The one colour the table itself owns. Separate from applyCellFormats()
   // because a rebuild has just written every per-cell format and only this is
@@ -549,7 +597,7 @@ private:
   // pre-mutation index it came from, or -1 for one this sheet inserted.
   // Bump structureGeneration(). Called from every structural mutator, just
   // before it closes its edit block.
-  void noteStructuralChange() { ++m_structureGeneration; }
+  void noteStructuralChange();
 
   void remapCellMeta(const QVector<QVector<QString>> &p_ownerTags,
                      const QVector<QString> &p_rowTags, const QVector<int> &p_rowMap,
@@ -579,6 +627,42 @@ private:
   // the band out by content, and a stale one would silently change how every
   // column is measured.
   void rewriteColumnConstraints();
+  struct InlinePreviewBinding {
+    int m_row = -1;
+    int m_column = -1;
+    QTextCursor m_start;
+    QTextCursor m_end;
+    QTextCursor m_object;
+    QString m_sourceCell;
+    QString m_elementSource;
+    PreviewData::Source m_source = PreviewData::ImageLink;
+    QPixmap m_image;
+    QSize m_logicalSize;
+    QRgb m_backgroundColor = 0;
+    int m_slot = -1;
+    bool m_installed = false;
+    bool m_suspended = false;
+  };
+  bool validInlinePreview(const InlinePreviewBinding &p_binding);
+  bool hasInlineElement(const QString &p_source, int p_start, int p_end,
+                        PreviewData::Source p_kind);
+  void removeInlinePreviewObject(InlinePreviewBinding &p_binding);
+  void retireInlinePreview(int p_index);
+  void clearInlinePreviews(PreviewData::Source p_source = PreviewData::MaxSource);
+  void installInlinePreviewObjects();
+  void refreshInlinePreviewSizes();
+  QSizeF inlinePreviewSize(const InlinePreviewBinding &p_binding) const;
+  void updateInlinePreviewResource(const InlinePreviewBinding &p_binding);
+  void suspendInlinePreviews(int p_row, int p_column);
+  void resumeInlinePreviews();
+  QVector<InlinePreviewBinding> m_inlinePreviews;
+  QVector<int> m_freeInlinePreviewSlots;
+  int m_nextInlinePreviewSlot = 0;
+  int m_suspendedInlineRow = -1;
+  int m_suspendedInlineColumn = -1;
+  quint64 m_inlinePreviewGenerations[PreviewData::MaxSource] = {};
+
+  int m_applyingInlinePreviews = 0;
 
   QScopedPointer<QTextDocument> m_doc;
 
@@ -591,8 +675,13 @@ private:
 
   struct CellHighlightCacheEntry {
     QVector<md::HLUnit> m_units;
+    QVector<md::ImageElement> imageElements;
+    QVector<md::MathElement> mathElements;
     bool m_used = false;
   };
+  CellHighlightCacheEntry &cellInlineData(const QString &p_source);
+  int m_inlinePreviewEdits = 0;
+
   // Exact live strings only, shared by duplicate origins and retained on rebuild.
   QHash<QString, CellHighlightCacheEntry> m_cellHighlightCache;
   QVector<QTextCharFormat> m_syntaxStyles;
@@ -689,6 +778,10 @@ private:
 //    refusals further down.
 class TablePreviewSheet : public VTextEdit {
   Q_OBJECT
+  friend class InteractivePreviewHost;
+  friend class TablePreviewInputMode;
+  friend class TablePreviewWidget;
+
 public:
   explicit TablePreviewSheet(QWidget *p_parent = nullptr);
 
@@ -927,6 +1020,8 @@ public:
   // Public because VTextEdit declares it so; narrowing an inherited public
   // member on the derived type only makes the two disagree, since a caller
   // holding a VTextEdit * reaches it either way.
+  QVariant inputMethodQuery(Qt::InputMethodQuery p_query) const Q_DECL_OVERRIDE;
+
   void wheelEvent(QWheelEvent *p_event) Q_DECL_OVERRIDE;
 
   // Public for the same reason as wheelEvent().
@@ -936,6 +1031,9 @@ signals:
   // The document's laid out size settled on something the host has not been
   // told about yet.
   void preferredGeometryChanged();
+
+  // Synchronous transaction/composition exit; no independent refresh timer.
+  void inlinePreviewsReady();
 
   void focusEscapeRequested(vte::FocusEscapeDirection p_direction);
 
@@ -985,6 +1083,8 @@ protected:
   bool canInsertFromMimeData(const QMimeData *p_source) const Q_DECL_OVERRIDE;
 
   void insertFromMimeData(const QMimeData *p_source) Q_DECL_OVERRIDE;
+
+  QMimeData *createMimeDataFromSelection() const Q_DECL_OVERRIDE;
 
 private slots:
   void handleDocumentSizeChanged();
@@ -1049,6 +1149,48 @@ private slots:
   void setOverriddenSelection(int p_start, int p_end);
 
 private:
+  struct SourceSelection {
+    int m_row = -1;
+    int m_column = -1;
+    int m_anchor = 0;
+    int m_caret = 0;
+    int m_selectionStart = 0;
+    int m_selectionEnd = 0;
+    bool m_overridden = false;
+  };
+  SourceSelection sourceSelection() const;
+  void restoreSourceSelection(const SourceSelection &p_selection);
+
+  class SourceEditGuard {
+  public:
+    explicit SourceEditGuard(TablePreviewSheet *p_sheet);
+    ~SourceEditGuard();
+    SourceEditGuard(const SourceEditGuard &) = delete;
+    SourceEditGuard &operator=(const SourceEditGuard &) = delete;
+
+  private:
+    TablePreviewSheet *m_sheet;
+    bool m_parsingInlinePreviews = false;
+  };
+  struct SuspendedInlinePreview {
+    QTextCursor m_start;
+    QTextCursor m_end;
+    QString m_source;
+    QTextImageFormat m_format;
+    bool m_image = true;
+    quint64 m_generation = 0;
+  };
+  void suspendInlinePreviews();
+  void restoreInlinePreviews();
+  bool inlinePreviewsDeferred() const;
+  void finishInlinePreviewTransaction();
+  int m_inputMethodEventDepth = 0;
+  int m_sourceEditDepth = 0;
+  int m_suspendedRow = -1;
+  int m_suspendedColumn = -1;
+  quint64 m_suspendedStructure = 0;
+  QVector<SuspendedInlinePreview> m_suspendedInlinePreviews;
+
   // What the frame and the viewport margins take off the outer width and
   // height. Read from the live geometry once there is one, because a style may
   // inset the viewport by more than the frame width alone.
@@ -1301,6 +1443,9 @@ public:
   bool setPreview(const QSharedPointer<const Preview> &p_preview) Q_DECL_OVERRIDE;
 
   void setSyntaxStyles(const QVector<QTextCharFormat> &p_styles);
+  void setInlinePreviews(PreviewData::Source p_source,
+                         const QVector<TableCellInlinePreview> &p_previews);
+  void revalidateInlinePreviews();
 
   qreal preferredWidthFraction() const Q_DECL_OVERRIDE;
 
@@ -1394,6 +1539,8 @@ private slots:
   void handleCommitTimeout();
 
 private:
+  friend class InteractivePreviewHost;
+
   void resetFromSource();
 
   // Take the bound snapshot from the context, which is the authoritative
@@ -1403,6 +1550,13 @@ private:
 
   // Restart the idle debounce.
   void armCommit();
+
+  bool observeSourceChanges(int p_start = -1, int p_end = -1);
+  void applyDeferredInlinePreviews();
+  QHash<int, QVector<TableCellInlinePreview>> m_pendingInlinePreviews;
+  bool m_inlinePreviewRevalidationPending = false;
+  bool m_applyingCellPreviews = false;
+  quint64 m_pendingInlinePreviewStructure = 0;
 
   // Write the sheet back now. "Nothing to commit" is Settled; a request the
   // host postponed is Deferred, which the caller must not treat as a loss.
@@ -1426,10 +1580,11 @@ private:
   // resulting document changes are not mistaken for user edits.
   bool m_applyingSource = false;
 
-  // The document revision that last had a real character change, so a
-  // contentsChanged raised by an empty edit block or by a rehighlight is not
-  // counted as an edit. See handleContentsChanged().
-  int m_lastDocumentRevisionWithChanges = 0;
+  // Notification classifier only; serialization always reads the live document.
+  bool m_sourceChangePending = false;
+  QHash<int, QString> m_observedCells;
+  QVector<PreviewTableAlignment> m_observedAlignments;
+  quint64 m_observedStructure = 0;
 
   int m_pendingHighlightStart = -1;
   int m_pendingHighlightEnd = -1;

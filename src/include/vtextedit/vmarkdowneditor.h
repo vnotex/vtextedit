@@ -100,6 +100,13 @@ public:
   // the link, image or table workflow, or when a payload is invalid.
   bool handleTypeAction(TypeAction p_action, const QVariant &p_data = QVariant());
 
+  // Complete a captured table-cell image request once, even after focus moves.
+  // Accepts exactly one complete, single-line image reference with a destination.
+  // Rejection never falls back to the source cursor. Source-editor workflows
+  // continue to use handleTypeAction(TypeImage)'s historical false return.
+  bool completeImageInsertion(quint64 p_requestId, const QString &p_imageSource);
+  void cancelImageInsertion(quint64 p_requestId);
+
   static void setExternalCodeBlockHighlihgtStyles(const ExternalCodeBlockHighlightStyles &p_styles);
 
 public slots:
@@ -111,6 +118,10 @@ public slots:
   void handleExternalMathHighlightData(int p_idx, TimeStamp p_timeStamp, const QString &p_html);
 
 signals:
+  // The application supplies image-reference source through completeImageInsertion(),
+  // or cancels the token. A newer request invalidates the previous request.
+  void imageInsertionRequested(quint64 p_requestId, const QString &p_selectedText);
+
   // Used when using WebCodeBlockHighlighter.
   void externalCodeBlockHighlightRequested(int p_idx, TimeStamp p_timeStamp, const QString &p_text);
 

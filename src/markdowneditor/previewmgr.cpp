@@ -134,6 +134,8 @@ void PreviewMgr::previewImageLinks(TimeStamp p_timeStamp,
 
   clearObsoleteImages(p_timeStamp, Source::ImageLink);
 
+  publishPreviewData(Source::ImageLink);
+
   relayout(affectedBlocks);
 }
 
@@ -421,6 +423,32 @@ void PreviewMgr::clearObsoleteImages(TimeStamp p_timeStamp, Source p_source) {
   }
 }
 
+void PreviewMgr::publishPreviewData(Source p_source) {
+  QVector<QTextBlock> blocks;
+  {
+    auto doc = document();
+    const auto &possibleBlocks = m_interface->getPossiblePreviewBlocks();
+    blocks.reserve(possibleBlocks.size());
+    for (auto blockNum : possibleBlocks) {
+      const auto block = doc->findBlockByNumber(blockNum);
+      if (!block.isValid()) {
+        continue;
+      }
+
+      const auto previewData = BlockPreviewData::get(block);
+      for (const auto data : previewData->getPreviewData()) {
+        if (data->source() == p_source) {
+          blocks.append(block);
+          break;
+        }
+      }
+    }
+  }
+
+  // Do not retain collection iterators or preview pointers across synchronous callbacks.
+  emit previewDataUpdated(p_source, blocks);
+}
+
 void PreviewMgr::relayout(const OrderedIntSet &p_blocks) {
   if (p_blocks.isEmpty()) {
     return;
@@ -516,6 +544,11 @@ void PreviewMgr::clearPreview() {
     clearObsoleteImages(ts, static_cast<Source>(i));
   }
 
+  // Clear every source before publishing. Recollect each source after any reentrant update.
+  for (int i = 0; i < m_previewData.size(); ++i) {
+    publishPreviewData(static_cast<Source>(i));
+  }
+
   relayout(affectedBlocks);
 }
 
@@ -526,6 +559,7 @@ void PreviewMgr::checkBlocksForObsoletePreview(const QList<int> &p_blocks) {
 
   auto doc = document();
   OrderedIntSet affectedBlocks;
+  bool affectedSources[Source::MaxSource] = {};
   for (auto blockNum : p_blocks) {
     QTextBlock block = doc->findBlockByNumber(blockNum);
     if (!block.isValid()) {
@@ -545,7 +579,14 @@ void PreviewMgr::checkBlocksForObsoletePreview(const QList<int> &p_blocks) {
       auto ps = static_cast<Source>(i);
       if (previewData->clearObsoletePreview(m_previewData[i].m_timeStamp, ps)) {
         affectedBlocks.insert(blockNum, QMapDummyValue());
+        affectedSources[i] = true;
       }
+    }
+  }
+
+  for (int i = 0; i < (int)Source::MaxSource; ++i) {
+    if (affectedSources[i]) {
+      publishPreviewData(static_cast<Source>(i));
     }
   }
 
@@ -612,6 +653,8 @@ void PreviewMgr::updatePreviewSource(PreviewData::Source p_source,
   clearBlockObsoletePreview(ts, p_source, affectedBlocks);
 
   clearObsoleteImages(ts, p_source);
+
+  publishPreviewData(p_source);
 
   relayout(affectedBlocks);
 }

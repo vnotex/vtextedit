@@ -140,6 +140,10 @@ signals:
 
   void requestUpdateMathBlocks();
 
+  // Complete current blocks for a source after its records and resources are updated.
+  // Consumers must copy the records and resources synchronously.
+  void previewDataUpdated(vte::PreviewData::Source p_source, const QVector<QTextBlock> &p_blocks);
+
 private slots:
   // Non-local image downloaded for preview.
   void imageDownloaded(const NetworkReply &p_data, const QString &p_url);
@@ -247,6 +251,8 @@ private:
                                  OrderedIntSet &p_affectedBlocks);
 
   void clearObsoleteImages(TimeStamp p_timeStamp, PreviewData::Source p_source);
+
+  void publishPreviewData(PreviewData::Source p_source);
 
   void relayout(const OrderedIntSet &p_blocks);
 

@@ -4,16 +4,19 @@
 #include <QHash>
 #include <QObject>
 #include <QPair>
+#include <QPixmap>
 #include <QPointer>
 #include <QRectF>
 #include <QSet>
 #include <QSharedPointer>
 #include <QSizeF>
+#include <QTextBlock>
 #include <QTextCursor>
 #include <QVector>
 
 #include <vtextedit/global.h>
 #include <vtextedit/preview.h>
+#include <vtextedit/previewdata.h>
 #include <vtextedit/previewwidget.h>
 
 #include "markdownfoldingprovider.h"
@@ -55,6 +58,8 @@ public:
   // Dispatch to the live preview root which owns application focus. A focused
   // preview consumes the action even when it has no optional handler.
   bool handleTypeAction(TypeAction p_action, const QVariant &p_data);
+  bool completeImageInsertion(quint64 p_requestId, const QString &p_imageSource);
+  void cancelImageInsertion(quint64 p_requestId);
 
   // Global switch, mirroring VMarkdownEditor::setInplacePreviewEnabled().
   void setEnabled(bool p_enabled);
@@ -647,6 +652,7 @@ private:
     ReplacementRetry,
     DeferredGeneration,
     Reconcile,
+    TableCellPreviews,
     Publish,
     GeometrySync,
     ScrollApply,
@@ -676,6 +682,9 @@ private:
   // layout is the blocker, asks it for the becameIdle() edge. The two unblock
   // edges - the outermost BlockGuard and becameIdle() - both come back here.
   void scheduleOwedWork();
+  void capturePreviewData(PreviewData::Source p_source, const QVector<QTextBlock> &p_blocks);
+  void scheduleTableCellPreviewRefresh();
+  void refreshTableCellPreviews();
 
   // Run everything owed, in the one fixed order which keeps the passes
   // consistent with each other. Re-owes itself the moment it is blocked again.
@@ -734,6 +743,21 @@ private:
   int m_nextFactoryOrder = 0;
 
   QHash<quint64, ActiveItem> m_items;
+
+  struct ImageInsertionRequest {
+    quint64 m_id = 0;
+    quint64 m_identity = 0;
+    QPointer<TablePreviewWidget> m_widget;
+    quint64 m_structureGeneration = 0;
+    int m_row = -1;
+    int m_column = -1;
+    int m_anchor = 0;
+    int m_caret = 0;
+    QString m_cellText;
+    QMetaObject::Connection m_changeConnection;
+  };
+  ImageInsertionRequest m_imageInsertionRequest;
+  quint64 m_nextImageInsertionRequest = 1;
 
   // The item which currently owns the keyboard focus, or 0.
   quint64 m_focusedItemId = 0;
@@ -808,6 +832,20 @@ private:
 
   // Owed work, all coalescing. Each is set by an entry point which declined to
   // run while blocked and cleared by drainOwedWork().
+  struct CapturedPreviewImage {
+    PreviewImageData m_data;
+    QString m_sourceText;
+    QPixmap m_image;
+  };
+  struct CapturedPreviewBlock {
+    QTextBlock m_block;
+    int m_revision = 0;
+    QString m_text;
+    QVector<CapturedPreviewImage> m_images;
+  };
+  QVector<CapturedPreviewBlock> m_capturedPreviews[PreviewData::MaxSource];
+  bool m_emptyPreviewPublication[PreviewData::MaxSource] = {true, true, true};
+  bool m_tableCellPreviewsPending = false;
   bool m_publishPending = false;
 
   bool m_geometrySyncPending = false;

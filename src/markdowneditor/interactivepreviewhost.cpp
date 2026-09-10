@@ -10,6 +10,7 @@
 #include <QScrollBar>
 #include <QTextBlock>
 #include <QTextDocument>
+#include <QTextTable>
 #include <QTimer>
 #include <QWidget>
 
@@ -17,6 +18,7 @@
 #include <texteditor/inputmodestatuswidget.h>
 #include <texteditor/textfolding.h>
 #include <vtextedit/markdownhighlighter.h>
+#include <vtextedit/previewmgr.h>
 #include <vtextedit/theme.h>
 #include <vtextedit/vmarkdowneditor.h>
 #include <vtextedit/vtextedit.h>
@@ -181,11 +183,15 @@ InteractivePreviewHost::InteractivePreviewHost(VMarkdownEditor *p_editor)
   connect(qApp, &QApplication::focusChanged, this,
           &InteractivePreviewHost::handleApplicationFocusChanged);
 
+  connect(m_editor->getPreviewMgr(), &PreviewMgr::previewDataUpdated, this,
+          &InteractivePreviewHost::capturePreviewData, Qt::DirectConnection);
+
   if (m_doc) {
     // The live anchors follow every edit, so resubmit the reservations as soon
     // as the event loop turns instead of waiting for the next parse.
     connect(m_doc, &QTextDocument::contentsChanged, this, [this]() {
       if (!m_items.isEmpty()) {
+        scheduleTableCellPreviewRefresh();
         schedulePublish();
       }
     });
@@ -230,6 +236,7 @@ InteractivePreviewHost::InteractivePreviewHost(VMarkdownEditor *p_editor)
 }
 
 InteractivePreviewHost::~InteractivePreviewHost() {
+  cancelImageInsertion(m_imageInsertionRequest.m_id);
   removeAllItems(true);
   // Nothing may survive the editor, including removals whose deferred deletion
   // has not been delivered yet.
@@ -423,6 +430,7 @@ void InteractivePreviewHost::setEnabled(bool p_enabled) {
   }
 
   m_enabled = p_enabled;
+  scheduleTableCellPreviewRefresh();
   publishEnabledTypeMask();
   // Enabling widens the mask the highlighter builds for; disabling only ever
   // removes items, which the replay of m_lastPreviews does on its own.
@@ -436,6 +444,7 @@ void InteractivePreviewHost::setTypeEnabled(PreviewElementType p_type, bool p_en
   }
 
   m_typeEnabled[idx] = p_enabled;
+  scheduleTableCellPreviewRefresh();
   publishEnabledTypeMask();
   reconcileLater(p_enabled);
 }
@@ -569,6 +578,166 @@ void InteractivePreviewHost::scheduleFoldRefresh() {
   scheduleOwedWork();
 }
 
+void InteractivePreviewHost::capturePreviewData(PreviewData::Source p_source,
+                                                const QVector<QTextBlock> &p_blocks) {
+  if (p_source != PreviewData::ImageLink && p_source != PreviewData::MathBlock) {
+    return;
+  }
+  QVector<CapturedPreviewBlock> captured;
+  captured.reserve(p_blocks.size());
+  for (const auto &block : p_blocks) {
+    if (!block.isValid() || block.document() != m_doc) {
+      continue;
+    }
+    const auto data = BlockPreviewData::get(block);
+    if (!data) {
+      continue;
+    }
+    CapturedPreviewBlock entry;
+    entry.m_block = block;
+    entry.m_revision = block.revision();
+    entry.m_text = block.text();
+    for (const auto preview : data->getPreviewData()) {
+      if (!preview || preview->source() != p_source) {
+        continue;
+      }
+      const auto image = preview->getImageData();
+      if (!image || image->m_startPos < 0 || image->m_endPos <= image->m_startPos ||
+          image->m_endPos > entry.m_text.size()) {
+        continue;
+      }
+      const auto pixmap = m_editor->findImageFromDocumentResourceMgr(image->m_imageName);
+      if (!pixmap || pixmap->isNull() || image->m_imageSize.width() <= 0 ||
+          image->m_imageSize.height() <= 0) {
+        continue;
+      }
+      CapturedPreviewImage record;
+      record.m_data = *image;
+      record.m_sourceText =
+          entry.m_text.mid(image->m_startPos, image->m_endPos - image->m_startPos);
+      record.m_image = *pixmap;
+      entry.m_images.append(std::move(record));
+    }
+    if (!entry.m_images.isEmpty()) {
+      captured.append(std::move(entry));
+    }
+  }
+  m_emptyPreviewPublication[p_source] = captured.isEmpty();
+  m_capturedPreviews[p_source] = std::move(captured);
+  scheduleTableCellPreviewRefresh();
+}
+
+void InteractivePreviewHost::scheduleTableCellPreviewRefresh() {
+  m_tableCellPreviewsPending = true;
+  scheduleOwedWork();
+}
+
+void InteractivePreviewHost::refreshTableCellPreviews() {
+  if (isBlocked()) {
+    scheduleTableCellPreviewRefresh();
+    return;
+  }
+
+  // Snapshot identities, not iterators: applying a sheet's geometry can call
+  // back into the host. Off-screen bound items are never realized by this pass.
+  const auto identities = m_items.keys();
+  for (quint64 identity : identities) {
+    QPointer<TablePreviewWidget> widget;
+    QSharedPointer<const TablePreview> table;
+    QTextCursor anchor;
+    {
+      const auto it = m_items.constFind(identity);
+      if (it == m_items.constEnd() || !it->m_preview ||
+          it->m_preview->type() != PreviewElementType::Table) {
+        continue;
+      }
+      widget = qobject_cast<TablePreviewWidget *>(it->m_widget.data());
+      if (!widget) {
+        continue;
+      }
+      table = it->m_preview.staticCast<const TablePreview>();
+      anchor = it->m_anchor;
+    }
+
+    QVector<TableCellInlinePreview> records[PreviewData::MaxSource];
+    bool sourceCurrent = table->syntax() == PreviewTableSyntax::Markdown &&
+                         previewSourceText(m_doc, anchor.selectionStart(), anchor.selectionEnd()) ==
+                             table->sourceMarkdown();
+    bool stale[PreviewData::MaxSource] = {false, false, false};
+    if (sourceCurrent) {
+      const auto header = m_doc->findBlock(anchor.selectionStart());
+      for (int row = 0; row < table->rowCount(); ++row) {
+        const auto block = m_doc->findBlockByNumber(header.blockNumber() + row + (row > 0 ? 1 : 0));
+        QString prefix;
+        QVector<QString> cells;
+        QVector<int> offsets;
+        if (!block.isValid() || !md::splitTableRow(block.text(), prefix, cells, &offsets) ||
+            row >= table->cells().size() || row >= table->rowPrefixes().size() ||
+            prefix != table->rowPrefixes()[row] || cells != table->cells()[row]) {
+          sourceCurrent = false;
+          break;
+        }
+        for (auto source : {PreviewData::ImageLink, PreviewData::MathBlock}) {
+          for (const auto &published : m_capturedPreviews[source]) {
+            if (published.m_block != block) {
+              continue;
+            }
+            if (block.revision() != published.m_revision || block.text() != published.m_text) {
+              stale[source] = true;
+              continue;
+            }
+            for (const auto &image : published.m_images) {
+              const auto &data = image.m_data;
+              if (published.m_text.mid(data.m_startPos, data.m_endPos - data.m_startPos) !=
+                  image.m_sourceText) {
+                continue;
+              }
+              for (int column = 0; column < cells.size(); ++column) {
+                if (data.m_startPos < offsets[column] ||
+                    data.m_endPos > offsets[column] + cells[column].size()) {
+                  continue;
+                }
+                TableCellInlinePreview record;
+                record.m_row = row;
+                record.m_column = column;
+                record.m_start = data.m_startPos - offsets[column];
+                record.m_end = data.m_endPos - offsets[column];
+                record.m_sourceCell = cells[column];
+                record.m_elementSource = image.m_sourceText;
+                record.m_source = source;
+                record.m_image = image.m_image;
+                record.m_logicalSize = data.m_imageSize;
+                record.m_backgroundColor = data.m_backgroundColor;
+                records[source].append(std::move(record));
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    BlockGuard guard(this, BlockGuard::Reason::FactoryCallback);
+    for (auto source : {PreviewData::ImageLink, PreviewData::MathBlock}) {
+      if (!widget) {
+        break;
+      }
+      const auto type =
+          source == PreviewData::ImageLink ? PreviewElementType::Image : PreviewElementType::Math;
+      if (!m_enabled || !isTypeEnabled(type) || m_emptyPreviewPublication[source] ||
+          table->syntax() != PreviewTableSyntax::Markdown) {
+        widget->setInlinePreviews(source, {});
+      } else if (sourceCurrent && !stale[source]) {
+        widget->setInlinePreviews(source, records[source]);
+      } else {
+        // Dirty source/snapshot or publication: keep only already-bound, still
+        // valid constructs. Never apply offsets from another text generation.
+        widget->revalidateInlinePreviews();
+      }
+    }
+  }
+}
+
 void InteractivePreviewHost::scheduleOwedWork() {
   if (m_owedWorkScheduled || m_drainingOwedWork) {
     // Exactly one delivery is armed at a time, and a running drain arms its
@@ -577,8 +746,9 @@ void InteractivePreviewHost::scheduleOwedWork() {
   }
 
   if (!m_replacementRetryPending && !m_hasDeferredGeneration && !m_reconcilePending &&
-      !m_publishPending && !m_geometrySyncPending && !m_scrollApplyPending &&
-      !m_realizationCompensationPending && !m_foldRefreshPending && !m_cursorLineSyncPending) {
+      !m_tableCellPreviewsPending && !m_publishPending && !m_geometrySyncPending &&
+      !m_scrollApplyPending && !m_realizationCompensationPending && !m_foldRefreshPending &&
+      !m_cursorLineSyncPending) {
     return;
   }
 
@@ -643,6 +813,10 @@ InteractivePreviewHost::OwedWork InteractivePreviewHost::highestOwedWork() const
 
   if (m_reconcilePending && !m_reconciling) {
     return OwedWork::Reconcile;
+  }
+
+  if (m_tableCellPreviewsPending) {
+    return OwedWork::TableCellPreviews;
   }
 
   if (m_publishPending) {
@@ -714,6 +888,14 @@ void InteractivePreviewHost::runOwedWorkSteps() {
     setProperty(c_reconcileDeliveryCountProperty, ++m_reconcileDeliveryCount);
     // A factory set change may make a different factory win, so rebuild.
     rebuildAll();
+  }
+
+  if (stopOwedWorkBefore(OwedWork::TableCellPreviews)) {
+    return;
+  }
+  if (m_tableCellPreviewsPending) {
+    m_tableCellPreviewsPending = false;
+    refreshTableCellPreviews();
   }
 
   if (stopOwedWorkBefore(OwedWork::Publish)) {
@@ -990,6 +1172,7 @@ void InteractivePreviewHost::updatePreviews(
   }
 
   m_reconciling = false;
+  scheduleTableCellPreviewRefresh();
 
   // Replay a generation which arrived while this pass was running, unless a
   // postponed replacement outranks it: that replacement mutates the document,
@@ -1477,6 +1660,9 @@ void InteractivePreviewHost::updateItem(quint64 p_id,
 void InteractivePreviewHost::removeItem(quint64 p_id) { removeItem(p_id, false); }
 
 void InteractivePreviewHost::removeItem(quint64 p_id, bool p_synchronous) {
+  if (m_imageInsertionRequest.m_identity == p_id) {
+    cancelImageInsertion(m_imageInsertionRequest.m_id);
+  }
   // A removal flushes the sheet's owed write-back, and that flush is
   // mandatory: it is the last point at which the identity is still
   // authoritative. It may therefore never be answered with Deferred, which is
@@ -1690,12 +1876,144 @@ bool InteractivePreviewHost::handleTypeAction(TypeAction p_action, const QVarian
     return false;
   }
 
+  auto tableWidget = qobject_cast<TablePreviewWidget *>(widget.data());
+  if (p_action == TypeAction::TypeImage && tableWidget) {
+    if (p_data.isValid() || isBlocked() || m_editor->isReadOnly() ||
+        !tableWidget->m_authoritative || tableWidget->m_suppressed) {
+      return true;
+    }
+    QPointer<TablePreviewSheet> sheet = tableWidget->m_sheet;
+    QPointer<InteractivePreviewHost> self(this);
+    if (!sheet || sheet->isReadOnly()) {
+      return true;
+    }
+    sheet->commitPreedit();
+    if (!self || !widget || !sheet || sheet->isReadOnly() || tableWidgetOf(id) != widget) {
+      return true;
+    }
+    sheet->clampCursorIntoTable();
+    sheet->collapseComplexSelectionForMutation();
+    auto document = sheet->tableDocument();
+    if (!document || !document->isIntact()) {
+      return true;
+    }
+    const auto cursor = sheet->textCursor();
+    const auto cell = document->table()->cellAt(cursor);
+    if (!cell.isValid()) {
+      return true;
+    }
+    const auto selection = sheet->getSelection();
+    const bool backward = cursor.position() < cursor.anchor();
+    const int first = cell.firstPosition();
+    const int last = cell.lastPosition();
+    const int start =
+        selection.isValid() ? qBound(first, selection.start(), last) : cursor.position();
+    const int end = selection.isValid() ? qBound(first, selection.end(), last) : cursor.position();
+    ImageInsertionRequest request;
+    // Never reuse an ID, even if a theoretical quint64 exhaustion is reached.
+    if (m_nextImageInsertionRequest == 0) {
+      return true;
+    }
+    cancelImageInsertion(m_imageInsertionRequest.m_id);
+    request.m_id = m_nextImageInsertionRequest++;
+    request.m_identity = id;
+    request.m_widget = tableWidget;
+    request.m_structureGeneration = document->structureGeneration();
+    request.m_row = cell.row();
+    request.m_column = cell.column();
+    request.m_anchor = document->sourceOffset(cell.row(), cell.column(), backward ? end : start);
+    request.m_caret = document->sourceOffset(cell.row(), cell.column(), backward ? start : end);
+    request.m_cellText = sheet->cellTextAt(sheet->currentCellIndex());
+    m_imageInsertionRequest = request;
+    m_imageInsertionRequest.m_changeConnection =
+        connect(document->document(), &QTextDocument::contentsChanged, this, [this]() {
+          const auto &pending = m_imageInsertionRequest;
+          auto widget = pending.m_widget.data();
+          auto doc = widget ? widget->m_document.data() : nullptr;
+          if (doc && doc->isApplyingInlinePreviews()) {
+            return;
+          }
+          if (!doc || !doc->isIntact() ||
+              doc->structureGeneration() != pending.m_structureGeneration ||
+              !doc->isOrigin(pending.m_row, pending.m_column) ||
+              widget->m_sheet->cellTextAt(pending.m_row * doc->columnCount() + pending.m_column) !=
+                  pending.m_cellText) {
+            cancelImageInsertion(pending.m_id);
+          }
+        });
+    const QString selectedText = document->sourceText(start, end);
+    emit m_editor->imageInsertionRequested(request.m_id, selectedText);
+    return true;
+  }
+
   auto handler = qobject_cast<PreviewTypeActionHandler *>(widget.data());
   if (handler) {
     BlockGuard guard(this, BlockGuard::Reason::FactoryCallback);
     handler->handleTypeAction(p_action, p_data);
   }
 
+  return true;
+}
+
+void InteractivePreviewHost::cancelImageInsertion(quint64 p_requestId) {
+  if (p_requestId == 0 || p_requestId != m_imageInsertionRequest.m_id) {
+    return;
+  }
+  disconnect(m_imageInsertionRequest.m_changeConnection);
+  m_imageInsertionRequest = ImageInsertionRequest();
+}
+
+bool InteractivePreviewHost::completeImageInsertion(quint64 p_requestId,
+                                                    const QString &p_imageSource) {
+  if (p_requestId == 0 || p_requestId != m_imageInsertionRequest.m_id) {
+    return false;
+  }
+  const auto request = m_imageInsertionRequest;
+  cancelImageInsertion(p_requestId);
+  if (isBlocked() || m_editor->isReadOnly() || p_imageSource.isEmpty()) {
+    return false;
+  }
+  for (const QChar ch : p_imageSource) {
+    if (ch == QLatin1Char('\n') || ch == QLatin1Char('\r') || ch == QChar::LineSeparator ||
+        ch == QChar::ParagraphSeparator) {
+      return false;
+    }
+  }
+  const auto parsed = md::walkAndConvert(p_imageSource.toUtf8(), 1, 0, 0, false);
+  if (parsed.imageElements.size() != 1) {
+    return false;
+  }
+  const auto &image = parsed.imageElements.first();
+  if (image.m_startPos != 0 || image.m_endPos != p_imageSource.size() ||
+      image.m_destination.isEmpty()) {
+    return false;
+  }
+  auto widget = request.m_widget.data();
+  if (!widget || tableWidgetOf(request.m_identity) != widget || !widget->m_authoritative ||
+      widget->m_suppressed || !widget->m_sheet || widget->m_sheet->isReadOnly()) {
+    return false;
+  }
+  auto doc = widget->m_document.data();
+  auto sheet = widget->m_sheet;
+  if (!doc || !doc->isIntact() || doc->structureGeneration() != request.m_structureGeneration ||
+      !doc->isOrigin(request.m_row, request.m_column) ||
+      sheet->cellTextAt(request.m_row * doc->columnCount() + request.m_column) !=
+          request.m_cellText) {
+    return false;
+  }
+  sheet->commitUndoCheckpoint();
+  sheet->clearSelection();
+  QTextCursor cursor(doc->document());
+  cursor.setPosition(doc->documentPosition(request.m_row, request.m_column, request.m_anchor));
+  cursor.setPosition(doc->documentPosition(request.m_row, request.m_column, request.m_caret),
+                     QTextCursor::KeepAnchor);
+  sheet->setTextCursor(cursor);
+  sheet->commitUndoCheckpoint();
+  TablePreviewSheet::SourceEditGuard sourceEdit(sheet);
+  cursor = sheet->textCursor();
+  cursor.insertText(p_imageSource, doc->baselineCellFormat(request.m_row));
+  sheet->setTextCursor(cursor);
+  sheet->commitUndoCheckpoint();
   return true;
 }
 
@@ -2258,6 +2576,7 @@ InteractivePreviewHost::RealizeOutcome InteractivePreviewHost::realizeItem(quint
   item.m_sizeIsEstimate = false;
 
   ++m_widgetsRealized;
+  scheduleTableCellPreviewRefresh();
 
   qCDebug(previewHostLog) << "realized item" << p_id << previewTypeName(preview->type()) << "widget"
                           << guarded->metaObject()->className() << "estimate was" << estimate;

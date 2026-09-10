@@ -31,6 +31,30 @@ private slots:
   void testAlignedOutputKeepsThePrefixes();
 
   // Document.
+  void testSourceProjectionOmitsOnlyDecorations();
+  void testProjectedClipboardPreservesSource();
+  void testInlinePreviewNativeEditingAndIme();
+  void testInlinePreviewFormattingPreservesObjects();
+  void testInlineBindingsSourceRemovalAndDropStayFrameSafe();
+
+  // Provider-backed inline objects.
+  void testInlineBindingsPlaceImageAndMathAtLogicalSize();
+  void testInlineBindingsFitWidthAndReflow();
+  void testInlineBindingsKeepClipboardAndSerializationSourceOnly();
+  void testInlineBindingsSourceUndoAndRedo();
+  void testInlineBindingsFormattingKeepsTypedElements();
+  void testInlineBindingsTrackEditsAndRejectStaleCells();
+  void testInlineBindingsCanonicalCellMapping_data();
+  void testInlineBindingsCanonicalCellMapping();
+  void testInlineBindingsRejectInvalidRecords_data();
+  void testInlineBindingsRejectInvalidRecords();
+  void testInlineBindingsDoNotDuplicateOverlappingRecords();
+  void testInlineBindingsRetireAndReuseResources();
+  void testInlineBindingsLeaveHtmlAndMergedCellsSourceOnly();
+  void testInlineBindingsDoNotCreateSourceCommitsOrUndoSteps();
+  void testInlineBindingsDeferRefreshDuringComposition();
+  void testInlineBindingsOrderMultipleImagesInOneCell();
+
   void testDocumentBuildsTheTable();
   void testDocumentNormalization();
   void testHeaderRowIsBold();

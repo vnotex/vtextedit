@@ -15,24 +15,29 @@
 #include <QMenu>
 #include <QMimeData>
 #include <QMouseEvent>
+#include <QPainter>
 #include <QPalette>
 #include <QScopedValueRollback>
 #include <QScrollBar>
+#include <QSet>
 #include <QStringList>
 #include <QTextBlock>
 #include <QTextBlockFormat>
 #include <QTextCharFormat>
 #include <QTextCursor>
 #include <QTextDocument>
+#include <QTextFragment>
 #include <QTextFrame>
 #include <QTextLayout>
 #include <QTextTable>
 #include <QTextTableCell>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 #include <QtMath>
 
+#include <algorithm>
 #include <cstdlib>
 #include <functional>
 #include <memory>
@@ -69,18 +74,29 @@ void vte::resetTablePreviewCellsBuilt() { s_tablePreviewCellsBuilt = 0; }
 // TablePreviewSerializer
 // ---------------------------------------------------------------------------
 
-QString TablePreviewSerializer::escapeCell(const QString &p_cell) {
+QString TablePreviewSerializer::escapeCell(const QString &p_cell, QVector<int> *p_sourceOffsets) {
   QString result;
   result.reserve(p_cell.size());
+  if (p_sourceOffsets) {
+    p_sourceOffsets->clear();
+    p_sourceOffsets->reserve(p_cell.size() + 1);
+    p_sourceOffsets->append(0);
+  }
 
   int backslashes = 0;
   for (int i = 0; i < p_cell.size(); ++i) {
     const QChar ch = p_cell.at(i);
     if (ch == QLatin1Char('|') && (backslashes % 2) == 0) {
       result.append(QLatin1Char('\\'));
+      if (p_sourceOffsets) {
+        p_sourceOffsets->append(i);
+      }
     }
 
     result.append(ch);
+    if (p_sourceOffsets) {
+      p_sourceOffsets->append(i + 1);
+    }
 
     if (ch == QLatin1Char('\\')) {
       ++backslashes;
@@ -805,6 +821,8 @@ void TablePreviewDocument::setTable(const QSharedPointer<const TablePreview> &p_
 }
 
 void TablePreviewDocument::build() {
+  clearInlinePreviews();
+  m_suspendedInlineRow = m_suspendedInlineColumn = -1;
   m_table = nullptr;
   m_doc->clear();
   // clear() rebuilds the document, which restores the default undo behavior.
@@ -885,7 +903,6 @@ void TablePreviewDocument::build() {
       if (!text.isEmpty()) {
         cell.firstCursorPosition().insertText(text);
       }
-
     }
   }
 
@@ -909,6 +926,457 @@ void TablePreviewDocument::build() {
   noteStructuralChange();
   refreshCellSyntaxFormats();
   cursor.endEditBlock();
+}
+
+// Visit contiguous physical source runs without allocating a parallel character map.
+// Untagged U+FFFC is ordinary user source; only tagged replacement characters vanish.
+template <typename Visitor>
+static void visitSourceRanges(QTextDocument *p_doc, int p_start, int p_end, Visitor p_visit) {
+  int start = p_start;
+  for (auto block = p_doc->findBlock(p_start); block.isValid() && block.position() < p_end;
+       block = block.next()) {
+    for (auto it = block.begin(); !it.atEnd(); ++it) {
+      const auto fragment = it.fragment();
+      if (fragment.position() >= p_end) {
+        break;
+      }
+      if (fragment.position() + fragment.length() <= p_start ||
+          fragment.charFormat().property(TablePreviewDocument::c_inlinePreviewProperty) != true) {
+        continue;
+      }
+      const QString text = fragment.text();
+      const int first = qMax(p_start - fragment.position(), 0);
+      const int last = qMin(p_end - fragment.position(), fragment.length());
+      for (int i = first; i < last; ++i) {
+        if (text.at(i) == QChar::ObjectReplacementCharacter) {
+          const int position = fragment.position() + i;
+          if (start < position) {
+            p_visit(start, position);
+          }
+          start = position + 1;
+        }
+      }
+    }
+  }
+  if (start < p_end) {
+    p_visit(start, p_end);
+  }
+}
+
+QString TablePreviewDocument::sourceText(int p_start, int p_end) const {
+  QString text;
+  if (p_start < 0 || p_end < p_start || p_end >= m_doc->characterCount()) {
+    return text;
+  }
+  visitSourceRanges(m_doc.data(), p_start, p_end, [this, &text](int p_first, int p_last) {
+    QTextCursor cursor(m_doc.data());
+    cursor.setPosition(p_first);
+    cursor.setPosition(p_last, QTextCursor::KeepAnchor);
+    text.append(cursor.selectedText());
+  });
+  return text;
+}
+
+int TablePreviewDocument::sourceOffset(int p_row, int p_column, int p_documentPosition) const {
+  if (!isOrigin(p_row, p_column)) {
+    return -1;
+  }
+  const auto cell = m_table->cellAt(p_row, p_column);
+  int offset = 0;
+  visitSourceRanges(m_doc.data(), cell.firstPosition(),
+                    qBound(cell.firstPosition(), p_documentPosition, cell.lastPosition()),
+                    [&offset](int p_first, int p_last) { offset += p_last - p_first; });
+  return offset;
+}
+
+int TablePreviewDocument::documentPosition(int p_row, int p_column, int p_sourceOffset,
+                                           bool p_afterPreview) const {
+  if (!isOrigin(p_row, p_column)) {
+    return -1;
+  }
+  const auto cell = m_table->cellAt(p_row, p_column);
+  if (p_sourceOffset <= 0 && !p_afterPreview) {
+    return cell.firstPosition();
+  }
+  int remaining = qMax(0, p_sourceOffset);
+  int result = cell.lastPosition();
+  bool found = false;
+  visitSourceRanges(m_doc.data(), cell.firstPosition(), cell.lastPosition(),
+                    [&](int p_first, int p_last) {
+                      if (found) {
+                        return;
+                      }
+                      const int length = p_last - p_first;
+                      if (remaining < length || (remaining == length && !p_afterPreview)) {
+                        result = p_first + remaining;
+                        found = true;
+                      } else {
+                        remaining -= length;
+                      }
+                    });
+  return result;
+}
+
+bool TablePreviewDocument::isInlinePreviewAt(int p_position) const {
+  if (p_position < 0 || p_position >= m_doc->characterCount() - 1 ||
+      m_doc->characterAt(p_position) != QChar::ObjectReplacementCharacter) {
+    return false;
+  }
+  QTextCursor cursor(m_doc.data());
+  cursor.setPosition(p_position);
+  cursor.setPosition(p_position + 1, QTextCursor::KeepAnchor);
+  return cursor.charFormat().property(c_inlinePreviewProperty) == true;
+}
+
+static QUrl inlinePreviewUrl(int p_slot) {
+  return QUrl(QStringLiteral("vte-table-preview:%1").arg(p_slot));
+}
+
+bool TablePreviewDocument::hasInlineElement(const QString &p_source, int p_start, int p_end,
+                                            PreviewData::Source p_kind) {
+  if (p_start < 0 || p_end <= p_start || p_end > p_source.size()) {
+    return false;
+  }
+  const auto &parsed = cellInlineData(p_source);
+  if (p_kind == PreviewData::ImageLink) {
+    for (const auto &element : parsed.imageElements) {
+      if (element.m_startPos == p_start && element.m_endPos == p_end &&
+          !element.m_destination.isEmpty()) {
+        return true;
+      }
+    }
+  } else if (p_kind == PreviewData::MathBlock) {
+    for (const auto &element : parsed.mathElements) {
+      if (element.m_startPos == p_start && element.m_endPos == p_end) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool TablePreviewDocument::validInlinePreview(const InlinePreviewBinding &p_binding) {
+  if (!isOrigin(p_binding.m_row, p_binding.m_column)) {
+    return false;
+  }
+  const auto cell = m_table->cellAt(p_binding.m_row, p_binding.m_column);
+  const int first = p_binding.m_start.position();
+  const int last = p_binding.m_end.position();
+  if (first < cell.firstPosition() || last > cell.lastPosition() || last <= first) {
+    return false;
+  }
+  const QString source = sourceText(cell.firstPosition(), cell.lastPosition());
+  const int start = sourceOffset(cell.row(), cell.column(), first);
+  const int end = sourceOffset(cell.row(), cell.column(), last);
+  return source.mid(start, end - start) == p_binding.m_elementSource &&
+         hasInlineElement(source, start, end, p_binding.m_source);
+}
+
+void TablePreviewDocument::removeInlinePreviewObject(InlinePreviewBinding &p_binding) {
+  if (!p_binding.m_installed) {
+    return;
+  }
+  const int position = p_binding.m_object.position();
+  if (isInlinePreviewAt(position)) {
+    QTextCursor cursor(m_doc.data());
+    cursor.setPosition(position);
+    cursor.setPosition(position + 1, QTextCursor::KeepAnchor);
+    if (cursor.charFormat().toImageFormat().name() ==
+        inlinePreviewUrl(p_binding.m_slot).toString()) {
+      cursor.removeSelectedText();
+    }
+  }
+  p_binding.m_installed = false;
+}
+
+void TablePreviewDocument::retireInlinePreview(int p_index) {
+  auto &binding = m_inlinePreviews[p_index];
+  removeInlinePreviewObject(binding);
+  m_doc->addResource(QTextDocument::ImageResource, inlinePreviewUrl(binding.m_slot), QVariant());
+  m_freeInlinePreviewSlots.append(binding.m_slot);
+  m_inlinePreviews.removeAt(p_index);
+}
+
+void TablePreviewDocument::clearInlinePreviews(PreviewData::Source p_source) {
+  InlinePreviewGuard presentation(this);
+  for (int source = 0; source < PreviewData::MaxSource; ++source) {
+    if (p_source == PreviewData::MaxSource || source == p_source) {
+      ++m_inlinePreviewGenerations[source];
+    }
+  }
+  for (int i = m_inlinePreviews.size() - 1; i >= 0; --i) {
+    if (p_source == PreviewData::MaxSource || m_inlinePreviews.at(i).m_source == p_source) {
+      retireInlinePreview(i);
+    }
+  }
+}
+
+void TablePreviewDocument::noteStructuralChange() {
+  clearInlinePreviews();
+  ++m_structureGeneration;
+}
+
+QSizeF TablePreviewDocument::inlinePreviewSize(const InlinePreviewBinding &p_binding) const {
+  const qreal border = c_bordersCollapsed ? c_cellBorder : 2 * c_cellBorder;
+  const qreal contentWidth = m_doc->textWidth() - 2 * m_doc->documentMargin();
+  const qreal cap =
+      qMax(qreal(1), contentWidth / qMax(1, m_columnCount) - 2 * c_cellPadding - 2 * border);
+  const qreal scale = qMin(qreal(1), cap / p_binding.m_logicalSize.width());
+  return QSizeF(p_binding.m_logicalSize.width() * scale, p_binding.m_logicalSize.height() * scale);
+}
+
+void TablePreviewDocument::updateInlinePreviewResource(const InlinePreviewBinding &p_binding) {
+  QPixmap image = p_binding.m_image;
+  if (qAlpha(p_binding.m_backgroundColor) != 0) {
+    QPixmap variant(image.size());
+    variant.setDevicePixelRatio(image.devicePixelRatio());
+    variant.fill(QColor::fromRgba(p_binding.m_backgroundColor));
+    QPainter painter(&variant);
+    painter.drawPixmap(QPointF(0, 0), image);
+    painter.end();
+    image = variant;
+  }
+  m_doc->addResource(QTextDocument::ImageResource, inlinePreviewUrl(p_binding.m_slot), image);
+}
+
+void TablePreviewDocument::refreshInlinePreviewSizes() {
+  InlinePreviewGuard presentation(this);
+  for (const auto &binding : m_inlinePreviews) {
+    if (!binding.m_installed || binding.m_suspended) {
+      continue;
+    }
+    const int position = binding.m_object.position();
+    if (!isInlinePreviewAt(position)) {
+      continue;
+    }
+    QTextCursor cursor(m_doc.data());
+    cursor.setPosition(position);
+    cursor.setPosition(position + 1, QTextCursor::KeepAnchor);
+    auto format = cursor.charFormat().toImageFormat();
+    const QSizeF size = inlinePreviewSize(binding);
+    if (qFuzzyCompare(format.width(), size.width()) &&
+        qFuzzyCompare(format.height(), size.height())) {
+      continue;
+    }
+    format.setWidth(size.width());
+    format.setHeight(size.height());
+    cursor.setCharFormat(format);
+    m_doc->markContentsDirty(position, 1);
+  }
+}
+
+void TablePreviewDocument::installInlinePreviewObjects() {
+  // New objects move all later physical positions; live cursors plus descending
+  // insertion keep every source end attached to its own construct.
+  QVector<int> pending;
+  for (int i = 0; i < m_inlinePreviews.size(); ++i) {
+    if (!m_inlinePreviews.at(i).m_installed && !m_inlinePreviews.at(i).m_suspended) {
+      pending.append(i);
+    }
+  }
+  std::sort(pending.begin(), pending.end(), [this](int p_left, int p_right) {
+    return m_inlinePreviews.at(p_left).m_end.position() >
+           m_inlinePreviews.at(p_right).m_end.position();
+  });
+  for (int index : pending) {
+    auto &binding = m_inlinePreviews[index];
+    const QSizeF size = inlinePreviewSize(binding);
+    QTextImageFormat format;
+    format.setName(inlinePreviewUrl(binding.m_slot).toString());
+    format.setProperty(c_inlinePreviewProperty, true);
+    format.setWidth(size.width());
+    format.setHeight(size.height());
+    const int position = binding.m_end.position();
+    QTextCursor cursor(m_doc.data());
+    // Retained left-affine cursors can acquire incidental selections.
+    cursor.setPosition(position);
+    cursor.insertImage(format);
+    binding.m_object = QTextCursor(m_doc.data());
+    binding.m_object.setPosition(position);
+    binding.m_object.setKeepPositionOnInsert(false);
+    binding.m_installed = true;
+  }
+}
+
+void TablePreviewDocument::revalidateInlinePreviews() {
+  if (!isIntact() || m_syntax != PreviewTableSyntax::Markdown || hasMergedCells()) {
+    clearInlinePreviews();
+    return;
+  }
+  InlinePreviewGuard presentation(this);
+  for (int i = m_inlinePreviews.size() - 1; i >= 0; --i) {
+    auto &binding = m_inlinePreviews[i];
+    if (!validInlinePreview(binding)) {
+      retireInlinePreview(i);
+    } else if (binding.m_installed && (binding.m_object.position() != binding.m_end.position() ||
+                                       !isInlinePreviewAt(binding.m_object.position()))) {
+      removeInlinePreviewObject(binding);
+    }
+  }
+  installInlinePreviewObjects();
+  refreshInlinePreviewSizes();
+}
+
+void TablePreviewDocument::suspendInlinePreviews(int p_row, int p_column) {
+  m_suspendedInlineRow = p_row;
+  m_suspendedInlineColumn = p_column;
+  InlinePreviewGuard presentation(this);
+  for (auto &binding : m_inlinePreviews) {
+    if (binding.m_row == p_row && binding.m_column == p_column) {
+      removeInlinePreviewObject(binding);
+      binding.m_suspended = true;
+    }
+  }
+}
+
+void TablePreviewDocument::resumeInlinePreviews() {
+  m_suspendedInlineRow = m_suspendedInlineColumn = -1;
+  for (auto &binding : m_inlinePreviews) {
+    binding.m_suspended = false;
+  }
+  revalidateInlinePreviews();
+}
+
+void TablePreviewDocument::setInlinePreviews(PreviewData::Source p_source,
+                                             const QVector<TableCellInlinePreview> &p_previews) {
+  if (p_source != PreviewData::ImageLink && p_source != PreviewData::MathBlock) {
+    return;
+  }
+  if (p_previews.isEmpty()) {
+    clearInlinePreviews(p_source);
+    return;
+  }
+  if (!isIntact() || m_syntax != PreviewTableSyntax::Markdown || hasMergedCells()) {
+    clearInlinePreviews();
+    return;
+  }
+  InlinePreviewGuard presentation(this);
+  for (int i = m_inlinePreviews.size() - 1; i >= 0; --i) {
+    if (!validInlinePreview(m_inlinePreviews.at(i))) {
+      retireInlinePreview(i);
+    }
+  }
+  struct CanonicalCell {
+    QString m_source;
+    QString m_escaped;
+    QVector<int> m_offsets;
+    int m_first = 0;
+    int m_last = 0;
+    bool m_matchesPublication = false;
+  };
+  QHash<int, CanonicalCell> cells;
+  auto canonicalCell = [&](int p_row, int p_column) -> CanonicalCell & {
+    const int key = p_row * m_columnCount + p_column;
+    auto it = cells.find(key);
+    if (it == cells.end()) {
+      const auto cell = m_table->cellAt(p_row, p_column);
+      CanonicalCell data;
+      data.m_source = sourceText(cell.firstPosition(), cell.lastPosition());
+      data.m_escaped = TablePreviewSerializer::escapeCell(data.m_source, &data.m_offsets);
+      data.m_last = data.m_escaped.size();
+      while (data.m_first < data.m_last && data.m_escaped.at(data.m_first).isSpace()) {
+        ++data.m_first;
+      }
+      while (data.m_last > data.m_first && data.m_escaped.at(data.m_last - 1).isSpace()) {
+        --data.m_last;
+      }
+      it = cells.insert(key, std::move(data));
+    }
+    return it.value();
+  };
+  QSet<int> retainedSlots;
+  bool repaint = false;
+  for (const auto &preview : p_previews) {
+    if (preview.m_source != p_source || !isOrigin(preview.m_row, preview.m_column)) {
+      continue;
+    }
+    auto &cell = canonicalCell(preview.m_row, preview.m_column);
+    if (cell.m_escaped.mid(cell.m_first, cell.m_last - cell.m_first) != preview.m_sourceCell) {
+      continue;
+    }
+    cell.m_matchesPublication = true;
+    if (preview.m_start < 0 || preview.m_end <= preview.m_start ||
+        preview.m_end > preview.m_sourceCell.size() || preview.m_image.isNull() ||
+        preview.m_logicalSize.width() <= 0 || preview.m_logicalSize.height() <= 0 ||
+        preview.m_sourceCell.mid(preview.m_start, preview.m_end - preview.m_start) !=
+            preview.m_elementSource) {
+      continue;
+    }
+    const int start = cell.m_offsets.at(cell.m_first + preview.m_start);
+    const int end = cell.m_offsets.at(cell.m_first + preview.m_end);
+    if (!hasInlineElement(cell.m_source, start, end, p_source)) {
+      continue;
+    }
+    const QString spelling = cell.m_source.mid(start, end - start);
+    int matching = -1;
+    bool overlap = false;
+    for (int i = 0; i < m_inlinePreviews.size(); ++i) {
+      const auto &binding = m_inlinePreviews.at(i);
+      if (binding.m_row != preview.m_row || binding.m_column != preview.m_column) {
+        continue;
+      }
+      const int boundStart =
+          sourceOffset(binding.m_row, binding.m_column, binding.m_start.position());
+      const int boundEnd = sourceOffset(binding.m_row, binding.m_column, binding.m_end.position());
+      if (boundStart == start && boundEnd == end && binding.m_source == p_source &&
+          binding.m_elementSource == spelling) {
+        matching = i;
+      } else if (boundStart < end && start < boundEnd) {
+        overlap = true;
+      }
+    }
+    if (overlap) {
+      continue;
+    }
+    if (matching < 0) {
+      InlinePreviewBinding binding;
+      binding.m_row = preview.m_row;
+      binding.m_column = preview.m_column;
+      binding.m_start = QTextCursor(m_doc.data());
+      binding.m_start.setPosition(documentPosition(preview.m_row, preview.m_column, start));
+      binding.m_start.setKeepPositionOnInsert(false);
+      binding.m_end = QTextCursor(m_doc.data());
+      binding.m_end.setPosition(documentPosition(preview.m_row, preview.m_column, end, false));
+      binding.m_end.setKeepPositionOnInsert(true);
+      binding.m_elementSource = spelling;
+      binding.m_source = p_source;
+      binding.m_slot = m_freeInlinePreviewSlots.isEmpty() ? m_nextInlinePreviewSlot++
+                                                          : m_freeInlinePreviewSlots.takeLast();
+      binding.m_suspended =
+          preview.m_row == m_suspendedInlineRow && preview.m_column == m_suspendedInlineColumn;
+      matching = m_inlinePreviews.size();
+      m_inlinePreviews.append(std::move(binding));
+    }
+    auto &binding = m_inlinePreviews[matching];
+    retainedSlots.insert(binding.m_slot);
+    const bool resourceChanged = binding.m_image.cacheKey() != preview.m_image.cacheKey() ||
+                                 binding.m_backgroundColor != preview.m_backgroundColor;
+    binding.m_sourceCell = preview.m_sourceCell;
+    binding.m_image = preview.m_image;
+    binding.m_logicalSize = preview.m_logicalSize;
+    binding.m_backgroundColor = preview.m_backgroundColor;
+    if (resourceChanged) {
+      updateInlinePreviewResource(binding);
+      repaint = true;
+    }
+  }
+  for (int i = m_inlinePreviews.size() - 1; i >= 0; --i) {
+    const auto &binding = m_inlinePreviews.at(i);
+    if (binding.m_source != p_source || retainedSlots.contains(binding.m_slot)) {
+      continue;
+    }
+    const auto &cell = canonicalCell(binding.m_row, binding.m_column);
+    // An unmatched pristine cell is authoritative. A dirty cell retains only
+    // its already validated live binding; stale offsets are never relocated.
+    if (cell.m_matchesPublication ||
+        cell.m_escaped.mid(cell.m_first, cell.m_last - cell.m_first) == binding.m_sourceCell) {
+      retireInlinePreview(i);
+    }
+  }
+  revalidateInlinePreviews();
+  if (repaint) {
+    m_doc->documentLayout()->update();
+  }
 }
 
 QVector<QVector<QString>> TablePreviewDocument::cells() const {
@@ -940,14 +1408,7 @@ QVector<QVector<QString>> TablePreviewDocument::cells() const {
         continue;
       }
 
-      QTextCursor cursor = cell.firstCursorPosition();
-      cursor.setPosition(cell.lastCursorPosition().position(), QTextCursor::KeepAnchor);
-      // selectedText() reports a block boundary as U+2029, which the
-      // serializer rejects. A cell can only ever hold one block - Enter never
-      // inserts one (it either does nothing or appends a whole row) and every
-      // paste is sanitized - so this is defence in depth rather than an
-      // expected shape.
-      row.append(cursor.selectedText());
+      row.append(sourceText(cell.firstPosition(), cell.lastPosition()));
     }
 
     matrix.append(row);
@@ -1228,7 +1689,7 @@ void TablePreviewDocument::applyCellFormat(int p_row, int p_column) {
   // already there is restyled.
   const QTextCharFormat headerFormat = baselineCellFormat(p_row);
   cursor.mergeBlockCharFormat(headerFormat);
-  cursor.mergeCharFormat(headerFormat);
+  applySourceCharFormat(cell.firstPosition(), cell.lastPosition(), headerFormat, true);
 }
 
 void TablePreviewDocument::setSyntaxStyles(const QVector<QTextCharFormat> &p_styles) {
@@ -1270,18 +1731,48 @@ void TablePreviewDocument::applyCellSyntaxFormats(int p_row, int p_column,
     return;
   }
 
-  const int start = cell.firstCursorPosition().position();
-  const int textLength = cell.lastCursorPosition().position() - start;
-  QTextCursor cursor(m_doc.data());
+  const int textLength = sourceOffset(p_row, p_column, cell.lastPosition());
   for (const auto &run : p_runs) {
     if (run.m_start < 0 || run.m_length <= 0 || run.m_start > textLength ||
         run.m_length > textLength - run.m_start) {
       continue;
     }
-    cursor.setPosition(start + run.m_start);
-    cursor.setPosition(start + run.m_start + run.m_length, QTextCursor::KeepAnchor);
-    cursor.mergeCharFormat(run.m_format);
+    applySourceCharFormat(documentPosition(p_row, p_column, run.m_start),
+                          documentPosition(p_row, p_column, run.m_start + run.m_length, false),
+                          run.m_format, true);
   }
+}
+
+void TablePreviewDocument::applySourceCharFormat(int p_start, int p_end,
+                                                 const QTextCharFormat &p_format, bool p_merge) {
+  InlinePreviewGuard presentation(this);
+  visitSourceRanges(m_doc.data(), p_start, p_end, [&](int p_first, int p_last) {
+    QTextCursor cursor(m_doc.data());
+    cursor.setPosition(p_first);
+    cursor.setPosition(p_last, QTextCursor::KeepAnchor);
+    if (p_merge) {
+      cursor.mergeCharFormat(p_format);
+    } else {
+      cursor.setCharFormat(p_format);
+    }
+  });
+}
+
+TablePreviewDocument::CellHighlightCacheEntry &
+TablePreviewDocument::cellInlineData(const QString &p_source) {
+  auto it = m_cellHighlightCache.find(p_source);
+  if (it == m_cellHighlightCache.end()) {
+    auto parsed = md::parseInlineSnippet(p_source);
+    CellHighlightCacheEntry entry;
+    if (!parsed.blocksHighlights.isEmpty()) {
+      entry.m_units = std::move(parsed.blocksHighlights.first());
+    }
+    entry.imageElements = std::move(parsed.imageElements);
+    entry.mathElements = std::move(parsed.mathElements);
+    it = m_cellHighlightCache.insert(p_source, std::move(entry));
+  }
+  it->m_used = true;
+  return it.value();
 }
 
 bool TablePreviewDocument::refreshCellSyntaxFormats(int p_start, int p_end) {
@@ -1290,6 +1781,7 @@ bool TablePreviewDocument::refreshCellSyntaxFormats(int p_start, int p_end) {
     return false;
   }
 
+  InlinePreviewGuard presentation(this);
   const bool repaintAll = p_start < 0 || p_end < 0 || m_syntaxStylesDirty ||
                           m_highlightedStructureGeneration != structureGeneration();
   const bool highlight =
@@ -1312,15 +1804,15 @@ bool TablePreviewDocument::refreshCellSyntaxFormats(int p_start, int p_end) {
       const int start = cursor.position();
       const int end = cell.lastCursorPosition().position();
       cursor.setPosition(end, QTextCursor::KeepAnchor);
-      const QString text = cursor.selectedText();
+      const QString text = sourceText(start, end);
       auto cached = m_cellHighlightCache.end();
       bool newText = false;
-      if (highlight && !text.isEmpty() && !hasLineSeparator(text)) {
+      if ((highlight || m_inlinePreviewEdits > 0 || !m_inlinePreviews.isEmpty()) &&
+          !text.isEmpty() && !hasLineSeparator(text)) {
         cached = m_cellHighlightCache.find(text);
         if (cached == m_cellHighlightCache.end()) {
-          CellHighlightCacheEntry entry;
-          entry.m_units = md::highlightInlineSnippet(text);
-          cached = m_cellHighlightCache.insert(text, entry);
+          cellInlineData(text);
+          cached = m_cellHighlightCache.find(text);
           newText = true;
         }
         cached->m_used = true;
@@ -1334,7 +1826,7 @@ bool TablePreviewDocument::refreshCellSyntaxFormats(int p_start, int p_end) {
         wroteFormats = true;
       }
       const QTextCharFormat baseline = baselineCellFormat(r);
-      cursor.setCharFormat(baseline);
+      applySourceCharFormat(start, end, baseline);
       // The first block's marker also owns the cell's spans. Qt's cell setter
       // preserves them; setBlockCharFormat() would reset them to 1x1.
       cell.setFormat(baseline);
@@ -2172,6 +2664,9 @@ int TablePreviewSheet::heightForWidth(int p_outerWidth) const {
 
   if (textWidth > 0 && !qFuzzyCompare(doc->textWidth() + 1, textWidth + 1)) {
     doc->setTextWidth(textWidth);
+    if (m_document && !inlinePreviewsDeferred()) {
+      m_document->refreshInlinePreviewSizes();
+    }
   }
 
   const int height = qCeil(doc->documentLayout()->documentSize().height()) + verticalChrome();
@@ -2282,6 +2777,7 @@ void TablePreviewSheet::cancelComposition() {
   restored.setPosition(qBound(0, caret, qMax(0, document()->characterCount() - 1)));
   setTextCursor(restored);
   clampCursorIntoTable();
+  finishInlinePreviewTransaction();
 }
 
 QPalette TablePreviewSheet::applyPalette() {
@@ -2367,7 +2863,13 @@ void TablePreviewSheet::resetInsertionFormat() {
     return;
   }
 
-  setCurrentCharFormat(m_document->baselineCellFormat(cell.row()));
+  const auto format = m_document->baselineCellFormat(cell.row());
+  const auto cursor = textCursor();
+  if (cursor.hasSelection()) {
+    m_document->applySourceCharFormat(cursor.selectionStart(), cursor.selectionEnd(), format);
+  } else {
+    setCurrentCharFormat(format);
+  }
 }
 
 void TablePreviewSheet::clampSelectionIntoOneCell() {
@@ -2455,6 +2957,7 @@ void TablePreviewSheet::cut() {
   // No read-only guard of its own: QTextEdit::cut() already refuses on a
   // read-only control, and duplicating the test here would diverge from it.
   collapseComplexSelectionForMutation();
+  SourceEditGuard sourceEdit(this);
   QTextEdit::cut();
 }
 
@@ -2685,6 +3188,222 @@ bool TablePreviewSheet::currentCellRange(int &p_first, int &p_last) const {
   return p_first <= p_last;
 }
 
+TablePreviewSheet::SourceSelection TablePreviewSheet::sourceSelection() const {
+  SourceSelection result;
+  if (!m_document || !m_document->isIntact()) {
+    return result;
+  }
+  const auto cursor = textCursor();
+  const auto cell = m_document->table()->cellAt(cursor);
+  if (!cell.isValid() || cursor.hasComplexSelection()) {
+    return result;
+  }
+  result.m_row = cell.row();
+  result.m_column = cell.column();
+  auto offset = [&](int p_position) {
+    return m_document->sourceOffset(cell.row(), cell.column(), p_position);
+  };
+  result.m_anchor = offset(cursor.anchor());
+  result.m_caret = offset(cursor.position());
+  const auto selection = getSelection();
+  result.m_overridden = selection.isValid() && (selection.start() != cursor.selectionStart() ||
+                                                selection.end() != cursor.selectionEnd());
+  result.m_selectionStart = offset(selection.start());
+  result.m_selectionEnd = offset(selection.end());
+  return result;
+}
+
+void TablePreviewSheet::restoreSourceSelection(const SourceSelection &p_selection) {
+  if (!m_document || !m_document->isOrigin(p_selection.m_row, p_selection.m_column)) {
+    return;
+  }
+  QScopedValueRollback<bool> clamping(m_clampingCursor, true);
+  auto position = [&](int p_offset, bool p_after = true) {
+    return m_document->documentPosition(p_selection.m_row, p_selection.m_column, p_offset, p_after);
+  };
+  const bool forward = p_selection.m_anchor < p_selection.m_caret;
+  QTextCursor cursor(document());
+  cursor.setPosition(
+      position(p_selection.m_anchor, forward || p_selection.m_anchor == p_selection.m_caret));
+  cursor.setPosition(position(p_selection.m_caret, !forward), QTextCursor::KeepAnchor);
+  VTextEdit::clearOverriddenSelection();
+  setTextCursor(cursor);
+  if (p_selection.m_overridden) {
+    VTextEdit::setOverriddenSelection(position(p_selection.m_selectionStart),
+                                      position(p_selection.m_selectionEnd, false));
+  }
+}
+
+TablePreviewSheet::SourceEditGuard::SourceEditGuard(TablePreviewSheet *p_sheet) : m_sheet(p_sheet) {
+  if (m_sheet && ++m_sheet->m_sourceEditDepth == 1) {
+    const auto selection = m_sheet->sourceSelection();
+    m_sheet->suspendInlinePreviews();
+    m_parsingInlinePreviews = !m_sheet->m_suspendedInlinePreviews.isEmpty() ||
+                              !m_sheet->m_document->m_inlinePreviews.isEmpty();
+    if (m_parsingInlinePreviews) {
+      ++m_sheet->m_document->m_inlinePreviewEdits;
+    }
+    m_sheet->restoreSourceSelection(selection);
+  }
+}
+
+TablePreviewSheet::SourceEditGuard::~SourceEditGuard() {
+  if (m_sheet && m_sheet->m_sourceEditDepth == 1) {
+    const auto selection = m_sheet->sourceSelection();
+    m_sheet->restoreInlinePreviews();
+    if (m_parsingInlinePreviews) {
+      --m_sheet->m_document->m_inlinePreviewEdits;
+    }
+    m_sheet->restoreSourceSelection(selection);
+  }
+  if (m_sheet && --m_sheet->m_sourceEditDepth == 0) {
+    m_sheet->finishInlinePreviewTransaction();
+  }
+}
+
+bool TablePreviewSheet::inlinePreviewsDeferred() const {
+  if (m_sourceEditDepth > 0 || m_inputMethodEventDepth > 0) {
+    return true;
+  }
+  const auto block = textCursor().block();
+  return block.isValid() && block.layout() && !block.layout()->preeditAreaText().isEmpty();
+}
+
+void TablePreviewSheet::finishInlinePreviewTransaction() {
+  if (inlinePreviewsDeferred()) {
+    return;
+  }
+  emit inlinePreviewsReady();
+  if (m_document) {
+    m_document->refreshInlinePreviewSizes();
+  }
+  handleDocumentSizeChanged();
+}
+
+void TablePreviewSheet::suspendInlinePreviews() {
+  m_suspendedInlinePreviews.clear();
+  const auto selection = sourceSelection();
+  m_suspendedRow = selection.m_row;
+  m_suspendedColumn = selection.m_column;
+  if (!m_document || !m_document->isOrigin(m_suspendedRow, m_suspendedColumn)) {
+    return;
+  }
+  m_suspendedStructure = m_document->structureGeneration();
+  QScopedValueRollback<bool> clamping(m_clampingCursor, true);
+  m_document->suspendInlinePreviews(m_suspendedRow, m_suspendedColumn);
+  const auto cell = m_document->table()->cellAt(m_suspendedRow, m_suspendedColumn);
+  QVector<int> positions;
+  for (auto it = cell.begin(); it != cell.end(); ++it) {
+    const auto block = it.currentBlock();
+    for (auto fragment = block.begin(); !fragment.atEnd(); ++fragment) {
+      const auto run = fragment.fragment();
+      if (run.charFormat().property(TablePreviewDocument::c_inlinePreviewProperty) != true) {
+        continue;
+      }
+      const auto text = run.text();
+      for (int i = 0; i < text.size(); ++i) {
+        if (text.at(i) == QChar::ObjectReplacementCharacter) {
+          positions.append(run.position() + i);
+        }
+      }
+    }
+  }
+  if (positions.isEmpty()) {
+    return;
+  }
+  const auto source = m_document->sourceText(cell.firstPosition(), cell.lastPosition());
+  const auto &parsed = m_document->cellInlineData(source);
+  TablePreviewDocument::InlinePreviewGuard presentation(m_document);
+  for (auto it = positions.crbegin(); it != positions.crend(); ++it) {
+    const int end = m_document->sourceOffset(cell.row(), cell.column(), *it);
+    int start = -1;
+    bool image = true;
+    for (const auto &element : parsed.imageElements) {
+      if (element.m_endPos == end) {
+        start = element.m_startPos;
+        break;
+      }
+    }
+    if (start < 0) {
+      for (const auto &element : parsed.mathElements) {
+        if (element.m_endPos == end) {
+          start = element.m_startPos;
+          image = false;
+          break;
+        }
+      }
+    }
+    QTextCursor object(document());
+    object.setPosition(*it);
+    object.setPosition(*it + 1, QTextCursor::KeepAnchor);
+    if (start >= 0) {
+      SuspendedInlinePreview preview;
+      preview.m_start = QTextCursor(document());
+      preview.m_start.setPosition(m_document->documentPosition(cell.row(), cell.column(), start));
+      preview.m_start.setKeepPositionOnInsert(false);
+      preview.m_end = QTextCursor(document());
+      preview.m_end.setPosition(*it);
+      preview.m_end.setKeepPositionOnInsert(true);
+      preview.m_source = source.mid(start, end - start);
+      preview.m_format = object.charFormat().toImageFormat();
+      preview.m_image = image;
+      preview.m_generation =
+          m_document
+              ->m_inlinePreviewGenerations[image ? PreviewData::ImageLink : PreviewData::MathBlock];
+      m_suspendedInlinePreviews.append(preview);
+    }
+    object.removeSelectedText();
+  }
+}
+
+void TablePreviewSheet::restoreInlinePreviews() {
+  QScopedValueRollback<bool> clamping(m_clampingCursor, true);
+  m_document->resumeInlinePreviews();
+  if (m_suspendedInlinePreviews.isEmpty()) {
+    return;
+  }
+  if (!m_document->isIntact() || m_document->structureGeneration() != m_suspendedStructure ||
+      m_document->syntax() != PreviewTableSyntax::Markdown) {
+    m_suspendedInlinePreviews.clear();
+    return;
+  }
+  const auto cell = m_document->table()->cellAt(m_suspendedRow, m_suspendedColumn);
+  const auto source = m_document->sourceText(cell.firstPosition(), cell.lastPosition());
+  const auto &parsed = m_document->cellInlineData(source);
+  TablePreviewDocument::InlinePreviewGuard presentation(m_document);
+  for (const auto &preview : m_suspendedInlinePreviews) {
+    if (preview.m_generation !=
+        m_document->m_inlinePreviewGenerations[preview.m_image ? PreviewData::ImageLink
+                                                               : PreviewData::MathBlock]) {
+      continue;
+    }
+    const int start =
+        m_document->sourceOffset(cell.row(), cell.column(), preview.m_start.position());
+    const int end = m_document->sourceOffset(cell.row(), cell.column(), preview.m_end.position());
+    if (source.mid(start, end - start) != preview.m_source) {
+      continue;
+    }
+    bool valid = false;
+    if (preview.m_image) {
+      for (const auto &element : parsed.imageElements) {
+        valid |= element.m_startPos == start && element.m_endPos == end;
+      }
+    } else {
+      for (const auto &element : parsed.mathElements) {
+        valid |= element.m_startPos == start && element.m_endPos == end;
+      }
+    }
+    if (valid) {
+      QTextCursor cursor(document());
+      // A left-affine live cursor can acquire an anchor across an insertion.
+      // Only its position is the binding; never replace that incidental selection.
+      cursor.setPosition(preview.m_end.position());
+      cursor.insertImage(preview.m_format);
+    }
+  }
+  m_suspendedInlinePreviews.clear();
+}
+
 void TablePreviewSheet::handleTypeAction(TypeAction p_action) {
   if (!m_document || !m_document->table() || isReadOnly()) {
     return;
@@ -2712,6 +3431,7 @@ void TablePreviewSheet::handleTypeAction(TypeAction p_action) {
     return;
   }
 
+  SourceEditGuard sourceEdit(this);
   const QTextCursor before = textCursor();
   const bool hadSelection = before.hasSelection();
   const int selectionStart = before.selectionStart();
@@ -2954,9 +3674,7 @@ QString TablePreviewSheet::cellTextAt(int p_cell) const {
     return QString();
   }
 
-  QTextCursor cursor = cell.firstCursorPosition();
-  cursor.setPosition(cell.lastPosition(), QTextCursor::KeepAnchor);
-  return cursor.selectedText();
+  return m_document->sourceText(cell.firstPosition(), cell.lastPosition());
 }
 
 bool TablePreviewSheet::setCellTextAt(int p_cell, const QString &p_text) {
@@ -3003,7 +3721,8 @@ void TablePreviewSheet::captureUndoBaseline() {
 }
 
 void TablePreviewSheet::commitUndoCheckpoint() {
-  if (m_replayingRing || m_applyingFormats) {
+  if (m_replayingRing || m_applyingFormats ||
+      (m_document && m_document->isApplyingInlinePreviews())) {
     return;
   }
 
@@ -3144,7 +3863,8 @@ void TablePreviewSheet::handleSelectionChanged() {
 }
 
 void TablePreviewSheet::handleDocumentSizeChanged() {
-  if (m_measuring || m_applyingGeometry || m_applyingFormats) {
+  if (m_measuring || m_applyingGeometry || m_applyingFormats || inlinePreviewsDeferred() ||
+      (m_document && m_document->isApplyingInlinePreviews())) {
     // Either this sheet is measuring itself, or it is answering a geometry the
     // host has just chosen. Reporting either one back would feed the
     // measurement into itself.
@@ -3211,6 +3931,8 @@ bool TablePreviewSheet::deleteWithinCell(const QKeyEvent *p_event) {
 
   clampCursorIntoTable();
   collapseComplexSelectionForMutation();
+  // Word boundaries come from source; visual EndOfLine must use the decorated layout.
+  SourceEditGuard wordEdit(operation != QTextCursor::EndOfLine ? this : nullptr);
 
   QTextCursor cursor = textCursor();
   const QTextTableCell cell = table->cellAt(cursor.position());
@@ -3234,9 +3956,13 @@ bool TablePreviewSheet::deleteWithinCell(const QKeyEvent *p_event) {
   }
 
   // Whatever the move reached for, the deletion stays inside the cell.
-  const int anchor = qBound(first, cursor.anchor(), last);
-  const int position = qBound(first, cursor.position(), last);
-
+  const int sourceAnchor =
+      m_document->sourceOffset(cell.row(), cell.column(), qBound(first, cursor.anchor(), last));
+  const int sourcePosition =
+      m_document->sourceOffset(cell.row(), cell.column(), qBound(first, cursor.position(), last));
+  SourceEditGuard sourceEdit(this);
+  const int anchor = m_document->documentPosition(cell.row(), cell.column(), sourceAnchor);
+  const int position = m_document->documentPosition(cell.row(), cell.column(), sourcePosition);
   cursor.setPosition(anchor);
   if (anchor != position) {
     cursor.setPosition(position, QTextCursor::KeepAnchor);
@@ -3492,11 +4218,33 @@ void TablePreviewSheet::keyPressEvent(QKeyEvent *p_event) {
     // would recolour the very range the operator is about to act on. Every
     // other mode, installed or not, is ordinary typing and wants it.
     if (isTextInsertingMode()) {
-      resetInsertionFormat();
+      const bool inserts =
+          (!p_event->text().isEmpty() &&
+           (modifiers & (Qt::ControlModifier | Qt::MetaModifier)) == 0) ||
+          p_event->key() == Qt::Key_Backspace || p_event->key() == Qt::Key_Delete ||
+          p_event->matches(QKeySequence::Cut) || p_event->matches(QKeySequence::Paste);
+      if (inserts) {
+        SourceEditGuard sourceEdit(this);
+        resetInsertionFormat();
+        VTextEdit::keyPressEvent(p_event);
+        return;
+      }
     }
   }
 
   VTextEdit::keyPressEvent(p_event);
+  if (isTextInsertingMode() &&
+      (p_event->key() == Qt::Key_Left || p_event->key() == Qt::Key_Right) &&
+      (modifiers & ~Qt::ShiftModifier) == 0 && m_document) {
+    QTextCursor cursor = textCursor();
+    if (m_document->isInlinePreviewAt(cursor.position())) {
+      cursor.movePosition(p_event->key() == Qt::Key_Right ? QTextCursor::NextCharacter
+                                                          : QTextCursor::PreviousCharacter,
+                          modifiers.testFlag(Qt::ShiftModifier) ? QTextCursor::KeepAnchor
+                                                                : QTextCursor::MoveAnchor);
+      setTextCursor(cursor);
+    }
+  }
 }
 
 void TablePreviewSheet::wheelEvent(QWheelEvent *p_event) {
@@ -3565,6 +4313,13 @@ void TablePreviewSheet::mousePressEvent(QMouseEvent *p_event) {
   // block after the table when the click lands below the last row.
   VTextEdit::mousePressEvent(p_event);
   clampCursorIntoTable();
+  QTextCursor cursor = textCursor();
+  if (m_document && m_document->isInlinePreviewAt(cursor.position())) {
+    cursor.setPosition(cursor.position() + 1, p_event->modifiers().testFlag(Qt::ShiftModifier)
+                                                  ? QTextCursor::KeepAnchor
+                                                  : QTextCursor::MoveAnchor);
+    setTextCursor(cursor);
+  }
 }
 
 void TablePreviewSheet::dropEvent(QDropEvent *p_event) {
@@ -3961,6 +4716,38 @@ void TablePreviewSheet::resizeEvent(QResizeEvent *p_event) {
   // documentSizeChanged for a size the host itself chose.
   QScopedValueRollback<bool> guard(m_applyingGeometry, true);
   VTextEdit::resizeEvent(p_event);
+  if (m_document && !inlinePreviewsDeferred()) {
+    m_document->refreshInlinePreviewSizes();
+  }
+}
+
+QVariant TablePreviewSheet::inputMethodQuery(Qt::InputMethodQuery p_query) const {
+  const auto selection = sourceSelection();
+  if (selection.m_row < 0) {
+    return VTextEdit::inputMethodQuery(p_query);
+  }
+  const auto cell = m_document->table()->cellAt(selection.m_row, selection.m_column);
+  switch (p_query) {
+  case Qt::ImSurroundingText:
+    return m_document->sourceText(cell.firstPosition(), cell.lastPosition());
+  case Qt::ImCurrentSelection: {
+    const auto effective = getSelection();
+    return effective.isValid() ? m_document->sourceText(effective.start(), effective.end())
+                               : QString();
+  }
+  case Qt::ImCursorPosition:
+  case Qt::ImAbsolutePosition:
+    return selection.m_caret;
+  case Qt::ImAnchorPosition:
+    return selection.m_anchor;
+  case Qt::ImTextBeforeCursor:
+    return m_document->sourceText(cell.firstPosition(), textCursor().position());
+  case Qt::ImTextAfterCursor:
+    return m_document->sourceText(textCursor().position(), cell.lastPosition());
+  default:
+    // In particular ImCursorRectangle remains in the actual decorated layout.
+    return VTextEdit::inputMethodQuery(p_query);
+  }
 }
 
 void TablePreviewSheet::inputMethodEvent(QInputMethodEvent *p_event) {
@@ -3990,6 +4777,15 @@ void TablePreviewSheet::inputMethodEvent(QInputMethodEvent *p_event) {
     p_event->accept();
     return;
   }
+
+  ++m_inputMethodEventDepth;
+  struct EventGuard {
+    TablePreviewSheet *m_sheet;
+    ~EventGuard() {
+      --m_sheet->m_inputMethodEventDepth;
+      m_sheet->finishInlinePreviewTransaction();
+    }
+  } eventGuard{this};
 
   // A Selection attribute is resolved by QWidgetTextControl in an intermediate
   // document state - after the current selection has been removed and after
@@ -4030,6 +4826,7 @@ void TablePreviewSheet::inputMethodEvent(QInputMethodEvent *p_event) {
     // cell rectangle still has to be collapsed before Qt can take the frame
     // apart through it.
     collapseComplexSelectionForMutation();
+    SourceEditGuard sourceEdit(hasSelection() ? this : nullptr);
     if (!droppedSelection) {
       VTextEdit::inputMethodEvent(p_event);
       return;
@@ -4062,6 +4859,8 @@ void TablePreviewSheet::inputMethodEvent(QInputMethodEvent *p_event) {
   clampCursorIntoTable();
   collapseComplexSelectionForMutation();
 
+  SourceEditGuard sourceEdit(this);
+
   // Remove the - by now confined - selection here rather than letting the base
   // do it. QWidgetTextControl resolves replacementStart()/replacementLength()
   // against the cursor it is left with *after* that removal, so collapsing it
@@ -4092,9 +4891,9 @@ void TablePreviewSheet::inputMethodEvent(QInputMethodEvent *p_event) {
   // The range the base will apply, now that the cursor is collapsed:
   // [position + replacementStart(), + replacementLength()). A negative start
   // or an overlong length would reach across the frame boundary.
-  const int rawStart = position + p_event->replacementStart();
-  const int start = qBound(first, rawStart, last);
-  const int end = qBound(start, rawStart + replacementLength, last);
+  const qint64 rawStart = qint64(position) + p_event->replacementStart();
+  const int start = int(qBound(qint64(first), rawStart, qint64(last)));
+  const int end = int(qBound(qint64(start), rawStart + replacementLength, qint64(last)));
 
   QInputMethodEvent replacement(p_event->preeditString(), attributes);
   replacement.setCommitString(sanitized, start - position, end - start);
@@ -4110,6 +4909,37 @@ bool TablePreviewSheet::canInsertFromMimeData(const QMimeData *p_source) const {
   // flattened anyway or land in the document as structure a table row cannot
   // express.
   return p_source && p_source->hasText() && hasCellContent(p_source->text());
+}
+
+QMimeData *TablePreviewSheet::createMimeDataFromSelection() const {
+  auto mime = new QMimeData();
+  if (m_document && m_document->isIntact()) {
+    const auto cursor = textCursor();
+    if (cursor.hasComplexSelection()) {
+      const QRect rectangle = m_document->selectionRect(cursor);
+      QStringList rows;
+      for (int row = rectangle.top(); row <= rectangle.bottom(); ++row) {
+        QStringList cells;
+        for (int column = rectangle.left(); column <= rectangle.right(); ++column) {
+          if (m_document->isOrigin(row, column)) {
+            const auto cell = m_document->table()->cellAt(row, column);
+            cells.append(m_document->sourceText(cell.firstPosition(), cell.lastPosition()));
+          } else {
+            cells.append(QString());
+          }
+        }
+        rows.append(cells.join(QLatin1Char('\t')));
+      }
+      mime->setText(rows.join(QLatin1Char('\n')));
+    } else {
+      const auto selection = getSelection();
+      if (selection.isValid()) {
+        mime->setText(m_document->sourceText(selection.start(), selection.end()));
+      }
+    }
+  }
+  emit const_cast<TablePreviewSheet *>(this)->createMimeDataFromSelectionRequested(mime);
+  return mime;
 }
 
 void TablePreviewSheet::insertFromMimeData(const QMimeData *p_source) {
@@ -4128,7 +4958,8 @@ void TablePreviewSheet::insertFromMimeData(const QMimeData *p_source) {
     return;
   }
 
-  // Drops arrive here too, so one validator covers both.
+  // Drops arrive here after Qt has resolved the decorated hit position.
+  SourceEditGuard sourceEdit(this);
   resetInsertionFormat();
   // THE one controlled insertion route. Qualified so it reaches the base
   // implementation rather than the refusing shadow: everything dangerous about
@@ -4175,10 +5006,11 @@ TablePreviewWidget::TablePreviewWidget(PreviewWidgetContext *p_context, QWidget 
   // contentsChange before contentsChanged.
   connect(m_document->document(), &QTextDocument::contentsChange, this,
           [this](int p_position, int p_charsRemoved, int p_charsAdded) {
-            if (m_applyingSource || (p_charsRemoved == 0 && p_charsAdded == 0)) {
+            if (m_applyingSource || m_document->isApplyingInlinePreviews() ||
+                (p_charsRemoved == 0 && p_charsAdded == 0)) {
               return;
             }
-            m_lastDocumentRevisionWithChanges = m_document->document()->revision();
+            m_sourceChangePending = true;
             if (m_pendingHighlightStart >= 0) {
               // Further edits can shift the earlier interval's endpoints.
               m_pendingHighlightAll = true;
@@ -4202,6 +5034,8 @@ TablePreviewWidget::TablePreviewWidget(PreviewWidgetContext *p_context, QWidget 
   // the sheet cannot reach it through updateGeometry() alone.
   connect(m_sheet, &TablePreviewSheet::preferredGeometryChanged, this,
           &TablePreviewWidget::handlePreferredGeometryChanged);
+  connect(m_sheet, &TablePreviewSheet::inlinePreviewsReady, this,
+          &TablePreviewWidget::applyDeferredInlinePreviews);
 
   if (p_context) {
     connect(p_context, &PreviewWidgetContext::replacementFinished, this,
@@ -4229,6 +5063,69 @@ void TablePreviewWidget::setSyntaxStyles(const QVector<QTextCharFormat> &p_style
   if (m_document->refreshCellSyntaxFormats()) {
     updateGeometry();
   }
+}
+
+void TablePreviewWidget::setInlinePreviews(PreviewData::Source p_source,
+                                           const QVector<TableCellInlinePreview> &p_previews) {
+  if (p_source != PreviewData::ImageLink && p_source != PreviewData::MathBlock) {
+    return;
+  }
+  const auto structure = m_document->structureGeneration();
+  if (structure != m_pendingInlinePreviewStructure) {
+    m_pendingInlinePreviews.clear();
+    m_pendingInlinePreviewStructure = structure;
+  }
+  m_pendingInlinePreviews.insert(p_source, p_previews);
+  if (p_previews.isEmpty()) {
+    // Invalidate even synthetic suspended objects before a guarded source
+    // operation can restore them. Physical retirement still waits for its exit.
+    ++m_document->m_inlinePreviewGenerations[p_source];
+  }
+  applyDeferredInlinePreviews();
+}
+
+void TablePreviewWidget::revalidateInlinePreviews() {
+  m_inlinePreviewRevalidationPending = true;
+  applyDeferredInlinePreviews();
+}
+
+void TablePreviewWidget::applyDeferredInlinePreviews() {
+  if (!m_sheet || m_sheet->inlinePreviewsDeferred() || m_applyingCellPreviews ||
+      (m_pendingInlinePreviews.isEmpty() && !m_inlinePreviewRevalidationPending)) {
+    return;
+  }
+  {
+    QScopedValueRollback<bool> applying(m_applyingCellPreviews, true);
+    QScopedValueRollback<bool> clamping(m_sheet->m_clampingCursor, true);
+    const auto selection = m_sheet->sourceSelection();
+    const QTextCursor cursor = m_sheet->textCursor();
+    const int horizontal = m_sheet->horizontalScrollBar()->value();
+    const int vertical = m_sheet->verticalScrollBar()->value();
+    do {
+      const auto structure = m_pendingInlinePreviewStructure;
+      auto pending = std::move(m_pendingInlinePreviews);
+      m_pendingInlinePreviews.clear();
+      m_inlinePreviewRevalidationPending = false;
+      if (structure == m_document->structureGeneration()) {
+        for (auto it = pending.cbegin(); it != pending.cend(); ++it) {
+          m_document->setInlinePreviews(static_cast<PreviewData::Source>(it.key()), it.value());
+        }
+      }
+      m_document->revalidateInlinePreviews();
+    } while (!m_sheet->inlinePreviewsDeferred() &&
+             (!m_pendingInlinePreviews.isEmpty() || m_inlinePreviewRevalidationPending));
+    if (selection.m_row >= 0) {
+      m_sheet->restoreSourceSelection(selection);
+    } else {
+      // A table rectangle is not an ordinary source selection. Its live Qt
+      // cursor follows inserted objects without losing the grid selection.
+      m_sheet->setTextCursor(cursor);
+    }
+    m_sheet->horizontalScrollBar()->setValue(horizontal);
+    m_sheet->verticalScrollBar()->setValue(vertical);
+    m_sheet->viewport()->update();
+  }
+  m_sheet->handleDocumentSizeChanged();
 }
 
 qreal TablePreviewWidget::preferredWidthFraction() const { return c_widthFraction; }
@@ -4442,6 +5339,8 @@ void TablePreviewWidget::resetFromSource() {
   // applied, and the sheet would then serialize the reverted matrix over the
   // user's accepted change.
   rebindFromContext();
+  m_pendingInlinePreviews.clear();
+  m_inlinePreviewRevalidationPending = false;
 
   {
     QScopedValueRollback<bool> guard(m_applyingSource, true);
@@ -4469,6 +5368,8 @@ void TablePreviewWidget::resetFromSource() {
   m_pendingHighlightStart = -1;
   m_pendingHighlightEnd = -1;
   m_pendingHighlightAll = false;
+  observeSourceChanges();
+  m_sourceChangePending = false;
   m_editGeneration = 0;
   m_committedGeneration = 0;
   m_inFlightGeneration = 0;
@@ -4492,8 +5393,46 @@ void TablePreviewWidget::armCommit() {
   m_commitTimer->start();
 }
 
+bool TablePreviewWidget::observeSourceChanges(int p_start, int p_end) {
+  const bool structureChanged = m_observedStructure != m_document->structureGeneration();
+  bool changed = structureChanged;
+  if (structureChanged) {
+    m_observedCells.clear();
+    m_observedStructure = m_document->structureGeneration();
+  }
+  const int columns = m_document->columnCount();
+  if (m_observedAlignments.size() != columns) {
+    changed = true;
+    m_observedAlignments.resize(columns);
+  }
+  for (int column = 0; column < columns; ++column) {
+    const auto alignment = m_document->columnAlignment(column);
+    if (m_observedAlignments[column] != alignment) {
+      m_observedAlignments[column] = alignment;
+      changed = true;
+    }
+    for (int row = 0; row < m_document->rowCount(); ++row) {
+      if (!m_document->isOrigin(row, column)) {
+        continue;
+      }
+      const auto cell = m_document->table()->cellAt(row, column);
+      if (!structureChanged && p_start >= 0 && p_end >= 0 &&
+          (cell.lastPosition() < p_start || cell.firstPosition() > p_end)) {
+        continue;
+      }
+      const QString text = m_document->sourceText(cell.firstPosition(), cell.lastPosition());
+      auto &previous = m_observedCells[row * columns + column];
+      if (previous != text) {
+        previous = text;
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
 void TablePreviewWidget::handleContentsChanged() {
-  if (m_applyingSource || m_suppressed) {
+  if (m_applyingSource || m_suppressed || m_document->isApplyingInlinePreviews()) {
     return;
   }
 
@@ -4505,13 +5444,11 @@ void TablePreviewWidget::handleContentsChanged() {
   // edits would advance the generation and arm a commit for a table nobody
   // touched, which then writes the source back to itself.
   //
-  // The same filter VTextEdit applies to its own contentsChanged signal
-  // (vtextedit.cpp), on this document instead: contentsChange - which carries
-  // the character counts - records the revision, and only that revision counts.
-  auto doc = m_document->document();
-  if (doc && doc->revision() != m_lastDocumentRevisionWithChanges) {
+  // Presentation changes may advance Qt revision, but never this source edge.
+  if (!m_sourceChangePending) {
     return;
   }
+  m_sourceChangePending = false;
 
   if (!m_document->isIntact()) {
     // Something took the table out of the document. Every guard which should
@@ -4530,13 +5467,18 @@ void TablePreviewWidget::handleContentsChanged() {
   m_pendingHighlightStart = -1;
   m_pendingHighlightEnd = -1;
   m_pendingHighlightAll = false;
+  const bool sourceChanged = observeSourceChanges(start, end);
   {
     QScopedValueRollback<bool> applying(m_applyingSource, true);
     if (m_document->refreshCellSyntaxFormats(start, end)) {
       updateGeometry();
     }
   }
+  revalidateInlinePreviews();
 
+  if (!sourceChanged) {
+    return;
+  }
   ++m_editGeneration;
   // Restarts, so a burst of keystrokes writes back once.
   armCommit();
@@ -4860,6 +5802,7 @@ void TablePreviewWidget::changeEvent(QEvent *p_event) {
         QScopedValueRollback<bool> guard(m_applyingSource, true);
         m_sheet->refreshFormats();
       }
+      revalidateInlinePreviews();
 
       updateGeometry();
     }

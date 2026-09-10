@@ -6,10 +6,16 @@
 #include <QAbstractTextDocumentLayout>
 #include <QAction>
 #include <QApplication>
+#include <QBuffer>
+#include <QClipboard>
 #include <QContextMenuEvent>
+#include <QDebug>
 #include <QEventLoop>
 #include <QFocusEvent>
+#include <QImage>
+#include <QKeySequence>
 #include <QMenu>
+#include <QMimeData>
 #include <QPointer>
 #include <QScrollBar>
 #include <QSignalSpy>
@@ -19,9 +25,11 @@
 #include <QTextDocument>
 #include <QTextEdit>
 #include <QTextFrame>
+#include <QTextImageFormat>
 #include <QTextTable>
 #include <QTextTableCell>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 
 #include <inputmode/abstractinputmode.h>
@@ -29,6 +37,7 @@
 #include <vtextedit/htmltablescanner.h>
 #include <vtextedit/markdowneditorconfig.h>
 #include <vtextedit/markdownhighlighter.h>
+#include <vtextedit/previewmgr.h>
 #include <vtextedit/texteditorconfig.h>
 #include <vtextedit/theme.h>
 #include <vtextedit/vmarkdowneditor.h>
@@ -595,6 +604,167 @@ private:
 };
 
 WarningRecorder *WarningRecorder::s_active = nullptr;
+
+// Copy records and resources in the signal stack, before a later generation can
+// replace either. The document scan is the test oracle for a COMPLETE block set.
+struct PublishedPreviewRecord {
+  int m_blockNumber = -1;
+  QString m_sourceText;
+  PreviewImageData m_data;
+  TimeStamp m_timeStamp = 0;
+  QPixmap m_image;
+};
+
+struct PreviewPublication {
+  PreviewData::Source m_source = PreviewData::ImageLink;
+  QVector<int> m_blocks;
+  QVector<PublishedPreviewRecord> m_records;
+};
+
+void capturePreviewPublication(VMarkdownEditor &p_editor, PreviewData::Source p_source,
+                               const QVector<QTextBlock> &p_blocks,
+                               QVector<PreviewPublication> &p_publications) {
+  PreviewPublication publication;
+  publication.m_source = p_source;
+  for (const auto &block : p_blocks) {
+    QVERIFY(block.isValid());
+    QVERIFY(!publication.m_blocks.contains(block.blockNumber()));
+    publication.m_blocks.append(block.blockNumber());
+    bool found = false;
+    for (const auto data : BlockPreviewData::get(block)->getPreviewData()) {
+      if (data->source() != p_source) {
+        continue;
+      }
+      found = true;
+      const auto imageData = data->getImageData();
+      QVERIFY(imageData);
+      QVERIFY(imageData->m_startPos >= 0);
+      QVERIFY(imageData->m_endPos > imageData->m_startPos);
+      QVERIFY(imageData->m_endPos <= block.text().size());
+      const auto image = p_editor.findImageFromDocumentResourceMgr(imageData->m_imageName);
+      QVERIFY(image);
+      QVERIFY(!image->isNull());
+      PublishedPreviewRecord record;
+      record.m_blockNumber = block.blockNumber();
+      record.m_sourceText =
+          block.text().mid(imageData->m_startPos, imageData->m_endPos - imageData->m_startPos);
+      record.m_data = *imageData;
+      record.m_timeStamp = data->timeStamp();
+      record.m_image = *image;
+      publication.m_records.append(record);
+    }
+    QVERIFY(found);
+  }
+  std::sort(publication.m_blocks.begin(), publication.m_blocks.end());
+  std::sort(publication.m_records.begin(), publication.m_records.end(),
+            [](const PublishedPreviewRecord &p_left, const PublishedPreviewRecord &p_right) {
+              return p_left.m_blockNumber == p_right.m_blockNumber
+                         ? p_left.m_data.m_startPos < p_right.m_data.m_startPos
+                         : p_left.m_blockNumber < p_right.m_blockNumber;
+            });
+  QVector<int> expectedBlocks;
+  for (auto block = p_editor.document()->begin(); block.isValid(); block = block.next()) {
+    for (const auto data : BlockPreviewData::get(block)->getPreviewData()) {
+      if (data->source() == p_source) {
+        expectedBlocks.append(block.blockNumber());
+        break;
+      }
+    }
+  }
+  QCOMPARE(publication.m_blocks, expectedBlocks);
+  p_publications.append(publication);
+}
+
+QByteArray previewImageBytes(const QSize &p_size, QRgb p_color) {
+  QImage image(p_size, QImage::Format_ARGB32);
+  image.fill(p_color);
+  QByteArray bytes;
+  QBuffer buffer(&bytes);
+  if (!buffer.open(QIODevice::WriteOnly) || !image.save(&buffer, "PNG")) {
+    return QByteArray();
+  }
+  return bytes;
+}
+
+QSharedPointer<PreviewItem> mathPreviewItem(const QTextBlock &p_block, const QString &p_formula,
+                                            const QString &p_name) {
+  auto item = QSharedPointer<PreviewItem>::create();
+  item->m_blockNumber = p_block.blockNumber();
+  item->m_blockPos = p_block.position();
+  item->m_startPos = p_block.position() + p_block.text().indexOf(p_formula);
+  item->m_endPos = item->m_startPos + p_formula.size();
+  item->m_name = p_name;
+  item->m_image = QPixmap(64, 32);
+  item->m_image.fill(Qt::blue);
+  item->m_image.setDevicePixelRatio(2.0);
+  item->m_logicalSize = QSize(32, 16);
+  item->m_backgroundColor = qRgb(250, 240, 230);
+  return item;
+}
+
+struct SheetInlineObject {
+  int m_sourceOffset = -1;
+  QTextCharFormat m_format;
+  QPixmap m_image;
+};
+
+struct SheetInlineCell {
+  QString m_source;
+  QVector<SheetInlineObject> m_objects;
+};
+
+// Keep the old source-only helper strict. Only these inline-object tests project
+// tagged decorations out; an ordinary, untagged U+FFFC remains real source.
+SheetInlineCell sheetInlineCell(QTextEdit *p_sheet, int p_row, int p_column) {
+  SheetInlineCell result;
+  const auto table = sheetTable(p_sheet);
+  if (!table) {
+    return result;
+  }
+  const auto cell = table->cellAt(p_row, p_column);
+  if (!cell.isValid()) {
+    return result;
+  }
+  const int end = cell.lastCursorPosition().position();
+  for (int pos = cell.firstCursorPosition().position(); pos < end; ++pos) {
+    QTextCursor cursor(p_sheet->document());
+    cursor.setPosition(pos);
+    cursor.setPosition(pos + 1, QTextCursor::KeepAnchor);
+    const auto format = cursor.charFormat();
+    const QChar character = p_sheet->document()->characterAt(pos);
+    if (character == QChar::ObjectReplacementCharacter &&
+        format.boolProperty(QTextFormat::UserProperty + 1)) {
+      SheetInlineObject object;
+      object.m_sourceOffset = result.m_source.size();
+      object.m_format = format;
+      object.m_image =
+          p_sheet->document()
+              ->resource(QTextDocument::ImageResource, QUrl(format.toImageFormat().name()))
+              .value<QPixmap>();
+      result.m_objects.append(object);
+    } else {
+      result.m_source += character;
+    }
+  }
+  return result;
+}
+
+int sheetInlineObjectCount(QTextEdit *p_sheet) {
+  const auto table = sheetTable(p_sheet);
+  if (!table) {
+    return 0;
+  }
+  int count = 0;
+  for (int row = 0; row < table->rows(); ++row) {
+    for (int column = 0; column < table->columns(); ++column) {
+      const auto cell = table->cellAt(row, column);
+      if (cell.row() == row && cell.column() == column) {
+        count += sheetInlineCell(p_sheet, row, column).m_objects.size();
+      }
+    }
+  }
+  return count;
+}
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -618,6 +788,7 @@ void TestInteractivePreview::testBuiltinTableWidgetCreated() {
 
 void TestInteractivePreview::testSourceTypeActionRouting() {
   VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  QSignalSpy imageRequested(&editor, &VMarkdownEditor::imageInsertionRequested);
 
   const auto selectSourceA = [&editor]() {
     editor.setText(QStringLiteral("a"));
@@ -648,6 +819,7 @@ void TestInteractivePreview::testSourceTypeActionRouting() {
   const QString before = editor.document()->toPlainText();
   QVERIFY(!editor.handleTypeAction(TypeAction::TypeLink));
   QVERIFY(!editor.handleTypeAction(TypeAction::TypeImage));
+  QCOMPARE(imageRequested.count(), 0);
   QVERIFY(!editor.handleTypeAction(TypeAction::TypeTable));
   QVERIFY(!editor.handleTypeAction(TypeAction::TypeHeading, QStringLiteral("2")));
   QVERIFY(!editor.handleTypeAction(TypeAction::TypeTodoList, 1));
@@ -667,6 +839,7 @@ void TestInteractivePreview::testPreviewTypeActionRouting() {
   auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
   QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
   setTextAndSettle(editor, QLatin1String(c_table));
+  QSignalSpy imageRequested(&editor, &VMarkdownEditor::imageInsertionRequested);
 
   QCOMPARE(factory->m_widgets.size(), 1);
   auto widget = factory->m_widgets.first();
@@ -684,10 +857,21 @@ void TestInteractivePreview::testPreviewTypeActionRouting() {
   QCOMPARE(widget->m_lastTypeActionData, QVariant(3));
   QCOMPARE(editor.document()->toPlainText(), before);
 
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeImage));
+  QCOMPARE(widget->m_typeActionCount, 2);
+  QCOMPARE(widget->m_lastTypeAction, TypeAction::TypeImage);
+  QVERIFY(!widget->m_lastTypeActionData.isValid());
+  const QVariant imageData(QStringLiteral("application-owned"));
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeImage, imageData));
+  QCOMPARE(widget->m_typeActionCount, 3);
+  QCOMPARE(widget->m_lastTypeActionData, imageData);
+  QCOMPARE(imageRequested.count(), 0);
+
   editor.getTextEdit()->setFocus();
   QTRY_VERIFY(editor.getTextEdit()->hasFocus());
   QVERIFY(!editor.handleTypeAction(TypeAction::TypeImage));
-  QCOMPARE(widget->m_typeActionCount, 1);
+  QCOMPARE(widget->m_typeActionCount, 3);
+  QCOMPARE(imageRequested.count(), 0);
 
   QWidget other;
   auto elsewhere = new QTextEdit(&other);
@@ -700,7 +884,7 @@ void TestInteractivePreview::testPreviewTypeActionRouting() {
   QCoreApplication::processEvents();
 
   QVERIFY(!editor.handleTypeAction(TypeAction::TypeTable));
-  QCOMPARE(widget->m_typeActionCount, 1);
+  QCOMPARE(widget->m_typeActionCount, 3);
 }
 
 void TestInteractivePreview::testHandlerlessPreviewConsumesTypeAction() {
@@ -721,7 +905,10 @@ void TestInteractivePreview::testHandlerlessPreviewConsumesTypeAction() {
   QTRY_VERIFY(child->hasFocus());
 
   const QString before = editor.document()->toPlainText();
+  QSignalSpy imageRequested(&editor, &VMarkdownEditor::imageInsertionRequested);
   QVERIFY(editor.handleTypeAction(TypeAction::TypeBold));
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeImage));
+  QCOMPARE(imageRequested.count(), 0);
   QCOMPARE(editor.document()->toPlainText(), before);
 }
 
@@ -798,15 +985,317 @@ void TestInteractivePreview::testTableConsumesUnsupportedAndReadOnlyActions() {
   selectCellContents(sheet, 1, 0);
 
   const QString sourceBefore = editor.document()->toPlainText();
+  QSignalSpy imageRequested(&editor, &VMarkdownEditor::imageInsertionRequested);
   QVERIFY(editor.handleTypeAction(TypeAction::TypeHeading, 2));
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeImage, QStringLiteral("![alt](asset.png)")));
+  QCOMPARE(imageRequested.count(), 0);
   QCOMPARE(sheetCell(sheet, 1, 0), QStringLiteral("a"));
   QCOMPARE(editor.document()->toPlainText(), sourceBefore);
 
   editor.setReadOnly(true);
   QCoreApplication::processEvents();
   QVERIFY(editor.handleTypeAction(TypeAction::TypeBold));
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeImage));
+  QCOMPARE(imageRequested.count(), 0);
   QCOMPARE(sheetCell(sheet, 1, 0), QStringLiteral("a"));
   QCOMPARE(editor.document()->toPlainText(), sourceBefore);
+}
+
+void TestInteractivePreview::testTableImageInsertion_data() {
+  QTest::addColumn<QString>("imageSource");
+
+  QTest::newRow("markdown") << QStringLiteral("![alt](asset.png)");
+  QTest::newRow("html") << QStringLiteral("<img alt=\"alt\" src=\"asset.png\" width=\"32\" />");
+}
+
+void TestInteractivePreview::testTableImageInsertion() {
+  QFETCH(QString, imageSource);
+
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QLatin1String(c_table) + QStringLiteral("\ntrailing\n"));
+  QSignalSpy requested(&editor, &VMarkdownEditor::imageInsertionRequested);
+  QVERIFY(requested.isValid());
+
+  QPointer<QTextEdit> sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  sheet->setFocus();
+  QTRY_VERIFY(sheet->hasFocus());
+  selectCellContents(sheet, 1, 0);
+  const QString before = editor.document()->toPlainText();
+
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeImage));
+  QCOMPARE(requested.count(), 1);
+  const quint64 requestId = requested.first().at(0).toULongLong();
+  QVERIFY(requestId != 0);
+  QCOMPARE(requested.first().at(1).toString(), QStringLiteral("a"));
+
+  // Neither the sheet's current cell nor the source editor's unrelated cursor
+  // is the insertion target once an application starts its image workflow.
+  putCaretIn(sheet, 1, 1);
+  editor.getTextEdit()->setFocus();
+  QTRY_VERIFY(editor.getTextEdit()->hasFocus());
+  QTextCursor sourceCursor(editor.document());
+  sourceCursor.movePosition(QTextCursor::End);
+  editor.getTextEdit()->setTextCursor(sourceCursor);
+
+  QVERIFY(editor.completeImageInsertion(requestId, imageSource));
+  QCOMPARE(sheetCell(sheet, 1, 0), imageSource);
+  QCOMPARE(sheetCell(sheet, 1, 1), QStringLiteral("b"));
+  QCOMPARE(sheet->textCursor().position(),
+           sheetTable(sheet)->cellAt(1, 0).lastCursorPosition().position());
+  QVERIFY(!sheet->textCursor().hasSelection());
+  // Completing is an ordinary pending cell edit, not an immediate source write.
+  QCOMPARE(editor.document()->toPlainText(), before);
+
+  flushSheet(sheet);
+  settle(editor);
+  QString expected = before;
+  expected.replace(QStringLiteral("| a | b |"), QStringLiteral("| %1 | b |").arg(imageSource));
+  QCOMPARE(editor.document()->toPlainText(), expected);
+
+  QVERIFY(sheet);
+  sheet->setFocus();
+  QTRY_VERIFY(sheet->hasFocus());
+  QTest::keyClick(sheet, Qt::Key_Z, Qt::ControlModifier);
+  QCOMPARE(editor.document()->toPlainText(), before);
+  settle(editor);
+  sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  QCOMPARE(sheetCell(sheet, 1, 0), QStringLiteral("a"));
+}
+
+void TestInteractivePreview::testTableImageRequestOneShot() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QLatin1String(c_table));
+  QSignalSpy requested(&editor, &VMarkdownEditor::imageInsertionRequested);
+  auto sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  sheet->setFocus();
+  QTRY_VERIFY(sheet->hasFocus());
+  selectCellContents(sheet, 1, 0);
+  const QString before = editor.document()->toPlainText();
+  const QString image = QStringLiteral("![alt](asset.png)");
+
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeImage));
+  QCOMPARE(requested.count(), 1);
+  const quint64 cancelled = requested.last().at(0).toULongLong();
+  QVERIFY(cancelled != 0);
+  editor.cancelImageInsertion(cancelled);
+  editor.cancelImageInsertion(cancelled);
+  QVERIFY(!editor.completeImageInsertion(cancelled, image));
+  QCOMPARE(sheetCell(sheet, 1, 0), QStringLiteral("a"));
+
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeImage));
+  QCOMPARE(requested.count(), 2);
+  const quint64 superseded = requested.last().at(0).toULongLong();
+  QVERIFY(superseded > cancelled);
+  selectCellContents(sheet, 1, 1);
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeImage));
+  QCOMPARE(requested.count(), 3);
+  const quint64 current = requested.last().at(0).toULongLong();
+  QVERIFY(current > superseded);
+  QCOMPARE(requested.last().at(1).toString(), QStringLiteral("b"));
+
+  QVERIFY(!editor.completeImageInsertion(superseded, image));
+  editor.cancelImageInsertion(superseded);
+  editor.cancelImageInsertion(0);
+  QVERIFY(!editor.completeImageInsertion(0, image));
+  QVERIFY(editor.completeImageInsertion(current, image));
+  QVERIFY(!editor.completeImageInsertion(current, QStringLiteral("![again](other.png)")));
+  editor.cancelImageInsertion(current);
+  QCOMPARE(sheetCell(sheet, 1, 0), QStringLiteral("a"));
+  QCOMPARE(sheetCell(sheet, 1, 1), image);
+  flushSheet(sheet);
+  QString expected = before;
+  expected.replace(QStringLiteral("| a | b |"), QStringLiteral("| a | %1 |").arg(image));
+  QCOMPARE(editor.document()->toPlainText(), expected);
+}
+
+void TestInteractivePreview::testTableImageInsertionRejectsPayload_data() {
+  QTest::addColumn<QString>("imageSource");
+
+  QTest::newRow("empty") << QString();
+  QTest::newRow("path-only") << QStringLiteral("asset.png");
+  QTest::newRow("incomplete-markdown") << QStringLiteral("![alt](asset.png");
+  QTest::newRow("incomplete-html") << QStringLiteral("<img src=\"asset.png\"");
+  QTest::newRow("leading-prose") << QStringLiteral("before ![alt](asset.png)");
+  QTest::newRow("trailing-prose") << QStringLiteral("<img src=\"asset.png\"> after");
+  QTest::newRow("surrounding-markup") << QStringLiteral("**![alt](asset.png)**");
+  QTest::newRow("leading-space") << QStringLiteral(" ![alt](asset.png)");
+  QTest::newRow("trailing-space") << QStringLiteral("![alt](asset.png) ");
+  QTest::newRow("multiple-images") << QStringLiteral("![a](a.png) ![b](b.png)");
+  QTest::newRow("cell-separator") << QStringLiteral("![alt](asset.png) | other");
+  QTest::newRow("empty-markdown-destination") << QStringLiteral("![alt]()");
+  QTest::newRow("empty-html-destination") << QStringLiteral("<img alt=\"alt\" src=\"\">");
+  QTest::newRow("missing-html-destination") << QStringLiteral("<img alt=\"alt\">");
+  QTest::newRow("newline") << QStringLiteral("![alt](asset.png)\n");
+  QTest::newRow("carriage-return") << QStringLiteral("![alt](asset.png)\r");
+  QTest::newRow("line-separator") << QStringLiteral("![alt](asset.png)\u2028");
+  QTest::newRow("paragraph-separator") << QStringLiteral("![alt](asset.png)\u2029");
+}
+
+void TestInteractivePreview::testTableImageInsertionRejectsPayload() {
+  QFETCH(QString, imageSource);
+
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QLatin1String(c_table));
+  QSignalSpy requested(&editor, &VMarkdownEditor::imageInsertionRequested);
+  auto sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  sheet->setFocus();
+  QTRY_VERIFY(sheet->hasFocus());
+  selectCellContents(sheet, 1, 0);
+  const QString before = editor.document()->toPlainText();
+
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeImage));
+  QCOMPARE(requested.count(), 1);
+  const quint64 requestId = requested.first().at(0).toULongLong();
+  QVERIFY(!editor.completeImageInsertion(requestId, imageSource));
+  // Invalid completion consumes the token too; fixing the payload cannot retry it.
+  QVERIFY(!editor.completeImageInsertion(requestId, QStringLiteral("![alt](asset.png)")));
+  QCOMPARE(sheetCell(sheet, 1, 0), QStringLiteral("a"));
+  QCOMPARE(sheetCell(sheet, 1, 1), QStringLiteral("b"));
+  flushSheet(sheet);
+  QCOMPARE(editor.document()->toPlainText(), before);
+}
+
+void TestInteractivePreview::testTableImageInsertionRejectsInvalidatedRequest_data() {
+  QTest::addColumn<int>("change");
+
+  QTest::newRow("captured-cell-edit") << 0;
+  QTest::newRow("captured-cell-edit-restored") << 1;
+  QTest::newRow("structure-change") << 2;
+  QTest::newRow("widget-rebuild") << 3;
+  QTest::newRow("table-removal") << 4;
+  QTest::newRow("editor-read-only") << 5;
+  QTest::newRow("text-edit-read-only") << 6;
+}
+
+void TestInteractivePreview::testTableImageInsertionRejectsInvalidatedRequest() {
+  QFETCH(int, change);
+
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QLatin1String(c_table));
+  QSignalSpy requested(&editor, &VMarkdownEditor::imageInsertionRequested);
+  QPointer<QTextEdit> sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  sheet->setFocus();
+  QTRY_VERIFY(sheet->hasFocus());
+  selectCellContents(sheet, 1, 0);
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeImage));
+  QCOMPARE(requested.count(), 1);
+  const quint64 requestId = requested.first().at(0).toULongLong();
+
+  switch (change) {
+  case 0:
+    editCell(sheet, 1, 0, QStringLiteral("edited"));
+    break;
+  case 1:
+    editCell(sheet, 1, 0, QStringLiteral("edited"));
+    editCell(sheet, 1, 0, QStringLiteral("a"));
+    break;
+  case 2:
+    QVERIFY(triggerTableAction(sheet, 1, 1, "InsertColumnRight"));
+    QCOMPARE(sheetTable(sheet)->columns(), 3);
+    break;
+  case 3: {
+    auto factory = new RecordingPreviewFactory({PreviewElementType::Image});
+    QVERIFY(editor.registerPreviewWidgetFactory(factory, 1));
+    settle(editor);
+    QTRY_VERIFY(sheet.isNull());
+    QVERIFY(singlePreviewWidget(editor));
+    break;
+  }
+  case 4: {
+    QTextCursor cursor(editor.document());
+    cursor.select(QTextCursor::Document);
+    cursor.insertText(QStringLiteral("plain paragraph\n"));
+    settle(editor);
+    QTRY_VERIFY(sheet.isNull());
+    QVERIFY(previewWidgets(editor).isEmpty());
+    break;
+  }
+  case 5:
+    editor.setReadOnly(true);
+    QVERIFY(sheet->isReadOnly());
+    break;
+  case 6:
+    editor.getTextEdit()->setReadOnly(true);
+    QVERIFY(sheet->isReadOnly());
+    break;
+  }
+
+  // Snapshot the current state, not the old captured cell: rejection must not
+  // roll back a user's edit, resurrect a removed sheet, or touch a new sheet.
+  auto currentSheet = sheetView(singlePreviewWidget(editor));
+  const QString currentCells = currentSheet ? currentSheet->toPlainText() : QString();
+  const QString currentSource = editor.document()->toPlainText();
+  QVERIFY(!editor.completeImageInsertion(requestId, QStringLiteral("![alt](asset.png)")));
+  editor.setReadOnly(false);
+  editor.getTextEdit()->setReadOnly(false);
+  QVERIFY(!editor.completeImageInsertion(requestId, QStringLiteral("![retry](asset.png)")));
+  QCOMPARE(editor.document()->toPlainText(), currentSource);
+  if (currentSheet) {
+    QCOMPARE(currentSheet->toPlainText(), currentCells);
+  } else {
+    QVERIFY(previewWidgets(editor).isEmpty());
+  }
+}
+
+void TestInteractivePreview::testTableImageRequestSurvivesCommitEcho() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QLatin1String(c_table));
+  QSignalSpy requested(&editor, &VMarkdownEditor::imageInsertionRequested);
+  QPointer<QTextEdit> sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  sheet->setFocus();
+  QTRY_VERIFY(sheet->hasFocus());
+  editCell(sheet, 1, 0, QStringLiteral("aa"));
+  selectCellContents(sheet, 1, 0);
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeImage));
+  QCOMPARE(requested.count(), 1);
+  QCOMPARE(requested.first().at(1).toString(), QStringLiteral("aa"));
+  const quint64 requestId = requested.first().at(0).toULongLong();
+
+  // A different cell can change while the request is outstanding. The ensuing
+  // flush/parse echo of the captured cell is not another edit to that cell.
+  editCell(sheet, 1, 1, QStringLiteral("changed"));
+  flushSheet(sheet);
+  settle(editor);
+  QVERIFY(sheet);
+  QCOMPARE(sheetCell(sheet, 1, 0), QStringLiteral("aa"));
+  const QString before = editor.document()->toPlainText();
+  QVERIFY(editor.completeImageInsertion(requestId, QStringLiteral("![alt](asset.png)")));
+  QCOMPARE(sheetCell(sheet, 1, 0), QStringLiteral("![alt](asset.png)"));
+  QCOMPARE(sheetCell(sheet, 1, 1), QStringLiteral("changed"));
+  flushSheet(sheet);
+  QString expected = before;
+  expected.replace(QStringLiteral("| aa | changed |"),
+                   QStringLiteral("| ![alt](asset.png) | changed |"));
+  QCOMPARE(editor.document()->toPlainText(), expected);
+}
+
+void TestInteractivePreview::testTableImageRequestCanCompleteSynchronously() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QLatin1String(c_table));
+  auto sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  sheet->setFocus();
+  QTRY_VERIFY(sheet->hasFocus());
+  selectCellContents(sheet, 1, 0);
+
+  bool completed = false;
+  QString selectedText;
+  connect(&editor, &VMarkdownEditor::imageInsertionRequested, &editor,
+          [&editor, &completed, &selectedText](quint64 p_requestId, const QString &p_selectedText) {
+            selectedText = p_selectedText;
+            completed =
+                editor.completeImageInsertion(p_requestId, QStringLiteral("![alt](asset.png)"));
+          });
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeImage));
+  QVERIFY(completed);
+  QCOMPARE(selectedText, QStringLiteral("a"));
+  QCOMPARE(sheetCell(sheet, 1, 0), QStringLiteral("![alt](asset.png)"));
 }
 
 namespace {
@@ -1392,6 +1881,263 @@ void TestInteractivePreview::testNoWidgetForImageCodeMathByDefault() {
 
   // Without a custom factory those elements keep the painted static path.
   QVERIFY(previewWidgets(editor).isEmpty());
+}
+
+void TestInteractivePreview::testImagePreviewPublications() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  auto manager = editor.getPreviewMgr();
+  const auto firstBytes = previewImageBytes(QSize(40, 20), qRgb(220, 10, 20));
+  const auto secondBytes = previewImageBytes(QSize(24, 12), qRgb(10, 180, 30));
+  QVERIFY(!firstBytes.isEmpty());
+  QVERIFY(!secondBytes.isEmpty());
+  manager->seedImageData(QStringLiteral("publication-first.png"), firstBytes);
+  manager->seedImageData(QStringLiteral("publication-second.png"), secondBytes);
+  QVector<PreviewPublication> publications;
+  QObject observer;
+  connect(
+      manager, &PreviewMgr::previewDataUpdated, &observer,
+      [&](PreviewData::Source p_source, const QVector<QTextBlock> &p_blocks) {
+        if (p_source == PreviewData::ImageLink) {
+          capturePreviewPublication(editor, p_source, p_blocks, publications);
+        }
+      },
+      Qt::DirectConnection);
+  const QString source = QStringLiteral("Before ![first](publication-first.png) and "
+                                        "![same](publication-first.png) after.\n"
+                                        "Second ![second](publication-second.png) end.\n");
+  setTextAndSettle(editor, source);
+  QVERIFY(!publications.isEmpty());
+  const auto initial = publications.last();
+  QCOMPARE(initial.m_blocks, (QVector<int>{0, 1}));
+  QCOMPARE(initial.m_records.size(), 3);
+  QCOMPARE(initial.m_records.at(0).m_sourceText, QStringLiteral("![first](publication-first.png)"));
+  QCOMPARE(initial.m_records.at(1).m_sourceText, QStringLiteral("![same](publication-first.png)"));
+  QCOMPARE(initial.m_records.at(2).m_sourceText,
+           QStringLiteral("![second](publication-second.png)"));
+  QCOMPARE(initial.m_records.at(0).m_data.m_imageSize, QSize(40, 20));
+  QCOMPARE(initial.m_records.at(2).m_data.m_imageSize, QSize(24, 12));
+  QCOMPARE(initial.m_records.at(0).m_image.toImage().pixel(0, 0), qRgb(220, 10, 20));
+  QCOMPARE(initial.m_records.at(2).m_image.toImage().pixel(0, 0), qRgb(10, 180, 30));
+  QCOMPARE(editor.document()->toPlainText(), source);
+
+  // Keep an actual source undo entry while identical generations produce no
+  // layout changes. Observers must still receive all records synchronously.
+  QTextCursor cursor(editor.document());
+  cursor.movePosition(QTextCursor::End);
+  cursor.insertText(QStringLiteral("tail"));
+  settle(editor);
+  const auto links = editor.getHighlighter()->getImageLinks();
+  QCOMPARE(links.size(), 3);
+  const int undoSteps = editor.document()->availableUndoSteps();
+  QVERIFY(undoSteps > 0);
+  for (int pass = 0; pass < 2; ++pass) {
+    const auto previous = publications.last();
+    const int count = publications.size();
+    manager->updateImageLinks(links);
+    QCOMPARE(publications.size(), count + 1);
+    const auto &current = publications.last();
+    QCOMPARE(current.m_blocks, initial.m_blocks);
+    QCOMPARE(current.m_records.size(), initial.m_records.size());
+    for (int i = 0; i < current.m_records.size(); ++i) {
+      const auto &record = current.m_records.at(i);
+      QCOMPARE(record.m_sourceText, initial.m_records.at(i).m_sourceText);
+      QVERIFY(record.m_data == previous.m_records.at(i).m_data);
+      QVERIFY(record.m_timeStamp > previous.m_records.at(i).m_timeStamp);
+      QCOMPARE(record.m_image.cacheKey(), previous.m_records.at(i).m_image.cacheKey());
+    }
+    QCOMPARE(editor.document()->toPlainText(), source + QStringLiteral("tail"));
+    QCOMPARE(editor.document()->availableUndoSteps(), undoSteps);
+  }
+  editor.document()->undo();
+  QCOMPARE(editor.document()->toPlainText(), source);
+}
+
+void TestInteractivePreview::testMathPreviewPublications() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  const QString source = QStringLiteral("Before $a$ after.\nSecond $b$ end.\n");
+  setTextAndSettle(editor, source);
+  const int undoSteps = editor.document()->availableUndoSteps();
+  auto manager = editor.getPreviewMgr();
+  auto first = mathPreviewItem(editor.document()->firstBlock(), QStringLiteral("$a$"),
+                               QStringLiteral("publication-a"));
+  auto second = mathPreviewItem(editor.document()->findBlockByNumber(1), QStringLiteral("$b$"),
+                                QStringLiteral("publication-b"));
+  QVector<PreviewPublication> publications;
+  QString retiredResource;
+  QObject observer;
+  connect(
+      manager, &PreviewMgr::previewDataUpdated, &observer,
+      [&](PreviewData::Source p_source, const QVector<QTextBlock> &p_blocks) {
+        if (p_source != PreviewData::MathBlock) {
+          return;
+        }
+        capturePreviewPublication(editor, p_source, p_blocks, publications);
+        if (!retiredResource.isEmpty()) {
+          QVERIFY(!editor.findImageFromDocumentResourceMgr(retiredResource));
+        }
+      },
+      Qt::DirectConnection);
+  manager->updateMathBlocks({first, second});
+  QCOMPARE(publications.size(), 1);
+  const auto initial = publications.first();
+  QCOMPARE(initial.m_blocks, (QVector<int>{0, 1}));
+  QCOMPARE(initial.m_records.size(), 2);
+  QCOMPARE(initial.m_records.at(0).m_sourceText, QStringLiteral("$a$"));
+  QCOMPARE(initial.m_records.at(1).m_sourceText, QStringLiteral("$b$"));
+  for (const auto &record : initial.m_records) {
+    QCOMPARE(record.m_data.m_imageSize, QSize(32, 16));
+    QCOMPARE(record.m_data.m_backgroundColor, qRgb(250, 240, 230));
+    QCOMPARE(record.m_image.size(), QSize(64, 32));
+    QCOMPARE(record.m_image.devicePixelRatio(), qreal(2.0));
+    QCOMPARE(record.m_image.toImage().pixel(0, 0), qRgb(0, 0, 255));
+  }
+
+  // A retained, timestamp-only record must survive the removal of its peer,
+  // and the peer's resource must already be gone when the signal is delivered.
+  retiredResource = initial.m_records.first().m_data.m_imageName;
+  manager->updateMathBlocks({second});
+  QCOMPARE(publications.size(), 2);
+  const auto current = publications.last();
+  QCOMPARE(current.m_blocks, (QVector<int>{1}));
+  QCOMPARE(current.m_records.size(), 1);
+  QCOMPARE(current.m_records.first().m_sourceText, QStringLiteral("$b$"));
+  QCOMPARE(current.m_records.first().m_image.cacheKey(),
+           initial.m_records.at(1).m_image.cacheKey());
+  manager->updateMathBlocks({second});
+  QCOMPARE(publications.size(), 3);
+  QCOMPARE(publications.last().m_blocks, current.m_blocks);
+  QCOMPARE(publications.last().m_records.size(), 1);
+  QVERIFY(publications.last().m_records.first().m_timeStamp >
+          current.m_records.first().m_timeStamp);
+  // A copied pixmap remains usable even after its resource is retired.
+  QCOMPARE(initial.m_records.first().m_image.toImage().pixel(0, 0), qRgb(0, 0, 255));
+  QCOMPARE(editor.document()->toPlainText(), source);
+  QCOMPARE(editor.document()->availableUndoSteps(), undoSteps);
+}
+
+void TestInteractivePreview::testPreviewPublicationClearing_data() {
+  QTest::addColumn<int>("operation");
+  QTest::newRow("clear") << 0;
+  QTest::newRow("disable-all") << 1;
+  QTest::newRow("disable-math") << 2;
+}
+
+void TestInteractivePreview::testPreviewPublicationClearing() {
+  QFETCH(int, operation);
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  auto manager = editor.getPreviewMgr();
+  const auto bytes = previewImageBytes(QSize(20, 10), qRgb(190, 30, 40));
+  QVERIFY(!bytes.isEmpty());
+  manager->seedImageData(QStringLiteral("publication-clear.png"), bytes);
+  const QString source = QStringLiteral("Before ![image](publication-clear.png) and $x$ after.\n");
+  setTextAndSettle(editor, source);
+  QTextCursor cursor(editor.document());
+  cursor.movePosition(QTextCursor::End);
+  cursor.insertText(QStringLiteral("tail"));
+  settle(editor);
+  const int undoSteps = editor.document()->availableUndoSteps();
+  QVERIFY(undoSteps > 0);
+  auto item = mathPreviewItem(editor.document()->firstBlock(), QStringLiteral("$x$"),
+                              QStringLiteral("publication-clear-math"));
+  manager->updateMathBlocks({item});
+  QHash<int, QString> resources;
+  for (const auto data : BlockPreviewData::get(editor.document()->firstBlock())->getPreviewData()) {
+    resources.insert(data->source(), data->getImageData()->m_imageName);
+  }
+  QCOMPARE(resources.size(), 2);
+  QVERIFY(resources.contains(PreviewData::ImageLink));
+  QVERIFY(resources.contains(PreviewData::MathBlock));
+  QVector<PreviewPublication> publications;
+  QObject observer;
+  connect(
+      manager, &PreviewMgr::previewDataUpdated, &observer,
+      [&](PreviewData::Source p_source, const QVector<QTextBlock> &p_blocks) {
+        capturePreviewPublication(editor, p_source, p_blocks, publications);
+        if (operation != 2) {
+          for (const auto &resource : resources) {
+            QVERIFY(!editor.findImageFromDocumentResourceMgr(resource));
+          }
+        }
+        if (p_blocks.isEmpty() && resources.contains(p_source)) {
+          QVERIFY(!editor.findImageFromDocumentResourceMgr(resources.value(p_source)));
+        }
+      },
+      Qt::DirectConnection);
+  if (operation == 0) {
+    manager->clearPreview();
+  } else if (operation == 1) {
+    manager->setPreviewEnabled(false);
+  } else {
+    manager->setPreviewEnabled(PreviewData::MathBlock, false);
+  }
+  for (auto sourceToClear : {PreviewData::ImageLink, PreviewData::MathBlock}) {
+    if (operation == 2 && sourceToClear == PreviewData::ImageLink) {
+      continue;
+    }
+    bool cleared = false;
+    for (const auto &publication : publications) {
+      if (publication.m_source == sourceToClear && publication.m_blocks.isEmpty() &&
+          publication.m_records.isEmpty()) {
+        cleared = true;
+      }
+    }
+    QVERIFY(cleared);
+  }
+  if (operation != 0) {
+    manager->updateMathBlocks({item});
+    for (const auto data :
+         BlockPreviewData::get(editor.document()->firstBlock())->getPreviewData()) {
+      QVERIFY(data->source() != PreviewData::MathBlock);
+    }
+  }
+  QCOMPARE(editor.document()->toPlainText(), source + QStringLiteral("tail"));
+  QCOMPARE(editor.document()->availableUndoSteps(), undoSteps);
+  editor.document()->undo();
+  QCOMPARE(editor.document()->toPlainText(), source);
+}
+
+void TestInteractivePreview::testObsoletePreviewPublication() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  const QString source = QStringLiteral("Before $old$ after.\nSecond $current$ end.\n");
+  setTextAndSettle(editor, source);
+  auto manager = editor.getPreviewMgr();
+  const auto firstBlock = editor.document()->firstBlock();
+  auto first =
+      mathPreviewItem(firstBlock, QStringLiteral("$old$"), QStringLiteral("obsolete-math"));
+  auto second = mathPreviewItem(editor.document()->findBlockByNumber(1),
+                                QStringLiteral("$current$"), QStringLiteral("current-math"));
+  manager->updateMathBlocks({first, second});
+  const auto oldData = BlockPreviewData::get(firstBlock)->getPreviewData().first();
+  const auto oldImage = *oldData->getImageData();
+  const auto oldTimeStamp = oldData->timeStamp();
+  manager->updateMathBlocks({second});
+
+  // Restore an older record through the exported block-data API, as can remain
+  // on a block not visited by a generation's possible-block sweep.
+  BlockPreviewData::get(firstBlock)
+      ->insert(new PreviewData(PreviewData::MathBlock, oldTimeStamp, oldImage.m_startPos,
+                               oldImage.m_endPos, oldImage.m_padding, oldImage.m_inline,
+                               oldImage.m_imageName, oldImage.m_imageSize,
+                               oldImage.m_backgroundColor));
+  QVector<PreviewPublication> publications;
+  QObject observer;
+  connect(
+      manager, &PreviewMgr::previewDataUpdated, &observer,
+      [&](PreviewData::Source p_source, const QVector<QTextBlock> &p_blocks) {
+        capturePreviewPublication(editor, p_source, p_blocks, publications);
+        QVERIFY(BlockPreviewData::get(firstBlock)->getPreviewData().isEmpty());
+      },
+      Qt::DirectConnection);
+  const int undoSteps = editor.document()->availableUndoSteps();
+  manager->checkBlocksForObsoletePreview({firstBlock.blockNumber()});
+  QCOMPARE(publications.size(), 1);
+  QCOMPARE(publications.first().m_source, PreviewData::MathBlock);
+  QCOMPARE(publications.first().m_blocks, (QVector<int>{1}));
+  QCOMPARE(publications.first().m_records.size(), 1);
+  QCOMPARE(publications.first().m_records.first().m_sourceText, QStringLiteral("$current$"));
+  QCOMPARE(publications.first().m_records.first().m_image.toImage().pixel(0, 0), qRgb(0, 0, 255));
+  QCOMPARE(editor.document()->toPlainText(), source);
+  QCOMPARE(editor.document()->availableUndoSteps(), undoSteps);
 }
 
 void TestInteractivePreview::testCustomFactoryOverridesBuiltin() {
@@ -6649,4 +7395,615 @@ void TestInteractivePreview::testHtmlTableSourceIsFoldedToItsOwnExtent() {
   QVERIFY2(visible(8), "text after the table must stay visible");
   QVERIFY2(visible(0), "the heading must stay visible");
 }
+
+void TestInteractivePreview::testTableInlinePreviewObjectsAndGeometry() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  auto manager = editor.getPreviewMgr();
+  manager->seedImageData(QStringLiteral("asset.png"),
+                         previewImageBytes(QSize(96, 48), qRgb(220, 40, 20)));
+  const QString cellSource = QStringLiteral("A ![x](asset.png) B $x^2$ C");
+  const QString source =
+      QStringLiteral("| head | other |\n| --- | --- |\n| %1 | tail |\n").arg(cellSource);
+  setTextAndSettle(editor, source);
+  auto sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  auto math = mathPreviewItem(editor.document()->findBlockByNumber(2), QStringLiteral("$x^2$"),
+                              QStringLiteral("table-geometry"));
+  manager->updateMathBlocks({math});
+  QTRY_COMPARE(sheetInlineObjectCount(sheet), 2);
+
+  const auto initial = sheetInlineCell(sheet, 1, 0);
+  QCOMPARE(initial.m_source, cellSource);
+  QCOMPARE(initial.m_objects.size(), 2);
+  QCOMPARE(initial.m_objects.at(0).m_sourceOffset, cellSource.indexOf(QStringLiteral(" B ")));
+  QCOMPARE(initial.m_objects.at(1).m_sourceOffset, cellSource.indexOf(QStringLiteral(" C")));
+  for (const auto &object : initial.m_objects) {
+    QVERIFY(object.m_format.isImageFormat());
+    QVERIFY(!object.m_image.isNull());
+  }
+  const auto imageFormat = initial.m_objects.at(0).m_format.toImageFormat();
+  QCOMPARE(imageFormat.width(), qreal(96));
+  QCOMPARE(imageFormat.height(), qreal(48));
+  const auto mathFormat = initial.m_objects.at(1).m_format.toImageFormat();
+  QCOMPARE(mathFormat.width(), qreal(32));
+  QCOMPARE(mathFormat.height(), qreal(16));
+  QCOMPARE(initial.m_objects.at(1).m_image.devicePixelRatio(), qreal(2));
+  QTRY_VERIFY(rowHeights(sheet).at(1) >= imageFormat.height());
+  QTRY_COMPARE(sheet->verticalScrollBar()->maximum(), 0);
+  const qreal initialRowHeight = rowHeights(sheet).at(1);
+
+  // The producer owns range-to-raster provenance. A new resource name supplies
+  // another raster density for the SAME explicit logical dimensions.
+  math->m_name = QStringLiteral("table-geometry-dpr4");
+  math->m_image = QPixmap(128, 64);
+  math->m_image.fill(Qt::green);
+  math->m_image.setDevicePixelRatio(4);
+  manager->updateMathBlocks({math});
+  QTRY_COMPARE(sheetInlineCell(sheet, 1, 0).m_objects.at(1).m_image.devicePixelRatio(), qreal(4));
+  QCOMPARE(sheetInlineCell(sheet, 1, 0).m_objects.at(1).m_format.toImageFormat().width(),
+           mathFormat.width());
+  QCOMPARE(sheetInlineCell(sheet, 1, 0).m_objects.at(1).m_format.toImageFormat().height(),
+           mathFormat.height());
+  QCOMPARE(rowHeights(sheet).at(1), initialRowHeight);
+
+  math->m_name = QStringLiteral("table-geometry-wide");
+  math->m_logicalSize = QSize(640, 320);
+  manager->updateMathBlocks({math});
+  QTRY_VERIFY(sheetInlineCell(sheet, 1, 0).m_objects.at(1).m_format.toImageFormat().width() > 32);
+  const auto fitted = sheetInlineCell(sheet, 1, 0).m_objects.at(1).m_format.toImageFormat();
+  QVERIFY(fitted.width() < 640);
+  QVERIFY(fitted.width() <= sheet->document()->textWidth() / 2);
+  QVERIFY(qAbs(fitted.width() / fitted.height() - 2) < 0.01);
+  editor.resize(900, 600);
+  QTRY_VERIFY(sheetInlineCell(sheet, 1, 0).m_objects.at(1).m_format.toImageFormat().width() >
+              fitted.width());
+  const auto widened = sheetInlineCell(sheet, 1, 0).m_objects.at(1).m_format.toImageFormat();
+  QVERIFY(widened.width() <= 640);
+  QVERIFY(widened.width() <= sheet->document()->textWidth() / 2);
+  QVERIFY(qAbs(widened.width() / widened.height() - 2) < 0.01);
+  QCOMPARE(editor.document()->toPlainText(), source);
+}
+
+void TestInteractivePreview::testTableInlinePreviewSourceRoundTrip() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  auto manager = editor.getPreviewMgr();
+  manager->seedImageData(QStringLiteral("asset.png"),
+                         previewImageBytes(QSize(24, 12), qRgb(200, 20, 30)));
+  const QString cellSource =
+      QStringLiteral("A ![x](asset.png) B $x^2$ C ") + QChar(QChar::ObjectReplacementCharacter);
+  const QString source =
+      QStringLiteral("| head | other |\n| --- | --- |\n| %1 | tail |\n").arg(cellSource);
+  setTextAndSettle(editor, source);
+  auto sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  auto math = mathPreviewItem(editor.document()->findBlockByNumber(2), QStringLiteral("$x^2$"),
+                              QStringLiteral("table-source"));
+  manager->updateMathBlocks({math});
+  QTRY_COMPARE(sheetInlineObjectCount(sheet), 2);
+  QCOMPARE(sheetInlineCell(sheet, 1, 0).m_source, cellSource);
+  selectCellContents(sheet, 1, 0);
+  sheet->copy();
+  QCOMPARE(QApplication::clipboard()->text(), cellSource);
+  QVERIFY(!QApplication::clipboard()->mimeData()->hasImage());
+  QVERIFY(!QApplication::clipboard()->mimeData()->hasHtml());
+
+  auto table = sheetTable(sheet);
+  auto selection = table->cellAt(0, 0).firstCursorPosition();
+  selection.setPosition(table->cellAt(1, 1).lastCursorPosition().position(),
+                        QTextCursor::KeepAnchor);
+  sheet->setTextCursor(selection);
+  QVERIFY(sheet->textCursor().hasComplexSelection());
+  sheet->copy();
+  QCOMPARE(QApplication::clipboard()->text(),
+           QStringLiteral("head\tother\n%1\ttail").arg(cellSource));
+  QVERIFY(triggerTableAction(sheet, 1, 0, "CopyAsMarkdown"));
+  const QString markdown = QApplication::clipboard()->text();
+  QVERIFY(markdown.contains(cellSource));
+  QCOMPARE(markdown.count(QChar::ObjectReplacementCharacter), 1);
+  QVERIFY(!markdown.contains(QStringLiteral("vte-table-preview:")));
+  QVERIFY(triggerTableAction(sheet, 1, 0, "CopyAsHtml"));
+  const QString html = QApplication::clipboard()->mimeData()->html();
+  QVERIFY(html.contains(QStringLiteral("src=\"asset.png\"")));
+  QVERIFY(html.contains(QStringLiteral("x^2")));
+  QVERIFY(!html.contains(QStringLiteral("vte-table-preview:")));
+  flushSheet(sheet);
+  QCOMPARE(editor.document()->toPlainText(), source);
+
+  sheet->setFocus();
+  QTRY_VERIFY(sheet->hasFocus());
+  selectCellContents(sheet, 1, 0);
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeCode));
+  QCOMPARE(sheetInlineObjectCount(sheet), 0);
+  QVERIFY(editor.handleTypeAction(TypeAction::TypeCode));
+  QCOMPARE(sheetInlineCell(sheet, 1, 0).m_source, cellSource);
+  flushSheet(sheet);
+  QCOMPARE(editor.document()->toPlainText(), source);
+
+  putCaretIn(sheet, 1, 0);
+  QTest::keyClicks(sheet, QStringLiteral(" changed"));
+  const QString changedCell = cellSource + QStringLiteral(" changed");
+  QCOMPARE(sheetInlineCell(sheet, 1, 0).m_source, changedCell);
+  flushSheet(sheet);
+  settle(editor);
+  QString changedSource = source;
+  changedSource.replace(cellSource, changedCell);
+  QCOMPARE(editor.document()->toPlainText(), changedSource);
+  QCOMPARE(editor.document()->toPlainText().count(QChar::ObjectReplacementCharacter), 1);
+  editor.document()->undo();
+  settle(editor);
+  QCOMPARE(editor.document()->toPlainText(), source);
+  QCOMPARE(sheetInlineCell(sheetView(singlePreviewWidget(editor)), 1, 0).m_source, cellSource);
+  editor.document()->redo();
+  settle(editor);
+  QCOMPARE(editor.document()->toPlainText(), changedSource);
+  QCOMPARE(sheetInlineCell(sheetView(singlePreviewWidget(editor)), 1, 0).m_source, changedCell);
+}
+
+void TestInteractivePreview::testTableInlinePreviewPresentationHasNoFeedback() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  auto manager = editor.getPreviewMgr();
+  const auto bytes = previewImageBytes(QSize(24, 12), qRgb(200, 20, 30));
+  manager->seedImageData(QStringLiteral("feedback.png"), bytes);
+  const QString source = QStringLiteral("| head | other |\n| --- | --- |\n"
+                                        "| ![x](feedback.png) $x$ | tail |\n\n");
+  setTextAndSettle(editor, source);
+  QTextCursor cursor(editor.document());
+  cursor.movePosition(QTextCursor::End);
+  cursor.insertText(QStringLiteral("source undo sentinel"));
+  settle(editor);
+  const QString before = editor.document()->toPlainText();
+  const int undoSteps = editor.document()->availableUndoSteps();
+  QVERIFY(undoSteps > 0);
+  auto widget = singlePreviewWidget(editor);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+  QSignalSpy commits(widget->previewContext(), &PreviewWidgetContext::replacementFinished);
+  auto math = mathPreviewItem(editor.document()->findBlockByNumber(2), QStringLiteral("$x$"),
+                              QStringLiteral("table-feedback"));
+  math->m_image.fill(Qt::transparent);
+  math->m_backgroundColor = qRgb(230, 220, 210);
+  manager->updateMathBlocks({math});
+  QTRY_COMPARE(sheetInlineObjectCount(sheet), 2);
+  QTRY_COMPARE(sheetInlineCell(sheet, 1, 0).m_objects.at(1).m_image.toImage().pixel(0, 0),
+               math->m_backgroundColor);
+  sheet->setFocus();
+  putCaretIn(sheet, 1, 1);
+  const int caret = sheet->textCursor().position();
+
+  math->m_backgroundColor = qRgb(10, 30, 90);
+  math->m_logicalSize = QSize(120, 60);
+  manager->updateMathBlocks({math});
+  QTRY_COMPARE(sheetInlineCell(sheet, 1, 0).m_objects.at(1).m_image.toImage().pixel(0, 0),
+               math->m_backgroundColor);
+  manager->updateMathBlocks({math}); // Timestamp-only complete publication.
+  manager->updateImageLinks(editor.getHighlighter()->getImageLinks());
+  QCoreApplication::processEvents();
+  QCOMPARE(sheet->textCursor().position(), caret);
+  QCOMPARE(sheet->textCursor().currentTable()->cellAt(sheet->textCursor()).column(), 1);
+
+  manager->setPreviewEnabled(PreviewData::ImageLink, false);
+  manager->updateMathBlocks({math});
+  QTRY_COMPARE(sheetInlineObjectCount(sheet), 1);
+  QCOMPARE(sheetInlineCell(sheet, 1, 0).m_objects.first().m_sourceOffset,
+           sheetInlineCell(sheet, 1, 0).m_source.size());
+  manager->seedImageData(QStringLiteral("feedback.png"), bytes);
+  manager->setPreviewEnabled(PreviewData::ImageLink, true);
+  manager->updateImageLinks(editor.getHighlighter()->getImageLinks());
+  manager->updateMathBlocks({math});
+  QTRY_COMPARE(sheetInlineObjectCount(sheet), 2);
+  flushSheet(sheet);
+  QCOMPARE(commits.count(), 0);
+  QCOMPARE(editor.document()->toPlainText(), before);
+  QCOMPARE(editor.document()->availableUndoSteps(), undoSteps);
+  sheet->setFocus();
+  QTRY_VERIFY(sheet->hasFocus());
+  QTest::keyClick(sheet, Qt::Key_Z, Qt::ControlModifier);
+  QCOMPARE(editor.document()->toPlainText(), source);
+}
+
+void TestInteractivePreview::testTableInlinePreviewSourceTypeFlags() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  auto manager = editor.getPreviewMgr();
+  const auto bytes = previewImageBytes(QSize(24, 12), qRgb(200, 20, 30));
+  manager->seedImageData(QStringLiteral("feedback.png"), bytes);
+  const QString source =
+      QStringLiteral("| h | other |\n| --- | --- |\n| ![x](feedback.png) $x$ | tail |\n");
+  setTextAndSettle(editor, source);
+  auto sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  auto math = mathPreviewItem(editor.document()->findBlockByNumber(2), QStringLiteral("$x$"),
+                              QStringLiteral("table-type-flags"));
+  manager->updateMathBlocks({math});
+  QTRY_COMPARE(sheetInlineObjectCount(sheet), 2);
+  auto imageOnly = makeConfig();
+  imageOnly->m_inplacePreviewSources &= ~MarkdownEditorConfig::Math;
+  manager->seedImageData(QStringLiteral("feedback.png"), bytes);
+  editor.setConfig(imageOnly);
+  settle(editor);
+  sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  manager->updateMathBlocks({math});
+  QTRY_COMPARE(sheetInlineObjectCount(sheet), 1);
+  manager->seedImageData(QStringLiteral("feedback.png"), bytes);
+  editor.setConfig(makeConfig());
+  settle(editor);
+  sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  manager->updateMathBlocks({math});
+  QTRY_COMPARE(sheetInlineObjectCount(sheet), 2);
+  // setConfig also reapplies source block formatting. Test its type mask here;
+  // source undo isolation is tested through the preview-only API separately.
+  QCOMPARE(editor.document()->toPlainText(), source);
+}
+
+void TestInteractivePreview::testTableInlinePreviewRowMapping_data() {
+  QTest::addColumn<QString>("headerPrefix");
+  QTest::addColumn<QString>("rowPrefix");
+  QTest::newRow("plain") << QString() << QString();
+  QTest::newRow("quote") << QStringLiteral("> ") << QStringLiteral("> ");
+  QTest::newRow("list") << QStringLiteral("- ") << QStringLiteral("  ");
+}
+
+void TestInteractivePreview::testTableInlinePreviewRowMapping() {
+  QFETCH(QString, headerPrefix);
+  QFETCH(QString, rowPrefix);
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  auto manager = editor.getPreviewMgr();
+  manager->seedImageData(QStringLiteral("mapping.png"),
+                         previewImageBytes(QSize(24, 12), qRgb(130, 30, 200)));
+  const QString image = QStringLiteral("![same](mapping.png)");
+  const QString astral = QString::fromUtf8("\xF0\x9F\x9A\x80");
+  const QVector<QVector<QString>> cells{
+      {image + QStringLiteral(" $h$"), image},
+      {astral + QStringLiteral(" pre\\| ") + image, image + QStringLiteral(" $b$")}};
+  const QString source = headerPrefix +
+                         QStringLiteral("| %1 | %2 |\n").arg(cells.at(0).at(0), cells.at(0).at(1)) +
+                         rowPrefix + QStringLiteral("| --- | --- |\n") + rowPrefix +
+                         QStringLiteral("| %1 | %2 |\n").arg(cells.at(1).at(0), cells.at(1).at(1));
+  setTextAndSettle(editor, source);
+  auto sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  auto header = mathPreviewItem(editor.document()->firstBlock(), QStringLiteral("$h$"),
+                                QStringLiteral("mapping-header"));
+  auto body = mathPreviewItem(editor.document()->findBlockByNumber(2), QStringLiteral("$b$"),
+                              QStringLiteral("mapping-body"));
+  manager->updateMathBlocks({header, body});
+  QTRY_COMPARE(sheetInlineObjectCount(sheet), 6);
+  QCOMPARE(sheetTable(sheet)->rows(), 2);
+  QCOMPARE(sheetTable(sheet)->columns(), 2);
+  for (int row = 0; row < 2; ++row) {
+    for (int column = 0; column < 2; ++column) {
+      const auto actual = sheetInlineCell(sheet, row, column);
+      const QString expected = cells.at(row).at(column);
+      QCOMPARE(actual.m_source, expected);
+      QCOMPARE(actual.m_objects.size(), row == column ? 2 : 1);
+      QCOMPARE(actual.m_objects.first().m_sourceOffset, expected.indexOf(image) + image.size());
+      QCOMPARE(actual.m_objects.first().m_image.toImage().pixel(0, 0), qRgb(130, 30, 200));
+      if (row == column) {
+        QCOMPARE(actual.m_objects.last().m_sourceOffset, expected.size());
+      }
+    }
+  }
+  QCOMPARE(editor.document()->toPlainText(), source);
+}
+
+void TestInteractivePreview::testTableInlinePreviewCanonicalEcho_data() {
+  QTest::addColumn<QString>("liveCell");
+  QTest::addColumn<QString>("publishedCell");
+  QTest::newRow("bare-pipe-before-image") << QStringLiteral("left| ![x](canonical.png) $x$")
+                                          << QStringLiteral("left\\| ![x](canonical.png) $x$");
+  QTest::newRow("bare-pipe-in-alt") << QStringLiteral("![a|b](canonical.png) $x$")
+                                    << QStringLiteral("![a\\|b](canonical.png) $x$");
+  QTest::newRow("leading-and-trailing-whitespace")
+      << QStringLiteral("  ![x](canonical.png) $x$  ") << QStringLiteral("![x](canonical.png) $x$");
+  const QString astral = QString::fromUtf8("\xF0\x9F\x9A\x80");
+  QTest::newRow("combined-utf16-escaping-and-trimming")
+      << QStringLiteral("  ") + astral + QStringLiteral(" pre| ![a|b](canonical.png) $x$  ")
+      << astral + QStringLiteral(" pre\\| ![a\\|b](canonical.png) $x$");
+}
+
+void TestInteractivePreview::testTableInlinePreviewCanonicalEcho() {
+  QFETCH(QString, liveCell);
+  QFETCH(QString, publishedCell);
+  auto config = makeConfig();
+  config->m_autoFormatTableSourceEnabled = false;
+  VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QLatin1String(c_table));
+  QPointer<QTextEdit> sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  sheet->setFocus();
+  editCell(sheet, 1, 0, liveCell);
+  auto manager = editor.getPreviewMgr();
+  manager->seedImageData(QStringLiteral("canonical.png"),
+                         previewImageBytes(QSize(24, 12), qRgb(50, 160, 20)));
+  flushSheet(sheet);
+  QVERIFY(editor.document()->toPlainText().contains(publishedCell));
+  settle(editor);
+  QVERIFY(sheet);
+  QCOMPARE(sheetView(singlePreviewWidget(editor)), sheet.data());
+  QCOMPARE(sheetInlineCell(sheet, 1, 0).m_source, liveCell);
+  auto math = mathPreviewItem(editor.document()->findBlockByNumber(2), QStringLiteral("$x$"),
+                              QStringLiteral("canonical-math"));
+  manager->updateMathBlocks({math});
+  QTRY_COMPARE(sheetInlineObjectCount(sheet), 2);
+  const auto actual = sheetInlineCell(sheet, 1, 0);
+  QCOMPARE(actual.m_source, liveCell);
+  QCOMPARE(actual.m_objects.at(0).m_sourceOffset,
+           liveCell.indexOf(QStringLiteral("canonical.png)")) +
+               QStringLiteral("canonical.png)").size());
+  QCOMPARE(actual.m_objects.at(1).m_sourceOffset, liveCell.indexOf(QStringLiteral("$x$")) + 3);
+  selectCellContents(sheet, 1, 0);
+  sheet->copy();
+  QCOMPARE(QApplication::clipboard()->text(), liveCell);
+}
+
+void TestInteractivePreview::testTableInlinePreviewRejectsUnboundSpans_data() {
+  QTest::addColumn<int>("kind");
+  QTest::newRow("code-wrapped-math") << 0;
+  QTest::newRow("cross-cell-math") << 1;
+  QTest::newRow("partial-math-span") << 2;
+  QTest::newRow("code-block-source") << 3;
+  QTest::newRow("math-raster-over-image-source") << 4;
+}
+
+void TestInteractivePreview::testTableInlinePreviewRejectsUnboundSpans() {
+  QFETCH(int, kind);
+  auto config = makeConfig();
+  config->m_inplacePreviewSources &= ~MarkdownEditorConfig::ImageLink;
+  VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+  const QString cell = kind == 0   ? QStringLiteral("`$x$`")
+                       : kind == 4 ? QStringLiteral("![x](unbound.png)")
+                                   : QStringLiteral("$x$");
+  const QString source =
+      QStringLiteral("| head | other |\n| --- | --- |\n| %1 | $y$ |\n").arg(cell);
+  setTextAndSettle(editor, source);
+  auto sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  const auto block = editor.document()->findBlockByNumber(2);
+  const QString element = kind == 4 ? cell : QStringLiteral("$x$");
+  auto math = mathPreviewItem(block, element, QStringLiteral("unbound-math"));
+  if (kind == 1) {
+    math->m_endPos = block.position() + block.text().indexOf(QStringLiteral("$y$")) + 3;
+  } else if (kind == 2) {
+    ++math->m_startPos;
+  }
+  if (kind == 3) {
+    editor.getPreviewMgr()->updateCodeBlocks({math});
+  } else {
+    editor.getPreviewMgr()->updateMathBlocks({math});
+  }
+  QTest::qWait(60);
+  QCOMPARE(sheetInlineObjectCount(sheet), 0);
+  QCOMPARE(sheetInlineCell(sheet, 1, 0).m_source, cell);
+  QCOMPARE(editor.document()->toPlainText(), source);
+}
+
+void TestInteractivePreview::testTableInlinePreviewRejectsStalePublication() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  const QString source = QStringLiteral("| head | other |\n| --- | --- |\n| $a$ | tail |\n");
+  setTextAndSettle(editor, source);
+  QPointer<QTextEdit> sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  auto item = mathPreviewItem(editor.document()->findBlockByNumber(2), QStringLiteral("$a$"),
+                              QStringLiteral("stale-before-queue"));
+  bool sawStaleObject = false;
+  QObject observer;
+  connect(sheet->document(), &QTextDocument::contentsChanged, &observer, [&]() {
+    if (sheet && sheetInlineObjectCount(sheet) != 0) {
+      sawStaleObject = true;
+    }
+  });
+  editor.getPreviewMgr()->updateMathBlocks({item});
+  // No event-loop turn between synchronous publication capture and the edit.
+  auto cursor = editor.document()->find(QStringLiteral("$a$"));
+  QVERIFY(!cursor.isNull());
+  cursor.insertText(QStringLiteral("prefix $b$"));
+  settle(editor);
+  auto current = sheetView(singlePreviewWidget(editor));
+  QVERIFY(current);
+  QCOMPARE(sheetInlineCell(current, 1, 0).m_source, QStringLiteral("prefix $b$"));
+  QCOMPARE(sheetInlineObjectCount(current), 0);
+  QVERIFY(!sawStaleObject);
+  auto fresh = mathPreviewItem(editor.document()->findBlockByNumber(2), QStringLiteral("$b$"),
+                               QStringLiteral("fresh-after-queue"));
+  editor.getPreviewMgr()->updateMathBlocks({fresh});
+  QTRY_COMPARE(sheetInlineObjectCount(current), 1);
+  QCOMPARE(sheetInlineCell(current, 1, 0).m_objects.first().m_sourceOffset,
+           QStringLiteral("prefix $b$").size());
+}
+
+void TestInteractivePreview::testTableInlinePreviewDirtyCellBeforeResult() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QLatin1String(c_table));
+  QPointer<QTextEdit> sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  sheet->setFocus();
+  editCell(sheet, 1, 0, QStringLiteral("$a$"));
+  flushSheet(sheet);
+  const QString committedA = editor.document()->toPlainText();
+  auto itemA = mathPreviewItem(editor.document()->findBlockByNumber(2), QStringLiteral("$a$"),
+                               QStringLiteral("dirty-result-a"));
+  editCell(sheet, 1, 0, QStringLiteral("$b$"));
+  editor.getPreviewMgr()->updateMathBlocks({itemA});
+  settle(editor);
+  QVERIFY(sheet);
+  QCOMPARE(sheetInlineCell(sheet, 1, 0).m_source, QStringLiteral("$b$"));
+  QCOMPARE(sheetInlineObjectCount(sheet), 0);
+  QCOMPARE(editor.document()->toPlainText(), committedA);
+
+  flushSheet(sheet);
+  settle(editor);
+  auto itemB = mathPreviewItem(editor.document()->findBlockByNumber(2), QStringLiteral("$b$"),
+                               QStringLiteral("dirty-result-b"));
+  editor.getPreviewMgr()->updateMathBlocks({itemB});
+  QTRY_COMPARE(sheetInlineObjectCount(sheet), 1);
+  // An unrelated dirty edit shifts the existing bound construct. Republishing
+  // the still-current source row must preserve it, not apply that row's offsets.
+  auto cursor = sheetTable(sheet)->cellAt(1, 0).firstCursorPosition();
+  cursor.insertText(QStringLiteral("lead "));
+  QCOMPARE(sheetInlineCell(sheet, 1, 0).m_source, QStringLiteral("lead $b$"));
+  QCOMPARE(sheetInlineObjectCount(sheet), 1);
+  QCOMPARE(sheetInlineCell(sheet, 1, 0).m_objects.first().m_sourceOffset, 8);
+  editor.getPreviewMgr()->updateMathBlocks({itemB});
+  QTest::qWait(60);
+  QCOMPARE(sheetInlineObjectCount(sheet), 1);
+  QCOMPARE(sheetInlineCell(sheet, 1, 0).m_objects.first().m_sourceOffset, 8);
+}
+
+void TestInteractivePreview::testTableInlinePreviewUsesRebasedLiveAnchor() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  const QString source =
+      QStringLiteral("intro\n\n| head | other |\n| --- | --- |\n| $x$ | tail |\n");
+  setTextAndSettle(editor, source);
+  auto sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  const auto block = editor.document()->findBlockByNumber(4);
+  auto math = mathPreviewItem(block, QStringLiteral("$x$"), QStringLiteral("rebased-inline"));
+  editor.getPreviewMgr()->updateMathBlocks({math});
+  // The block handle and text remain current; only every absolute source
+  // position moves before the queued host application can run.
+  QTextCursor cursor(editor.document());
+  cursor.insertText(QStringLiteral("new paragraph\n\n"));
+  QCOMPARE(block.blockNumber(), 6);
+  QCOMPARE(block.text(), QStringLiteral("| $x$ | tail |"));
+  settle(editor);
+  sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  QTRY_COMPARE(sheetInlineObjectCount(sheet), 1);
+  QCOMPARE(sheetInlineCell(sheet, 1, 0).m_source, QStringLiteral("$x$"));
+  QCOMPARE(sheetInlineCell(sheet, 1, 0).m_objects.first().m_sourceOffset, 3);
+  QCOMPARE(editor.document()->toPlainText(), QStringLiteral("new paragraph\n\n") + source);
+}
+
+void TestInteractivePreview::testTableInlinePreviewRetirementAndRemoval() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  auto manager = editor.getPreviewMgr();
+  const auto bytes = previewImageBytes(QSize(24, 12), qRgb(100, 180, 20));
+  manager->seedImageData(QStringLiteral("lifecycle.png"), bytes);
+  const QString source = QStringLiteral("| head | other |\n| --- | --- |\n"
+                                        "| ![x](lifecycle.png) $x$ | tail |\n");
+  setTextAndSettle(editor, source);
+  QPointer<QTextEdit> sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  auto math = mathPreviewItem(editor.document()->findBlockByNumber(2), QStringLiteral("$x$"),
+                              QStringLiteral("lifecycle-math"));
+  manager->updateMathBlocks({math});
+  QTRY_COMPARE(sheetInlineObjectCount(sheet), 2);
+  const QUrl retired(sheetInlineCell(sheet, 1, 0).m_objects.last().m_format.toImageFormat().name());
+  manager->updateMathBlocks({});
+  QTRY_COMPARE(sheetInlineObjectCount(sheet), 1);
+  QVERIFY(!sheet->document()->resource(QTextDocument::ImageResource, retired).isValid());
+  QCOMPARE(sheetInlineCell(sheet, 1, 0).m_objects.first().m_sourceOffset,
+           QStringLiteral("![x](lifecycle.png)").size());
+  manager->updateMathBlocks({math});
+  QTRY_COMPARE(sheetInlineObjectCount(sheet), 2);
+
+  editor.setInplacePreviewEnabled(false);
+  QTRY_VERIFY(sheet.isNull());
+  QVERIFY(previewWidgets(editor).isEmpty());
+  QCOMPARE(editor.document()->toPlainText(), source);
+  manager->seedImageData(QStringLiteral("lifecycle.png"), bytes);
+  editor.setInplacePreviewEnabled(true);
+  settle(editor);
+  sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  manager->updateMathBlocks({math});
+  QTRY_COMPARE(sheetInlineObjectCount(sheet), 2);
+
+  // Removal while an application pass is still queued must not resurrect the
+  // old widget or leave its cached formula attached to a later table.
+  manager->updateMathBlocks({math});
+  auto cursor = QTextCursor(editor.document());
+  cursor.select(QTextCursor::Document);
+  cursor.insertText(QStringLiteral("table removed\n"));
+  settle(editor);
+  QTRY_VERIFY(sheet.isNull());
+  QVERIFY(previewWidgets(editor).isEmpty());
+  QCOMPARE(editor.document()->toPlainText(), QStringLiteral("table removed\n"));
+  const QString replacement = QStringLiteral("| head | other |\n| --- | --- |\n| $z$ | tail |\n");
+  setTextAndSettle(editor, replacement);
+  sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  QCOMPARE(sheetInlineObjectCount(sheet), 0);
+  QCOMPARE(sheetInlineCell(sheet, 1, 0).m_source, QStringLiteral("$z$"));
+  auto current = mathPreviewItem(editor.document()->findBlockByNumber(2), QStringLiteral("$z$"),
+                                 QStringLiteral("lifecycle-replacement"));
+  manager->updateMathBlocks({current});
+  QTRY_COMPARE(sheetInlineObjectCount(sheet), 1);
+}
+
+void TestInteractivePreview::testTableInlinePreviewOffscreenRealization() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 300);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  auto manager = editor.getPreviewMgr();
+  manager->seedImageData(QStringLiteral("offscreen.png"),
+                         previewImageBytes(QSize(24, 12), qRgb(20, 180, 190)));
+  QString source;
+  for (int i = 0; i < 100; ++i) {
+    source += QStringLiteral("leading paragraph %1\n\n").arg(i);
+  }
+  source += QStringLiteral("| head | other |\n| --- | --- |\n"
+                           "| ![x](offscreen.png) $x$ | tail |\n\n");
+  for (int i = 0; i < 100; ++i) {
+    source += QStringLiteral("trailing paragraph %1\n\n").arg(i);
+  }
+  setTextAndSettle(editor, source);
+  QVERIFY(previewWidgets(editor).isEmpty());
+  const auto formula = editor.document()->find(QStringLiteral("$x$"));
+  QVERIFY(!formula.isNull());
+  auto math =
+      mathPreviewItem(formula.block(), QStringLiteral("$x$"), QStringLiteral("offscreen-math"));
+  manager->updateMathBlocks({math});
+  QTest::qWait(60);
+  QVERIFY(previewWidgets(editor).isEmpty());
+  QSignalSpy mathRequests(manager, &PreviewMgr::requestUpdateMathBlocks);
+  auto widget = scrollUntilPreviewRealized(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+  QTRY_COMPARE(sheetInlineObjectCount(sheet), 2);
+  QCOMPARE(sheetInlineCell(sheet, 1, 0).m_source, QStringLiteral("![x](offscreen.png) $x$"));
+  QCOMPARE(mathRequests.count(), 0);
+  QCOMPARE(editor.document()->toPlainText(), source);
+}
+
+void TestInteractivePreview::testHtmlTableInlinePreviewsRemainSourceOnly() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  auto manager = editor.getPreviewMgr();
+  manager->seedImageData(QStringLiteral("html-inline.png"),
+                         previewImageBytes(QSize(24, 12), qRgb(20, 180, 190)));
+  const QString cellSource = QStringLiteral("![x](html-inline.png) $x$");
+  const QString source = QStringLiteral("<table>\n"
+                                        "<tr><td colspan=\"2\"><!--vte-md:%1-->"
+                                        "<img src=\"html-inline.png\"> $x$</td></tr>\n"
+                                        "<tr><td>left</td><td>right</td></tr>\n"
+                                        "</table>\n")
+                             .arg(escapePayload(cellSource));
+  setTextAndSettle(editor, source);
+  auto sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  QVERIFY(!sheet->isReadOnly());
+  QCOMPARE(sheetTable(sheet)->cellAt(0, 0).columnSpan(), 2);
+  QCOMPARE(sheetInlineCell(sheet, 0, 0).m_source, cellSource);
+  auto math = mathPreviewItem(editor.document()->findBlockByNumber(1), QStringLiteral("$x$"),
+                              QStringLiteral("html-inline-math"));
+  manager->updateMathBlocks({math});
+  QTest::qWait(60);
+  QCOMPARE(sheetInlineObjectCount(sheet), 0);
+  flushSheet(sheet);
+  QCOMPARE(editor.document()->toPlainText(), source);
+  editCell(sheet, 1, 0, QStringLiteral("edited"));
+  flushSheet(sheet);
+  settle(editor);
+  sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  QCOMPARE(sheetInlineObjectCount(sheet), 0);
+  QCOMPARE(sheetTable(sheet)->cellAt(0, 0).columnSpan(), 2);
+  QCOMPARE(sheetInlineCell(sheet, 0, 0).m_source, cellSource);
+  QCOMPARE(sheetInlineCell(sheet, 1, 0).m_source, QStringLiteral("edited"));
+  QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("colspan=\"2\"")));
+}
+
 QTEST_MAIN(tests::TestInteractivePreview)

@@ -12,6 +12,7 @@
 #include <QMenu>
 #include <QMimeData>
 #include <QPainter>
+#include <QPixmap>
 #include <QScrollBar>
 #include <QSignalSpy>
 #include <QStringList>
@@ -19,13 +20,16 @@
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextFrame>
+#include <QTextImageFormat>
 #include <QTextLayout>
 #include <QTextTable>
 #include <QTextTableCell>
 #include <QTimer>
+#include <QUrl>
 
 #include <vtextedit/htmltablescanner.h>
 #include <vtextedit/preview.h>
+#include <vtextedit/vmarkdowneditor.h>
 
 #include "hlformatresolver.h"
 #include "markdownastwalker.h"
@@ -842,6 +846,161 @@ void TestTablePreview::testAlignedOutputKeepsThePrefixes() {
 // ---------------------------------------------------------------------------
 // Document
 // ---------------------------------------------------------------------------
+
+void TestTablePreview::testSourceProjectionOmitsOnlyDecorations() {
+  TablePreviewDocument doc;
+  const QString source =
+      QStringLiteral("A") + QChar::ObjectReplacementCharacter + QStringLiteral("BC");
+  doc.setTable(makeSnapshot({{QStringLiteral("h")}, {source}}, {PreviewTableAlignment::None}));
+  const auto cell = doc.table()->cellAt(1, 0);
+  const int first = cell.firstPosition();
+  {
+    TablePreviewDocument::InlinePreviewGuard presentation(&doc);
+    QTextCursor cursor(doc.document());
+    cursor.setPosition(first + 3);
+    QTextImageFormat format;
+    format.setName(QStringLiteral("vte-table-preview:0"));
+    format.setProperty(TablePreviewDocument::c_inlinePreviewProperty, true);
+    cursor.insertImage(format);
+  }
+  QCOMPARE(doc.cells()[1][0], source);
+  QCOMPARE(doc.sourceOffset(1, 0, first + 3), 3);
+  QCOMPARE(doc.sourceOffset(1, 0, first + 4), 3);
+  QCOMPARE(doc.documentPosition(1, 0, 3), first + 4);
+  QCOMPARE(doc.documentPosition(1, 0, 3, false), first + 3);
+  QCOMPARE(doc.sourceText(first + 2, first + 5), QStringLiteral("BC"));
+  QCOMPARE(doc.toMarkdown(), QStringLiteral("| h |\n| --- |\n| %1 |").arg(source));
+}
+
+void TestTablePreview::testInlinePreviewFormattingPreservesObjects() {
+  TablePreviewDocument doc;
+  const QString source = QStringLiteral("![x](a.png) $x^2$");
+  doc.setTable(makeSnapshot({{QStringLiteral("h")}, {source}}, {PreviewTableAlignment::None}));
+  TablePreviewSheet sheet;
+  sheet.setTableDocument(&doc);
+  auto cell = doc.table()->cellAt(1, 0);
+  const QVector<int> ends{source.indexOf(QLatin1Char(')')) + 1, int(source.size())};
+  {
+    TablePreviewDocument::InlinePreviewGuard presentation(&doc);
+    for (auto end = ends.crbegin(); end != ends.crend(); ++end) {
+      QTextCursor object(doc.document());
+      object.setPosition(cell.firstPosition() + *end);
+      QTextImageFormat format;
+      format.setName(QStringLiteral("vte-table-preview:%1").arg(*end));
+      format.setWidth(20);
+      format.setHeight(30);
+      format.setProperty(TablePreviewDocument::c_inlinePreviewProperty, true);
+      object.insertImage(format);
+    }
+  }
+  sheet.refreshFormats();
+  for (int end : ends) {
+    const int position = doc.documentPosition(1, 0, end, false);
+    QVERIFY(doc.isInlinePreviewAt(position));
+    QTextCursor object(doc.document());
+    object.setPosition(position + 1);
+    QVERIFY(object.charFormat().isImageFormat());
+    QCOMPARE(object.charFormat().toImageFormat().height(), qreal(30));
+  }
+  QTextCursor selection = cell.firstCursorPosition();
+  selection.setPosition(cell.lastPosition(), QTextCursor::KeepAnchor);
+  sheet.setTextCursor(selection);
+  sheet.handleTypeAction(TypeAction::TypeBold);
+  QCOMPARE(doc.cells()[1][0], QStringLiteral("**%1**").arg(source));
+  QCOMPARE(cell.lastPosition() - cell.firstPosition(), doc.cells()[1][0].size() + 2);
+  sheet.handleTypeAction(TypeAction::TypeBold);
+  QCOMPARE(doc.cells()[1][0], source);
+  sheet.handleTypeAction(TypeAction::TypeCode);
+  QCOMPARE(doc.cells()[1][0], QStringLiteral("`%1`").arg(source));
+  QCOMPARE(cell.lastPosition() - cell.firstPosition(), doc.cells()[1][0].size());
+}
+
+void TestTablePreview::testInlinePreviewNativeEditingAndIme() {
+  TablePreviewDocument doc;
+  const QString source = QStringLiteral("A ![x](a.png) Z");
+  doc.setTable(makeSnapshot({{QStringLiteral("h")}, {source}}, {PreviewTableAlignment::None}));
+  TablePreviewSheet sheet;
+  sheet.setTableDocument(&doc);
+  sheet.resize(500, 200);
+  sheet.show();
+  const auto cell = doc.table()->cellAt(1, 0);
+  const int end = source.indexOf(QLatin1Char(')')) + 1;
+  {
+    TablePreviewDocument::InlinePreviewGuard presentation(&doc);
+    QTextCursor object(doc.document());
+    object.setPosition(cell.firstPosition() + end);
+    QTextImageFormat format;
+    format.setName(QStringLiteral("vte-table-preview:0"));
+    format.setWidth(20);
+    format.setHeight(20);
+    format.setProperty(TablePreviewDocument::c_inlinePreviewProperty, true);
+    QImage image(20, 20, QImage::Format_ARGB32);
+    image.fill(Qt::red);
+    doc.document()->addResource(QTextDocument::ImageResource, QUrl(format.name()), image);
+    object.insertImage(format);
+  }
+  QTextCursor cursor(doc.document());
+  cursor.setPosition(doc.documentPosition(1, 0, end));
+  sheet.setTextCursor(cursor);
+  QWidget *query = &sheet;
+  QCOMPARE(query->inputMethodQuery(Qt::ImSurroundingText).toString(), source);
+  QCOMPARE(query->inputMethodQuery(Qt::ImCursorPosition).toInt(), end);
+  QCOMPARE(query->inputMethodQuery(Qt::ImTextBeforeCursor).toString(), source.left(end));
+  QTest::keyClick(&sheet, Qt::Key_Left);
+  QCOMPARE(doc.sourceOffset(1, 0, sheet.textCursor().position()), end - 1);
+  QTest::keyClick(&sheet, Qt::Key_Right);
+  QCOMPARE(sheet.textCursor().position(), doc.documentPosition(1, 0, end));
+  QInputMethodEvent commit;
+  commit.setCommitString(QStringLiteral("!"));
+  QApplication::sendEvent(&sheet, &commit);
+  QCOMPARE(doc.cells()[1][0], source.left(end) + QStringLiteral("!") + source.mid(end));
+  QVERIFY(doc.isInlinePreviewAt(doc.documentPosition(1, 0, end, false)));
+  QCOMPARE(query->inputMethodQuery(Qt::ImCursorPosition).toInt(), end + 1);
+  QTest::keyClick(&sheet, Qt::Key_Backspace);
+  QCOMPARE(doc.cells()[1][0], source);
+  QTest::keyClick(&sheet, Qt::Key_Backspace);
+  QCOMPARE(doc.cells()[1][0], source.left(end - 1) + source.mid(end));
+  QVERIFY(doc.isIntact());
+  QCOMPARE(cell.lastPosition() - cell.firstPosition(), doc.cells()[1][0].size());
+}
+
+void TestTablePreview::testProjectedClipboardPreservesSource() {
+  TablePreviewDocument doc;
+  doc.setTable(makeSnapshot({{QStringLiteral("h"), QStringLiteral("j")},
+                             {QStringLiteral("![x](a.png)"), QStringLiteral("b")}},
+                            {PreviewTableAlignment::None, PreviewTableAlignment::None}));
+  TablePreviewSheet sheet;
+  sheet.setTableDocument(&doc);
+  const auto cell = doc.table()->cellAt(1, 0);
+  {
+    TablePreviewDocument::InlinePreviewGuard presentation(&doc);
+    QTextCursor cursor = cell.lastCursorPosition();
+    QTextImageFormat format;
+    format.setName(QStringLiteral("vte-table-preview:0"));
+    format.setProperty(TablePreviewDocument::c_inlinePreviewProperty, true);
+    cursor.insertImage(format);
+  }
+  bool augmented = false;
+  connect(&sheet, &VTextEdit::createMimeDataFromSelectionRequested, &sheet,
+          [&augmented](QMimeData *p_mime) {
+            augmented = true;
+            p_mime->setData("application/x-test", "yes");
+          });
+  QTextCursor cursor = cell.firstCursorPosition();
+  cursor.setPosition(cell.lastPosition(), QTextCursor::KeepAnchor);
+  sheet.setTextCursor(cursor);
+  sheet.copy();
+  QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("![x](a.png)"));
+  QVERIFY(augmented);
+  QVERIFY(!QApplication::clipboard()->mimeData()->hasHtml());
+  QVERIFY(!QApplication::clipboard()->mimeData()->hasImage());
+  QCOMPARE(QApplication::clipboard()->mimeData()->data("application/x-test"), QByteArray("yes"));
+  cursor.setPosition(doc.table()->cellAt(1, 1).lastPosition(), QTextCursor::KeepAnchor);
+  sheet.setTextCursor(cursor);
+  QVERIFY(sheet.textCursor().hasComplexSelection());
+  sheet.copy();
+  QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("![x](a.png)\tb"));
+}
 
 void TestTablePreview::testDocumentBuildsTheTable() {
   QVector<QVector<QString>> cells;
@@ -5261,4 +5420,901 @@ void TestTablePreview::testAlignmentIsRefusedOnASpannedColumn() {
   QVERIFY(split);
   QVERIFY2(split->isEnabled(), "a merged cell must offer Split");
 }
+
+namespace {
+QPixmap inlinePixmap(const QSize &p_logicalSize, const QColor &p_color, qreal p_dpr = 1) {
+  QPixmap image(qRound(p_logicalSize.width() * p_dpr), qRound(p_logicalSize.height() * p_dpr));
+  image.setDevicePixelRatio(p_dpr);
+  image.fill(p_color);
+  return image;
+}
+
+TableCellInlinePreview inlinePreview(int p_row, int p_column, const QString &p_sourceCell,
+                                     const QString &p_elementSource, PreviewData::Source p_source,
+                                     const QSize &p_size = QSize(24, 18),
+                                     const QColor &p_color = Qt::red, qreal p_dpr = 1) {
+  TableCellInlinePreview preview;
+  preview.m_row = p_row;
+  preview.m_column = p_column;
+  preview.m_start = p_sourceCell.indexOf(p_elementSource);
+  preview.m_end = preview.m_start + p_elementSource.size();
+  preview.m_sourceCell = p_sourceCell;
+  preview.m_elementSource = p_elementSource;
+  preview.m_source = p_source;
+  preview.m_image = inlinePixmap(p_size, p_color, p_dpr);
+  preview.m_logicalSize = p_size;
+  preview.m_backgroundColor = 0;
+  return preview;
+}
+
+struct InlineObject {
+  int m_sourceOffset = -1;
+  QTextImageFormat m_format;
+};
+
+QVector<InlineObject> inlineObjects(const TablePreviewDocument &p_document, int p_row,
+                                    int p_column) {
+  QVector<InlineObject> result;
+  const auto cell = p_document.table()->cellAt(p_row, p_column);
+  for (int position = cell.firstPosition(); position < cell.lastPosition(); ++position) {
+    if (!p_document.isInlinePreviewAt(position)) {
+      continue;
+    }
+    QTextCursor cursor(p_document.document());
+    cursor.setPosition(position);
+    cursor.setPosition(position + 1, QTextCursor::KeepAnchor);
+    InlineObject object;
+    object.m_sourceOffset = p_document.sourceOffset(p_row, p_column, position);
+    object.m_format = cursor.charFormat().toImageFormat();
+    result.append(object);
+  }
+  return result;
+}
+
+QPixmap inlineResource(const TablePreviewDocument &p_document, const QTextImageFormat &p_format) {
+  return p_document.document()
+      ->resource(QTextDocument::ImageResource, QUrl(p_format.name()))
+      .value<QPixmap>();
+}
+
+void selectSource(TablePreviewSheet *p_sheet, int p_row, int p_column, int p_anchor, int p_caret) {
+  const auto document = p_sheet->tableDocument();
+  QTextCursor cursor(document->document());
+  cursor.setPosition(document->documentPosition(p_row, p_column, p_anchor, p_anchor <= p_caret));
+  cursor.setPosition(document->documentPosition(p_row, p_column, p_caret, p_anchor >= p_caret),
+                     QTextCursor::KeepAnchor);
+  p_sheet->setTextCursor(cursor);
+}
+} // namespace
+
+void TestTablePreview::testInlineBindingsSourceRemovalAndDropStayFrameSafe() {
+  const QString image = QStringLiteral("![x](a.png)");
+  const QString math = QStringLiteral("$x$");
+  const QString source = image + QLatin1Char(' ') + math;
+  SheetHarness harness(
+      makeSnapshot({{QStringLiteral("h"), QStringLiteral("j")}, {source, QString()}},
+                   {PreviewTableAlignment::None, PreviewTableAlignment::None}));
+  auto sheet = harness.sheet();
+  QVERIFY(sheet);
+  showOffScreen(*harness.widget(), 700);
+  auto document = sheet->tableDocument();
+  harness.widget()->setInlinePreviews(PreviewData::ImageLink,
+                                      {inlinePreview(1, 0, source, image, PreviewData::ImageLink)});
+  harness.widget()->setInlinePreviews(PreviewData::MathBlock,
+                                      {inlinePreview(1, 0, source, math, PreviewData::MathBlock)});
+  QTextCursor selection(sheet->document());
+  selection.setPosition(document->documentPosition(1, 0, 0));
+  selection.setPosition(document->documentPosition(1, 0, image.size()), QTextCursor::KeepAnchor);
+  sheet->setTextCursor(selection);
+  sheet->copy();
+  const QString copied = QApplication::clipboard()->text();
+  QCOMPARE(copied, image);
+  // Qt's external move-drag removes its selected source directly, bypassing
+  // the explicit sheet mutators. Exercise that same document mutation boundary.
+  selection.removeSelectedText();
+  sheet->setTextCursor(selection);
+  QCOMPARE(document->cells()[1][0], QStringLiteral(" ") + math);
+  QCOMPARE(inlineObjects(*document, 1, 0).size(), 1);
+  QVERIFY(document->isIntact());
+
+  QMimeData data;
+  data.setText(copied + QStringLiteral("\ntext"));
+  const QPoint position = cellRect(sheet, 1, 1).center();
+  QDragEnterEvent enter(position, Qt::MoveAction, &data, Qt::LeftButton, Qt::NoModifier);
+  QApplication::sendEvent(sheet->viewport(), &enter);
+  QDragMoveEvent move(position, Qt::MoveAction, &data, Qt::LeftButton, Qt::NoModifier);
+  QApplication::sendEvent(sheet->viewport(), &move);
+  QDropEvent drop(position, Qt::MoveAction, &data, Qt::LeftButton, Qt::NoModifier);
+  QApplication::sendEvent(sheet->viewport(), &drop);
+  QCOMPARE(document->cells()[1][1], image + QStringLiteral(" text"));
+  QCOMPARE(document->cells()[1][0], QStringLiteral(" ") + math);
+  QVERIFY(document->isIntact());
+  QVERIFY(!document->toMarkdown().contains(QChar::ObjectReplacementCharacter));
+  QVERIFY(!document->toMarkdown().contains(QStringLiteral("vte-table-preview:")));
+}
+
+void TestTablePreview::testInlineBindingsPlaceImageAndMathAtLogicalSize() {
+  const QString imageSource = QStringLiteral("![x](asset.png)");
+  const QString mathSource = QStringLiteral("$x^2$");
+  const QString source = QStringLiteral("A ") + imageSource + QStringLiteral(" B ") + mathSource +
+                         QStringLiteral(" C");
+  SheetHarness harness(
+      makeSnapshot({{QStringLiteral("h")}, {source}}, {PreviewTableAlignment::None}));
+  auto sheet = harness.sheet();
+  QVERIFY(sheet);
+  showOffScreen(*harness.widget(), 800);
+  auto document = sheet->tableDocument();
+  const int sourceOnlyHeight = harness.widget()->heightForWidth(800);
+  selectSource(sheet, 1, 0, source.size(), 2);
+  QSignalSpy geometry(sheet, &TablePreviewSheet::preferredGeometryChanged);
+  auto image =
+      inlinePreview(1, 0, source, imageSource, PreviewData::ImageLink, QSize(32, 48), Qt::red, 2);
+  const auto math =
+      inlinePreview(1, 0, source, mathSource, PreviewData::MathBlock, QSize(26, 20), Qt::blue, 2);
+  harness.widget()->setInlinePreviews(PreviewData::ImageLink, {image});
+  harness.widget()->setInlinePreviews(PreviewData::MathBlock, {math});
+  settle();
+
+  const auto objects = inlineObjects(*document, 1, 0);
+  QCOMPARE(objects.size(), 2);
+  QCOMPARE(objects[0].m_sourceOffset, image.m_end);
+  QCOMPARE(objects[1].m_sourceOffset, math.m_end);
+  QCOMPARE(objects[0].m_format.width(), qreal(32));
+  QCOMPARE(objects[0].m_format.height(), qreal(48));
+  QCOMPARE(objects[1].m_format.width(), qreal(26));
+  QCOMPARE(objects[1].m_format.height(), qreal(20));
+  const QPixmap raster = inlineResource(*document, objects[0].m_format);
+  QVERIFY(!raster.isNull());
+  QCOMPARE(raster.devicePixelRatio(), qreal(2));
+  QCOMPARE(raster.size(), QSize(64, 96));
+  QCOMPARE(raster.toImage().pixelColor(0, 0), QColor(Qt::red));
+  QCOMPARE(inlineResource(*document, objects[1].m_format).toImage().pixelColor(0, 0),
+           QColor(Qt::blue));
+  const QString decorated = QStringLiteral("A ") + imageSource + QChar::ObjectReplacementCharacter +
+                            QStringLiteral(" B ") + mathSource + QChar::ObjectReplacementCharacter +
+                            QStringLiteral(" C");
+  QCOMPARE(cellText(sheet->document(), 1, 0), decorated);
+  QCOMPARE(document->cells()[1][0], source);
+  QCOMPARE(document->sourceOffset(1, 0, sheet->textCursor().anchor()), int(source.size()));
+  QCOMPARE(document->sourceOffset(1, 0, sheet->textCursor().position()), 2);
+  const auto block = document->table()->cellAt(1, 0).firstCursorPosition().block();
+  QVERIFY(sheet->document()->documentLayout()->blockBoundingRect(block).height() >= 48);
+  const int decoratedHeight = harness.widget()->heightForWidth(800);
+  QVERIFY(decoratedHeight > sourceOnlyHeight);
+  QVERIFY(geometry.count() > 0);
+
+  // A density-only replacement changes the actual resource, not its logical box.
+  image.m_image = inlinePixmap(image.m_logicalSize, Qt::green);
+  harness.widget()->setInlinePreviews(PreviewData::ImageLink, {image});
+  settle();
+  const auto replaced = inlineObjects(*document, 1, 0);
+  QCOMPARE(replaced.size(), 2);
+  QCOMPARE(replaced[0].m_format.name(), objects[0].m_format.name());
+  QCOMPARE(replaced[0].m_format.width(), qreal(32));
+  QCOMPARE(replaced[0].m_format.height(), qreal(48));
+  const QPixmap replacement = inlineResource(*document, replaced[0].m_format);
+  QCOMPARE(replacement.size(), QSize(32, 48));
+  QCOMPARE(replacement.devicePixelRatio(), qreal(1));
+  QCOMPARE(replacement.toImage().pixelColor(0, 0), QColor(Qt::green));
+  QCOMPARE(harness.widget()->heightForWidth(800), decoratedHeight);
+  QCOMPARE(document->cells()[1][0], source);
+  QCOMPARE(document->sourceOffset(1, 0, sheet->textCursor().position()), 2);
+}
+
+void TestTablePreview::testInlineBindingsFitWidthAndReflow() {
+  const QString source = QStringLiteral("![x](a.png)");
+  TablePreviewWidget widget(nullptr, nullptr);
+  QVERIFY(widget.setPreview(
+      makeSnapshot({{QStringLiteral("h"), QStringLiteral("j")}, {source, QStringLiteral("b")}},
+                   {PreviewTableAlignment::None, PreviewTableAlignment::None})));
+  auto sheet = sheetOf(widget);
+  QVERIFY(sheet);
+  auto document = sheet->tableDocument();
+  showOffScreen(widget, 700);
+  auto image = inlinePreview(1, 0, source, source, PreviewData::ImageLink, QSize(60, 40));
+  image.m_logicalSize = QSize(900, 600);
+  widget.setInlinePreviews(PreviewData::ImageLink, {image});
+  settle();
+  const auto wide = inlineObjects(*document, 1, 0);
+  QCOMPARE(wide.size(), 1);
+  QVERIFY(wide[0].m_format.width() > 0);
+  QVERIFY(wide[0].m_format.width() < sheet->document()->textWidth() / 2);
+  QVERIFY(wide[0].m_format.width() < image.m_logicalSize.width());
+  QVERIFY(qAbs(wide[0].m_format.height() / wide[0].m_format.width() - 2.0 / 3.0) < 0.01);
+  const int wideHeight = widget.heightForWidth(700);
+  QVERIFY(wideHeight >= wide[0].m_format.height());
+  showOffScreen(widget, 360);
+  settle();
+  const auto narrow = inlineObjects(*document, 1, 0);
+  QCOMPARE(narrow.size(), 1);
+  QVERIFY(narrow[0].m_format.width() < wide[0].m_format.width());
+  QVERIFY(narrow[0].m_format.width() < sheet->document()->textWidth() / 2);
+  QVERIFY(qAbs(narrow[0].m_format.height() / narrow[0].m_format.width() - 2.0 / 3.0) < 0.01);
+  QVERIFY(widget.heightForWidth(360) < wideHeight);
+  const auto bounds = sheet->document()->documentLayout()->frameBoundingRect(document->table());
+  QVERIFY(bounds.width() <= sheet->document()->textWidth() + 2);
+  // Host-assigned resize suppresses redundant geometry notifications; the
+  // measured frame and object geometry above are the observable contract.
+
+  // A small result is never enlarged to fill the column share.
+  image.m_logicalSize = QSize(20, 12);
+  widget.setInlinePreviews(PreviewData::ImageLink, {image});
+  settle();
+  const auto small = inlineObjects(*document, 1, 0);
+  QCOMPARE(small.size(), 1);
+  QCOMPARE(small[0].m_format.width(), qreal(20));
+  QCOMPARE(small[0].m_format.height(), qreal(12));
+  QCOMPARE(document->cells()[1][0], source);
+}
+
+void TestTablePreview::testInlineBindingsKeepClipboardAndSerializationSourceOnly() {
+  const QString image = QStringLiteral("![x](asset.png)");
+  const QString math = QStringLiteral("$x^2$");
+  const QString source = QStringLiteral("A ") + image + QStringLiteral(" B ") + math +
+                         QStringLiteral(" C") + QChar::ObjectReplacementCharacter;
+  const QVector<QVector<QString>> cells{{QStringLiteral("h"), QStringLiteral("j")},
+                                        {source, QStringLiteral("b")}};
+  TablePreviewWidget widget(nullptr, nullptr);
+  QVERIFY(widget.setPreview(
+      makeSnapshot(cells, {PreviewTableAlignment::None, PreviewTableAlignment::None})));
+  auto sheet = sheetOf(widget);
+  QVERIFY(sheet);
+  showOffScreen(widget, 900);
+  auto document = sheet->tableDocument();
+  const QString markdown = document->toMarkdown();
+  const QString standalone = document->toStandaloneMarkdown();
+  const QString html = document->toHtml();
+  widget.setInlinePreviews(PreviewData::ImageLink,
+                           {inlinePreview(1, 0, source, image, PreviewData::ImageLink)});
+  widget.setInlinePreviews(PreviewData::MathBlock,
+                           {inlinePreview(1, 0, source, math, PreviewData::MathBlock)});
+  QCOMPARE(inlineObjects(*document, 1, 0).size(), 2);
+  QCOMPARE(document->cells(), cells);
+  QCOMPARE(document->toMarkdown(), markdown);
+  QCOMPARE(document->toStandaloneMarkdown(), standalone);
+  QCOMPARE(document->toHtml(), html);
+  QVERIFY(!markdown.contains(QStringLiteral("vte-table-preview:")));
+  QCOMPARE(markdown.count(QChar::ObjectReplacementCharacter), 1);
+
+  const auto cell = document->table()->cellAt(1, 0);
+  QTextCursor selection = cell.firstCursorPosition();
+  selection.setPosition(cell.lastPosition(), QTextCursor::KeepAnchor);
+  sheet->setTextCursor(selection);
+  sheet->copy();
+  QCOMPARE(QApplication::clipboard()->text(), source);
+  QVERIFY(!QApplication::clipboard()->mimeData()->hasImage());
+  QVERIFY(!QApplication::clipboard()->mimeData()->hasHtml());
+
+  sheet->setTextCursor(selectCells(*document, 0, 0, 1, 1));
+  QVERIFY(sheet->textCursor().hasComplexSelection());
+  sheet->copy();
+  QCOMPARE(QApplication::clipboard()->text(),
+           QStringLiteral("h\tj\n") + source + QStringLiteral("\tb"));
+  QVERIFY(sheet->textCursor().hasComplexSelection());
+  QVERIFY(!QApplication::clipboard()->mimeData()->hasImage());
+  QVERIFY(!QApplication::clipboard()->mimeData()->hasHtml());
+
+  {
+    QScopedPointer<QMenu> menu(menuForCell(sheet, 1, 0));
+    auto action = actionNamed(menu.data(), "CopyAsMarkdown");
+    QVERIFY(action);
+    action->trigger();
+    QCOMPARE(QApplication::clipboard()->text(), standalone);
+  }
+  {
+    QScopedPointer<QMenu> menu(menuForCell(sheet, 1, 0));
+    auto action = actionNamed(menu.data(), "CopyAsHtml");
+    QVERIFY(action);
+    action->trigger();
+    const auto mime = QApplication::clipboard()->mimeData();
+    QVERIFY(mime->hasHtml());
+    QCOMPARE(mime->text(), html);
+    QVERIFY(mime->html().contains(QStringLiteral("src=\"asset.png\"")));
+    QCOMPARE(mime->html(), html);
+    QVERIFY(!mime->html().contains(QStringLiteral("vte-table-preview:")));
+    QVERIFY(!mime->hasImage());
+  }
+  QCOMPARE(document->cells(), cells);
+}
+
+void TestTablePreview::testInlineBindingsSourceUndoAndRedo() {
+  const QString image = QStringLiteral("![x](a.png)");
+  const QString math = QStringLiteral("$x^2$");
+  const QString source = image + QStringLiteral(" ") + math;
+  SheetHarness harness(
+      makeSnapshot({{QStringLiteral("h")}, {source}}, {PreviewTableAlignment::None}));
+  auto sheet = harness.sheet();
+  QVERIFY(sheet);
+  showOffScreen(*harness.widget(), 600);
+  putCaretIn(sheet, 1, 0);
+  auto document = sheet->tableDocument();
+  harness.widget()->setInlinePreviews(PreviewData::ImageLink,
+                                      {inlinePreview(1, 0, source, image, PreviewData::ImageLink)});
+  harness.widget()->setInlinePreviews(PreviewData::MathBlock,
+                                      {inlinePreview(1, 0, source, math, PreviewData::MathBlock)});
+  QCOMPARE(inlineObjects(*document, 1, 0).size(), 2);
+  QCOMPARE(sheet->undoRingDepth(), 0);
+  QSignalSpy undo(harness.widget(), &TablePreviewWidget::undoRequested);
+  QSignalSpy redo(harness.widget(), &TablePreviewWidget::redoRequested);
+  QTest::keyClicks(sheet, QStringLiteral(" tail"));
+  QCOMPARE(document->cells()[1][0], source + QStringLiteral(" tail"));
+  QCOMPARE(inlineObjects(*document, 1, 0).size(), 2);
+  QCOMPARE(sheet->undoRingDepth(), 1);
+  QTest::keyClick(sheet, Qt::Key_Z, Qt::ControlModifier);
+  QCOMPARE(document->cells()[1][0], source);
+  QCOMPARE(sheet->undoRingDepth(), 0);
+  QCOMPARE(sheet->redoRingDepth(), 1);
+  QCOMPARE(undo.count(), 0);
+  QTest::keyClick(sheet, Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
+  QCOMPARE(document->cells()[1][0], source + QStringLiteral(" tail"));
+  QCOMPARE(sheet->undoRingDepth(), 1);
+  QCOMPARE(sheet->redoRingDepth(), 0);
+  QCOMPARE(redo.count(), 0);
+  QCOMPARE(harness.requestCount(), 0);
+  harness.widget()->flushNow();
+  QCOMPARE(harness.requestCount(), 1);
+  QCOMPARE(harness.lastRequest(),
+           QStringLiteral("| h |\n| --- |\n| ") + source + QStringLiteral(" tail |"));
+  QVERIFY(!harness.lastRequest().contains(QChar::ObjectReplacementCharacter));
+  QVERIFY(!harness.lastRequest().contains(QStringLiteral("vte-table-preview:")));
+}
+
+void TestTablePreview::testInlineBindingsFormattingKeepsTypedElements() {
+  const QString image = QStringLiteral("![x](a.png)");
+  const QString math = QStringLiteral("$x^2$");
+  const QString source = image + QStringLiteral(" ") + math;
+  SheetHarness harness(
+      makeSnapshot({{QStringLiteral("h")}, {source}}, {PreviewTableAlignment::None}));
+  auto sheet = harness.sheet();
+  QVERIFY(sheet);
+  showOffScreen(*harness.widget(), 700);
+  auto document = sheet->tableDocument();
+  harness.widget()->setInlinePreviews(PreviewData::ImageLink,
+                                      {inlinePreview(1, 0, source, image, PreviewData::ImageLink)});
+  harness.widget()->setInlinePreviews(PreviewData::MathBlock,
+                                      {inlinePreview(1, 0, source, math, PreviewData::MathBlock)});
+  selectSource(sheet, 1, 0, 0, source.size());
+  sheet->handleTypeAction(TypeAction::TypeBold);
+  QCOMPARE(document->cells()[1][0], QStringLiteral("**") + source + QStringLiteral("**"));
+  auto objects = inlineObjects(*document, 1, 0);
+  QCOMPARE(objects.size(), 2);
+  QCOMPARE(objects[0].m_sourceOffset, int(image.size()) + 2);
+  QCOMPARE(objects[1].m_sourceOffset, int(source.size()) + 2);
+  QCOMPARE(sheet->undoRingDepth(), 1);
+  sheet->refreshFormats();
+  harness.widget()->setSyntaxStyles(makeSyntaxStyles(Qt::blue));
+  objects = inlineObjects(*document, 1, 0);
+  QCOMPARE(objects.size(), 2);
+  QVERIFY(!inlineResource(*document, objects[0].m_format).isNull());
+  QCOMPARE(objects[0].m_format.width(), qreal(24));
+  QCOMPARE(objects[0].m_format.height(), qreal(18));
+  QCOMPARE(sheet->undoRingDepth(), 1);
+  sheet->handleTypeAction(TypeAction::TypeBold);
+  QCOMPARE(document->cells()[1][0], source);
+  QCOMPARE(inlineObjects(*document, 1, 0).size(), 2);
+  sheet->handleTypeAction(TypeAction::TypeCode);
+  QCOMPARE(document->cells()[1][0], QStringLiteral("`") + source + QStringLiteral("`"));
+  QCOMPARE(inlineObjects(*document, 1, 0).size(), 0);
+  QVERIFY(!document->toMarkdown().contains(QChar::ObjectReplacementCharacter));
+}
+
+void TestTablePreview::testInlineBindingsTrackEditsAndRejectStaleCells() {
+  const QString image = QStringLiteral("![x](a.png)");
+  const QString math = QStringLiteral("$x^2$");
+  const QString source = image + QStringLiteral(" ") + math + QStringLiteral(" tail");
+  SheetHarness harness(
+      makeSnapshot({{QStringLiteral("h")}, {source}}, {PreviewTableAlignment::None}));
+  auto sheet = harness.sheet();
+  QVERIFY(sheet);
+  showOffScreen(*harness.widget(), 800);
+  auto document = sheet->tableDocument();
+  const auto imageRecord = inlinePreview(1, 0, source, image, PreviewData::ImageLink);
+  const auto mathRecord = inlinePreview(1, 0, source, math, PreviewData::MathBlock);
+  harness.widget()->setInlinePreviews(PreviewData::ImageLink, {imageRecord});
+  harness.widget()->setInlinePreviews(PreviewData::MathBlock, {mathRecord});
+  selectSource(sheet, 1, 0, 0, 0);
+  QTest::keyClicks(sheet, QStringLiteral("pre "));
+  QString live = QStringLiteral("pre ") + source;
+  QCOMPARE(document->cells()[1][0], live);
+  auto objects = inlineObjects(*document, 1, 0);
+  QCOMPARE(objects.size(), 2);
+  QCOMPARE(objects[0].m_sourceOffset, imageRecord.m_end + 4);
+  QCOMPARE(objects[1].m_sourceOffset, mathRecord.m_end + 4);
+
+  // Old offsets cannot be reapplied to this ahead cell, but its live bindings
+  // are still valid and must not blink out when an older publication arrives.
+  harness.widget()->setInlinePreviews(PreviewData::ImageLink, {imageRecord});
+  harness.widget()->setInlinePreviews(PreviewData::MathBlock, {mathRecord});
+  objects = inlineObjects(*document, 1, 0);
+  QCOMPARE(objects.size(), 2);
+  QCOMPARE(objects[0].m_sourceOffset, imageRecord.m_end + 4);
+  QCOMPARE(objects[1].m_sourceOffset, mathRecord.m_end + 4);
+  harness.widget()->setInlinePreviews(PreviewData::ImageLink, {});
+  harness.widget()->setInlinePreviews(PreviewData::ImageLink, {imageRecord});
+  objects = inlineObjects(*document, 1, 0);
+  QCOMPARE(objects.size(), 1);
+  QCOMPARE(objects[0].m_sourceOffset, mathRecord.m_end + 4);
+
+  const auto currentImage = inlinePreview(1, 0, live, image, PreviewData::ImageLink);
+  harness.widget()->setInlinePreviews(PreviewData::ImageLink, {currentImage});
+  QCOMPARE(inlineObjects(*document, 1, 0).size(), 2);
+  const int alt = live.indexOf(QStringLiteral("[x]")) + 1;
+  selectSource(sheet, 1, 0, alt, alt + 1);
+  QTest::keyClicks(sheet, QStringLiteral("y"));
+  live.replace(alt, 1, QStringLiteral("y"));
+  QCOMPARE(document->cells()[1][0], live);
+  objects = inlineObjects(*document, 1, 0);
+  QCOMPARE(objects.size(), 1);
+  QCOMPARE(objects[0].m_sourceOffset, mathRecord.m_end + 4);
+  harness.widget()->setInlinePreviews(PreviewData::ImageLink, {currentImage});
+  QCOMPARE(inlineObjects(*document, 1, 0).size(), 1);
+
+  const int mathStart = live.indexOf(math);
+  selectSource(sheet, 1, 0, mathStart, mathStart + math.size());
+  sheet->handleTypeAction(TypeAction::TypeCode);
+  live.replace(mathStart, math.size(), QStringLiteral("`") + math + QStringLiteral("`"));
+  QCOMPARE(document->cells()[1][0], live);
+  QCOMPARE(inlineObjects(*document, 1, 0).size(), 0);
+  QVERIFY(document->isIntact());
+}
+
+void TestTablePreview::testInlineBindingsCanonicalCellMapping_data() {
+  QTest::addColumn<QString>("live");
+  QTest::addColumn<QString>("published");
+  QTest::addColumn<QString>("element");
+  QTest::addColumn<QString>("publishedElement");
+  QTest::newRow("bare-pipe-before")
+      << QStringLiteral("| ![x](a.png)") << QStringLiteral("\\| ![x](a.png)")
+      << QStringLiteral("![x](a.png)") << QStringLiteral("![x](a.png)");
+  QTest::newRow("bare-pipe-in-alt")
+      << QStringLiteral("![a|b](a.png)") << QStringLiteral("![a\\|b](a.png)")
+      << QStringLiteral("![a|b](a.png)") << QStringLiteral("![a\\|b](a.png)");
+  QTest::newRow("trimmed-whitespace")
+      << QStringLiteral("  ![x](a.png) \t") << QStringLiteral("![x](a.png)")
+      << QStringLiteral("![x](a.png)") << QStringLiteral("![x](a.png)");
+  QTest::newRow("escaped-pipes-astral-two-elements")
+      << QStringLiteral("\\| \U0001f600 ![a\\|b](a.png) $x^2$")
+      << QStringLiteral("\\| \U0001f600 ![a\\|b](a.png) $x^2$") << QStringLiteral("![a\\|b](a.png)")
+      << QStringLiteral("![a\\|b](a.png)");
+  QTest::newRow("combined-canonicalization")
+      << QStringLiteral("  | \U0001f600 ![a|b](a.png) $x^2$ \t")
+      << QStringLiteral("\\| \U0001f600 ![a\\|b](a.png) $x^2$") << QStringLiteral("![a|b](a.png)")
+      << QStringLiteral("![a\\|b](a.png)");
+}
+
+void TestTablePreview::testInlineBindingsCanonicalCellMapping() {
+  QFETCH(QString, live);
+  QFETCH(QString, published);
+  QFETCH(QString, element);
+  QFETCH(QString, publishedElement);
+  SheetHarness harness(makeSnapshot({{QStringLiteral("h")}, {QStringLiteral("original")}},
+                                    {PreviewTableAlignment::None}));
+  auto sheet = harness.sheet();
+  QVERIFY(sheet);
+  showOffScreen(*harness.widget(), 900);
+  auto document = sheet->tableDocument();
+  selectSource(sheet, 1, 0, 0, QStringLiteral("original").size());
+  QTextCursor insertion = sheet->textCursor();
+  insertion.insertText(live);
+  harness.widget()->flushNow();
+  QCOMPARE(harness.requestCount(), 1);
+  QVERIFY(harness.echo());
+  QVERIFY(harness.deliver(harness.echo()));
+  // Its accepted canonical parse echo must not replace the user's raw cell.
+  QCOMPARE(document->cells()[1][0], live);
+  const QString serialized = document->toMarkdown();
+  const auto image = inlinePreview(1, 0, published, publishedElement, PreviewData::ImageLink);
+  harness.widget()->setInlinePreviews(PreviewData::ImageLink, {image});
+  const QString math = QStringLiteral("$x^2$");
+  const bool hasMath = live.contains(math);
+  if (hasMath) {
+    harness.widget()->setInlinePreviews(
+        PreviewData::MathBlock, {inlinePreview(1, 0, published, math, PreviewData::MathBlock)});
+  }
+  const auto objects = inlineObjects(*document, 1, 0);
+  QCOMPARE(objects.size(), hasMath ? 2 : 1);
+  QCOMPARE(objects[0].m_sourceOffset, int(live.indexOf(element) + element.size()));
+  QVERIFY(!inlineResource(*document, objects[0].m_format).isNull());
+  if (hasMath) {
+    QCOMPARE(objects[1].m_sourceOffset, int(live.indexOf(math) + math.size()));
+  }
+  QCOMPARE(document->cells()[1][0], live);
+  QCOMPARE(document->toMarkdown(), serialized);
+  harness.widget()->flushNow();
+  QCOMPARE(harness.requestCount(), 1);
+}
+
+void TestTablePreview::testInlineBindingsRejectInvalidRecords_data() {
+  QTest::addColumn<int>("invalidCase");
+  QTest::newRow("negative-start") << 0;
+  QTest::newRow("past-cell-end") << 1;
+  QTest::newRow("empty-range") << 2;
+  QTest::newRow("partial-element-range") << 3;
+  QTest::newRow("wrong-element-spelling") << 4;
+  QTest::newRow("different-source-cell") << 5;
+  QTest::newRow("image-tagged-as-math") << 6;
+  QTest::newRow("code-block-source") << 7;
+  QTest::newRow("missing-pixmap") << 8;
+  QTest::newRow("zero-logical-width") << 9;
+  QTest::newRow("negative-logical-height") << 10;
+  QTest::newRow("outside-grid") << 11;
+  QTest::newRow("code-wrapped-image") << 12;
+}
+
+void TestTablePreview::testInlineBindingsRejectInvalidRecords() {
+  QFETCH(int, invalidCase);
+  const QString image = QStringLiteral("![x](a.png)");
+  const QString source =
+      invalidCase == 12 ? QStringLiteral("`") + image + QStringLiteral("`") : image;
+  TablePreviewDocument document;
+  document.setTable(makeSnapshot({{QStringLiteral("h")}, {source}}, {PreviewTableAlignment::None}));
+  const QString serialized = document.toMarkdown();
+  auto record = inlinePreview(1, 0, source, image, PreviewData::ImageLink);
+  switch (invalidCase) {
+  case 0:
+    record.m_start = -1;
+    break;
+  case 1:
+    record.m_end = source.size() + 1;
+    break;
+  case 2:
+    record.m_end = record.m_start;
+    break;
+  case 3:
+    ++record.m_start;
+    record.m_elementSource.remove(0, 1);
+    break;
+  case 4:
+    record.m_elementSource = QStringLiteral("![y](a.png)");
+    break;
+  case 5:
+    record.m_sourceCell = QStringLiteral("prefix ") + source;
+    break;
+  case 6:
+    record.m_source = PreviewData::MathBlock;
+    break;
+  case 7:
+    record.m_source = PreviewData::CodeBlock;
+    break;
+  case 8:
+    record.m_image = QPixmap();
+    break;
+  case 9:
+    record.m_logicalSize.setWidth(0);
+    break;
+  case 10:
+    record.m_logicalSize.setHeight(-1);
+    break;
+  case 11:
+    record.m_column = 1;
+    break;
+  case 12:
+    break;
+  }
+  document.setInlinePreviews(record.m_source, {record});
+  QCOMPARE(inlineObjects(document, 1, 0).size(), 0);
+  QCOMPARE(document.cells()[1][0], source);
+  QCOMPARE(document.toMarkdown(), serialized);
+}
+
+void TestTablePreview::testInlineBindingsDoNotDuplicateOverlappingRecords() {
+  const QString source = QStringLiteral("![x](a.png)");
+  TablePreviewDocument document;
+  document.setTable(makeSnapshot({{QStringLiteral("h")}, {source}}, {PreviewTableAlignment::None}));
+  const auto record = inlinePreview(1, 0, source, source, PreviewData::ImageLink);
+  auto conflicting = record;
+  conflicting.m_image = inlinePixmap(QSize(24, 18), Qt::blue);
+  document.setInlinePreviews(PreviewData::ImageLink, {record, conflicting});
+  const auto objects = inlineObjects(document, 1, 0);
+  // Rejecting the ambiguous pair or retaining one is safe; two objects for the
+  // same source interval would not be a complete non-overlapping publication.
+  QVERIFY(objects.size() <= 1);
+  for (const auto &object : objects) {
+    QCOMPARE(object.m_sourceOffset, int(source.size()));
+    QVERIFY(!inlineResource(document, object.m_format).isNull());
+  }
+  QCOMPARE(document.cells()[1][0], source);
+}
+
+void TestTablePreview::testInlineBindingsRetireAndReuseResources() {
+  const QString image = QStringLiteral("![x](a.png)");
+  const QString math = QStringLiteral("$x^2$");
+  const QString source = image + QStringLiteral(" ") + math;
+  TablePreviewDocument document;
+  document.setTable(
+      makeSnapshot({{QStringLiteral("h")}, {source}, {source}}, {PreviewTableAlignment::None}));
+  document.document()->setTextWidth(700);
+  const auto first = inlinePreview(1, 0, source, image, PreviewData::ImageLink);
+  const auto second = inlinePreview(2, 0, source, image, PreviewData::ImageLink);
+  document.setInlinePreviews(PreviewData::ImageLink, {first, second});
+  document.setInlinePreviews(PreviewData::MathBlock,
+                             {inlinePreview(1, 0, source, math, PreviewData::MathBlock)});
+  auto firstObjects = inlineObjects(document, 1, 0);
+  auto secondObjects = inlineObjects(document, 2, 0);
+  QCOMPARE(firstObjects.size(), 2);
+  QCOMPARE(secondObjects.size(), 1);
+  const QString firstSlot = firstObjects[0].m_format.name();
+  const QString secondSlot = secondObjects[0].m_format.name();
+  const auto mathFormat = firstObjects[1].m_format;
+  QVERIFY(firstSlot != secondSlot);
+  QVERIFY(!inlineResource(document, mathFormat).isNull());
+
+  // A complete nonempty publication removes an unmatched pristine cell.
+  document.setInlinePreviews(PreviewData::ImageLink, {first});
+  QCOMPARE(inlineObjects(document, 2, 0).size(), 0);
+  QVERIFY(!document.document()->resource(QTextDocument::ImageResource, QUrl(secondSlot)).isValid());
+  QCOMPARE(inlineObjects(document, 1, 0).size(), 2);
+  document.setInlinePreviews(PreviewData::ImageLink, {first, second});
+  secondObjects = inlineObjects(document, 2, 0);
+  QCOMPARE(secondObjects.size(), 1);
+  QCOMPARE(secondObjects[0].m_format.name(), secondSlot);
+
+  // The same omission must not discard a still-valid binding in an ahead cell.
+  QTextCursor insertion = document.table()->cellAt(2, 0).firstCursorPosition();
+  insertion.insertText(QStringLiteral("pre "));
+  document.revalidateInlinePreviews();
+  document.setInlinePreviews(PreviewData::ImageLink, {first});
+  secondObjects = inlineObjects(document, 2, 0);
+  QCOMPARE(secondObjects.size(), 1);
+  QCOMPARE(secondObjects[0].m_sourceOffset, int(image.size()) + 4);
+  QCOMPARE(document.cells()[2][0], QStringLiteral("pre ") + source);
+
+  document.setInlinePreviews(PreviewData::ImageLink, {});
+  QCOMPARE(inlineObjects(document, 2, 0).size(), 0);
+  firstObjects = inlineObjects(document, 1, 0);
+  QCOMPARE(firstObjects.size(), 1);
+  QCOMPARE(firstObjects[0].m_sourceOffset, int(source.size()));
+  QVERIFY(!inlineResource(document, mathFormat).isNull());
+  QVERIFY(!document.document()->resource(QTextDocument::ImageResource, QUrl(firstSlot)).isValid());
+  QVERIFY(!document.document()->resource(QTextDocument::ImageResource, QUrl(secondSlot)).isValid());
+
+  const QStringList retiredSlots{firstSlot, secondSlot};
+  for (const QColor &color : {QColor(Qt::green), QColor(Qt::blue), QColor(Qt::yellow)}) {
+    auto replacement = first;
+    replacement.m_image = inlinePixmap(replacement.m_logicalSize, color);
+    document.setInlinePreviews(PreviewData::ImageLink, {replacement});
+    const auto objects = inlineObjects(document, 1, 0);
+    QCOMPARE(objects.size(), 2);
+    QVERIFY(retiredSlots.contains(objects[0].m_format.name()));
+    QCOMPARE(inlineResource(document, objects[0].m_format).toImage().pixelColor(0, 0), color);
+    const auto slot = QUrl(objects[0].m_format.name());
+    document.setInlinePreviews(PreviewData::ImageLink, {});
+    QVERIFY(!document.document()->resource(QTextDocument::ImageResource, slot).isValid());
+  }
+  document.setInlinePreviews(PreviewData::MathBlock, {});
+  QCOMPARE(inlineObjects(document, 1, 0).size(), 0);
+  QVERIFY(!document.document()
+               ->resource(QTextDocument::ImageResource, QUrl(mathFormat.name()))
+               .isValid());
+
+  document.setInlinePreviews(PreviewData::ImageLink, {first});
+  const auto restored = inlineObjects(document, 1, 0);
+  QCOMPARE(restored.size(), 1);
+  const QUrl removedSlot(restored[0].m_format.name());
+  const auto cell = document.table()->cellAt(1, 0);
+  QTextCursor removal = cell.firstCursorPosition();
+  removal.setPosition(cell.lastPosition(), QTextCursor::KeepAnchor);
+  removal.removeSelectedText();
+  document.revalidateInlinePreviews();
+  QCOMPARE(document.cells()[1][0], QString());
+  QCOMPARE(inlineObjects(document, 1, 0).size(), 0);
+  QVERIFY(!document.document()->resource(QTextDocument::ImageResource, removedSlot).isValid());
+}
+
+void TestTablePreview::testInlineBindingsLeaveHtmlAndMergedCellsSourceOnly() {
+  const QString image = QStringLiteral("![x](a.png)");
+  const QString math = QStringLiteral("$x^2$");
+  const QVector<QVector<QString>> htmlCells{{image, QString()}, {math, QStringLiteral("b")}};
+  const QVector<QVector<QPoint>> spans{{QPoint(2, 1), QPoint(0, 0)}, {QPoint(1, 1), QPoint(1, 1)}};
+  for (bool markdownBacked : {false, true}) {
+    TablePreviewDocument document;
+    document.setTable(makeHtmlSnapshot(htmlCells, spans, false, markdownBacked));
+    const QString serialized = document.toMarkdown();
+    document.setInlinePreviews(PreviewData::ImageLink,
+                               {inlinePreview(0, 0, image, image, PreviewData::ImageLink)});
+    document.setInlinePreviews(PreviewData::MathBlock,
+                               {inlinePreview(1, 0, math, math, PreviewData::MathBlock)});
+    QCOMPARE(inlineObjects(document, 0, 0).size(), 0);
+    QCOMPARE(inlineObjects(document, 1, 0).size(), 0);
+    QCOMPARE(document.cells(), htmlCells);
+    QCOMPARE(document.toMarkdown(), serialized);
+    QCOMPARE(document.colSpanAt(0, 0), 2);
+  }
+
+  TablePreviewDocument document;
+  document.setTable(makeSnapshot({{QStringLiteral("h"), QStringLiteral("j")}, {image, math}},
+                                 {PreviewTableAlignment::None, PreviewTableAlignment::None}));
+  document.document()->setTextWidth(700);
+  document.setInlinePreviews(PreviewData::ImageLink,
+                             {inlinePreview(1, 0, image, image, PreviewData::ImageLink)});
+  document.setInlinePreviews(PreviewData::MathBlock,
+                             {inlinePreview(1, 1, math, math, PreviewData::MathBlock)});
+  const auto images = inlineObjects(document, 1, 0);
+  const auto formulas = inlineObjects(document, 1, 1);
+  QCOMPARE(images.size(), 1);
+  QCOMPARE(formulas.size(), 1);
+  const QStringList resourceNames{images[0].m_format.name(), formulas[0].m_format.name()};
+  QVERIFY(document.mergeCells(selectCells(document, 1, 0, 1, 1)));
+  QCOMPARE(document.syntax(), PreviewTableSyntax::Html);
+  QCOMPARE(document.cells()[1][0], image + QStringLiteral(" ") + math);
+  QCOMPARE(document.cells()[1][1], QString());
+  QCOMPARE(inlineObjects(document, 1, 0).size(), 0);
+  QVERIFY(!document.toMarkdown().contains(QChar::ObjectReplacementCharacter));
+  QVERIFY(!document.toMarkdown().contains(QStringLiteral("vte-table-preview:")));
+  for (const auto &slot : resourceNames) {
+    QVERIFY(!document.document()->resource(QTextDocument::ImageResource, QUrl(slot)).isValid());
+  }
+}
+
+void TestTablePreview::testInlineBindingsDoNotCreateSourceCommitsOrUndoSteps() {
+  const QString image = QStringLiteral("![x](a.png)");
+  const QString math = QStringLiteral("$x^2$");
+  const QString source = image + QStringLiteral(" ") + math;
+  const auto snapshot =
+      makeSnapshot({{QStringLiteral("h")}, {source}}, {PreviewTableAlignment::None});
+  SheetHarness harness(snapshot);
+  auto sheet = harness.sheet();
+  QVERIFY(sheet);
+  showOffScreen(*harness.widget(), 700);
+  putCaretIn(sheet, 1, 0);
+  auto document = sheet->tableDocument();
+  auto record = inlinePreview(1, 0, source, image, PreviewData::ImageLink);
+  harness.widget()->setInlinePreviews(PreviewData::ImageLink, {record});
+  harness.widget()->setInlinePreviews(PreviewData::MathBlock,
+                                      {inlinePreview(1, 0, source, math, PreviewData::MathBlock)});
+  QCOMPARE(inlineObjects(*document, 1, 0).size(), 2);
+  QCOMPARE(sheet->undoRingDepth(), 0);
+  QCOMPARE(sheet->redoRingDepth(), 0);
+
+  record.m_image = inlinePixmap(record.m_logicalSize, Qt::blue, 2);
+  harness.widget()->setInlinePreviews(PreviewData::ImageLink, {record});
+  QCOMPARE(sheet->undoRingDepth(), 0);
+  record.m_logicalSize = QSize(48, 36);
+  harness.widget()->setInlinePreviews(PreviewData::ImageLink, {record});
+  auto objects = inlineObjects(*document, 1, 0);
+  QCOMPARE(objects.size(), 2);
+  QCOMPARE(objects[0].m_format.width(), qreal(48));
+  QCOMPARE(objects[0].m_format.height(), qreal(36));
+  QCOMPARE(sheet->undoRingDepth(), 0);
+
+  record.m_image = inlinePixmap(QSize(24, 18), Qt::transparent, 2);
+  {
+    QPainter painter(&record.m_image);
+    painter.fillRect(QRect(8, 6, 8, 6), Qt::red);
+  }
+  record.m_backgroundColor = qRgb(255, 255, 0);
+  harness.widget()->setInlinePreviews(PreviewData::ImageLink, {record});
+  objects = inlineObjects(*document, 1, 0);
+  QCOMPARE(objects.size(), 2);
+  const auto composite = inlineResource(*document, objects[0].m_format);
+  QVERIFY(!composite.isNull());
+  QCOMPARE(composite.devicePixelRatio(), qreal(2));
+  QCOMPARE(composite.toImage().pixelColor(0, 0), QColor(Qt::yellow));
+  QCOMPARE(composite.toImage().pixelColor(20, 16), QColor(Qt::red));
+  QCOMPARE(qAlpha(record.m_image.toImage().pixel(0, 0)), 0);
+  QCOMPARE(sheet->undoRingDepth(), 0);
+  showOffScreen(*harness.widget(), 400);
+  harness.widget()->setInlinePreviews(PreviewData::ImageLink, {});
+  QCOMPARE(inlineObjects(*document, 1, 0).size(), 1);
+  harness.widget()->setInlinePreviews(PreviewData::MathBlock, {});
+  QCOMPARE(inlineObjects(*document, 1, 0).size(), 0);
+  waitForCommit();
+  QCOMPARE(document->cells()[1][0], source);
+  QCOMPARE(document->toMarkdown(), snapshot->sourceMarkdown());
+  QCOMPARE(harness.requestCount(), 0);
+  QCOMPARE(sheet->undoRingDepth(), 0);
+  QCOMPARE(sheet->redoRingDepth(), 0);
+  QVERIFY(!sheet->document()->isUndoAvailable());
+
+  // Presentation refreshes between typing and Undo cannot add a second step.
+  QTest::keyClicks(sheet, QStringLiteral(" tail"));
+  const QString edited = source + QStringLiteral(" tail");
+  harness.widget()->setInlinePreviews(PreviewData::ImageLink,
+                                      {inlinePreview(1, 0, edited, image, PreviewData::ImageLink)});
+  QCOMPARE(inlineObjects(*document, 1, 0).size(), 1);
+  harness.widget()->setInlinePreviews(PreviewData::ImageLink, {});
+  QCOMPARE(sheet->undoRingDepth(), 1);
+  QTest::keyClick(sheet, Qt::Key_Z, Qt::ControlModifier);
+  QCOMPARE(document->cells()[1][0], source);
+  QCOMPARE(sheet->undoRingDepth(), 0);
+  harness.widget()->flushNow();
+  QCOMPARE(harness.requestCount(), 0);
+  putCaretIn(sheet, 1, 0);
+  QTest::keyClicks(sheet, QStringLiteral("!"));
+  waitForCommit();
+  QCOMPARE(harness.requestCount(), 1);
+  QCOMPARE(harness.lastRequest(),
+           QStringLiteral("| h |\n| --- |\n| ") + source + QStringLiteral("! |"));
+}
+
+void TestTablePreview::testInlineBindingsDeferRefreshDuringComposition() {
+  const QString image = QStringLiteral("![x](a.png)");
+  const QString source = image + QStringLiteral(" tail");
+  SheetHarness harness(
+      makeSnapshot({{QStringLiteral("h")}, {source}}, {PreviewTableAlignment::None}));
+  auto sheet = harness.sheet();
+  QVERIFY(sheet);
+  showOffScreen(*harness.widget(), 700);
+  sheet->setFocus();
+  putCaretIn(sheet, 1, 0);
+  auto document = sheet->tableDocument();
+  auto record = inlinePreview(1, 0, source, image, PreviewData::ImageLink, QSize(20, 16));
+  harness.widget()->setInlinePreviews(PreviewData::ImageLink, {record});
+  QCOMPARE(inlineObjects(*document, 1, 0).size(), 1);
+  const QString composing = QStringLiteral("\u3042\u3044");
+  QList<QInputMethodEvent::Attribute> attributes;
+  attributes.append(QInputMethodEvent::Attribute(QInputMethodEvent::Cursor, 2, 1, QVariant()));
+  QInputMethodEvent preedit(composing, attributes);
+  QApplication::sendEvent(sheet, &preedit);
+  QVERIFY(sheet->textCursor().block().layout());
+  QCOMPARE(sheet->textCursor().block().layout()->preeditAreaText(), composing);
+  record.m_image = inlinePixmap(QSize(40, 32), Qt::green);
+  record.m_logicalSize = QSize(40, 32);
+  harness.widget()->setInlinePreviews(PreviewData::ImageLink, {record});
+  settle();
+  auto objects = inlineObjects(*document, 1, 0);
+  QCOMPARE(objects.size(), 1);
+  QCOMPARE(objects[0].m_format.width(), qreal(20));
+  QCOMPARE(inlineResource(*document, objects[0].m_format).toImage().pixelColor(0, 0),
+           QColor(Qt::red));
+  QCOMPARE(sheet->textCursor().block().layout()->preeditAreaText(), composing);
+  QCOMPARE(document->cells()[1][0], source);
+  QCOMPARE(sheet->undoRingDepth(), 0);
+  QCOMPARE(harness.requestCount(), 0);
+
+  // Synthetic platform completion with no committed text ends the preedit.
+  // The deferred raster/geometry becomes visible without a source mutation.
+  QInputMethodEvent endComposition;
+  QApplication::sendEvent(sheet, &endComposition);
+  settle();
+  QCOMPARE(sheet->textCursor().block().layout()->preeditAreaText(), QString());
+  objects = inlineObjects(*document, 1, 0);
+  QCOMPARE(objects.size(), 1);
+  QCOMPARE(objects[0].m_format.width(), qreal(40));
+  QCOMPARE(objects[0].m_format.height(), qreal(32));
+  QCOMPARE(inlineResource(*document, objects[0].m_format).toImage().pixelColor(0, 0),
+           QColor(Qt::green));
+  QCOMPARE(document->cells()[1][0], source);
+  QCOMPARE(sheet->undoRingDepth(), 0);
+  QCOMPARE(harness.requestCount(), 0);
+}
+
+void TestTablePreview::testInlineBindingsOrderMultipleImagesInOneCell() {
+  const QString image = QStringLiteral("![x](a.png)");
+  const QString source = QStringLiteral("\U0001f600 ") + image + QStringLiteral(" ") + image;
+  TablePreviewDocument document;
+  document.setTable(makeSnapshot({{QStringLiteral("h"), QStringLiteral("j")}, {source, image}},
+                                 {PreviewTableAlignment::None, PreviewTableAlignment::None}));
+  document.document()->setTextWidth(900);
+  const auto first =
+      inlinePreview(1, 0, source, image, PreviewData::ImageLink, QSize(24, 18), Qt::red);
+  auto second = first;
+  second.m_start = source.lastIndexOf(image);
+  second.m_end = second.m_start + image.size();
+  second.m_image = inlinePixmap(QSize(24, 18), Qt::blue);
+  const auto otherCell =
+      inlinePreview(1, 1, image, image, PreviewData::ImageLink, QSize(24, 18), Qt::green);
+  // Publication order is not document order, and equal spellings do not make
+  // the two source intervals or the two cells interchangeable.
+  document.setInlinePreviews(PreviewData::ImageLink, {second, otherCell, first});
+  const auto objects = inlineObjects(document, 1, 0);
+  const auto other = inlineObjects(document, 1, 1);
+  QCOMPARE(objects.size(), 2);
+  QCOMPARE(other.size(), 1);
+  QCOMPARE(objects[0].m_sourceOffset, first.m_end);
+  QCOMPARE(objects[1].m_sourceOffset, second.m_end);
+  QCOMPARE(other[0].m_sourceOffset, int(image.size()));
+  QCOMPARE(inlineResource(document, objects[0].m_format).toImage().pixelColor(0, 0),
+           QColor(Qt::red));
+  QCOMPARE(inlineResource(document, objects[1].m_format).toImage().pixelColor(0, 0),
+           QColor(Qt::blue));
+  QCOMPARE(inlineResource(document, other[0].m_format).toImage().pixelColor(0, 0),
+           QColor(Qt::green));
+  QCOMPARE(cellText(document.document(), 1, 0),
+           QStringLiteral("\U0001f600 ") + image + QChar::ObjectReplacementCharacter +
+               QStringLiteral(" ") + image + QChar::ObjectReplacementCharacter);
+  QCOMPARE(document.cells()[1][0], source);
+  QCOMPARE(document.cells()[1][1], image);
+}
+
 QTEST_MAIN(tests::TestTablePreview)
