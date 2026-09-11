@@ -313,7 +313,7 @@ bool HeadingSourceNumberer::resolveHeading(const md::HeadingInfo &p_heading,
   p_source.m_text = p_source.m_block.text();
   const int size = int(p_source.m_text.size());
   int content = p_heading.m_startPos - p_source.m_block.position();
-  if (content < 0 || content >= size || p_source.m_text[content].isLowSurrogate()) {
+  if (content < 0 || content >= size || p_source.m_text.at(content).isLowSurrogate()) {
     return false;
   }
   // A real ATX node ends on its first line. A real Setext node includes its
