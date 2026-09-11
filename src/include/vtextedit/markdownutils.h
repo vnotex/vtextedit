@@ -105,16 +105,6 @@ struct VTEXTEDIT_EXPORT MarkdownLink {
 
   // Whether m_path exists on disk. Only meaningful for the local flavors.
   bool m_exists = false;
-  // Resource-link information populated by fetchResourceLinks(). Image-only
-  // consumers keep their existing contract and do not inspect these fields.
-  bool m_isImage = true;
-  // False entries MUST abort a resource-closure rewrite, even with local-only
-  // flags: an AST construct or HTML resource could not be located/understood.
-  bool m_rewriteSupported = true;
-  // End of the original [label], including its closing bracket. A resolved
-  // reference replaces only [m_labelEnd, m_regionEnd), preserving nested
-  // formatting/resources in the label rather than regenerating it as text.
-  int m_labelEnd = -1;
 };
 
 class VTEXTEDIT_EXPORT MarkdownUtils {
@@ -204,18 +194,6 @@ public:
                                                const QString &p_contentBasePath,
                                                MarkdownLink::TypeFlags p_flags);
 
-  // Images plus ordinary Markdown/HTML local-file links, from the same cmark
-  // AST and HTML image scanner. Code is excluded. Unlike fetchImageLinks(),
-  // unresolved resource constructs are returned with m_rewriteSupported=false
-  // regardless of flags; closure callers must fail closed on them.
-  // Descending by the replacement start (destination, or reference suffix).
-  // With p_resolvePaths=false this is syntax-only: no filesystem/resource probes,
-  // m_path stays empty and m_exists false. Relative links use the internal type.
-  static QVector<MarkdownLink> fetchResourceLinks(const QString &p_content,
-                                                  const QString &p_contentBasePath,
-                                                  MarkdownLink::TypeFlags p_flags,
-                                                  bool p_resolvePaths = true);
-
   struct HeaderMatch {
     bool m_matched = false;
 
@@ -263,11 +241,6 @@ public:
   static const QString c_linkRegExp;
 
 private:
-  template <bool ResolvePaths>
-  static QVector<MarkdownLink> fetchImageLinksImpl(const QString &p_content,
-                                                   const QString &p_contentBasePath,
-                                                   MarkdownLink::TypeFlags p_flags);
-
   enum CursorPosition { StartMarker, NewLinebetweenMarkers, EndMarker };
 
   struct QuoteData {
