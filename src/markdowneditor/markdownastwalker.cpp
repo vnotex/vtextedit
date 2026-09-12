@@ -1,8 +1,11 @@
 #include "markdownastwalker.h"
+#include "../utils/htmltagparse.h"
 #include "cmarkadapter.h"
 #include "markdownsyntaxstyles.h"
 
 #include <algorithm>
+
+#include <QStringView>
 
 #include <vtextedit/htmlimgscanner.h>
 #include <vtextedit/htmltablescanner.h>
@@ -768,6 +771,225 @@ static void extractHtmlTables(const QString &p_slice, int p_sliceStart, const QS
   }
 }
 
+namespace {
+
+struct FontColorSpan {
+  int start;
+  int end;
+  QColor foreground;
+};
+
+// Only HTML nodes feed this lexer. Pair first, then publish: an unfinished font
+// never lends its color to the rest of the document, even across block nodes.
+class FontColorCollector {
+public:
+  void exclude(int p_start, int p_end) {
+    if (!m_open.isEmpty() && p_start < p_end) {
+      m_excluded.append(ElementRegion(p_start, p_end));
+    }
+  }
+
+  void scanHtml(const QString &p_slice, int p_base, int p_documentEnd) {
+    const auto excludeSlice = [&](int p_start, int p_end) {
+      // An unresolved token must not expose markup inside an enclosing font.
+      // Suppress conservatively rather than inventing source coordinates.
+      exclude(p_base < 0 ? 0 : p_base + p_start, p_base < 0 ? p_documentEnd : p_base + p_end);
+    };
+    int i = 0;
+    while (i < p_slice.size()) {
+      if (!m_rawText.m_element.isEmpty()) {
+        const int end = htmltag::findRawTextClose(p_slice, i, m_rawText.m_element);
+        if (end < 0) {
+          return;
+        }
+        exclude(m_rawStart, p_base < 0 ? p_documentEnd : p_base + end);
+        m_rawText.m_element.clear();
+        i = end;
+        continue;
+      }
+
+      const int lt = p_slice.indexOf(QLatin1Char('<'), i);
+      if (lt < 0) {
+        break;
+      }
+
+      // Comments, CDATA, processing instructions and declarations are opaque;
+      // a font spelling inside any of them is never another tag.
+      const auto suffix = QStringView(p_slice).mid(lt);
+      int opaqueEnd = -1;
+      if (suffix.startsWith(QLatin1String("<!--"))) {
+        const int end = p_slice.indexOf(QStringLiteral("-->"), lt + 4);
+        opaqueEnd = end < 0 ? p_slice.size() : end + 3;
+      } else if (suffix.startsWith(QLatin1String("<![CDATA["))) {
+        const int end = p_slice.indexOf(QStringLiteral("]]>"), lt + 9);
+        opaqueEnd = end < 0 ? p_slice.size() : end + 3;
+      } else if (suffix.startsWith(QLatin1String("<?"))) {
+        const int end = p_slice.indexOf(QStringLiteral("?>"), lt + 2);
+        opaqueEnd = end < 0 ? p_slice.size() : end + 2;
+      } else if (suffix.startsWith(QLatin1String("<!"))) {
+        const int end = htmltag::skipTag(p_slice, lt);
+        opaqueEnd = end < 0 ? p_slice.size() : end;
+      }
+      if (opaqueEnd >= 0) {
+        excludeSlice(lt, opaqueEnd);
+        i = opaqueEnd;
+        continue;
+      }
+
+      int nameStart = lt + 1;
+      const bool closing = nameStart < p_slice.size() && p_slice.at(nameStart) == QLatin1Char('/');
+      if (closing) {
+        ++nameStart;
+      }
+      if (nameStart >= p_slice.size() || !htmltag::isNameStart(p_slice.at(nameStart))) {
+        i = lt + 1;
+        continue;
+      }
+      int nameEnd = nameStart;
+      while (nameEnd < p_slice.size() && htmltag::isNameChar(p_slice.at(nameEnd))) {
+        ++nameEnd;
+      }
+      const QString name = p_slice.mid(nameStart, nameEnd - nameStart).toLower();
+      const int tagEnd = htmltag::skipTag(p_slice, lt);
+      excludeSlice(lt, tagEnd < 0 ? p_slice.size() : tagEnd);
+
+      if (!closing && htmltag::isRawTextElement(name)) {
+        m_rawText.m_element = name;
+        m_rawStart = p_base < 0 ? 0 : p_base + lt;
+      } else if (tagEnd >= 0 && name == QStringLiteral("font")) {
+        int limit = p_slice.indexOf(QLatin1Char('\n'), nameEnd);
+        if (limit < 0) {
+          limit = p_slice.size();
+        }
+        QVector<HtmlAttr> attrs;
+        int parsedEnd = -1;
+        if (htmltag::parseAttrs(p_slice, nameEnd, limit, p_base, attrs, parsedEnd)) {
+          if (closing) {
+            // Closing tags may contain whitespace, but not attributes or '/'.
+            int end = nameEnd;
+            while (end < limit && p_slice.at(end).isSpace()) {
+              ++end;
+            }
+            if (end < limit && p_slice.at(end) == QLatin1Char('>') && !m_open.isEmpty()) {
+              const FontColorSpan opened = m_open.takeLast();
+              const int closeStart = p_base < 0 ? -1 : p_base + lt;
+              if (opened.start >= 0 && opened.start < closeStart && opened.foreground.isValid()) {
+                m_matched.append({opened.start, closeStart, opened.foreground});
+              }
+            }
+          } else if (p_slice.at(parsedEnd - 2) != QLatin1Char('/')) {
+            const HtmlAttr *color = htmltag::findAttr(attrs, "color");
+            // parseAttrs has already decoded HTML entities; QColor accepts
+            // named and hex colors, without introducing a second CSS parser.
+            const QColor foreground = color ? QColor(color->m_value.trimmed()) : QColor();
+            m_open.append({p_base < 0 ? -1 : p_base + parsedEnd, -1, foreground});
+          }
+        }
+      }
+      if (tagEnd < 0) {
+        return;
+      }
+      i = tagEnd;
+    }
+  }
+
+  void appendHighlights(ASTWalkResult &p_result, const LineOffsetTable &p_offsets, int p_startBlock,
+                        int p_documentEnd) {
+    if (m_matched.isEmpty()) {
+      return;
+    }
+    if (!m_rawText.m_element.isEmpty()) {
+      exclude(m_rawStart, p_documentEnd);
+    }
+    std::sort(m_matched.begin(), m_matched.end(),
+              [](const FontColorSpan &p_a, const FontColorSpan &p_b) {
+                return p_a.start < p_b.start || (p_a.start == p_b.start && p_a.end > p_b.end);
+              });
+    std::sort(m_excluded.begin(), m_excluded.end());
+
+    int excludedIndex = 0;
+    const auto appendVisible = [&](int p_start, int p_end, const QColor &p_foreground) {
+      while (p_start < p_end) {
+        if (excludedIndex == m_excluded.size() ||
+            m_excluded.at(excludedIndex).m_startPos >= p_end) {
+          appendSpan(p_result, p_offsets, p_startBlock, p_start, p_end, p_foreground);
+          break;
+        }
+        const auto &excluded = m_excluded.at(excludedIndex);
+        if (excluded.m_endPos <= p_start) {
+          ++excludedIndex;
+          continue;
+        }
+        if (excluded.m_startPos > p_start) {
+          appendSpan(p_result, p_offsets, p_startBlock, p_start, excluded.m_startPos, p_foreground);
+        }
+        p_start = qMax(p_start, excluded.m_endPos);
+        if (excluded.m_endPos <= p_end) {
+          ++excludedIndex;
+        }
+      }
+    };
+
+    // Resolve nesting before cutting out excluded spans. Otherwise a parent
+    // and child can become equal-sized units, losing their precedence in the
+    // highlight sort. Invalid colors have no matched span and inherit naturally.
+    QVector<int> active;
+    int pos = m_matched.first().start;
+    for (int idx = 0; idx < m_matched.size(); ++idx) {
+      const auto &span = m_matched.at(idx);
+      while (!active.isEmpty() && m_matched.at(active.last()).end <= span.start) {
+        const auto &finished = m_matched.at(active.takeLast());
+        appendVisible(pos, finished.end, finished.foreground);
+        pos = finished.end;
+      }
+      if (!active.isEmpty()) {
+        appendVisible(pos, span.start, m_matched.at(active.last()).foreground);
+      }
+      pos = span.start;
+      active.append(idx);
+    }
+    while (!active.isEmpty()) {
+      const auto &finished = m_matched.at(active.takeLast());
+      appendVisible(pos, finished.end, finished.foreground);
+      pos = finished.end;
+    }
+  }
+
+private:
+  static void appendSpan(ASTWalkResult &p_result, const LineOffsetTable &p_offsets,
+                         int p_startBlock, int p_start, int p_end, const QColor &p_foreground) {
+    for (int line = lineIndexOfDocPos(p_offsets, p_start);
+         line >= 0 && line < p_offsets.lineCount(); ++line) {
+      const int lineStart = p_offsets.lineStartQCharOffset(line);
+      if (lineStart >= p_end) {
+        break;
+      }
+      const int block = p_startBlock + line;
+      if (block < 0 || block >= p_result.blocksHighlights.size()) {
+        continue;
+      }
+      const int start = qMax(p_start, lineStart);
+      const int end = qMin(p_end, p_offsets.lineEndQCharOffset(line));
+      if (start < end) {
+        HLUnit unit;
+        unit.start = start - lineStart;
+        unit.length = end - start;
+        unit.styleIndex = static_cast<unsigned int>(-1);
+        unit.foreground = p_foreground;
+        p_result.blocksHighlights[block].append(unit);
+      }
+    }
+  }
+
+  QVector<FontColorSpan> m_open;
+  QVector<FontColorSpan> m_matched;
+  QVector<ElementRegion> m_excluded;
+  RawTextState m_rawText;
+  int m_rawStart = 0;
+};
+
+} // namespace
+
 // The single per-node entry point for HTML scanning.
 //
 // @p_rawText is per-WALK state, not per-node: cmark emits `<script>`, its
@@ -785,7 +1007,8 @@ static void extractHtmlTables(const QString &p_slice, int p_sliceStart, const QS
 // jumping over a table it captured. The assert is the guard on that invariant.
 static void extractHtmlNode(cmark_node *p_node, const QString &p_text, const QByteArray &p_utf8Text,
                             const LineOffsetTable &p_offsets, ASTWalkResult &p_result, int p_offset,
-                            int p_startBlock, RawTextState &p_rawText) {
+                            int p_startBlock, RawTextState &p_rawText,
+                            FontColorCollector &p_fontColors, bool p_fast) {
   const bool isBlock = cmark_node_get_type(p_node) == CMARK_NODE_HTML_BLOCK;
 
   int regionStart = -1;
@@ -805,6 +1028,11 @@ static void extractHtmlNode(cmark_node *p_node, const QString &p_text, const QBy
     }
     slice = QString::fromUtf8(literal);
     sliceStart = 0;
+  }
+
+  p_fontColors.scanHtml(slice, resolved ? sliceStart : -1, p_text.size());
+  if (p_fast) {
+    return;
   }
 
   const RawTextState incoming = p_rawText;
@@ -901,9 +1129,10 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
 
   LineOffsetTable offsets(p_utf8Text);
 
-  // Decoded once: the HTML span resolver and the `<img>` scanner both work on
-  // QChar offsets, which is also what every downstream region uses.
-  const QString text = p_fast ? QString() : QString::fromUtf8(p_utf8Text);
+  // Decode only when an HTML node needs verified QChar source positions.
+  // Ordinary Markdown, including code that merely spells HTML, needs no copy.
+  QString text;
+  FontColorCollector fontColors;
 
   // Per-WALK raw-text context; see extractHtmlImages().
   RawTextState rawText;
@@ -935,8 +1164,12 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
 
     // Runs BEFORE the span/style guards below: the raw-text state must advance
     // for every HTML node, including one this walk cannot place.
-    if (!p_fast && (type == CMARK_NODE_HTML_INLINE || type == CMARK_NODE_HTML_BLOCK)) {
-      extractHtmlNode(node, text, p_utf8Text, offsets, result, p_offset, p_startBlock, rawText);
+    if (type == CMARK_NODE_HTML_INLINE || type == CMARK_NODE_HTML_BLOCK) {
+      if (text.isNull()) {
+        text = QString::fromUtf8(p_utf8Text);
+      }
+      extractHtmlNode(node, text, p_utf8Text, offsets, result, p_offset, p_startBlock, rawText,
+                      fontColors, p_fast);
     }
 
     int style = mapCmarkNodeToStyle(type, node);
@@ -1004,6 +1237,11 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
              << "startBlock=" << p_startBlock;
 #endif
 
+    if (type == CMARK_NODE_CODE || type == CMARK_NODE_CODE_BLOCK ||
+        type == CMARK_NODE_FORMULA_INLINE || type == CMARK_NODE_FORMULA_BLOCK) {
+      fontColors.exclude(docStart, docEnd);
+    }
+
     // Add per-block HLUnits.
     addHLUnit(result, offsets, docStart, docEnd, style, p_startBlock, p_numBlocks);
 
@@ -1027,6 +1265,8 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
   }
 
   cmark_iter_free(iter);
+
+  fontColors.appendHighlights(result, offsets, p_startBlock, text.size());
 
   // Sort each block's HLUnits.
   for (auto &blockUnits : result.blocksHighlights) {

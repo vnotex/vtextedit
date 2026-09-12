@@ -18,6 +18,9 @@ private slots:
   void testFencedCodeBlocks();
   void testFencedCodeBlockIndentationFormat();
   void testHTMLNodesAreStyledLikeCode();
+  void testFontColorHighlighting_data();
+  void testFontColorHighlighting();
+  void testFontColorPreservesMarkdownAndUpdates();
   void testIndentedCodeBlocks();
   void testHTMLBlocks();
   void testHtmlBlockClosingTagIsStyled();

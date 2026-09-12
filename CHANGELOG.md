@@ -19,6 +19,11 @@
 
 ### Behavior changes
 
+- Markdown source highlighting recognizes matched `<font color=...>` tags, including
+  named/hex colors, nested tags, and multiline contents. Foreground changes preserve
+  existing Markdown formatting and update on edits and undo. Tag tokens, code, comments,
+  and raw-text HTML are excluded; unmatched tags do not color the rest of the document.
+
 - Folding tracks numeric source anchors instead of retaining `QTextBlock` handles across
   edits, fixing crashes and unrelated folds after bulk deletion. Parser reconciliation
   replaces the whole folding tree atomically, preserving state only for surviving regions

@@ -238,7 +238,10 @@ bool MarkdownHighlighter::preHighlightSingleFormatBlock(
   const auto &units = p_highlights[p_blockNum];
   if (units.size() == 1) {
     const auto &unit = units[0];
-    if (unit.start == 0 && (int)unit.length < sz && (p_forced || containSpecialChar(p_text))) {
+    // Foreground overlays must stay within their parsed bounds, even when forced.
+    if (!unit.foreground.isValid() &&
+        unit.styleIndex < static_cast<unsigned int>(m_styles.size()) && unit.start == 0 &&
+        (int)unit.length < sz && (p_forced || containSpecialChar(p_text))) {
       setFormat(0, sz, m_styles[unit.styleIndex]);
       return true;
     }
@@ -261,8 +264,8 @@ void MarkdownHighlighter::highlightBlockOne(const QVector<QVector<md::HLUnit>> &
 }
 
 void MarkdownHighlighter::highlightBlockOne(const QVector<md::HLUnit> &p_units) {
-  // Runs come back one per unit, possibly overlapping, in input order; applying
-  // them in order reproduces the original sequential setFormat() behavior.
+  // Apply ordinary style runs first, then foreground-only pieces that retain
+  // the resolved ordinary formatting without extending beyond their bounds.
   const auto runs = md::resolveFormatRuns(p_units, m_styles);
   for (const auto &run : runs) {
     setFormat(run.m_start, run.m_length, run.m_format);
@@ -457,7 +460,8 @@ void MarkdownHighlighter::appendSingleFormatBlocks(
     const auto &units = p_highlights[i];
     if (units.size() == 1) {
       const auto &unit = units[0];
-      if (unit.start == 0 && unit.length > 0) {
+      // Only ordinary whole-block styles may be extended after an edit.
+      if (!unit.foreground.isValid() && unit.start == 0 && unit.length > 0) {
         QTextBlock block = doc->findBlockByNumber(i);
         if (block.length() - 1 <= (int)unit.length) {
           m_singleFormatBlocks.insert(i);
@@ -991,7 +995,7 @@ const QVector<md::FencedCodeBlock> &MarkdownHighlighter::getCodeBlocks() const {
 static int countQuoteUnits(const QVector<md::HLUnit> &p_units) {
   int depth = 0;
   for (const auto &unit : p_units) {
-    if (static_cast<int>(unit.styleIndex) == STYLE_BLOCKQUOTE) {
+    if (!unit.foreground.isValid() && static_cast<int>(unit.styleIndex) == STYLE_BLOCKQUOTE) {
       ++depth;
     }
   }

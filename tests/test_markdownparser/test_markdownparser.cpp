@@ -396,6 +396,146 @@ void TestMarkdownParser::testHTMLNodesAreStyledLikeCode() {
   QCOMPARE(formatAt(inner, 4).background().color(), QColor(QStringLiteral("#654321")));
 }
 
+void TestMarkdownParser::testFontColorHighlighting_data() {
+  QTest::addColumn<QString>("source");
+  QTest::addColumn<QStringList>("tokens");
+  QTest::addColumn<QStringList>("colors");
+
+  QTest::newRow("attribute-syntax")
+      << QStringLiteral("<font color=red>named</font> "
+                        "<FONT COLOR = '&#35;008000' title='a>b'>hexadecimal</FONT> "
+                        "<font color=\"#00f\">shorthex</font> outside")
+      << QStringList({"named", "hexadecimal", "shorthex", "outside", "<font", "</FONT>"})
+      << QStringList({"red", "#008000", "blue", "", "", ""});
+  QTest::newRow("nested-inheritance")
+      << QStringLiteral("<font color=red>outer <font color=blue>inner</font> restored "
+                        "<font color=invalid>inherited</font> "
+                        "<font size=4>unspecified</font></font> outside")
+      << QStringList({"outer", "inner", "restored", "inherited", "unspecified", "outside"})
+      << QStringList({"red", "blue", "red", "red", "red", ""});
+  QTest::newRow("multiline-and-unicode")
+      << QString::fromUtf8("\xF0\x9F\x98\x80 <font color=red>first\n"
+                           "second</font> outside\n\n"
+                           "<font color=blue>\nblockcontent\n</font>\n\noutsideblock")
+      << QStringList({"first", "second", "outside", "blockcontent", "outsideblock"})
+      << QStringList({"red", "red", "", "blue", ""});
+  QTest::newRow("lazy-quote-continuation")
+      << QStringLiteral("> lead <font color=red>first\n"
+                        "lazy <font color=blue>inner</font> restored</font> outside")
+      << QStringList({"first", "lazy", "inner", "restored", "outside"})
+      << QStringList({"red", "red", "blue", "red", ""});
+  QTest::newRow("code-is-literal")
+      << QStringLiteral("`<font color=red>inlinecode</font>`\n\n"
+                        "```html\n<font color=red>fencedcode</font>\n```\n\n"
+                        "    <font color=red>indentedcode</font>\n\n"
+                        "<font color=red>prose `codeinside` aftercode</font>")
+      << QStringList(
+             {"inlinecode", "fencedcode", "indentedcode", "prose", "codeinside", "aftercode"})
+      << QStringList({"", "", "", "red", "", "red"});
+  QTest::newRow("html-is-not-source-code")
+      << QStringLiteral("<!-- <font color=red>comment</font> -->\n\n"
+                        "<script>let s = '<font color=red>scripttext</font>';</script>\n\n"
+                        "prefix <textarea><font color=red>rawtext</font></textarea>\n\n"
+                        "<div title='<font color=red>attribute</font>'>ordinary</div>\n\n"
+                        "<font color=red>before <b>boldhtml</b> "
+                        "<!-- hiddencomment --> after</font>")
+      << QStringList({"comment", "scripttext", "rawtext", "attribute", "ordinary", "before",
+                      "boldhtml", "<b>", "hiddencomment", "after"})
+      << QStringList({"", "", "", "", "", "red", "red", "", "", "red"});
+  QTest::newRow("invalid-and-unmatched")
+      << QStringLiteral("<font color=invalid>invalidcolor</font> "
+                        "<font>missingcolor</font> "
+                        "&lt;font color=red&gt;escaped&lt;/font&gt;\n\n"
+                        "<font color=red>unfinished\n\ntrailing")
+      << QStringList({"invalidcolor", "missingcolor", "escaped", "unfinished", "trailing"})
+      << QStringList({"", "", "", "", ""});
+}
+
+void TestMarkdownParser::testFontColorHighlighting() {
+  QFETCH(QString, source);
+  QFETCH(QStringList, tokens);
+  QFETCH(QStringList, colors);
+  auto textConfig = QSharedPointer<vte::TextEditorConfig>::create();
+  auto config = QSharedPointer<vte::MarkdownEditorConfig>::create(textConfig);
+  config->m_inplacePreviewSources = vte::MarkdownEditorConfig::NoInplacePreview;
+  auto parameters = QSharedPointer<vte::TextEditorParameters>::create();
+  vte::VMarkdownEditor editor(config, parameters);
+  QSignalSpy completed(editor.getHighlighter(), &vte::MarkdownHighlighter::highlightCompleted);
+  editor.setText(source);
+  editor.getHighlighter()->updateHighlight();
+  QTRY_VERIFY(completed.count() > 0);
+
+  for (int i = 0; i < tokens.size(); ++i) {
+    const int start = source.indexOf(tokens[i]);
+    QVERIFY(start >= 0);
+    for (int pos = start; pos < start + tokens[i].size(); ++pos) {
+      const auto block = editor.document()->findBlock(pos);
+      const auto actual = formatAt(block, pos - block.position()).foreground();
+      if (colors[i].isEmpty()) {
+        QVERIFY2(actual.style() == Qt::NoBrush ||
+                     (actual.color() != QColor(Qt::red) && actual.color() != QColor(Qt::blue) &&
+                      actual.color() != QColor(QStringLiteral("#008000"))),
+                 qPrintable(tokens[i]));
+      } else {
+        QCOMPARE(actual.color(), QColor(colors[i]));
+      }
+    }
+  }
+  QCOMPARE(editor.getText(), source);
+}
+
+void TestMarkdownParser::testFontColorPreservesMarkdownAndUpdates() {
+  auto theme = vte::Theme::createThemeFromContent(QStringLiteral(R"({
+    "metadata": {"type": "vtextedit", "name": "FontColorTest"},
+    "markdown-syntax-styles": {
+      "STRONG": {"bold": true, "background-color": "#123456"},
+      "EMPH": {"italic": true}
+    }
+  })"));
+  QVERIFY(theme);
+  auto textConfig = QSharedPointer<vte::TextEditorConfig>::create();
+  textConfig->m_theme = theme;
+  auto config = QSharedPointer<vte::MarkdownEditorConfig>::create(textConfig);
+  config->m_inplacePreviewSources = vte::MarkdownEditorConfig::NoInplacePreview;
+  auto parameters = QSharedPointer<vte::TextEditorParameters>::create();
+  vte::VMarkdownEditor editor(config, parameters);
+  const QString source = QStringLiteral("**bold <font color=red>colored** plain *italic*"
+                                        "</font> outside");
+  QSignalSpy completed(editor.getHighlighter(), &vte::MarkdownHighlighter::highlightCompleted);
+  editor.setText(source);
+  editor.getHighlighter()->updateHighlight();
+  QTRY_VERIFY(completed.count() > 0);
+  auto at = [&editor](const QString &p_token) {
+    const int pos = editor.getText().indexOf(p_token);
+    const auto block = editor.document()->findBlock(pos);
+    return formatAt(block, pos - block.position());
+  };
+  QCOMPARE(at(QStringLiteral("colored")).foreground().color(), QColor(Qt::red));
+  QCOMPARE(at(QStringLiteral("colored")).fontWeight(), int(QFont::Bold));
+  QCOMPARE(at(QStringLiteral("colored")).background().color(), QColor(QStringLiteral("#123456")));
+  QVERIFY(at(QStringLiteral("plain")).fontWeight() != QFont::Bold);
+  QVERIFY(at(QStringLiteral("plain")).background().style() == Qt::NoBrush);
+  QCOMPARE(at(QStringLiteral("italic")).foreground().color(), QColor(Qt::red));
+  QVERIFY(at(QStringLiteral("italic")).fontItalic());
+  QVERIFY(!at(QStringLiteral("outside")).fontItalic());
+
+  // Same-length attribute edits must invalidate the cached highlights, not just ranges.
+  QTextCursor cursor(editor.document());
+  cursor.setPosition(source.indexOf(QStringLiteral("red")));
+  cursor.setPosition(cursor.position() + 3, QTextCursor::KeepAnchor);
+  cursor.insertText(QStringLiteral("tan"));
+  QTRY_COMPARE(at(QStringLiteral("colored")).foreground().color(), QColor(QStringLiteral("tan")));
+  QCOMPARE(at(QStringLiteral("colored")).fontWeight(), int(QFont::Bold));
+  editor.getTextEdit()->undo();
+  QTRY_COMPARE(at(QStringLiteral("colored")).foreground().color(), QColor(Qt::red));
+
+  cursor.setPosition(source.indexOf(QStringLiteral("</font>")));
+  cursor.setPosition(cursor.position() + 7, QTextCursor::KeepAnchor);
+  cursor.removeSelectedText();
+  QTRY_VERIFY(at(QStringLiteral("colored")).foreground().color() != QColor(Qt::red));
+  QCOMPARE(at(QStringLiteral("colored")).fontWeight(), int(QFont::Bold));
+}
+
 void TestMarkdownParser::testIndentedCodeBlocks() {
   const QString input = QStringLiteral("    indented code\n");
   auto result = parse(input);
