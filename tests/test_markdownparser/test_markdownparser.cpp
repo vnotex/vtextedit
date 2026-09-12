@@ -536,6 +536,41 @@ void TestMarkdownParser::testFontColorPreservesMarkdownAndUpdates() {
   QCOMPARE(at(QStringLiteral("colored")).fontWeight(), int(QFont::Bold));
 }
 
+void TestMarkdownParser::testFontColorUpdatesUneditedContinuation() {
+  auto textConfig = QSharedPointer<vte::TextEditorConfig>::create();
+  auto config = QSharedPointer<vte::MarkdownEditorConfig>::create(textConfig);
+  config->m_inplacePreviewSources = vte::MarkdownEditorConfig::NoInplacePreview;
+  auto parameters = QSharedPointer<vte::TextEditorParameters>::create();
+  vte::VMarkdownEditor editor(config, parameters);
+  // Exceed the bounded fast-parse window: only a full result can repaint the
+  // unedited continuation blocks whose ordinary highlights remain identical.
+  const QString source = QStringLiteral("<font color=red>first\n") +
+                         QStringLiteral("continuation\n").repeated(20) +
+                         QStringLiteral("last</font> outside");
+  editor.setText(source);
+  editor.getHighlighter()->updateHighlight();
+  const QTextBlock middle = editor.document()->findBlockByNumber(10);
+  auto color = [&middle]() { return formatAt(middle, 0).foreground().color(); };
+  QTRY_COMPARE(color(), QColor(Qt::red));
+  const int revision = middle.revision();
+
+  QTextCursor cursor(editor.document());
+  cursor.setPosition(source.indexOf(QStringLiteral("red")));
+  cursor.setPosition(cursor.position() + 3, QTextCursor::KeepAnchor);
+  cursor.insertText(QStringLiteral("tan"));
+  QTRY_COMPARE(color(), QColor(QStringLiteral("tan")));
+  QCOMPARE(middle.revision(), revision);
+  editor.getTextEdit()->undo();
+  QTRY_COMPARE(color(), QColor(Qt::red));
+
+  // Removing the closing tag must clear overlays from the same unchanged blocks.
+  cursor.setPosition(source.indexOf(QStringLiteral("</font>")));
+  cursor.setPosition(cursor.position() + 7, QTextCursor::KeepAnchor);
+  cursor.removeSelectedText();
+  QTRY_VERIFY(color() != QColor(Qt::red));
+  QCOMPARE(middle.revision(), revision);
+}
+
 void TestMarkdownParser::testIndentedCodeBlocks() {
   const QString input = QStringLiteral("    indented code\n");
   auto result = parse(input);

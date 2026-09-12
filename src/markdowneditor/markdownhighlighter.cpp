@@ -178,6 +178,7 @@ void MarkdownHighlighter::highlightBlock(const QString &p_text) {
   }
 
   if (cacheValid) {
+    highlightData->setHighlightOverlays(overlays);
     highlightData->setHighlightTimeStamp(result->m_timeStamp);
   } else {
     highlightData->clearHighlight();
@@ -749,7 +750,11 @@ bool MarkdownHighlighter::rehighlightBlockRange(int p_first, int p_last) {
       needHL = true;
       // Try to find cache.
       if (blockNum < hls.size()) {
-        if (highlightData->isBlockHighlightMatched(hls[blockNum])) {
+        const auto overlayIt = m_result->m_blockOverlays.constFind(blockNum);
+        static const QVector<md::HLUnitStyle> emptyOverlays;
+        const auto &overlays =
+            overlayIt == m_result->m_blockOverlays.cend() ? emptyOverlays : overlayIt.value();
+        if (highlightData->isBlockHighlightMatched(hls[blockNum], overlays)) {
           needHL = false;
           updateTS = true;
         }

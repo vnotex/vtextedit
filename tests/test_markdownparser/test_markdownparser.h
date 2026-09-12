@@ -21,6 +21,7 @@ private slots:
   void testFontColorHighlighting_data();
   void testFontColorHighlighting();
   void testFontColorPreservesMarkdownAndUpdates();
+  void testFontColorUpdatesUneditedContinuation();
   void testIndentedCodeBlocks();
   void testHTMLBlocks();
   void testHtmlBlockClosingTagIsStyled();
