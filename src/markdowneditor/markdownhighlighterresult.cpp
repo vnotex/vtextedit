@@ -20,6 +20,7 @@ MarkdownHighlighterFastResult::MarkdownHighlighterFastResult(
     : m_timeStamp(p_result->m_timeStamp) {
   Q_UNUSED(p_peg);
   m_blocksHighlights = p_result->m_blocksHighlights;
+  m_blockOverlays = p_result->m_blockOverlays;
 }
 
 MarkdownHighlighterResult::MarkdownHighlighterResult(
@@ -33,6 +34,7 @@ MarkdownHighlighterResult::MarkdownHighlighterResult(
   Q_UNUSED(p_lastContentsChange);
 
   m_blocksHighlights = p_result->m_blocksHighlights;
+  m_blockOverlays = p_result->m_blockOverlays;
 
   // Implicit sharing.
   m_headerRegions = p_result->m_headerRegions;

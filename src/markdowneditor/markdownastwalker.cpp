@@ -5,6 +5,7 @@
 
 #include <algorithm>
 
+#include <QColor>
 #include <QStringView>
 
 #include <vtextedit/htmlimgscanner.h>
@@ -930,9 +931,9 @@ public:
       }
     };
 
-    // Resolve nesting before cutting out excluded spans. Otherwise a parent
-    // and child can become equal-sized units, losing their precedence in the
-    // highlight sort. Invalid colors have no matched span and inherit naturally.
+    // Resolve nesting before cutting out excluded spans to emit source-ordered,
+    // disjoint foreground overlays separately from ordinary highlights.
+    // Invalid colors have no matched span and inherit naturally.
     QVector<int> active;
     int pos = m_matched.first().start;
     for (int idx = 0; idx < m_matched.size(); ++idx) {
@@ -958,6 +959,8 @@ public:
 private:
   static void appendSpan(ASTWalkResult &p_result, const LineOffsetTable &p_offsets,
                          int p_startBlock, int p_start, int p_end, const QColor &p_foreground) {
+    HLUnitStyle unit;
+    unit.format.setForeground(p_foreground);
     for (int line = lineIndexOfDocPos(p_offsets, p_start);
          line >= 0 && line < p_offsets.lineCount(); ++line) {
       const int lineStart = p_offsets.lineStartQCharOffset(line);
@@ -971,12 +974,9 @@ private:
       const int start = qMax(p_start, lineStart);
       const int end = qMin(p_end, p_offsets.lineEndQCharOffset(line));
       if (start < end) {
-        HLUnit unit;
         unit.start = start - lineStart;
         unit.length = end - start;
-        unit.styleIndex = static_cast<unsigned int>(-1);
-        unit.foreground = p_foreground;
-        p_result.blocksHighlights[block].append(unit);
+        p_result.blockOverlays[block].append(unit);
       }
     }
   }
@@ -1268,7 +1268,7 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
 
   fontColors.appendHighlights(result, offsets, p_startBlock, text.size());
 
-  // Sort each block's HLUnits.
+  // Sort ordinary HLUnits; foreground overlays are already disjoint and source-ordered.
   for (auto &blockUnits : result.blocksHighlights) {
     if (blockUnits.size() > 1) {
       std::sort(blockUnits.begin(), blockUnits.end(), HLUnitLess());

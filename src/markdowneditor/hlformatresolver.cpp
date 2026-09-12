@@ -6,23 +6,19 @@ namespace vte {
 namespace md {
 
 QVector<PreviewFormatRun> resolveFormatRuns(const QVector<HLUnit> &p_units,
-                                            const QVector<QTextCharFormat> &p_styles) {
+                                            const QVector<QTextCharFormat> &p_styles,
+                                            const QVector<HLUnitStyle> &p_overlays) {
   QVector<PreviewFormatRun> runs;
-  if (p_units.isEmpty()) {
+  if (p_units.isEmpty() && p_overlays.isEmpty()) {
     return runs;
   }
 
   // Keep overlays separate from ordinary styles. Standalone table widgets may
   // supply fewer styles than the source highlighter, or none at all.
   QVector<const HLUnit *> units;
-  QVector<const HLUnit *> overlays;
   units.reserve(p_units.size());
   for (const auto &unit : p_units) {
-    if (unit.foreground.isValid()) {
-      if (unit.length > 0) {
-        overlays.append(&unit);
-      }
-    } else if (unit.styleIndex < static_cast<unsigned int>(p_styles.size())) {
+    if (unit.styleIndex < static_cast<unsigned int>(p_styles.size())) {
       units.append(&unit);
     }
   }
@@ -52,21 +48,26 @@ QVector<PreviewFormatRun> resolveFormatRuns(const QVector<HLUnit> &p_units,
     runs.append(run);
   }
 
-  if (overlays.isEmpty()) {
+  if (p_overlays.isEmpty()) {
     return runs;
   }
 
   // Each boundary can change the final ordinary format or the winning color.
   // Splitting at both ends also handles crossing (not just nested) overlaps.
   QVector<int> boundaries;
-  boundaries.reserve(2 * (runs.size() + overlays.size()));
+  boundaries.reserve(2 * (runs.size() + p_overlays.size()));
   for (const auto &run : runs) {
     boundaries.append(run.m_start);
     boundaries.append(run.m_start + run.m_length);
   }
-  for (const auto *overlay : overlays) {
-    boundaries.append(static_cast<int>(overlay->start));
-    boundaries.append(static_cast<int>(overlay->start + overlay->length));
+  for (const auto &overlay : p_overlays) {
+    if (overlay.length > 0) {
+      boundaries.append(static_cast<int>(overlay.start));
+      boundaries.append(static_cast<int>(overlay.start + overlay.length));
+    }
+  }
+  if (boundaries.size() < 2) {
+    return runs;
   }
   std::sort(boundaries.begin(), boundaries.end());
   boundaries.erase(std::unique(boundaries.begin(), boundaries.end()), boundaries.end());
@@ -75,10 +76,10 @@ QVector<PreviewFormatRun> resolveFormatRuns(const QVector<HLUnit> &p_units,
   runs.reserve(ordinaryRunCount + boundaries.size() - 1);
   for (int i = 0; i + 1 < boundaries.size(); ++i) {
     const int start = boundaries[i];
-    const HLUnit *overlay = nullptr;
+    const HLUnitStyle *overlay = nullptr;
     // The input orders outer overlays before inner ones. Last covering wins.
-    for (int j = overlays.size() - 1; j >= 0; --j) {
-      const auto *candidate = overlays[j];
+    for (int j = p_overlays.size() - 1; j >= 0; --j) {
+      const auto *candidate = &p_overlays[j];
       if (candidate->start <= static_cast<unsigned long>(start) &&
           candidate->start + candidate->length > static_cast<unsigned long>(start)) {
         overlay = candidate;
@@ -101,7 +102,7 @@ QVector<PreviewFormatRun> resolveFormatRuns(const QVector<HLUnit> &p_units,
         break;
       }
     }
-    run.m_format.setForeground(overlay->foreground);
+    run.m_format.merge(overlay->format);
     if (runs.size() > ordinaryRunCount && runs.last().m_start + runs.last().m_length == start &&
         runs.last().m_format == run.m_format) {
       runs.last().m_length += run.m_length;

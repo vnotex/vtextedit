@@ -141,9 +141,10 @@ private:
                                      int p_blockNum, const QString &p_text, bool p_forced);
 
   void highlightBlockOne(const QVector<QVector<md::HLUnit>> &p_highlights, int p_blockNum,
-                         QVector<md::HLUnit> &p_cache);
+                         QVector<md::HLUnit> &p_cache, const QVector<md::HLUnitStyle> &p_overlays);
 
-  void highlightBlockOne(const QVector<md::HLUnit> &p_units);
+  void highlightBlockOne(const QVector<md::HLUnit> &p_units,
+                         const QVector<md::HLUnitStyle> &p_overlays);
 
   bool isFastParseBlock(int p_blockNum) const;
 

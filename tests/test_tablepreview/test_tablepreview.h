@@ -65,6 +65,7 @@ private slots:
   void testRaggedTableIsNotRoundTrippable();
   void testFormatRefreshKeepsTheCaret();
   void testCellSyntaxFormatsArePainted();
+  void testCellFontColorsSurviveCacheRefresh();
   void testSyntaxStylesRepaintTheCells();
   void testCellHighlightingOnlyParsesChangedText();
   void testIdenticalCellReplacementKeepsHighlighting();

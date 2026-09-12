@@ -415,10 +415,10 @@ void TestMarkdownParser::testFontColorHighlighting_data() {
       << QStringList({"red", "blue", "red", "red", "red", ""});
   QTest::newRow("multiline-and-unicode")
       << QString::fromUtf8("\xF0\x9F\x98\x80 <font color=red>first\n"
-                           "second</font> outside\n\n"
+                           "middle\nsecond</font> outside\n\n"
                            "<font color=blue>\nblockcontent\n</font>\n\noutsideblock")
-      << QStringList({"first", "second", "outside", "blockcontent", "outsideblock"})
-      << QStringList({"red", "red", "", "blue", ""});
+      << QStringList({"first", "middle", "second", "outside", "blockcontent", "outsideblock"})
+      << QStringList({"red", "red", "red", "", "blue", ""});
   QTest::newRow("lazy-quote-continuation")
       << QStringLiteral("> lead <font color=red>first\n"
                         "lazy <font color=blue>inner</font> restored</font> outside")

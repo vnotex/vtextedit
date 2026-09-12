@@ -2,6 +2,7 @@
 #define MARKDOWNASTWALKER_H
 
 #include <QByteArray>
+#include <QHash>
 #include <QMap>
 #include <QString>
 #include <QVector>
@@ -141,6 +142,8 @@ struct TableElement : public TypedPreviewElement {
 
 struct ASTWalkResult {
   QVector<QVector<HLUnit>> blocksHighlights; // indexed by block number
+  // Source-ordered, disjoint foreground overlays; only populated blocks are stored.
+  QHash<int, QVector<HLUnitStyle>> blockOverlays; // keyed by global block number
   // NOT the editor's image channel. Nothing in production reads this any more:
   // the highlighter publishes md::ImageLinkInfo built from imageElements, which
   // also carries the destination and the declared `=WxH` size. This survives
@@ -169,11 +172,11 @@ struct ASTWalkResult {
 };
 
 // Single-pass AST walker. Parses markdown with cmark, walks AST once,
-// produces per-block HLUnits and region vectors directly.
+// produces per-block HLUnits, sparse foreground overlays and region vectors directly.
 // p_numBlocks: total blocks in document (sizes blocksHighlights vector)
 // p_offset: QChar offset of text start in document (for region positions)
 // p_startBlock: first block number of the sliced text (maps local line 0 -> global block
-// p_startBlock) p_fast: if true, skip region collection (only produce blocksHighlights)
+// p_startBlock) p_fast: if true, skip region collection (retain highlights and overlays)
 ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int p_offset = 0,
                              int p_startBlock = 0, bool p_fast = false);
 

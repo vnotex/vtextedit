@@ -1265,6 +1265,49 @@ void TestTablePreview::testCellSyntaxFormatsArePainted() {
            Qt::Alignment(Qt::AlignLeft));
 }
 
+void TestTablePreview::testCellFontColorsSurviveCacheRefresh() {
+  const QString text = QStringLiteral("**bold <font color=red>colored** plain</font> outside");
+  TablePreviewWidget widget(nullptr, nullptr);
+  auto styles = makeSyntaxStyles(Qt::green);
+  styles[STYLE_HTML].setForeground(Qt::magenta);
+  widget.setSyntaxStyles(styles);
+  QVERIFY(
+      widget.setPreview(makeSnapshot({{"left", "right"}, {text, text}},
+                                     {PreviewTableAlignment::Left, PreviewTableAlignment::Left})));
+  auto sheet = sheetOf(widget);
+  QVERIFY(sheet);
+  auto at = [sheet, &text](int p_column, const QString &p_token) {
+    return formatAt(sheet->document(), 1, p_column, text.indexOf(p_token));
+  };
+  QCOMPARE(at(0, QStringLiteral("colored")).foreground().color(), QColor(Qt::red));
+  QCOMPARE(at(0, QStringLiteral("colored")).fontWeight(), int(QFont::Bold));
+  QCOMPARE(at(0, QStringLiteral("plain")).foreground().color(), QColor(Qt::red));
+  QVERIFY(at(0, QStringLiteral("plain")).fontWeight() != QFont::Bold);
+  QCOMPARE(at(0, QStringLiteral("<font")).foreground().color(), QColor(Qt::magenta));
+  QVERIFY(!at(0, QStringLiteral("outside")).hasProperty(QTextFormat::ForegroundBrush));
+
+  // A theme refresh reuses the cached parse, including its separate overlays.
+  styles[STYLE_STRONG].setForeground(Qt::blue);
+  widget.setSyntaxStyles(styles);
+  QCOMPARE(at(0, QStringLiteral("bold")).foreground().color(), QColor(Qt::blue));
+  QCOMPARE(at(0, QStringLiteral("colored")).foreground().color(), QColor(Qt::red));
+  QCOMPARE(at(1, QStringLiteral("colored")).foreground().color(), QColor(Qt::red));
+
+  // Changing one cell must neither reuse its old color nor change an identical sibling.
+  auto document = sheet->tableDocument();
+  const auto cell = document->table()->cellAt(1, 0);
+  QTextCursor cursor = cell.firstCursorPosition();
+  cursor.setPosition(cell.lastCursorPosition().position(), QTextCursor::KeepAnchor);
+  QString changed = text;
+  changed.replace(QStringLiteral("color=red"), QStringLiteral("color=tan"));
+  cursor.insertText(changed, document->baselineCellFormat(1));
+  QCOMPARE(at(0, QStringLiteral("colored")).foreground().color(), QColor(QStringLiteral("tan")));
+  QCOMPARE(at(0, QStringLiteral("colored")).fontWeight(), int(QFont::Bold));
+  QCOMPARE(at(1, QStringLiteral("colored")).foreground().color(), QColor(Qt::red));
+  QCOMPARE(cellText(sheet->document(), 1, 0), changed);
+  QCOMPARE(cellText(sheet->document(), 1, 1), text);
+}
+
 void TestTablePreview::testSyntaxStylesRepaintTheCells() {
   const QVector<PreviewTableAlignment> alignments{PreviewTableAlignment::Left,
                                                   PreviewTableAlignment::Left};
@@ -1455,7 +1498,7 @@ void TestTablePreview::testResolveFormatRunsMergesOverlaps() {
   units.append({2, 2, 1});
   units.append({8, 2, 2});
 
-  const auto runs = vte::md::resolveFormatRuns(units, styles);
+  const auto runs = vte::md::resolveFormatRuns(units, styles, {});
   QCOMPARE(runs.size(), 3);
 
   QCOMPARE(runs.at(0).m_start, 0);
@@ -1484,12 +1527,12 @@ void TestTablePreview::testResolveFormatRunsSkipsUnknownStyles() {
   units.append({1, 2, 7});
   units.append({2, 2, 0});
 
-  const auto runs = vte::md::resolveFormatRuns(units, styles);
+  const auto runs = vte::md::resolveFormatRuns(units, styles, {});
   QCOMPARE(runs.size(), 2);
   QCOMPARE(runs.at(0).m_start, 0);
   QCOMPARE(runs.at(1).m_start, 2);
 
-  QVERIFY(vte::md::resolveFormatRuns(units, QVector<QTextCharFormat>()).isEmpty());
+  QVERIFY(vte::md::resolveFormatRuns(units, QVector<QTextCharFormat>(), {}).isEmpty());
 }
 
 void TestTablePreview::testStaleEchoDoesNotRepaintTheCells() {

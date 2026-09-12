@@ -1,7 +1,6 @@
 #ifndef MARKDOWNHIGHLIGHTERDATA_H
 #define MARKDOWNHIGHLIGHTERDATA_H
 
-#include <QColor>
 #include <QTextCharFormat>
 
 #include "vtextedit_export.h"
@@ -48,11 +47,11 @@ struct VTEXTEDIT_EXPORT BlockContext {
   int m_quoteDepth = 0;
 };
 
-// One continuous Markdown style or foreground-only overlay within a QTextBlock.
+// One continuous region for a certain markdown highlight style
+// within a QTextBlock.
 struct HLUnit {
   bool operator==(const HLUnit &p_a) const {
-    return start == p_a.start && length == p_a.length && styleIndex == p_a.styleIndex &&
-           foreground == p_a.foreground;
+    return start == p_a.start && length == p_a.length && styleIndex == p_a.styleIndex;
   }
 
   QString toString() const {
@@ -63,10 +62,6 @@ struct HLUnit {
   unsigned long start = 0;
   unsigned long length = 0;
   unsigned int styleIndex = 0;
-
-  // A valid color makes this a foreground-only overlay; styleIndex is ignored.
-  // Overlay producers use static_cast<unsigned int>(-1) for styleIndex.
-  QColor foreground;
 };
 
 // One continuous region for a certain markdown highlight style

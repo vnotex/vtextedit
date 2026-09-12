@@ -26,12 +26,18 @@ public:
 
   bool matched(TimeStamp p_timeStamp) const { return m_timeStamp == p_timeStamp; }
 
-  void clear() { m_blocksHighlights.clear(); }
+  void clear() {
+    m_blocksHighlights.clear();
+    m_blockOverlays.clear();
+  }
 
   TimeStamp m_timeStamp = 0;
 
   // Highlights of all blocks.
   QVector<QVector<md::HLUnit>> m_blocksHighlights;
+
+  // Foreground overlays, keyed only by global block numbers with overlays.
+  QHash<int, QVector<md::HLUnitStyle>> m_blockOverlays;
 };
 
 class MarkdownHighlighterResult {
@@ -61,6 +67,9 @@ public:
 
   // Highlights of all blocks.
   QVector<QVector<md::HLUnit>> m_blocksHighlights;
+
+  // Foreground overlays, keyed only by global block numbers with overlays.
+  QHash<int, QVector<md::HLUnitStyle>> m_blockOverlays;
 
   // Whether the code block highlight results of this result have been received.
   bool m_codeBlockHighlightReceived = false;

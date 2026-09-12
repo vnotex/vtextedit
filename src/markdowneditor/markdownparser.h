@@ -4,6 +4,7 @@
 #include <QObject>
 
 #include <QAtomicInt>
+#include <QHash>
 #include <QSharedPointer>
 #include <QThread>
 #include <QVector>
@@ -61,6 +62,9 @@ struct MarkdownParseResult {
   int m_offset = 0;
 
   QVector<QVector<HLUnit>> m_blocksHighlights;
+
+  // Foreground overlays, keyed only by global block numbers with overlays.
+  QHash<int, QVector<HLUnitStyle>> m_blockOverlays;
 
   // All image link regions.
   QVector<ElementRegion> m_imageRegions;
