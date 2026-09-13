@@ -97,10 +97,13 @@ private slots:
   // Merge and split, and the HTML write-back they force.
   void testHtmlSnapshotBuildsSpanningGrid();
   void testMergeJoinsTextAndConvertsToHtml();
+  void testMergedCellMathRoundTrip();
   void testMergeRefusals();
   void testMergeContainmentRefusal();
   void testSplitCellRestoresTheGrid();
   void testHtmlSerializerKeepsCellsSingleLine();
+  void testHtmlMathCellEscaping();
+  void testRowSpannedMathCellRoundTrip();
   void testHtmlOnlyTableWritesBackVerbatim();
   void testMergeMenuEntriesAndAlignmentGating();
   void testLiveRectangleSurvivesCopyAndGatesMutations();

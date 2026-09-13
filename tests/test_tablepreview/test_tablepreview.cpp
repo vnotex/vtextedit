@@ -4530,6 +4530,71 @@ void TestTablePreview::testMergeJoinsTextAndConvertsToHtml() {
   QVERIFY(document.toMarkdown().startsWith(QStringLiteral("<table>")));
 }
 
+void TestTablePreview::testMergedCellMathRoundTrip() {
+  TablePreviewDocument document;
+  document.setTable(makeTable(
+      {{QStringLiteral("h1"), QStringLiteral("h2")}, {QStringLiteral("$p_1$"), QString()}},
+      {PreviewTableAlignment::None, PreviewTableAlignment::None}));
+  QVERIFY(document.mergeCells(selectCells(document, 1, 0, 1, 1)));
+  QCOMPARE(document.cells().at(1).at(0), QStringLiteral("$p_1$"));
+  QVERIFY(document.cells().at(1).at(1).isEmpty());
+  QCOMPARE(document.colSpanAt(1, 0), 2);
+
+  const QString source = document.toMarkdown();
+  const auto scanned = scanHtmlTables(source, 0, nullptr);
+  QCOMPARE(scanned.size(), 1);
+  QCOMPARE(scanned.first().m_rowCount, 2);
+  QCOMPARE(scanned.first().m_columnCount, 2);
+  QVERIFY(scanned.first().m_anyPayloadPresent);
+  QVERIFY(!scanned.first().m_anyPayloadMalformed);
+  const auto *origin = scanned.first().cellAt(1, 0);
+  QVERIFY(origin);
+  QCOMPARE(origin->m_colSpan, 2);
+  QCOMPARE(origin->m_payload, QStringLiteral("$p_1$"));
+  QCOMPARE(origin->m_inner,
+           QStringLiteral("<!--vte-md:$p_1$--><eq class=\"tex-to-render\">$p_1$</eq>"));
+
+  const auto parsed = md::walkAndConvert(source.toUtf8(), source.count(QLatin1Char('\n')) + 1);
+  QCOMPARE(parsed.tableElements.size(), 1);
+  const auto &table = parsed.tableElements.first();
+  QCOMPARE(table.m_syntax, md::TableElement::Syntax::Html);
+  QVERIFY(table.m_markdownBacked);
+  QCOMPARE(table.m_rows.at(1).m_cells.at(0), QStringLiteral("$p_1$"));
+  QCOMPARE(table.m_rows.at(1).m_colSpans.at(0), 2);
+
+  QString altered = source;
+  altered.replace(QStringLiteral(">$p_1$</eq>"), QStringLiteral(">$q_2$</eq>"));
+  QVERIFY(altered != source);
+  const auto reparsed = md::walkAndConvert(altered.toUtf8(), altered.count(QLatin1Char('\n')) + 1);
+  QCOMPARE(reparsed.tableElements.size(), 1);
+  QCOMPARE(reparsed.tableElements.first().m_rows.at(1).m_cells.at(0), QStringLiteral("$p_1$"));
+
+  QVERIFY(document.splitCell(1, 0));
+  QCOMPARE(document.syntax(), PreviewTableSyntax::Html);
+  QCOMPARE(document.cells().at(1).at(0), QStringLiteral("$p_1$"));
+  QVERIFY(document.cells().at(1).at(1).isEmpty());
+  const QString splitSource = document.toMarkdown();
+  const auto splitScan = scanHtmlTables(splitSource, 0, nullptr);
+  QCOMPARE(splitScan.size(), 1);
+  QCOMPARE(splitScan.first().cellAt(1, 0)->m_colSpan, 1);
+  QCOMPARE(splitSource.count(QStringLiteral("<eq class=\"tex-to-render\">")), 1);
+
+  const auto cell = document.table()->cellAt(1, 0);
+  QTextCursor cursor = cell.firstCursorPosition();
+  cursor.setPosition(cell.lastCursorPosition().position(), QTextCursor::KeepAnchor);
+  cursor.insertText(QStringLiteral("$q_2$"));
+  const QString edited = document.toMarkdown();
+  const auto editedScan = scanHtmlTables(edited, 0, nullptr);
+  QCOMPARE(editedScan.size(), 1);
+  QCOMPARE(editedScan.first().cellAt(1, 0)->m_payload, QStringLiteral("$q_2$"));
+  QCOMPARE(editedScan.first().cellAt(1, 0)->m_inner,
+           QStringLiteral("<!--vte-md:$q_2$--><eq class=\"tex-to-render\">$q_2$</eq>"));
+  QVERIFY(!edited.contains(QStringLiteral("p_1")));
+  const auto editedParse = md::walkAndConvert(edited.toUtf8(), edited.count(QLatin1Char('\n')) + 1);
+  QCOMPARE(editedParse.tableElements.size(), 1);
+  QCOMPARE(editedParse.tableElements.first().m_rows.at(1).m_cells.at(0), QStringLiteral("$q_2$"));
+}
+
 void TestTablePreview::testMergeRefusals() {
   QVector<QVector<QString>> cells;
   cells.append({QStringLiteral("h1"), QStringLiteral("h2")});
@@ -4651,6 +4716,80 @@ void TestTablePreview::testHtmlSerializerKeepsCellsSingleLine() {
   QCOMPARE(rescanned.size(), 1);
   QCOMPARE(rescanned.first().cellAt(0, 0)->m_payload, QStringLiteral("    x"));
   QCOMPARE(rescanned.first().cellAt(0, 1)->m_payload, QStringLiteral("# h"));
+}
+
+void TestTablePreview::testHtmlMathCellEscaping() {
+  const QString source = QStringLiteral("$\\alpha_{1} < x & y > z$");
+  QCOMPARE(TablePreviewHtmlSerializer::renderCellHtml(source),
+           QStringLiteral("<eq class=\"tex-to-render\">$\\alpha_{1} &lt; x &amp; y &gt; z$</eq>"));
+
+  const QString tagShaped = QStringLiteral("$\\text{</eq><img>}$");
+  QCOMPARE(TablePreviewHtmlSerializer::renderCellHtml(tagShaped),
+           QStringLiteral("<eq class=\"tex-to-render\">$\\text{&lt;/eq&gt;&lt;img&gt;}$</eq>"));
+  const QString escapedDollar = QStringLiteral("$a\\$b$");
+  QCOMPARE(TablePreviewHtmlSerializer::renderCellHtml(escapedDollar),
+           QStringLiteral("<eq class=\"tex-to-render\">$a\\$b$</eq>"));
+
+  for (const auto &payload : {tagShaped, escapedDollar}) {
+    TablePreviewDocument document;
+    document.setTable(makeHtmlSnapshot({{payload}}, {{QPoint(1, 1)}}, false, true));
+    const QString serialized = document.toMarkdown();
+    const auto scanned = scanHtmlTables(serialized, 0, nullptr);
+    QCOMPARE(scanned.size(), 1);
+    QVERIFY(scanned.first().m_anyPayloadPresent);
+    QVERIFY(!scanned.first().m_anyPayloadMalformed);
+    const auto *cell = scanned.first().cellAt(0, 0);
+    QVERIFY(cell);
+    QCOMPARE(cell->m_payload, payload);
+    QCOMPARE(serialized.count(QStringLiteral("<eq class=\"tex-to-render\">")), 1);
+  }
+
+  QCOMPARE(TablePreviewHtmlSerializer::renderCellHtml(QStringLiteral("`$p_1$`")),
+           QStringLiteral("<code>$p_1$</code>"));
+  TablePreviewDocument literal;
+  literal.setTable(makeHtmlSnapshot({{QStringLiteral("$p_1$")}}, {{QPoint(1, 1)}}, false, false));
+  const QString literalSource = literal.toMarkdown();
+  const auto literalScan = scanHtmlTables(literalSource, 0, nullptr);
+  QCOMPARE(literalScan.size(), 1);
+  QCOMPARE(literalScan.first().cellAt(0, 0)->m_inner, QStringLiteral("$p_1$"));
+  QVERIFY(!literalScan.first().m_anyPayloadPresent);
+  QVERIFY(!literalSource.contains(QStringLiteral("tex-to-render")));
+}
+
+void TestTablePreview::testRowSpannedMathCellRoundTrip() {
+  TablePreviewDocument document;
+  document.setTable(makeHtmlSnapshot(
+      {{QStringLiteral("$p_1$"), QStringLiteral("a")}, {QString(), QStringLiteral("b")}},
+      {{QPoint(1, 2), QPoint(1, 1)}, {QPoint(0, 0), QPoint(1, 1)}}, false, true));
+  QCOMPARE(document.rowSpanAt(0, 0), 2);
+  const QString source = document.toMarkdown();
+  const auto scanned = scanHtmlTables(source, 0, nullptr);
+  QCOMPARE(scanned.size(), 1);
+  QCOMPARE(scanned.first().m_rowCount, 2);
+  QCOMPARE(scanned.first().m_columnCount, 2);
+  QCOMPARE(scanned.first().cellAt(0, 0)->m_rowSpan, 2);
+  QCOMPARE(scanned.first().cellAt(0, 0)->m_payload, QStringLiteral("$p_1$"));
+  QCOMPARE(scanned.first().cellAt(0, 0)->m_inner,
+           QStringLiteral("<!--vte-md:$p_1$--><eq class=\"tex-to-render\">$p_1$</eq>"));
+  QCOMPARE(source.count(QStringLiteral("<eq class=\"tex-to-render\">")), 1);
+  const auto parsed = md::walkAndConvert(source.toUtf8(), source.count(QLatin1Char('\n')) + 1);
+  QCOMPARE(parsed.tableElements.size(), 1);
+  const auto &table = parsed.tableElements.first();
+  QCOMPARE(table.m_syntax, md::TableElement::Syntax::Html);
+  QVERIFY(table.m_markdownBacked);
+  QCOMPARE(table.m_rows.at(0).m_cells.at(0), QStringLiteral("$p_1$"));
+  QCOMPARE(table.m_rows.at(0).m_rowSpans.at(0), 2);
+
+  QVERIFY(document.splitCell(1, 0));
+  QCOMPARE(document.cells().at(0).at(0), QStringLiteral("$p_1$"));
+  QVERIFY(document.cells().at(1).at(0).isEmpty());
+  QCOMPARE(document.rowSpanAt(0, 0), 1);
+  const QString splitSource = document.toMarkdown();
+  const auto splitScan = scanHtmlTables(splitSource, 0, nullptr);
+  QCOMPARE(splitScan.size(), 1);
+  QCOMPARE(splitScan.first().cellAt(0, 0)->m_payload, QStringLiteral("$p_1$"));
+  QVERIFY(splitScan.first().cellAt(1, 0)->m_payload.isEmpty());
+  QCOMPARE(splitSource.count(QStringLiteral("<eq class=\"tex-to-render\">")), 1);
 }
 
 void TestTablePreview::testHtmlOnlyTableWritesBackVerbatim() {
