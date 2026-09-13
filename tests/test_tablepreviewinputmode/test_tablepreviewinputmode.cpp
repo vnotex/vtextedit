@@ -1,18 +1,22 @@
 #include "test_tablepreviewinputmode.h"
 
 #include <QApplication>
+#include <QImage>
 #include <QSignalSpy>
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextFrame>
+#include <QTextImageFormat>
 #include <QTextTable>
 #include <QTextTableCell>
+#include <QUrl>
 
 #include <inputmode/abstractinputmode.h>
 #include <vtextedit/global.h>
 #include <vtextedit/preview.h>
 
 #include "previewbuilder.h"
+#include "tablepreviewinputmode.h"
 #include "tablepreviewwidget.h"
 
 using namespace tests;
@@ -82,6 +86,24 @@ void putCaretIn(TablePreviewSheet *p_sheet, int p_row, int p_column, bool p_atEn
   const QTextTableCell cell = table->cellAt(p_row, p_column);
   QVERIFY2(cell.isValid(), "no such cell");
   p_sheet->setTextCursor(p_atEnd ? cell.lastCursorPosition() : cell.firstCursorPosition());
+}
+
+void appendInlinePreview(TablePreviewSheet *p_sheet, int p_row, int p_column, int p_sourceEnd) {
+  auto document = p_sheet->tableDocument();
+  TablePreviewDocument::InlinePreviewGuard presentation(document);
+  const QString name =
+      QStringLiteral("vte-table-preview:test-%1-%2-%3").arg(p_row).arg(p_column).arg(p_sourceEnd);
+  QImage image(8, 8, QImage::Format_ARGB32_Premultiplied);
+  image.fill(Qt::darkGreen);
+  p_sheet->document()->addResource(QTextDocument::ImageResource, QUrl(name), image);
+  QTextImageFormat format;
+  format.setName(name);
+  format.setWidth(8);
+  format.setHeight(8);
+  format.setProperty(TablePreviewDocument::c_inlinePreviewProperty, true);
+  QTextCursor cursor(p_sheet->document());
+  cursor.setPosition(document->documentPosition(p_row, p_column, p_sourceEnd));
+  cursor.insertImage(format);
 }
 
 // Row major index of the caret's cell, which is what the sheet reports.
@@ -231,6 +253,284 @@ void TestTablePreviewInputMode::testTheSheetSurvivesDestructionWithAnActiveMode(
   // A Vi status bar which is still parented asserts on the way out too.
   holder.reset();
   QCoreApplication::processEvents();
+}
+
+// ---------------------------------------------------------------------------
+// Inline preview source projection
+// ---------------------------------------------------------------------------
+
+void TestTablePreviewInputMode::testDecoratedTypingInEveryMode_data() {
+  QTest::addColumn<int>("mode");
+  QTest::newRow("normal") << int(InputMode::NormalMode);
+  QTest::newRow("vscode") << int(InputMode::VscodeMode);
+  QTest::newRow("vi-insert") << int(InputMode::ViMode);
+}
+
+void TestTablePreviewInputMode::testDecoratedTypingInEveryMode() {
+  QFETCH(int, mode);
+  const QString image = QStringLiteral("![x](asset.png)");
+  const QString math = QStringLiteral("$x^2$");
+  QString source =
+      QStringLiteral("A ") + image + QStringLiteral(" B ") + math + QStringLiteral(" C");
+  QScopedPointer<TablePreviewWidget> holder;
+  auto widget = buildSheet(holder, static_cast<InputMode>(mode),
+                           makeTable({{QStringLiteral("h1"), QStringLiteral("h2")},
+                                      {source, QStringLiteral("neighbor")}}));
+  QVERIFY(widget);
+  auto sheet = sheetOf(*widget);
+  QVERIFY(sheet);
+  putCaretIn(sheet, 1, 0);
+  sheet->ensureInputMode();
+  auto document = sheet->tableDocument();
+  for (auto kind : {PreviewData::ImageLink, PreviewData::MathBlock}) {
+    const auto element = kind == PreviewData::ImageLink ? image : math;
+    TableCellInlinePreview record;
+    record.m_row = 1;
+    record.m_column = 0;
+    record.m_source = kind;
+    record.m_sourceCell = source;
+    record.m_elementSource = element;
+    record.m_start = source.indexOf(element);
+    record.m_end = record.m_start + element.size();
+    record.m_image = QPixmap(16, 16);
+    record.m_image.fill(Qt::blue);
+    record.m_logicalSize = QSize(16, 16);
+    widget->setInlinePreviews(kind, {record});
+  }
+  if (static_cast<InputMode>(mode) == InputMode::ViMode) {
+    QTest::keyClick(sheet, Qt::Key_I);
+  }
+  QTest::keyClicks(sheet, QStringLiteral("z"));
+  source.prepend(QLatin1Char('z'));
+  QCOMPARE(document->cells()[1][0], source);
+  QVERIFY(document->isInlinePreviewAt(
+      document->documentPosition(1, 0, source.indexOf(image) + image.size(), false)));
+  QTextCursor cursor(sheet->document());
+  const int alt = source.indexOf(image) + 2;
+  cursor.setPosition(document->documentPosition(1, 0, alt));
+  sheet->setTextCursor(cursor);
+  QTest::keyClicks(sheet, QStringLiteral("y"));
+  source.insert(alt, QLatin1Char('y'));
+  QCOMPARE(document->cells()[1][0], source);
+  const int mathEnd = source.indexOf(math) + math.size();
+  QVERIFY(document->isInlinePreviewAt(document->documentPosition(1, 0, mathEnd, false)));
+  cursor.setPosition(document->documentPosition(1, 0, mathEnd));
+  sheet->setTextCursor(cursor);
+  QTest::keyClick(sheet, Qt::Key_Backspace);
+  source.remove(mathEnd - 1, 1);
+  QCOMPARE(document->cells()[1][0], source);
+  const auto cell = document->table()->cellAt(1, 0);
+  QCOMPARE(cell.lastPosition() - cell.firstPosition(), source.size());
+  QCOMPARE(document->cells()[1][1], QStringLiteral("neighbor"));
+  QVERIFY(document->isIntact());
+}
+
+void TestTablePreviewInputMode::testDecoratedCellUsesSourceColumns() {
+  const QString image = QStringLiteral("![x](asset.png)");
+  const QString math = QStringLiteral("$x^2$");
+  const QString prefix = QStringLiteral("\U0001d11e ");
+  const QString source = prefix + image + QLatin1Char(' ') + math + QLatin1Char(' ') +
+                         QChar(QChar::ObjectReplacementCharacter) + QStringLiteral(" tail");
+  const int imageEnd = prefix.size() + image.size();
+  const int mathStart = imageEnd + 1;
+  const int mathEnd = mathStart + math.size();
+
+  // The same source coordinates apply before previews arrive and afterwards.
+  for (bool decorated : {false, true}) {
+    QScopedPointer<TablePreviewWidget> holder;
+    auto widget = buildSheet(holder, InputMode::NormalMode,
+                             makeTable({{QStringLiteral("h1"), QStringLiteral("h2")},
+                                        {source, QStringLiteral("beta")}}));
+    QVERIFY(widget);
+    auto sheet = sheetOf(*widget);
+    QVERIFY(sheet);
+    putCaretIn(sheet, 1, 0);
+    auto document = sheet->tableDocument();
+    if (decorated) {
+      appendInlinePreview(sheet, 1, 0, mathEnd);
+      appendInlinePreview(sheet, 1, 0, imageEnd);
+    }
+    TablePreviewInputMode adapter(sheet);
+
+    QCOMPARE(adapter.currentTextLine(), source);
+    QCOMPARE(adapter.line(0), source);
+    QCOMPARE(adapter.lineLength(0), source.size());
+    QCOMPARE(adapter.documentEnd().column(), source.size());
+    QCOMPARE(adapter.getText(KateViI::Range(0, 0, 1, 0), false), source);
+    QCOMPARE(adapter.getText(KateViI::Range(0, mathStart, 0, mathEnd), false), math);
+    QCOMPARE(adapter.characterAt(KateViI::Cursor(0, mathEnd + 1)),
+             QChar(QChar::ObjectReplacementCharacter));
+
+    for (int column : {imageEnd, mathEnd, int(source.size())}) {
+      adapter.updateCursor(0, column);
+      QCOMPARE(sheet->textCursor().position(), document->documentPosition(1, 0, column));
+      QCOMPARE(adapter.cursorPosition().column(), column);
+    }
+    QTextCursor cursor = sheet->textCursor();
+    cursor.setPosition(document->documentPosition(1, 0, imageEnd, false));
+    sheet->setTextCursor(cursor);
+    QCOMPARE(adapter.cursorPosition().column(), imageEnd);
+    cursor.setPosition(document->documentPosition(1, 0, imageEnd));
+    sheet->setTextCursor(cursor);
+    QCOMPARE(adapter.cursorPosition().column(), imageEnd);
+
+    // The integer overload is half-open and must retain a backward selection.
+    adapter.setSelection(0, mathEnd, 0, mathStart);
+    QCOMPARE(adapter.cursorPosition().column(), mathStart);
+    QCOMPARE(document->sourceOffset(1, 0, sheet->textCursor().anchor()), mathEnd);
+    QCOMPARE(adapter.selectionRange().start().column(), mathStart);
+    QCOMPARE(adapter.selectionRange().end().column(), mathEnd);
+    QCOMPARE(adapter.getText(adapter.selectionRange(), false), math);
+    QCOMPARE(adapter.textLines(adapter.selectionRange(), false), QStringList{math});
+  }
+}
+
+void TestTablePreviewInputMode::testDecoratedViSelectionsKeepInclusiveSourceEndpoints() {
+  const QString image = QStringLiteral("![x](asset.png)");
+  const QString math = QStringLiteral("$x^2$");
+  const QString source = image + QLatin1Char(' ') + math;
+  const int mathStart = image.size() + 1;
+  const int mathEnd = source.size();
+  QScopedPointer<TablePreviewWidget> holder;
+  auto widget = buildSheet(
+      holder, InputMode::ViMode,
+      makeTable({{QStringLiteral("h1"), QStringLiteral("h2")}, {source, QStringLiteral("beta")}}));
+  QVERIFY(widget);
+  auto sheet = sheetOf(*widget);
+  QVERIFY(sheet);
+  putCaretIn(sheet, 1, 0);
+  appendInlinePreview(sheet, 1, 0, mathEnd);
+  appendInlinePreview(sheet, 1, 0, image.size());
+  TablePreviewInputMode adapter(sheet);
+  auto document = sheet->tableDocument();
+
+  for (bool forward : {true, false}) {
+    adapter.clearSelection();
+    const int caret = forward ? mathEnd - 1 : mathStart;
+    QVERIFY(adapter.setCursorPosition(KateViI::Cursor(0, caret)));
+    adapter.setSelection(KateViI::Range(0, mathStart, 0, mathEnd));
+
+    // The final '$' is selected without moving the Vi caret onto its preview.
+    QCOMPARE(adapter.cursorPosition().column(), caret);
+    QCOMPARE(sheet->textCursor().position(), document->documentPosition(1, 0, caret));
+    QCOMPARE(document->sourceOffset(1, 0, sheet->textCursor().anchor()),
+             forward ? mathStart : mathEnd);
+    QCOMPARE(adapter.selectionRange().start().column(), mathStart);
+    QCOMPARE(adapter.selectionRange().end().column(), mathEnd);
+    QCOMPARE(adapter.getText(adapter.selectionRange(), false), math);
+    const auto selection = sheet->getSelection();
+    QCOMPARE(document->sourceText(selection.start(), selection.end()), math);
+  }
+}
+
+void TestTablePreviewInputMode::testDecoratedPreviousCharacterUsesSourceGraphemes() {
+  const QString image = QStringLiteral("![x](asset.png)");
+  const QString grapheme = QStringLiteral("e\u0301");
+  const QString math = QStringLiteral("$x^2$");
+  const QString source = image + grapheme + math;
+  QScopedPointer<TablePreviewWidget> holder;
+  auto widget = buildSheet(
+      holder, InputMode::NormalMode,
+      makeTable({{QStringLiteral("h1"), QStringLiteral("h2")}, {source, QStringLiteral("beta")}}));
+  QVERIFY(widget);
+  auto sheet = sheetOf(*widget);
+  QVERIFY(sheet);
+  putCaretIn(sheet, 1, 0);
+  appendInlinePreview(sheet, 1, 0, source.size());
+  appendInlinePreview(sheet, 1, 0, image.size());
+  TablePreviewInputMode adapter(sheet);
+  auto document = sheet->tableDocument();
+
+  QTextCursor cursor = sheet->textCursor();
+  cursor.setPosition(document->documentPosition(1, 0, source.size()));
+  sheet->setTextCursor(cursor);
+  adapter.cursorPrevChar(false);
+  QCOMPARE(adapter.cursorPosition().column(), source.size() - 1);
+  QCOMPARE(adapter.characterAt(adapter.cursorPosition()), QLatin1Char('$'));
+
+  cursor.setPosition(document->documentPosition(1, 0, image.size() + grapheme.size()));
+  sheet->setTextCursor(cursor);
+  adapter.cursorPrevChar(true);
+  QCOMPARE(adapter.cursorPosition().column(), image.size());
+  QCOMPARE(adapter.getText(adapter.selectionRange(), false), grapheme);
+  QCOMPARE(document->sourceOffset(1, 0, sheet->textCursor().anchor()),
+           image.size() + grapheme.size());
+  QCOMPARE(document->cells()[1][0], source);
+}
+
+void TestTablePreviewInputMode::testDecoratedBackspaceRemovesSourceGraphemes() {
+  const QString image = QStringLiteral("![x](asset.png)");
+  const QString grapheme = QStringLiteral("e\u0301");
+  const QString math = QStringLiteral("$x^2$");
+  const QString source = image + grapheme + math;
+  QScopedPointer<TablePreviewWidget> holder;
+  auto widget = buildSheet(
+      holder, InputMode::NormalMode,
+      makeTable({{QStringLiteral("h1"), QStringLiteral("h2")}, {source, QStringLiteral("beta")}}));
+  QVERIFY(widget);
+  auto sheet = sheetOf(*widget);
+  QVERIFY(sheet);
+  putCaretIn(sheet, 1, 0);
+  appendInlinePreview(sheet, 1, 0, source.size());
+  appendInlinePreview(sheet, 1, 0, image.size());
+  TablePreviewInputMode adapter(sheet);
+  auto document = sheet->tableDocument();
+
+  QTextCursor cursor = sheet->textCursor();
+  cursor.setPosition(document->documentPosition(1, 0, image.size() + grapheme.size()));
+  sheet->setTextCursor(cursor);
+  adapter.backspace();
+  QCOMPARE(document->cells()[1][0], image + math);
+  QCOMPARE(adapter.cursorPosition().column(), image.size());
+
+  // Backspace immediately after the math preview deletes the source '$', not
+  // just the object. The earlier grapheme deletion did not change its syntax.
+  const int end = image.size() + math.size();
+  QVERIFY(document->isInlinePreviewAt(document->documentPosition(1, 0, end, false)));
+  cursor = sheet->textCursor();
+  cursor.setPosition(document->documentPosition(1, 0, end));
+  sheet->setTextCursor(cursor);
+  adapter.backspace();
+  QCOMPARE(document->cells()[1][0], image + math.left(math.size() - 1));
+  QCOMPARE(adapter.cursorPosition().column(), end - 1);
+  QCOMPARE(document->cells()[1][1], QStringLiteral("beta"));
+  QVERIFY(document->isIntact());
+}
+
+void TestTablePreviewInputMode::testDecoratedViYankPutAndRepeatUseSource() {
+  const QString image = QStringLiteral("![x](asset.png)");
+  const QString math = QStringLiteral("$x^2$");
+  const QString source = image + QLatin1Char(' ') + math + QLatin1Char(' ') +
+                         QChar(QChar::ObjectReplacementCharacter) + QStringLiteral(" tail");
+  QScopedPointer<TablePreviewWidget> holder;
+  auto widget = buildSheet(
+      holder, InputMode::ViMode,
+      makeTable({{QStringLiteral("h1"), QStringLiteral("h2")}, {source, QStringLiteral("Z")}}));
+  QVERIFY(widget);
+  auto sheet = sheetOf(*widget);
+  QVERIFY(sheet);
+  putCaretIn(sheet, 1, 0);
+  sheet->ensureInputMode();
+  appendInlinePreview(sheet, 1, 0, image.size() + 1 + math.size());
+  appendInlinePreview(sheet, 1, 0, image.size());
+  auto document = sheet->tableDocument();
+
+  // Characterwise yank/put exposes the actual register contents in another
+  // cell, including the user's untagged U+FFFC but neither preview object.
+  QTest::keyClicks(sheet, QStringLiteral("0v$y"));
+  putCaretIn(sheet, 1, 1);
+  QTest::keyClicks(sheet, QStringLiteral("P"));
+  QCOMPARE(document->cells()[1][1], source + QStringLiteral("Z"));
+
+  putCaretIn(sheet, 1, 0, true);
+  QTest::keyClicks(sheet, QStringLiteral("A!"));
+  QTest::keyClick(sheet, Qt::Key_Escape);
+  QCOMPARE(document->cells()[1][0], source + QStringLiteral("!"));
+  putCaretIn(sheet, 1, 1, true);
+  QTest::keyClick(sheet, Qt::Key_Period);
+  QCOMPARE(document->cells()[1][1], source + QStringLiteral("Z!"));
+  QCOMPARE(document->cells()[0][0], QStringLiteral("h1"));
+  QVERIFY(document->isIntact());
 }
 
 // ---------------------------------------------------------------------------

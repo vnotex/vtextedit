@@ -22,6 +22,16 @@ TablePreviewInputMode::TablePreviewInputMode(TablePreviewSheet *p_sheet)
 // The projection
 // ---------------------------------------------------------------------------
 
+static int previousSourceCharacter(const QString &p_text, int p_column) {
+  QTextDocument document;
+  document.setUndoRedoEnabled(false);
+  document.setPlainText(p_text);
+  QTextCursor cursor(&document);
+  cursor.setPosition(qBound(0, p_column, p_text.length()));
+  cursor.movePosition(QTextCursor::PreviousCharacter);
+  return cursor.position();
+}
+
 bool TablePreviewInputMode::cellRange(int &p_first, int &p_last) const {
   return m_sheet && m_sheet->currentCellRange(p_first, p_last);
 }
@@ -33,28 +43,27 @@ QString TablePreviewInputMode::cellText() const {
     return QString();
   }
 
-  QTextCursor cursor = m_sheet->textCursor();
-  cursor.setPosition(first);
-  cursor.setPosition(last, QTextCursor::KeepAnchor);
-  return cursor.selectedText();
+  return m_sheet->tableDocument()->sourceText(first, last);
 }
 
-int TablePreviewInputMode::positionOf(const KateViI::Cursor &p_cursor) const {
+int TablePreviewInputMode::positionOf(const KateViI::Cursor &p_cursor, bool p_afterPreview) const {
   int first = 0;
   int last = 0;
   if (!cellRange(first, last)) {
     return -1;
   }
 
-  if (!p_cursor.isValid() || p_cursor.line() < 0) {
-    return first;
+  const auto document = m_sheet->tableDocument();
+  const auto cell = document->table()->cellAt(first);
+  int column = 0;
+  if (p_cursor.isValid() && p_cursor.line() >= 0) {
+    if (p_cursor.line() > 0 && p_afterPreview) {
+      return last;
+    }
+    column = p_cursor.line() > 0 ? document->sourceOffset(cell.row(), cell.column(), last)
+                                 : p_cursor.column();
   }
-
-  if (p_cursor.line() > 0) {
-    return last;
-  }
-
-  return qBound(first, first + p_cursor.column(), last);
+  return document->documentPosition(cell.row(), cell.column(), column, p_afterPreview);
 }
 
 void TablePreviewInputMode::applyBaselineFormat(QTextCursor &p_cursor) const {
@@ -202,7 +211,10 @@ KateViI::Cursor TablePreviewInputMode::cursorPosition() const {
     return KateViI::Cursor(0, 0);
   }
 
-  return KateViI::Cursor(0, qBound(first, m_sheet->textCursor().position(), last) - first);
+  const auto document = m_sheet->tableDocument();
+  const auto cell = document->table()->cellAt(first);
+  return KateViI::Cursor(
+      0, document->sourceOffset(cell.row(), cell.column(), m_sheet->textCursor().position()));
 }
 
 QChar TablePreviewInputMode::characterAt(const KateViI::Cursor &p_cursor) const {
@@ -282,9 +294,8 @@ KateViI::Cursor TablePreviewInputMode::goVisualLineUpDownDry(int p_lines, bool &
 void TablePreviewInputMode::updateCursor(int p_line, int p_column) {
   Q_UNUSED(p_line);
 
-  int first = 0;
-  int last = 0;
-  if (!cellRange(first, last)) {
+  const int position = positionOf(KateViI::Cursor(0, qMax(0, p_column)));
+  if (position < 0) {
     return;
   }
 
@@ -293,18 +304,20 @@ void TablePreviewInputMode::updateCursor(int p_line, int p_column) {
   // cell, not the caret's. This is the single most dangerous inherited method:
   // every katevi motion ends here.
   QTextCursor cursor = m_sheet->textCursor();
-  cursor.setPosition(qBound(first, first + qMax(0, p_column), last));
+  cursor.setPosition(position);
   m_sheet->setTextCursor(cursor);
 }
 
 bool TablePreviewInputMode::setCursorPosition(KateViI::Cursor p_position) {
-  int first = 0;
-  int last = 0;
-  if (!cellRange(first, last)) {
+  const int position =
+      positionOf(KateViI::Cursor(p_position.line() > 0 ? 1 : 0, qMax(0, p_position.column())));
+  if (position < 0) {
     return false;
   }
 
-  updateCursor(0, p_position.line() > 0 ? last - first : p_position.column());
+  QTextCursor cursor = m_sheet->textCursor();
+  cursor.setPosition(position);
+  m_sheet->setTextCursor(cursor);
   return true;
 }
 
@@ -315,8 +328,11 @@ void TablePreviewInputMode::cursorPrevChar(bool p_selection) {
     return;
   }
 
+  const auto document = m_sheet->tableDocument();
+  const auto cell = document->table()->cellAt(first);
   QTextCursor cursor = m_sheet->textCursor();
-  if (cursor.position() <= first) {
+  const int column = document->sourceOffset(cell.row(), cell.column(), cursor.position());
+  if (column <= 0) {
     // At the cell's start there is no previous character. The base moves one
     // PreviousCharacter unconditionally, which at a cell boundary steps into
     // the previous cell - and this runs while an insertion is being ended
@@ -324,8 +340,17 @@ void TablePreviewInputMode::cursorPrevChar(bool p_selection) {
     return;
   }
 
-  cursor.setPosition(cursor.position() - 1,
-                     p_selection ? QTextCursor::KeepAnchor : QTextCursor::MoveAnchor);
+  const int previous = previousSourceCharacter(cellText(), column);
+  if (p_selection) {
+    const int anchor = document->sourceOffset(cell.row(), cell.column(), cursor.anchor());
+    cursor.setPosition(
+        document->documentPosition(cell.row(), cell.column(), anchor, anchor <= previous));
+    cursor.setPosition(
+        document->documentPosition(cell.row(), cell.column(), previous, previous <= anchor),
+        QTextCursor::KeepAnchor);
+  } else {
+    cursor.setPosition(document->documentPosition(cell.row(), cell.column(), previous));
+  }
   m_sheet->setTextCursor(cursor);
 }
 
@@ -346,24 +371,30 @@ void TablePreviewInputMode::setSelection(const KateViI::Range &p_range) {
   }
 
   const int startPos = positionOf(p_range.start());
-  const int endPos = positionOf(p_range.end());
-  if (startPos < 0 || endPos < 0) {
+  const int endAfterPreview = positionOf(p_range.end());
+  if (startPos < 0 || endAfterPreview < 0) {
     return;
   }
 
-  // Vi's visual selection is INCLUSIVE of the character under the caret, so
-  // the published range runs one past it while the QTextCursor selection must
-  // not - keeping the caret where katevi believes it is. Same shape as the
-  // base, with the multi-line arm dropped: every range here is on one line.
+  const auto document = m_sheet->tableDocument();
+  const auto cell = document->table()->cellAt(first);
+  const int startColumn = document->sourceOffset(cell.row(), cell.column(), startPos);
+  const int endColumn = document->sourceOffset(cell.row(), cell.column(), endAfterPreview);
+  const int endPos = startColumn == endColumn ? startPos : positionOf(p_range.end(), false);
+
+  // Vi's visual selection is INCLUSIVE of the source character under the
+  // caret. Compute that character in source columns before mapping it; an
+  // adjacent preview is not a character and must not become the visible caret.
+  // The published source range remains exclusive at its upper boundary.
   QTextCursor cursor = m_sheet->textCursor();
-  const int pos = cursor.position();
-  if (pos == endPos - 1) {
-    if (pos != startPos) {
+  const int column = document->sourceOffset(cell.row(), cell.column(), cursor.position());
+  if (column == endColumn - 1) {
+    if (column != startColumn) {
       cursor.setPosition(startPos);
-      cursor.setPosition(endPos - 1, QTextCursor::KeepAnchor);
+      cursor.setPosition(positionOf(KateViI::Cursor(0, endColumn - 1)), QTextCursor::KeepAnchor);
       m_sheet->setTextCursor(cursor);
     }
-  } else if (pos == startPos) {
+  } else if (column == startColumn) {
     cursor.setPosition(endPos);
     cursor.setPosition(startPos, QTextCursor::KeepAnchor);
     m_sheet->setTextCursor(cursor);
@@ -393,9 +424,21 @@ void TablePreviewInputMode::setSelection(int p_startLine, int p_startColumn, int
 
   clearSelection();
 
+  const KateViI::Cursor start(0, qMax(0, p_startColumn));
+  const KateViI::Cursor end(0, qMax(0, p_endColumn));
+  int startPos = positionOf(start);
+  int endPos = positionOf(end);
+  // The lower selection boundary follows a preview, the upper precedes it.
+  // Equal source columns stay collapsed even when a preview is at that boundary.
+  if (startPos < endPos) {
+    endPos = positionOf(end, false);
+  } else if (endPos < startPos) {
+    startPos = positionOf(start, false);
+  }
+
   QTextCursor cursor = m_sheet->textCursor();
-  cursor.setPosition(qBound(first, first + qMax(0, p_startColumn), last));
-  cursor.setPosition(qBound(first, first + qMax(0, p_endColumn), last), QTextCursor::KeepAnchor);
+  cursor.setPosition(startPos);
+  cursor.setPosition(endPos, QTextCursor::KeepAnchor);
   m_sheet->setTextCursor(cursor);
 }
 
@@ -406,9 +449,12 @@ KateViI::Range TablePreviewInputMode::selectionRange() const {
     return KateViI::Range::invalid();
   }
 
+  const auto document = m_sheet->tableDocument();
+  const auto cell = document->table()->cellAt(first);
   const auto &selection = m_sheet->getSelection();
-  return KateViI::Range(KateViI::Cursor(0, qBound(first, selection.start(), last) - first),
-                        KateViI::Cursor(0, qBound(first, selection.end(), last) - first));
+  return KateViI::Range(
+      KateViI::Cursor(0, document->sourceOffset(cell.row(), cell.column(), selection.start())),
+      KateViI::Cursor(0, document->sourceOffset(cell.row(), cell.column(), selection.end())));
 }
 
 void TablePreviewInputMode::setBlockSelection(bool p_enabled) {
@@ -437,6 +483,8 @@ bool TablePreviewInputMode::removeText(const KateViI::Range &p_range, bool p_blo
     return false;
   }
 
+  const TablePreviewSheet::SourceEditGuard sourceEdit(m_sheet);
+
   const int startPos = positionOf(p_range.start());
   const int endPos = positionOf(p_range.end());
   if (startPos < 0 || endPos <= startPos) {
@@ -461,6 +509,8 @@ bool TablePreviewInputMode::removeLine(int p_line) {
   if (!prepareMutation()) {
     return false;
   }
+
+  const TablePreviewSheet::SourceEditGuard sourceEdit(m_sheet);
 
   int first = 0;
   int last = 0;
@@ -493,6 +543,8 @@ bool TablePreviewInputMode::replaceText(const KateViI::Range &p_range, const QSt
     return false;
   }
 
+  const TablePreviewSheet::SourceEditGuard sourceEdit(m_sheet);
+
   const int startPos = positionOf(p_range.start());
   const int endPos = positionOf(p_range.end());
   if (startPos < 0 || endPos <= startPos) {
@@ -521,6 +573,8 @@ bool TablePreviewInputMode::insertText(const KateViI::Cursor &p_position, const 
   if (!prepareMutation()) {
     return false;
   }
+
+  const TablePreviewSheet::SourceEditGuard sourceEdit(m_sheet);
 
   // A register can hold anything a yank in the EDITOR put there, including a
   // multi-line one - and the shared GlobalState makes that the normal case, not
@@ -552,21 +606,21 @@ void TablePreviewInputMode::backspace() {
     return;
   }
 
-  int first = 0;
-  int last = 0;
-  if (!cellRange(first, last)) {
-    return;
-  }
-
+  const TablePreviewSheet::SourceEditGuard sourceEdit(m_sheet);
   QTextCursor cursor = m_sheet->textCursor();
-  if (cursor.position() <= first) {
-    // Never across the boundary: deletePreviousChar() at a cell's start
-    // deletes the block separator, which is the cell itself.
+  const int column = cursorPosition().column();
+  if (column <= 0) {
+    // Never across the boundary: deleting the block separator deletes the
+    // cell itself. Tagged objects do not give this source buffer another stop.
     return;
   }
 
   editStart();
-  cursor.deletePreviousChar();
+  if (!cursor.hasSelection()) {
+    const int previous = previousSourceCharacter(cellText(), column);
+    cursor.setPosition(positionOf(KateViI::Cursor(0, previous)), QTextCursor::KeepAnchor);
+  }
+  cursor.removeSelectedText();
   m_sheet->setTextCursor(cursor);
   editEnd();
 }
@@ -651,7 +705,7 @@ QString TablePreviewInputMode::getText(const KateViI::Range &p_range, bool p_blo
     return QString();
   }
 
-  return cellText().mid(startPos - first, endPos - startPos);
+  return m_sheet->tableDocument()->sourceText(startPos, endPos);
 }
 
 // ---------------------------------------------------------------------------
@@ -695,14 +749,14 @@ void TablePreviewInputMode::notifyEditorModeChanged(EditorMode p_mode) {
 
 void TablePreviewInputMode::connectTextInserted(
     std::function<void(const KateViI::Range &)> p_slot) {
-  // The base reports PHYSICAL block numbers, which katevi feeds straight into
-  // insert tracking and into the registers a repeat (`.`) replays from. Inside
-  // a sheet those are block numbers of the whole table, so a repeat would
-  // address a cell other than the one typed in.
+  // The base reports PHYSICAL block numbers and columns, which katevi feeds
+  // into insert tracking and the registers a repeat (`.`) replays from. Report
+  // the caret cell's source range instead, without replaying inline previews
+  // or addressing another cell.
   connect(m_sheet->document(), &QTextDocument::contentsChange, this,
           [this, p_slot](int p_position, int p_charsRemoved, int p_charsAdded) {
             Q_UNUSED(p_charsRemoved);
-            if (p_charsAdded <= 0) {
+            if (p_charsAdded <= 0 || m_sheet->tableDocument()->isApplyingInlinePreviews()) {
               return;
             }
 
@@ -719,7 +773,14 @@ void TablePreviewInputMode::connectTextInserted(
               return;
             }
 
-            p_slot(
-                KateViI::Range(KateViI::Cursor(0, start - first), KateViI::Cursor(0, end - first)));
+            const auto document = m_sheet->tableDocument();
+            const auto cell = document->table()->cellAt(first);
+            const int startColumn = document->sourceOffset(cell.row(), cell.column(), start);
+            const int endColumn = document->sourceOffset(cell.row(), cell.column(), end);
+            if (endColumn <= startColumn) {
+              return;
+            }
+
+            p_slot(KateViI::Range(KateViI::Cursor(0, startColumn), KateViI::Cursor(0, endColumn)));
           });
 }

@@ -1076,15 +1076,12 @@ QVector<ImageLinkInfo> buildImageLinks(const QVector<ImageElement> &p_elements) 
   return links;
 }
 
-QVector<HLUnit> highlightInlineSnippet(const QString &p_snippet) {
+ASTWalkResult parseInlineSnippet(const QString &p_snippet) {
   if (p_snippet.isEmpty()) {
-    return QVector<HLUnit>();
+    return ASTWalkResult();
   }
   ++s_inlineSnippetParses;
-
-  // One block, no regions, no typed elements: the fast path is exactly what
-  // per-cell highlighting needs, without collecting preview elements.
-  return walkAndConvert(p_snippet.toUtf8(), 1, 0, 0, true).blocksHighlights.value(0);
+  return walkAndConvert(p_snippet.toUtf8(), 1, 0, 0, false);
 }
 
 quint64 inlineSnippetParseCount() { return s_inlineSnippetParses; }

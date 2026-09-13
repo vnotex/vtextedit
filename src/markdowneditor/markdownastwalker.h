@@ -182,7 +182,7 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
 // element.
 QVector<ImageLinkInfo> buildImageLinks(const QVector<ImageElement> &p_elements);
 
-// Cell-local highlight units for one snippet of Markdown source.
+// Cell-local highlights and typed elements for one snippet of Markdown source.
 //
 // One-way and BEST EFFORT: the snippet is parsed as a whole document, so a
 // payload that happens to parse as a block construct (`# x`) is highlighted as
@@ -190,9 +190,9 @@ QVector<ImageLinkInfo> buildImageLinks(const QVector<ImageElement> &p_elements);
 // source is by definition detached from its surrounding block context, so this
 // is the closest honest answer. Used by the live table document's cache for
 // Markdown and Markdown-backed HTML cells; an HTML-only table gets no runs.
-QVector<HLUnit> highlightInlineSnippet(const QString &p_snippet);
+ASTWalkResult parseInlineSnippet(const QString &p_snippet);
 
-// Total number of nonempty snippet parse attempts highlightInlineSnippet() has
+// Total number of nonempty snippet parse attempts parseInlineSnippet() has
 // performed since the last reset. Measures live-cell cache misses. Diagnostics
 // only, and process wide - a benchmark drives one document at a time.
 // Not thread safe: it is a counter, not a synchronization primitive.

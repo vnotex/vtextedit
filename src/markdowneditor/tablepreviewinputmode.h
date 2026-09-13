@@ -13,13 +13,11 @@ class TablePreviewSheet;
 //
 // THE BUFFER IS THE CARET'S CELL, projected as a ONE-LINE document and
 // recomputed on every call (decision D1). The sheet already guarantees one
-// cell is one QTextBlock, so nothing here has to reason about wrapping: the
-// projection is
-//
-//     virtual line 0, column c   <->   physical position cellFirst() + c
-//
-// and every line other than 0 is off the end of the buffer. Confinement is
-// therefore STRUCTURAL rather than a set of range checks: a katevi call can
+// cell is one QTextBlock. Columns are UTF-16 source offsets, mapped through
+// TablePreviewDocument's projection rather than added to a physical position.
+// Tagged inline previews have no source width; untagged object characters
+// remain source. Every line other than 0 is off the end of the buffer.
+// Confinement is therefore STRUCTURAL rather than a set of range checks: a katevi call can
 // only address what this projection exposes, and the projection cannot
 // describe a position outside the cell. That is only true while the
 // projection is COMPLETE, which is why every one of the 69 interface methods
@@ -216,18 +214,19 @@ private:
   // nothing.
   bool cellRange(int &p_first, int &p_last) const;
 
-  // The caret cell's text, empty when there is no cell.
+  // The caret cell's raw source text, empty when there is no cell.
   QString cellText() const;
 
-  // Project a KateVi cursor onto a physical position, or -1 when there is no
-  // cell.
+  // Project a KateVi source cursor onto a physical position, or -1 when
+  // there is no cell. Typing follows previews at the boundary; selection ends
+  // pass false to exclude a decoration without its source.
   //
   // A line other than 0 does not exist in a one-line buffer, and katevi does
   // produce one: a LINEWISE range is spelled [ (line, 0), (line + 1, 0) ), so
   // `dd` on the only line asks for a range ending at line 1. Line > 0 is
   // therefore mapped to the END of the cell, which is what makes such a range
   // mean "the whole cell" instead of reaching into the next one.
-  int positionOf(const KateViI::Cursor &p_cursor) const;
+  int positionOf(const KateViI::Cursor &p_cursor, bool p_afterPreview = true) const;
 
   // Give @p_cursor the caret cell's baseline character format, so text this
   // mode inserts does not inherit the highlight run to its left - the same

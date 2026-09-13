@@ -23,6 +23,15 @@ private slots:
   void testAModeSwitchLeavesTheTableIntact();
   void testTheSheetSurvivesDestructionWithAnActiveMode();
 
+  // Source coordinates stay independent of inline preview objects.
+  void testDecoratedTypingInEveryMode_data();
+  void testDecoratedTypingInEveryMode();
+  void testDecoratedCellUsesSourceColumns();
+  void testDecoratedViSelectionsKeepInclusiveSourceEndpoints();
+  void testDecoratedPreviousCharacterUsesSourceGraphemes();
+  void testDecoratedBackspaceRemovesSourceGraphemes();
+  void testDecoratedViYankPutAndRepeatUseSource();
+
   // Cell confinement: motions.
   void testVerticalMotionsStayInTheCell();
   void testDocumentMotionsStayInTheCell();
