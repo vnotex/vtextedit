@@ -57,6 +57,7 @@ void VTextEditor::FindResultCache::clear() {
   m_texts.clear();
   m_flags = FindFlag::None;
   m_result.clear();
+  m_regExpMatches.clear();
 }
 
 bool VTextEditor::FindResultCache::matched(const QStringList &p_texts, FindFlags p_flags,
@@ -67,12 +68,14 @@ bool VTextEditor::FindResultCache::matched(const QStringList &p_texts, FindFlags
 
 void VTextEditor::FindResultCache::update(const QStringList &p_texts, FindFlags p_flags,
                                           int p_start, int p_end,
-                                          const QList<QTextCursor> &p_result) {
+                                          const QList<QTextCursor> &p_result,
+                                          const QList<QRegularExpressionMatch> &p_regExpMatches) {
   m_texts = p_texts;
   m_flags = p_flags;
   m_start = p_start;
   m_end = p_end;
   m_result = p_result;
+  m_regExpMatches = p_regExpMatches;
 }
 
 VTextEditor::VTextEditor(const QSharedPointer<TextEditorConfig> &p_config,
@@ -1158,59 +1161,69 @@ VTextEditor::FindResult VTextEditor::findTextHelper(const QStringList &p_texts, 
 VTextEditor::FindResult VTextEditor::replaceText(const QString &p_text, FindFlags p_flags,
                                                  const QString &p_replaceText, int p_start,
                                                  int p_end) {
+  if (isReadOnly()) {
+    return FindResult();
+  }
   auto cursor = m_textEdit->textCursor();
   auto result = findTextHelper(QStringList(p_text), p_flags, p_start, p_end, false, cursor);
   if (result.m_totalMatches > 0) {
     Q_ASSERT(!cursor.isNull());
-    result.m_totalMatches = 1;
-
-    if ((p_flags & FindFlag::RegularExpression) && hasBackReference(p_replaceText)) {
-      auto newText = resolveBackReferenceInReplaceText(
-          p_replaceText, TextEditUtils::getSelectedText(cursor), QRegularExpression(p_text));
-      cursor.insertText(newText);
-    } else {
-      cursor.insertText(p_replaceText);
-    }
+    const auto text =
+        (p_flags & FindFlag::RegularExpression)
+            ? expandRegularExpressionReplacement(
+                  p_replaceText, m_findResultCache.m_regExpMatches.at(result.m_currentMatchIndex))
+            : p_replaceText;
+    cursor.insertText(text);
     m_textEdit->setTextCursor(cursor);
+    result.m_totalMatches = 1;
+    clearSearchHighlight();
   }
   return result;
 }
 
+namespace {
+struct Replacement {
+  int m_start;
+  int m_end;
+  QString m_text;
+};
+} // namespace
+
 VTextEditor::FindResult VTextEditor::replaceAll(const QString &p_text, FindFlags p_flags,
                                                 const QString &p_replaceText, int p_start,
                                                 int p_end) {
+  if (isReadOnly()) {
+    return FindResult();
+  }
   clearIncrementalSearchHighlight();
 
   FindResult result;
-  if (p_text.isEmpty() || (p_start >= p_end && p_end >= 0)) {
-    clearSearchHighlight();
-    return result;
+  QVector<Replacement> replacements;
+  {
+    const auto &matches = findAllText(QStringList(p_text), p_flags, p_start, p_end);
+    replacements.reserve(matches.size());
+    for (int idx = 0; idx < matches.size(); ++idx) {
+      const auto text = (p_flags & FindFlag::RegularExpression)
+                            ? expandRegularExpressionReplacement(
+                                  p_replaceText, m_findResultCache.m_regExpMatches.at(idx))
+                            : p_replaceText;
+      replacements.append({matches[idx].selectionStart(), matches[idx].selectionEnd(), text});
+    }
   }
 
-  const auto &allResults = findAllText(QStringList(p_text), p_flags, p_start, p_end);
-  if (!allResults.isEmpty()) {
-    result.m_totalMatches = allResults.size();
-
-    // Replace all matches one by one.
-    auto cursor = m_textEdit->textCursor();
+  if (!replacements.isEmpty()) {
+    result.m_totalMatches = replacements.size();
+    QTextCursor finalCursor(document());
+    finalCursor.setPosition(replacements.constLast().m_end);
+    QTextCursor cursor(document());
     cursor.beginEditBlock();
-    bool hasBackRef =
-        (p_flags & FindFlag::RegularExpression) ? hasBackReference(p_replaceText) : false;
-    QRegularExpression regExp(hasBackRef ? p_text : QString());
-    for (const auto &result : allResults) {
-      cursor.setPosition(result.selectionStart());
-      cursor.setPosition(result.selectionEnd(), QTextCursor::KeepAnchor);
-
-      if (hasBackRef) {
-        auto newText = resolveBackReferenceInReplaceText(
-            p_replaceText, TextEditUtils::getSelectedText(cursor), regExp);
-        cursor.insertText(newText);
-      } else {
-        cursor.insertText(p_replaceText);
-      }
+    for (auto it = replacements.crbegin(); it != replacements.crend(); ++it) {
+      cursor.setPosition(it->m_start);
+      cursor.setPosition(it->m_end, QTextCursor::KeepAnchor);
+      cursor.insertText(it->m_text);
     }
     cursor.endEditBlock();
-    m_textEdit->setTextCursor(cursor);
+    m_textEdit->setTextCursor(finalCursor);
   }
 
   clearSearchHighlight();
@@ -1241,13 +1254,16 @@ const QList<QTextCursor> &VTextEditor::findAllText(const QStringList &p_texts, F
 
   int cnt = 0;
   QList<QTextCursor> results;
+  QList<QRegularExpressionMatch> regExpMatches;
+  const bool captureMatches = p_texts.size() == 1 && (p_flags & FindFlag::RegularExpression);
   for (const auto &text : p_texts) {
     if (text.isEmpty()) {
       continue;
     }
 
     ++cnt;
-    results.append(m_textEdit->findAllText(text, p_flags, p_start, p_end));
+    results.append(m_textEdit->findAllText(text, p_flags, p_start, p_end,
+                                           captureMatches ? &regExpMatches : nullptr));
   }
 
   if (cnt > 1) {
@@ -1255,7 +1271,7 @@ const QList<QTextCursor> &VTextEditor::findAllText(const QStringList &p_texts, F
     std::sort(results.begin(), results.end());
   }
 
-  m_findResultCache.update(p_texts, p_flags, p_start, p_end, results);
+  m_findResultCache.update(p_texts, p_flags, p_start, p_end, results, regExpMatches);
 
   return m_findResultCache.m_result;
 }
@@ -1345,29 +1361,52 @@ void VTextEditor::highlightSearch(const QList<QTextCursor> &p_results, int p_cur
   }
 }
 
-bool VTextEditor::hasBackReference(const QString &p_regExpText) {
-  QRegularExpression regExp(R"(\\\d+)");
-  int pos = 0;
-  QRegularExpressionMatch match;
-  while (pos < p_regExpText.size()) {
-    int idx = p_regExpText.indexOf(regExp, pos, &match);
-    if (idx == -1) {
-      return false;
-    }
-    if (!TextUtils::isEscaped(p_regExpText, idx)) {
-      return true;
-    }
-    pos = idx + match.capturedLength();
+QString VTextEditor::expandRegularExpressionReplacement(const QString &p_replaceText,
+                                                        const QRegularExpressionMatch &p_match) {
+  const int firstEscape = p_replaceText.indexOf(QLatin1Char('\\'));
+  if (firstEscape < 0) {
+    return p_replaceText;
   }
-
-  return false;
-}
-
-QString VTextEditor::resolveBackReferenceInReplaceText(const QString &p_replaceText, QString p_text,
-                                                       const QRegularExpression &p_regExp) {
-  // TODO: Need to remove the look ahead/back component at the two ends of the
-  // regular expression.
-  return p_text.replace(p_regExp, p_replaceText);
+  QString text;
+  text.reserve(p_replaceText.size());
+  text.append(p_replaceText.constData(), firstEscape);
+  const int captureCount = p_match.regularExpression().captureCount();
+  for (int idx = firstEscape; idx < p_replaceText.size(); ++idx) {
+    const auto ch = p_replaceText.at(idx);
+    if (ch != QLatin1Char('\\') || idx + 1 == p_replaceText.size()) {
+      text.append(ch);
+      continue;
+    }
+    const auto escaped = p_replaceText.at(idx + 1);
+    if (escaped == QLatin1Char('n')) {
+      text.append(QLatin1Char('\n'));
+    } else if (escaped == QLatin1Char('t')) {
+      text.append(QLatin1Char('\t'));
+    } else if (escaped == QLatin1Char('\\')) {
+      text.append(QLatin1Char('\\'));
+    } else if (escaped >= QLatin1Char('1') && escaped <= QLatin1Char('9')) {
+      int capture = escaped.unicode() - '0';
+      if (idx + 2 < p_replaceText.size()) {
+        const auto second = p_replaceText.at(idx + 2);
+        const int twoDigits = capture * 10 + second.unicode() - '0';
+        if (second >= QLatin1Char('0') && second <= QLatin1Char('9') && twoDigits <= captureCount) {
+          capture = twoDigits;
+          ++idx;
+        }
+      }
+      if (capture <= captureCount) {
+        text.append(p_match.captured(capture));
+      } else {
+        text.append(ch);
+        text.append(escaped);
+      }
+    } else {
+      text.append(ch);
+      text.append(escaped);
+    }
+    ++idx;
+  }
+  return text;
 }
 
 void VTextEditor::updateSpellCheck() {

@@ -7,6 +7,7 @@
 #include <QFont>
 #include <QMap>
 #include <QPalette>
+#include <QRegularExpression>
 #include <QScopedPointer>
 #include <QSharedPointer>
 #include <QTextCursor>
@@ -302,10 +303,8 @@ private:
 
   void applyLineSpacing();
 
-  static bool hasBackReference(const QString &p_regExpText);
-
-  static QString resolveBackReferenceInReplaceText(const QString &p_replaceText, QString p_text,
-                                                   const QRegularExpression &p_regExp);
+  static QString expandRegularExpressionReplacement(const QString &p_replaceText,
+                                                    const QRegularExpressionMatch &p_match);
 
   // @p_cursors is in ascending order.
   // If @p_forward is true, find the smallest cursor whose selection start is
@@ -329,7 +328,8 @@ private:
     bool matched(const QStringList &p_texts, FindFlags p_flags, int p_start, int p_end) const;
 
     void update(const QStringList &p_texts, FindFlags p_flags, int p_start, int p_end,
-                const QList<QTextCursor> &p_result);
+                const QList<QTextCursor> &p_result,
+                const QList<QRegularExpressionMatch> &p_regExpMatches);
 
     // Find range [m_start, m_end).
     int m_start = -1;
@@ -340,6 +340,8 @@ private:
     FindFlags m_flags = FindFlag::None;
 
     QList<QTextCursor> m_result;
+
+    QList<QRegularExpressionMatch> m_regExpMatches;
   };
 
   QSharedPointer<TextEditorConfig> m_config;

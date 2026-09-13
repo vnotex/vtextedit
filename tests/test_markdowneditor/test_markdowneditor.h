@@ -8,6 +8,13 @@ namespace tests {
 class TestMarkdownEditor : public QObject {
   Q_OBJECT
 private slots:
+  void testMultilineReplaceAllUndoRedo();
+  void testMultilineReplacementCaptures();
+  void testRegexReplacementEscapes();
+  void testMultilineReplaceAndFind();
+  void testReadOnlyReplacementIsRejected();
+  void testMultilineReplacementKeepsLineEndings();
+
   // MarkdownUtils helpers.
   void testIsQuote();
 

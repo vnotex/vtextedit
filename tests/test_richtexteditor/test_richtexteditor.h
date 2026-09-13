@@ -7,6 +7,11 @@ namespace tests {
 class TestRichTextEditor : public QObject {
   Q_OBJECT
 private slots:
+  void testSearchAcrossParagraphs();
+  void testSearchRegexOptions();
+  void testSearchRangesAndZeroLengthMatches();
+  void testSearchForwardBackwardWrap();
+
   // Base interface defaults through the public widget.
   void testFoldKeysFallThroughWithoutFolding();
   void testCompletionKeysDoNothing();
