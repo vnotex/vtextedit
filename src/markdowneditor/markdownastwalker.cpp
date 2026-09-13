@@ -4,12 +4,18 @@
 #include "markdownsyntaxstyles.h"
 
 #include <algorithm>
+#include <cstring>
+#include <limits>
+#include <memory>
+#include <utility>
 
 #include <QColor>
 #include <QStringView>
+#include <QThread>
 
 #include <vtextedit/htmlimgscanner.h>
 #include <vtextedit/htmltablescanner.h>
+#include <vtextedit/markdownutils.h>
 
 #ifdef VTE_DEBUG_HIGHLIGHT
 #include <QDebug>
@@ -21,16 +27,1372 @@
 namespace vte {
 namespace md {
 
-static int numberWidth(int p_num) {
-  if (p_num <= 0)
-    return 1;
-  int w = 0;
-  int n = p_num;
-  while (n > 0) {
-    n /= 10;
-    ++w;
+bool scanListMarker(const QString &p_line, int p_start, ListItemInfo &p_marker) {
+  p_marker = ListItemInfo();
+  if (p_start < 0 || p_start >= p_line.size()) {
+    return false;
   }
-  return w;
+
+  int end = p_start;
+  int number = 0;
+  const QChar first = p_line.at(end);
+  const bool bullet =
+      first == QLatin1Char('-') || first == QLatin1Char('+') || first == QLatin1Char('*');
+  if (bullet) {
+    ++end;
+  } else {
+    while (end < p_line.size() && end - p_start < 9 && p_line.at(end) >= QLatin1Char('0') &&
+           p_line.at(end) <= QLatin1Char('9')) {
+      number = number * 10 + p_line.at(end).unicode() - '0';
+      ++end;
+    }
+    if (end == p_start || end >= p_line.size() ||
+        (p_line.at(end) != QLatin1Char('.') && p_line.at(end) != QLatin1Char(')'))) {
+      return false;
+    }
+    ++end;
+  }
+
+  // cmark's locale-independent ASCII whitespace class, not Unicode \s.
+  if (end < p_line.size()) {
+    const ushort ch = p_line.at(end).unicode();
+    if (ch != ' ' && (ch < '\t' || ch > '\r')) {
+      return false;
+    }
+  }
+
+  int content = end;
+  while (content < p_line.size() && p_line.at(content).isSpace()) {
+    ++content;
+  }
+  bool task = false;
+  if (bullet && content < p_line.size() && p_line.at(content) == QLatin1Char('[')) {
+    QChar taskMarker;
+    bool taskEmpty = false;
+    // Keep the existing task spelling policy (unordered [ ] / [x]) in one place.
+    task = scanTodoList(p_line.mid(p_start), taskMarker, taskEmpty);
+    if (task) {
+      content += 3;
+      while (content < p_line.size() && p_line.at(content).isSpace()) {
+        ++content;
+      }
+    }
+  }
+
+  p_marker.m_markerStart = p_start;
+  p_marker.m_markerEnd = end;
+  p_marker.m_contentStart = content;
+  p_marker.m_sourceNumber = number;
+  p_marker.m_marker = p_line.at(end - 1);
+  p_marker.m_task = task;
+  p_marker.m_empty = content == p_line.size();
+  return true;
+}
+
+// Reverse only a verified boundary through the existing byte-to-QChar table.
+// No re-encoding of the source prefix, including a non-ASCII footnote label.
+static int listByteColumn(const LineOffsetTable &p_offsets, int p_line, int p_length,
+                          int p_position) {
+  int lo = 0;
+  int hi = p_length;
+  while (lo < hi) {
+    const int mid = lo + (hi - lo) / 2;
+    if (p_offsets.toDocPosition(p_line, mid + 1) < p_position) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  return p_offsets.toDocPosition(p_line, lo + 1) == p_position ? lo : -1;
+}
+
+// One decoded opening line and one marker are shared by highlighting and the
+// collector. No decoded document or tree pointer escapes the lifetime of a walk.
+class ListMarkerReader {
+public:
+  ListMarkerReader(const QByteArray &p_source, const LineOffsetTable &p_offsets)
+      : m_source(p_source), m_offsets(p_offsets) {}
+
+  const ListItemInfo &marker(cmark_node *p_node) {
+    if (p_node == m_node) {
+      return m_marker;
+    }
+    m_node = p_node;
+    m_marker = ListItemInfo();
+    const int line = cmark_node_get_start_line(p_node);
+    const int column = cmark_node_get_start_column(p_node);
+    int start = 0;
+    int length = 0;
+    if (column < 1 || !m_offsets.lineByteRange(line - 1, start, length) || column > length) {
+      return m_marker;
+    }
+    if (m_line != line) {
+      m_line = line;
+      m_text = QString::fromUtf8(m_source.constData() + start, length);
+    }
+    const int lineStart = m_offsets.lineStartQCharOffset(line - 1);
+    const int anchor = m_offsets.toDocPosition(line, column) - lineStart;
+    ListItemInfo marker;
+    if (!scanListMarker(m_text, anchor, marker)) {
+      return m_marker;
+    }
+    const auto &data = p_node->as.list;
+    const bool ordered = data.list_type == CMARK_ORDERED_LIST;
+    const QChar expected = ordered ? QLatin1Char(data.delimiter == CMARK_PAREN_DELIM ? ')' : '.')
+                                   : QLatin1Char(data.bullet_char);
+    const int width = marker.m_markerEnd - marker.m_markerStart;
+    if (marker.m_marker != expected || (ordered && marker.m_sourceNumber != data.start) ||
+        (!ordered && width != 1) || column - 1 + width > length ||
+        m_source.at(start + column - 1) != m_text.at(anchor).toLatin1()) {
+      return m_marker;
+    }
+    const int contentByte =
+        listByteColumn(m_offsets, line, length, lineStart + marker.m_contentStart);
+    if (contentByte < column - 1 + width) {
+      return m_marker;
+    }
+    marker.m_markerStart = m_offsets.toDocPosition(line, column);
+    marker.m_markerEnd = m_offsets.toDocPosition(line, column + width);
+    marker.m_contentStart = m_offsets.toDocPosition(line, contentByte + 1);
+    marker.m_sourceValid = marker.m_markerEnd - marker.m_markerStart == width;
+    m_marker = std::move(marker);
+    return m_marker;
+  }
+
+private:
+  const QByteArray &m_source;
+  const LineOffsetTable &m_offsets;
+  cmark_node *m_node = nullptr;
+  int m_line = -1;
+  QString m_text;
+  ListItemInfo m_marker;
+};
+
+// Source-coordinate recovery, not list recognition: all membership and padding
+// come from the AST. Keep these byte/virtual-column segments for number-width
+// adjustments as well as sibling-prefix construction.
+struct ListPrefixCursor {
+  int m_byte = 0;
+  int m_column = 0;
+  bool m_partialTab = false;
+};
+
+struct ListPrefixSegment {
+  enum class Kind { Quote, OpeningItem, OpeningIndent, Indentation, Blank, Lazy };
+  int m_container = -1;
+  Kind m_kind = Kind::Indentation;
+  ListPrefixCursor m_begin;
+  ListPrefixCursor m_end;
+  ListPrefixCursor m_markerBegin;
+  ListPrefixCursor m_markerEnd;
+};
+
+static bool listSpaceOrTab(char p_ch) { return p_ch == ' ' || p_ch == '\t'; }
+
+// blocks.c:S_advance_offset, including a tab left partially consumed in place.
+static bool advanceListPrefix(const char *p_line, int p_length, ListPrefixCursor &p_cursor,
+                              int p_count, bool p_columns) {
+  if (p_count < 0) {
+    return false;
+  }
+  while (p_count > 0 && p_cursor.m_byte < p_length) {
+    if (p_line[p_cursor.m_byte] == '\t') {
+      const int tab = 4 - p_cursor.m_column % 4;
+      const int step = p_columns ? qMin(tab, p_count) : tab;
+      p_cursor.m_partialTab = p_columns && step < tab;
+      p_cursor.m_column += step;
+      p_cursor.m_byte += p_cursor.m_partialTab ? 0 : 1;
+      p_count -= p_columns ? step : 1;
+    } else {
+      p_cursor.m_partialTab = false;
+      ++p_cursor.m_byte;
+      ++p_cursor.m_column;
+      --p_count;
+    }
+  }
+  return p_count == 0;
+}
+
+// blocks.c:S_find_first_nonspace, without its parser-local cached lookahead.
+static ListPrefixCursor firstListNonspace(const char *p_line, int p_length,
+                                          ListPrefixCursor p_cursor) {
+  while (p_cursor.m_byte < p_length && listSpaceOrTab(p_line[p_cursor.m_byte])) {
+    advanceListPrefix(p_line, p_length, p_cursor, 1, false);
+  }
+  return p_cursor;
+}
+
+// blocks.c's opening-marker padding rule, shared by projection and width changes.
+// p_cursor starts immediately after the marker, with the current absolute column.
+static bool consumeListOpeningPadding(const char *p_line, int p_length, int p_width,
+                                      ListPrefixCursor &p_cursor, int &p_padding) {
+  const auto afterMarker = p_cursor;
+  while (p_cursor.m_column - afterMarker.m_column <= 5 && p_cursor.m_byte < p_length &&
+         listSpaceOrTab(p_line[p_cursor.m_byte])) {
+    if (!advanceListPrefix(p_line, p_length, p_cursor, 1, true)) {
+      return false;
+    }
+  }
+  const int whitespace = p_cursor.m_column - afterMarker.m_column;
+  p_padding = p_width + whitespace;
+  if (whitespace >= 5 || whitespace < 1 || p_cursor.m_byte == p_length) {
+    p_padding = p_width + 1;
+    p_cursor = afterMarker;
+    if (whitespace > 0 && !advanceListPrefix(p_line, p_length, p_cursor, 1, true)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool walkListPrefix(const ListStructure &p_structure, const char *p_line, int p_length,
+                           const LineOffsetTable &p_offsets, int p_lineNumber, int p_offset,
+                           int p_block, int p_container, QVector<int> &p_chain,
+                           QVector<ListPrefixSegment> &p_segments, ListPrefixCursor &p_end) {
+  p_chain.clear();
+  p_segments.clear();
+  p_end = ListPrefixCursor();
+  for (int index = p_container; index >= 0;) {
+    if (index >= p_structure.m_containers.size()) {
+      return false;
+    }
+    const auto &container = p_structure.m_containers.at(index);
+    // Containers are appended parent-first; also rules out a corrupt cycle.
+    if (container.m_parent >= index || p_block < container.m_startBlock ||
+        p_block > container.m_endBlock) {
+      return false;
+    }
+    p_chain.append(index);
+    index = container.m_parent;
+  }
+  std::reverse(p_chain.begin(), p_chain.end());
+
+  bool lazy = false;
+  for (int index : p_chain) {
+    const auto &container = p_structure.m_containers.at(index);
+    ListPrefixSegment segment;
+    segment.m_container = index;
+    segment.m_begin = p_end;
+    const auto first = firstListNonspace(p_line, p_length, p_end);
+    const int indent = first.m_column - p_end.m_column;
+    const bool blank = first.m_byte == p_length;
+    if (lazy) {
+      // check_open_blocks stops at the FIRST missing prefix. A later '>' is
+      // paragraph content, not permission to restart container recognition.
+      segment.m_kind = ListPrefixSegment::Kind::Lazy;
+    } else if (container.m_kind == ListContainerInfo::Kind::Quote) {
+      if (indent <= 3 && !blank && p_line[first.m_byte] == '>') {
+        segment.m_kind = ListPrefixSegment::Kind::Quote;
+        if (!advanceListPrefix(p_line, p_length, p_end, indent + 1, true)) {
+          return false;
+        }
+        if (p_end.m_byte < p_length && listSpaceOrTab(p_line[p_end.m_byte])) {
+          advanceListPrefix(p_line, p_length, p_end, 1, true);
+        }
+      } else {
+        segment.m_kind = ListPrefixSegment::Kind::Lazy;
+        lazy = true;
+      }
+    } else if (container.m_startBlock == p_block) {
+      if (container.m_markerOffset != indent || blank) {
+        return false;
+      }
+      if (!advanceListPrefix(p_line, p_length, p_end, first.m_byte - p_end.m_byte, false)) {
+        return false;
+      }
+      segment.m_markerBegin = p_end;
+      if (container.m_kind == ListContainerInfo::Kind::Item) {
+        if (container.m_item < 0 || container.m_item >= p_structure.m_items.size()) {
+          return false;
+        }
+        const auto &item = p_structure.m_items.at(container.m_item);
+        if (!item.m_sourceValid ||
+            p_offsets.toDocPosition(p_lineNumber, first.m_byte + 1) + p_offset !=
+                item.m_markerStart) {
+          return false;
+        }
+        const int width = item.m_markerEnd - item.m_markerStart;
+        if (!advanceListPrefix(p_line, p_length, p_end, width, false)) {
+          return false;
+        }
+        segment.m_kind = ListPrefixSegment::Kind::OpeningItem;
+        segment.m_markerEnd = p_end;
+        int padding = 0;
+        if (!consumeListOpeningPadding(p_line, p_length, width, p_end, padding)) {
+          return false;
+        }
+        if (padding != container.m_padding) {
+          return false;
+        }
+      } else {
+        // Footnote padding stores opener BYTES, including its trailing spaces.
+        // Consume those bytes on the opening line; continuation consumes columns.
+        if (container.m_padding < 6 || first.m_byte + container.m_padding > p_length ||
+            p_line[first.m_byte] != '[' || p_line[first.m_byte + 1] != '^' ||
+            !listSpaceOrTab(p_line[first.m_byte + container.m_padding - 1])) {
+          return false;
+        }
+        if (!advanceListPrefix(p_line, p_length, p_end, container.m_padding, false)) {
+          return false;
+        }
+        segment.m_kind = ListPrefixSegment::Kind::OpeningIndent;
+        segment.m_markerEnd = p_end;
+      }
+    } else {
+      const int padding = container.m_markerOffset + container.m_padding;
+      if (padding < 1) {
+        return false;
+      }
+      // Footnotes test blank before indentation; ITEMs test indentation first.
+      // Every non-opening blank here is inside an AST-confirmed extent. No
+      // blank-line segment is ever a candidate for an indentation rewrite.
+      if (blank && (container.m_kind == ListContainerInfo::Kind::Indent || indent < padding)) {
+        segment.m_kind = ListPrefixSegment::Kind::Blank;
+        p_end = first;
+      } else if (indent >= padding) {
+        segment.m_kind = ListPrefixSegment::Kind::Indentation;
+        advanceListPrefix(p_line, p_length, p_end, padding, true);
+      } else {
+        segment.m_kind = ListPrefixSegment::Kind::Lazy;
+        lazy = true;
+      }
+    }
+    segment.m_end = p_end;
+    p_segments.append(segment);
+  }
+  return true;
+}
+
+// Append an unchanged source interval. A tab survives unless the interval must
+// split it or an earlier change moved its tab stop. Do not split at mere AST
+// segment boundaries: e.g. the one column consumed by '>\t' stays one raw tab.
+static bool appendListPrefix(const char *p_line, int p_length, ListPrefixCursor &p_from,
+                             const ListPrefixCursor &p_to, QByteArray &p_output,
+                             int &p_outputColumn) {
+  if (p_to.m_byte < p_from.m_byte || p_to.m_column < p_from.m_column) {
+    return false;
+  }
+  while (p_from.m_byte < p_to.m_byte || p_from.m_column < p_to.m_column) {
+    if (p_from.m_byte >= p_length) {
+      return false;
+    }
+    const char ch = p_line[p_from.m_byte];
+    if (ch == '\t') {
+      const int available = 4 - p_from.m_column % 4;
+      const int columns =
+          p_from.m_byte == p_to.m_byte ? p_to.m_column - p_from.m_column : available;
+      if (columns < 1 || columns > available) {
+        return false;
+      }
+      if (!p_from.m_partialTab && columns == available && 4 - p_outputColumn % 4 == columns) {
+        p_output.append('\t');
+      } else {
+        p_output.append(columns, ' ');
+      }
+      p_outputColumn += columns;
+      advanceListPrefix(p_line, p_length, p_from, columns, true);
+    } else {
+      if (static_cast<unsigned char>(ch) >= 0x80) {
+        return false;
+      }
+      p_output.append(ch);
+      ++p_outputColumn;
+      advanceListPrefix(p_line, p_length, p_from, 1, false);
+    }
+  }
+  return p_from.m_byte == p_to.m_byte && p_from.m_column == p_to.m_column;
+}
+
+static bool cacheListPrefix(ListStructure &p_structure, int p_item, const QByteArray &p_source,
+                            const LineOffsetTable &p_offsets, int p_offset, int p_startBlock,
+                            QVector<int> &p_chain, QVector<ListPrefixSegment> &p_segments) {
+  auto &item = p_structure.m_items[p_item];
+  if (!item.m_sourceValid) {
+    return false;
+  }
+  const auto &own = p_structure.m_containers.at(item.m_container);
+  const int line = item.m_startBlock - p_startBlock;
+  int start = 0;
+  int length = 0;
+  if (!p_offsets.lineByteRange(line, start, length)) {
+    return false;
+  }
+  const char *source = p_source.constData() + start;
+  ListPrefixCursor consumed;
+  if (!walkListPrefix(p_structure, source, length, p_offsets, line + 1, p_offset, item.m_startBlock,
+                      own.m_parent, p_chain, p_segments, consumed)) {
+    return false;
+  }
+  const auto marker = firstListNonspace(source, length, consumed);
+  if (p_offsets.toDocPosition(line + 1, marker.m_byte + 1) + p_offset != item.m_markerStart ||
+      marker.m_column - consumed.m_column != own.m_markerOffset) {
+    return false;
+  }
+
+  QByteArray prefix;
+  prefix.reserve(marker.m_byte);
+  ListPrefixCursor copied;
+  int outputColumn = 0;
+  for (const auto &segment : p_segments) {
+    const auto &container = p_structure.m_containers.at(segment.m_container);
+    if (segment.m_kind == ListPrefixSegment::Kind::OpeningItem ||
+        segment.m_kind == ListPrefixSegment::Kind::OpeningIndent) {
+      if (!appendListPrefix(source, length, copied, segment.m_markerBegin, prefix, outputColumn)) {
+        return false;
+      }
+      const int width = segment.m_kind == ListPrefixSegment::Kind::OpeningItem
+                            ? segment.m_markerEnd.m_column - segment.m_markerBegin.m_column
+                            : container.m_padding;
+      prefix.append(width, ' ');
+      outputColumn += width;
+      copied = segment.m_markerEnd;
+    } else if (segment.m_kind == ListPrefixSegment::Kind::Lazy) {
+      if (container.m_kind != ListContainerInfo::Kind::Quote ||
+          !appendListPrefix(source, length, copied, segment.m_begin, prefix, outputColumn)) {
+        return false;
+      }
+      prefix.append("> ");
+      outputColumn += 2;
+    }
+  }
+  if (!appendListPrefix(source, length, copied, marker, prefix, outputColumn)) {
+    return false;
+  }
+  item.m_siblingPrefix = QString::fromUtf8(prefix);
+  return true;
+}
+
+bool listContinuationPrefix(const ListStructure &p_structure, int p_item, QString &p_prefix) {
+  p_prefix.clear();
+  if (!p_structure.m_valid || p_item < 0 || p_item >= p_structure.m_items.size()) {
+    return false;
+  }
+  const auto &item = p_structure.m_items.at(p_item);
+  if (!item.m_sourceValid || !item.m_prefixValid) {
+    return false;
+  }
+  p_prefix = item.m_siblingPrefix;
+  return true;
+}
+
+class ListCollector {
+public:
+  ListCollector(ListStructure &p_result, const QByteArray &p_source,
+                const LineOffsetTable &p_offsets, ListMarkerReader &p_markers, int p_offset,
+                int p_startBlock)
+      : m_result(p_result), m_source(p_source), m_offsets(p_offsets), m_markers(p_markers),
+        m_offset(p_offset), m_startBlock(p_startBlock) {}
+
+  // Numbering also needs item-owned quote/footnote prefixes with no inner LIST.
+  void enterNumberContainer(cmark_node *p_node) { ancestorContainers(p_node); }
+
+  void enter(cmark_node *p_node) {
+    const auto type = cmark_node_get_type(p_node);
+    if (type == CMARK_NODE_LIST) {
+      ListInfo list;
+      list.m_parentContainer = ancestorContainers(cmark_node_parent(p_node));
+      list.m_ordered = cmark_node_get_list_type(p_node) == CMARK_ORDERED_LIST;
+      list.m_startNumber = list.m_ordered ? cmark_node_get_list_start(p_node) : 0;
+      list.m_marker = list.m_ordered
+                          ? QLatin1Char(p_node->as.list.delimiter == CMARK_PAREN_DELIM ? ')' : '.')
+                          : QLatin1Char(p_node->as.list.bullet_char);
+      m_lists.insert(p_node, m_result.m_lists.size());
+      m_result.m_lists.append(std::move(list));
+    } else if (type == CMARK_NODE_ITEM) {
+      const auto list = m_lists.constFind(cmark_node_parent(p_node));
+      if (list == m_lists.cend()) {
+        return;
+      }
+      // ITEM-enter, never a LIST's eager sibling loop: nested same-line markers
+      // and all later markers consequently have the same source ordering.
+      ListItemInfo item = m_markers.marker(p_node);
+      item.m_list = list.value();
+      item.m_startBlock = m_startBlock + cmark_node_get_start_line(p_node) - 1;
+      item.m_endBlock = m_startBlock + cmark_node_get_end_line(p_node) - 1;
+      if (item.m_sourceValid) {
+        item.m_markerStart += m_offset;
+        item.m_markerEnd += m_offset;
+        item.m_contentStart += m_offset;
+      }
+      cmark_node *child = cmark_node_first_child(p_node);
+      // The checkbox is literal paragraph content in this cmark fork. Only
+      // that single opening-line paragraph may coexist with an empty task.
+      item.m_empty =
+          item.m_sourceValid && item.m_empty &&
+          (!child || (item.m_task && cmark_node_get_type(child) == CMARK_NODE_PARAGRAPH &&
+                      !cmark_node_next(child) &&
+                      cmark_node_get_start_line(child) == cmark_node_get_start_line(p_node) &&
+                      cmark_node_get_end_line(child) == cmark_node_get_start_line(p_node)));
+      const int index = m_result.m_items.size();
+      ListContainerInfo container;
+      container.m_kind = ListContainerInfo::Kind::Item;
+      container.m_parent = m_result.m_lists.at(item.m_list).m_parentContainer;
+      container.m_item = index;
+      container.m_startBlock = item.m_startBlock;
+      container.m_endBlock = item.m_endBlock;
+      container.m_markerOffset = p_node->as.list.marker_offset;
+      container.m_padding = p_node->as.list.padding;
+      item.m_container = m_result.m_containers.size();
+      m_containers.insert(p_node, item.m_container);
+      m_result.m_containers.append(container);
+      m_result.m_lists[item.m_list].m_items.append(index);
+      m_result.m_items.append(std::move(item));
+      m_result.m_items[index].m_prefixValid = cacheListPrefix(
+          m_result, index, m_source, m_offsets, m_offset, m_startBlock, m_chain, m_segments);
+    } else if (type == CMARK_NODE_PARAGRAPH &&
+               cmark_node_get_type(cmark_node_parent(p_node)) == CMARK_NODE_ITEM) {
+      const auto parent = m_containers.constFind(cmark_node_parent(p_node));
+      if (parent == m_containers.cend()) {
+        return;
+      }
+      const int start = cmark_node_get_start_line(p_node);
+      const int end = cmark_node_get_end_line(p_node);
+      if (start > 0 && end >= start && end <= m_offsets.lineCount()) {
+        ListParagraphInfo paragraph;
+        paragraph.m_startBlock = m_startBlock + start - 1;
+        paragraph.m_endBlock = m_startBlock + end - 1;
+        paragraph.m_item = m_result.m_containers.at(parent.value()).m_item;
+        m_result.m_paragraphs.append(paragraph);
+      }
+    }
+  }
+
+  void finish() {
+    if (!m_result.m_lists.isEmpty()) {
+      m_result.m_source = m_source;
+      std::sort(m_result.m_paragraphs.begin(), m_result.m_paragraphs.end(),
+                [](const ListParagraphInfo &a, const ListParagraphInfo &b) {
+                  return a.m_startBlock < b.m_startBlock;
+                });
+    }
+    m_result.m_valid = true;
+  }
+
+private:
+  // Allocate only ancestors actually needed by a LIST. Quotes/footnotes in a
+  // list-free document never leave records or an allocated ancestor stack.
+  int ancestorContainers(cmark_node *p_node) {
+    m_pendingAncestors.clear();
+    int parent = -1;
+    for (auto *node = p_node; node; node = cmark_node_parent(node)) {
+      const auto known = m_containers.constFind(node);
+      if (known != m_containers.cend()) {
+        parent = known.value();
+        break;
+      }
+      const auto type = cmark_node_get_type(node);
+      if (type == CMARK_NODE_BLOCK_QUOTE || type == CMARK_NODE_FOOTNOTE_DEFINITION) {
+        m_pendingAncestors.append(node);
+      }
+    }
+    for (int i = m_pendingAncestors.size() - 1; i >= 0; --i) {
+      auto *node = m_pendingAncestors.at(i);
+      ListContainerInfo container;
+      const bool quote = cmark_node_get_type(node) == CMARK_NODE_BLOCK_QUOTE;
+      container.m_kind = quote ? ListContainerInfo::Kind::Quote : ListContainerInfo::Kind::Indent;
+      container.m_parent = parent;
+      container.m_startBlock = m_startBlock + cmark_node_get_start_line(node) - 1;
+      container.m_endBlock = m_startBlock + cmark_node_get_end_line(node) - 1;
+      if (!quote) {
+        container.m_markerOffset = node->as.footnote_def.marker_offset;
+        container.m_padding = node->as.footnote_def.padding;
+      }
+      parent = m_result.m_containers.size();
+      m_containers.insert(node, parent);
+      m_result.m_containers.append(container);
+    }
+    return parent;
+  }
+
+  ListStructure &m_result;
+  const QByteArray &m_source;
+  const LineOffsetTable &m_offsets;
+  ListMarkerReader &m_markers;
+  int m_offset;
+  int m_startBlock;
+  QHash<cmark_node *, int> m_lists;
+  QHash<cmark_node *, int> m_containers;
+  QVector<cmark_node *> m_pendingAncestors;
+  QVector<int> m_chain;
+  QVector<ListPrefixSegment> m_segments;
+};
+
+ListStructure parseListStructure(const QByteArray &p_utf8Text, int p_offset, int p_startBlock) {
+  ListStructure result;
+  if (p_utf8Text.isEmpty()) {
+    result.m_valid = true;
+    return result;
+  }
+  cmark_node *doc =
+      cmark_parse_document(p_utf8Text.constData(), p_utf8Text.size(), CMARK_OPT_DEFAULT);
+  if (!doc) {
+    return result;
+  }
+  cmark_iter *iter = cmark_iter_new(doc);
+  if (!iter) {
+    cmark_node_free(doc);
+    return result;
+  }
+  LineOffsetTable offsets(p_utf8Text);
+  ListMarkerReader markers(p_utf8Text, offsets);
+  ListCollector collector(result, p_utf8Text, offsets, markers, p_offset, p_startBlock);
+  cmark_event_type event;
+  while ((event = cmark_iter_next(iter)) != CMARK_EVENT_DONE) {
+    if (event == CMARK_EVENT_ENTER) {
+      collector.enter(cmark_iter_get_node(iter));
+    }
+  }
+  collector.finish();
+  cmark_iter_free(iter);
+  cmark_node_free(doc);
+  return result;
+}
+
+// Number construction is background-only. All positions below refer to the
+// immutable original; even nested width changes are composed before publication.
+static bool listNumberInterrupted() { return QThread::currentThread()->isInterruptionRequested(); }
+
+using ListNumberTree = std::unique_ptr<cmark_node, decltype(&cmark_node_free)>;
+using ListNumberIterator = std::unique_ptr<cmark_iter, decltype(&cmark_iter_free)>;
+
+static int listNumberWidth(int p_number) {
+  int width = 1;
+  while (p_number >= 10) {
+    p_number /= 10;
+    ++width;
+  }
+  return width;
+}
+
+// A connected unit is a LIST and all LISTs below its ITEMs, including intervening
+// quote/footnote containers. Sibling lists outside any common ITEM are independent.
+static bool listNumberRoots(const ListStructure &p_structure, QVector<int> &p_roots,
+                            QVector<int> &p_containerLists) {
+  p_containerLists.fill(-1, p_structure.m_containers.size());
+  for (int index = 0; index < p_structure.m_containers.size(); ++index) {
+    const auto &container = p_structure.m_containers.at(index);
+    if (container.m_parent < -1 || container.m_parent >= index || container.m_startBlock < 0 ||
+        container.m_endBlock < container.m_startBlock) {
+      return false;
+    }
+    int list = container.m_parent < 0 ? -1 : p_containerLists.at(container.m_parent);
+    if (container.m_kind == ListContainerInfo::Kind::Item) {
+      if (container.m_item < 0 || container.m_item >= p_structure.m_items.size()) {
+        return false;
+      }
+      const auto &item = p_structure.m_items.at(container.m_item);
+      if (item.m_container != index || item.m_list < 0 ||
+          item.m_list >= p_structure.m_lists.size()) {
+        return false;
+      }
+      list = item.m_list;
+    }
+    p_containerLists[index] = list;
+  }
+  p_roots.resize(p_structure.m_lists.size());
+  QVector<bool> seen(p_structure.m_items.size(), false);
+  for (int index = 0; index < p_structure.m_lists.size(); ++index) {
+    const auto &list = p_structure.m_lists.at(index);
+    if (list.m_parentContainer < -1 || list.m_parentContainer >= p_containerLists.size()) {
+      return false;
+    }
+    const int parent =
+        list.m_parentContainer < 0 ? -1 : p_containerLists.at(list.m_parentContainer);
+    if (parent >= index) {
+      return false;
+    }
+    p_roots[index] = parent < 0 ? index : p_roots.at(parent);
+    for (int item : list.m_items) {
+      if (item < 0 || item >= seen.size() || seen.at(item) ||
+          p_structure.m_items.at(item).m_list != index) {
+        return false;
+      }
+      seen[item] = true;
+    }
+  }
+  return std::all_of(seen.cbegin(), seen.cend(), [](bool p_seen) { return p_seen; });
+}
+
+static bool sameListNumberAncestors(const ListStructure &p_left, int p_leftContainer,
+                                    const ListStructure &p_right, int p_rightContainer) {
+  while (p_leftContainer >= 0 && p_rightContainer >= 0) {
+    const auto &left = p_left.m_containers.at(p_leftContainer);
+    const auto &right = p_right.m_containers.at(p_rightContainer);
+    if (left.m_kind != right.m_kind || left.m_item != right.m_item ||
+        left.m_startBlock != right.m_startBlock || left.m_endBlock != right.m_endBlock ||
+        left.m_markerOffset != right.m_markerOffset || left.m_padding != right.m_padding) {
+      return false;
+    }
+    p_leftContainer = left.m_parent;
+    p_rightContainer = right.m_parent;
+  }
+  return p_leftContainer == p_rightContainer;
+}
+
+struct ListNumberPendingEdit {
+  ListSourceEdit m_edit;
+  int m_unit = -1;
+};
+
+// Token boundaries keep delimiters, quote markers, task boxes, and footnote labels
+// outside replacements. A split tab may unite two AST segments into one whitespace
+// replacement; that is why edits are recovered from the composed prefix, not from
+// each ancestor independently.
+static bool appendListNumberLineEdits(const QString &p_source, const char *p_line,
+                                      int p_prefixLength, const QByteArray &p_prefix,
+                                      const LineOffsetTable &p_offsets, int p_block,
+                                      const QVector<QPair<int, int>> &p_digits, int p_unit,
+                                      QVector<ListNumberPendingEdit> &p_edits) {
+  int before = 0;
+  int after = 0;
+  int digit = 0;
+  while (before < p_prefixLength || after < p_prefix.size()) {
+    const int begin = before;
+    const int replacement = after;
+    while (digit < p_digits.size() && p_digits.at(digit).second <= before) {
+      ++digit;
+    }
+    if (digit < p_digits.size() && before == p_digits.at(digit).first) {
+      before = p_digits.at(digit).second;
+      while (after < p_prefix.size() && p_prefix.at(after) >= '0' && p_prefix.at(after) <= '9') {
+        ++after;
+      }
+      if (after == replacement || after - replacement > 9) {
+        return false;
+      }
+    } else if ((before < p_prefixLength && listSpaceOrTab(p_line[before])) ||
+               (after < p_prefix.size() && listSpaceOrTab(p_prefix.at(after)))) {
+      while (before < p_prefixLength && listSpaceOrTab(p_line[before])) {
+        ++before;
+      }
+      while (after < p_prefix.size() && listSpaceOrTab(p_prefix.at(after))) {
+        ++after;
+      }
+    } else {
+      if (before >= p_prefixLength || after >= p_prefix.size() ||
+          p_line[before] != p_prefix.at(after)) {
+        return false;
+      }
+      ++before;
+      ++after;
+      continue;
+    }
+    int common = 0;
+    while (begin + common < before && replacement + common < after &&
+           p_line[begin + common] == p_prefix.at(replacement + common)) {
+      ++common;
+    }
+    int oldEnd = before;
+    int newEnd = after;
+    while (oldEnd > begin + common && newEnd > replacement + common &&
+           p_line[oldEnd - 1] == p_prefix.at(newEnd - 1)) {
+      --oldEnd;
+      --newEnd;
+    }
+    if (oldEnd == begin + common && newEnd == replacement + common) {
+      continue;
+    }
+    ListNumberPendingEdit edit;
+    edit.m_unit = p_unit;
+    edit.m_edit.m_start = p_offsets.toDocPosition(p_block + 1, begin + common + 1);
+    edit.m_edit.m_end = p_offsets.toDocPosition(p_block + 1, oldEnd + 1);
+    if (edit.m_edit.m_start < 0 || edit.m_edit.m_end < edit.m_edit.m_start ||
+        edit.m_edit.m_end > p_source.size()) {
+      return false;
+    }
+    edit.m_edit.m_before =
+        p_source.mid(edit.m_edit.m_start, edit.m_edit.m_end - edit.m_edit.m_start);
+    edit.m_edit.m_after = QString::fromUtf8(p_prefix.constData() + replacement + common,
+                                            newEnd - replacement - common);
+    p_edits.append(std::move(edit));
+  }
+  return true;
+}
+
+static bool buildListNumberLine(const QString &p_source, const ListStructure &p_structure,
+                                const LineOffsetTable &p_offsets, int p_block, int p_container,
+                                const QVector<int> &p_numbers, QVector<int> &p_paddingChanges,
+                                QVector<int> &p_chain, QVector<ListPrefixSegment> &p_segments,
+                                QByteArray &p_prefix, QVector<QPair<int, int>> &p_digits,
+                                int p_unit, QVector<ListNumberPendingEdit> &p_edits) {
+  int start = 0;
+  int length = 0;
+  if (!p_offsets.lineByteRange(p_block, start, length)) {
+    return false;
+  }
+  const char *line = p_structure.m_source.constData() + start;
+  ListPrefixCursor consumed;
+  if (!walkListPrefix(p_structure, line, length, p_offsets, p_block + 1, 0, p_block, p_container,
+                      p_chain, p_segments, consumed)) {
+    return false;
+  }
+  const bool opening =
+      std::any_of(p_segments.cbegin(), p_segments.cend(), [](const ListPrefixSegment &p_segment) {
+        return p_segment.m_kind == ListPrefixSegment::Kind::OpeningItem ||
+               p_segment.m_kind == ListPrefixSegment::Kind::OpeningIndent;
+      });
+  if (!opening && firstListNonspace(line, length, consumed).m_byte == length) {
+    return true; // Container-relative blank lines remain byte-for-byte unchanged.
+  }
+
+  p_prefix.clear();
+  p_digits.clear();
+  ListPrefixCursor copied;
+  int column = 0;
+  int newConsumedColumn = 0;
+  for (const auto &segment : p_segments) {
+    const auto &container = p_structure.m_containers.at(segment.m_container);
+    if (segment.m_kind == ListPrefixSegment::Kind::Quote) {
+      const auto marker = firstListNonspace(line, length, segment.m_begin);
+      if (!appendListPrefix(line, length, copied, marker, p_prefix, column) ||
+          column < newConsumedColumn || column - newConsumedColumn > 3) {
+        return false;
+      }
+      newConsumedColumn = column + 1;
+      if (marker.m_byte + 1 < length && listSpaceOrTab(line[marker.m_byte + 1])) {
+        ++newConsumedColumn;
+      }
+    } else if (segment.m_kind == ListPrefixSegment::Kind::Indentation) {
+      const int width = segment.m_end.m_column - segment.m_begin.m_column;
+      const int change = p_paddingChanges.at(segment.m_container);
+      if (width + change < 1) {
+        return false;
+      }
+      if (change != 0) {
+        if (!appendListPrefix(line, length, copied, segment.m_begin, p_prefix, column) ||
+            column != newConsumedColumn) {
+          return false;
+        }
+        // Keep whole tabs whose stops still agree. Only the added/removed tail,
+        // a split tab, or a tab shifted by an outer change needs respelling.
+        auto retained = segment.m_begin;
+        if (!advanceListPrefix(line, length, retained, width + qMin(change, 0), true) ||
+            !appendListPrefix(line, length, copied, retained, p_prefix, column)) {
+          return false;
+        }
+        if (change > 0) {
+          p_prefix.append(change, ' ');
+          column += change;
+        }
+        copied = segment.m_end;
+      }
+      newConsumedColumn += width + change;
+    } else if (segment.m_kind == ListPrefixSegment::Kind::OpeningItem ||
+               segment.m_kind == ListPrefixSegment::Kind::OpeningIndent) {
+      if (!appendListPrefix(line, length, copied, segment.m_markerBegin, p_prefix, column)) {
+        return false;
+      }
+      const int markerOffset = column - newConsumedColumn;
+      if (markerOffset < 0 || markerOffset > 3) {
+        return false;
+      }
+      if (segment.m_kind == ListPrefixSegment::Kind::OpeningIndent) {
+        // cmark's footnote padding counts opener bytes, not rendered columns.
+        auto end = segment.m_markerBegin;
+        end.m_column = column;
+        if (!advanceListPrefix(line, length, end,
+                               segment.m_markerEnd.m_byte - segment.m_markerBegin.m_byte, false)) {
+          return false;
+        }
+        p_prefix.append(line + segment.m_markerBegin.m_byte,
+                        segment.m_markerEnd.m_byte - segment.m_markerBegin.m_byte);
+        copied = segment.m_markerEnd;
+        column = newConsumedColumn = end.m_column;
+        p_paddingChanges[segment.m_container] = markerOffset - container.m_markerOffset;
+        continue;
+      }
+      const auto &item = p_structure.m_items.at(container.m_item);
+      const int number = p_numbers.at(container.m_item);
+      const int oldWidth = item.m_markerEnd - item.m_markerStart;
+      int width = oldWidth;
+      if (p_structure.m_lists.at(item.m_list).m_ordered) {
+        p_digits.append(qMakePair(segment.m_markerBegin.m_byte, segment.m_markerEnd.m_byte - 1));
+      }
+      if (number >= 0) {
+        const auto digits = QByteArray::number(number);
+        p_prefix.append(digits);
+        p_prefix.append(item.m_marker.toLatin1());
+        width = digits.size() + 1;
+      } else {
+        p_prefix.append(line + segment.m_markerBegin.m_byte, oldWidth);
+      }
+      column += width;
+      copied = segment.m_markerEnd;
+      auto afterMarker = copied;
+      afterMarker.m_column = column;
+      auto end = afterMarker;
+      int padding = 0;
+      if (!consumeListOpeningPadding(line, length, width, end, padding)) {
+        return false;
+      }
+      p_paddingChanges[segment.m_container] =
+          markerOffset + padding - container.m_markerOffset - container.m_padding;
+      newConsumedColumn = end.m_column;
+      // Preserve authored marker-to-content whitespace, including tabs. Its new
+      // tab stop determines the new padding; it is not a continuation indent.
+      const auto rawEnd = firstListNonspace(line, length, copied);
+      p_prefix.append(line + copied.m_byte, rawEnd.m_byte - copied.m_byte);
+      if (!advanceListPrefix(line, length, afterMarker, rawEnd.m_byte - copied.m_byte, false)) {
+        return false;
+      }
+      column = afterMarker.m_column;
+      copied = rawEnd;
+    }
+  }
+  auto end = firstListNonspace(line, length, consumed);
+  if (copied.m_byte > end.m_byte) {
+    end = copied;
+  }
+  if (!appendListPrefix(line, length, copied, end, p_prefix, column)) {
+    return false;
+  }
+  return appendListNumberLineEdits(p_source, line, end.m_byte, p_prefix, p_offsets, p_block,
+                                   p_digits, p_unit, p_edits);
+}
+
+class ListNumberPositionMap {
+public:
+  explicit ListNumberPositionMap(const QVector<ListSourceEdit> &p_edits) : m_edits(p_edits) {
+    m_deltas.reserve(p_edits.size() + 1);
+    m_deltas.append(0);
+    for (const auto &edit : p_edits) {
+      m_deltas.append(m_deltas.constLast() + edit.m_after.size() - (edit.m_end - edit.m_start));
+    }
+  }
+
+  qint64 map(int p_position) const {
+    const auto after = std::upper_bound(
+        m_edits.cbegin(), m_edits.cend(), p_position,
+        [](int p_pos, const ListSourceEdit &p_edit) { return p_pos < p_edit.m_start; });
+    const int count = after - m_edits.cbegin();
+    if (count > 0) {
+      const auto &edit = m_edits.at(count - 1);
+      if (p_position < edit.m_end) {
+        return edit.m_start + m_deltas.at(count - 1) +
+               qMin<qint64>(p_position - edit.m_start, edit.m_after.size());
+      }
+    }
+    return p_position + m_deltas.at(count);
+  }
+
+private:
+  const QVector<ListSourceEdit> &m_edits;
+  QVector<qint64> m_deltas;
+};
+
+static cmark_event_type nextListNumberBlock(cmark_iter *p_iter) {
+  cmark_event_type event;
+  do {
+    event = cmark_iter_next(p_iter);
+  } while (event != CMARK_EVENT_DONE && !cmark_node_is_block(cmark_iter_get_node(p_iter)));
+  return event;
+}
+
+// Raw block starts can point at a partially consumed tab (notably indented code).
+// Anchor such a start to its first non-whitespace byte; its relative indentation
+// is independently protected by both the prefix construction and HTML comparison.
+static bool listNumberBlockPositions(cmark_node *p_node, const QByteArray &p_source,
+                                     const LineOffsetTable &p_offsets, int &p_begin, int &p_end) {
+  int start = 0;
+  int length = 0;
+  const int line = cmark_node_get_start_line(p_node);
+  int column = cmark_node_get_start_column(p_node) - 1;
+  if (column < 0 || !p_offsets.lineByteRange(line - 1, start, length) || column > length) {
+    return false;
+  }
+  while (column < length && listSpaceOrTab(p_source.at(start + column))) {
+    ++column;
+  }
+  p_begin = p_offsets.toDocPosition(line, column + 1);
+  const int endLine = cmark_node_get_end_line(p_node);
+  const int endColumn = cmark_node_get_end_column(p_node);
+  if (endColumn < 0 || !p_offsets.lineByteRange(endLine - 1, start, length) || endColumn > length) {
+    return false;
+  }
+  p_end = p_offsets.toDocPosition(endLine, endColumn + 1);
+  return p_end >= p_begin;
+}
+
+static bool sameListNumberBlocks(cmark_node *p_original, cmark_node *p_candidate,
+                                 const QByteArray &p_before, const QByteArray &p_after,
+                                 const LineOffsetTable &p_beforeOffsets,
+                                 const LineOffsetTable &p_afterOffsets,
+                                 const QVector<ListSourceEdit> &p_edits,
+                                 ListCollector &p_collector) {
+  ListNumberIterator original(cmark_iter_new(p_original), &cmark_iter_free);
+  ListNumberIterator candidate(cmark_iter_new(p_candidate), &cmark_iter_free);
+  if (!original || !candidate) {
+    return false;
+  }
+  const ListNumberPositionMap map(p_edits);
+  int visited = 0;
+  for (;;) {
+    if ((++visited & 1023) == 0 && listNumberInterrupted()) {
+      return false;
+    }
+    const auto leftEvent = nextListNumberBlock(original.get());
+    const auto rightEvent = nextListNumberBlock(candidate.get());
+    if (leftEvent != rightEvent) {
+      return false;
+    }
+    if (leftEvent == CMARK_EVENT_DONE) {
+      p_collector.finish();
+      return true;
+    }
+    auto *left = cmark_iter_get_node(original.get());
+    auto *right = cmark_iter_get_node(candidate.get());
+    const auto type = cmark_node_get_type(left);
+    // Matching ENTER/EXIT streams preserve every block's parent, direct sibling
+    // count, and list/item ownership, even for equally rendered nested lists.
+    if (type != cmark_node_get_type(right)) {
+      return false;
+    }
+    if (leftEvent != CMARK_EVENT_ENTER) {
+      continue;
+    }
+    p_collector.enter(right);
+    if (cmark_node_get_start_line(left) != cmark_node_get_start_line(right) ||
+        cmark_node_get_end_line(left) != cmark_node_get_end_line(right)) {
+      return false;
+    }
+    if (type == CMARK_NODE_LIST || type == CMARK_NODE_ITEM) {
+      if (left->as.list.list_type != right->as.list.list_type ||
+          left->as.list.delimiter != right->as.list.delimiter ||
+          left->as.list.bullet_char != right->as.list.bullet_char ||
+          (type == CMARK_NODE_LIST && (left->as.list.tight != right->as.list.tight ||
+                                       left->as.list.start != right->as.list.start))) {
+        return false;
+      }
+    } else if (type != CMARK_NODE_DOCUMENT) {
+      int leftStart = 0;
+      int leftEnd = 0;
+      int rightStart = 0;
+      int rightEnd = 0;
+      if (!listNumberBlockPositions(left, p_before, p_beforeOffsets, leftStart, leftEnd) ||
+          !listNumberBlockPositions(right, p_after, p_afterOffsets, rightStart, rightEnd) ||
+          map.map(leftStart) != rightStart || map.map(leftEnd) != rightEnd) {
+        return false;
+      }
+    }
+  }
+}
+
+bool buildListNumberEdits(const QString &p_source, const ListStructure &p_structure,
+                          const QHash<int, int> &p_listStarts, QVector<ListSourceEdit> &p_edits,
+                          ListStructure &p_after) {
+  p_edits.clear();
+  p_after = ListStructure();
+  if (!p_structure.m_valid || listNumberInterrupted() ||
+      p_source.size() > std::numeric_limits<int>::max() ||
+      p_structure.m_source.size() > std::numeric_limits<int>::max()) {
+    return false;
+  }
+  if (p_listStarts.isEmpty()) {
+    p_after = p_structure;
+    return true;
+  }
+  QVector<int> roots;
+  QVector<int> containerLists;
+  if (!listNumberRoots(p_structure, roots, containerLists)) {
+    return false;
+  }
+  QVector<int> starts(p_structure.m_lists.size(), -1);
+  QVector<bool> requested(p_structure.m_lists.size(), false);
+  QVector<bool> rejected(p_structure.m_lists.size(), false);
+  for (auto target = p_listStarts.cbegin(); target != p_listStarts.cend(); ++target) {
+    if (target.key() < 0 || target.key() >= starts.size()) {
+      return false;
+    }
+    const int root = roots.at(target.key());
+    requested[root] = true;
+    const auto &list = p_structure.m_lists.at(target.key());
+    if (!list.m_ordered || list.m_items.isEmpty() || target.value() < 0 ||
+        target.value() > 999999999 || list.m_items.size() - 1 > 999999999 - target.value()) {
+      rejected[root] = true;
+    } else {
+      starts[target.key()] = target.value();
+    }
+  }
+  for (int listIndex = 0; listIndex < p_structure.m_lists.size(); ++listIndex) {
+    const int root = roots.at(listIndex);
+    if (!requested.at(root) || rejected.at(root)) {
+      continue;
+    }
+    const auto &list = p_structure.m_lists.at(listIndex);
+    int previous = -1;
+    for (int index : list.m_items) {
+      const auto &item = p_structure.m_items.at(index);
+      const int width = item.m_markerEnd - item.m_markerStart;
+      bool valid = item.m_sourceValid && item.m_prefixValid && item.m_markerStart > previous &&
+                   item.m_markerStart >= 0 && item.m_markerEnd <= p_source.size() && width >= 1 &&
+                   item.m_marker == list.m_marker && item.m_startBlock >= 0 &&
+                   item.m_endBlock >= item.m_startBlock && item.m_container >= 0 &&
+                   item.m_container < p_structure.m_containers.size();
+      if (valid) {
+        valid = p_source.at(item.m_markerEnd - 1) == list.m_marker;
+        if (list.m_ordered) {
+          int value = 0;
+          valid = valid && width >= 2 && width <= 10;
+          for (int position = item.m_markerStart; valid && position < item.m_markerEnd - 1;
+               ++position) {
+            const ushort ch = p_source.at(position).unicode();
+            valid = ch >= '0' && ch <= '9';
+            if (valid) {
+              value = value * 10 + ch - '0';
+            }
+          }
+          valid = valid && value == item.m_sourceNumber;
+        } else {
+          valid = valid && width == 1;
+        }
+      }
+      if (!valid) {
+        rejected[root] = true;
+        break;
+      }
+      previous = item.m_markerEnd - 1;
+    }
+  }
+  QVector<int> numbers(p_structure.m_items.size(), -1);
+  bool accepted = false;
+  bool changed = false;
+  for (int index = 0; index < starts.size(); ++index) {
+    if (starts.at(index) < 0 || rejected.at(roots.at(index))) {
+      continue;
+    }
+    accepted = true;
+    const auto &list = p_structure.m_lists.at(index);
+    for (int ordinal = 0; ordinal < list.m_items.size(); ++ordinal) {
+      const int itemIndex = list.m_items.at(ordinal);
+      const auto &item = p_structure.m_items.at(itemIndex);
+      const int number = starts.at(index) + ordinal; // Overflow was preflighted above.
+      numbers[itemIndex] = number;
+      changed = changed || number != item.m_sourceNumber ||
+                listNumberWidth(number) != item.m_markerEnd - item.m_markerStart - 1;
+    }
+  }
+  if (!accepted) {
+    return false;
+  }
+  if (!changed) {
+    p_after = p_structure;
+    return true;
+  }
+  // Refuse partial/offset projections and mismatched callers. This encoding is
+  // temporary; the full QString was decoded only once by the caller's worker.
+  if (p_source.toUtf8() != p_structure.m_source || listNumberInterrupted()) {
+    return false;
+  }
+  ListNumberTree original(cmark_parse_document(p_structure.m_source.constData(),
+                                               p_structure.m_source.size(), CMARK_OPT_DEFAULT),
+                          &cmark_node_free);
+  if (!original || listNumberInterrupted()) {
+    return false;
+  }
+  LineOffsetTable offsets(p_structure.m_source);
+  ListStructure working;
+  ListMarkerReader markers(p_structure.m_source, offsets);
+  ListCollector collector(working, p_structure.m_source, offsets, markers, 0, 0);
+  QVector<cmark_node *> lists;
+  ListNumberIterator iter(cmark_iter_new(original.get()), &cmark_iter_free);
+  if (!iter) {
+    return false;
+  }
+  int visited = 0;
+  cmark_event_type event;
+  while ((event = cmark_iter_next(iter.get())) != CMARK_EVENT_DONE) {
+    if ((++visited & 1023) == 0 && listNumberInterrupted()) {
+      return false;
+    }
+    if (event != CMARK_EVENT_ENTER) {
+      continue;
+    }
+    auto *node = cmark_iter_get_node(iter.get());
+    const auto type = cmark_node_get_type(node);
+    if (type == CMARK_NODE_BLOCK_QUOTE || type == CMARK_NODE_FOOTNOTE_DEFINITION) {
+      // These otherwise-unneeded containers matter when a width change shifts a
+      // tab inside an item-owned quote containing no descendant LIST.
+      collector.enterNumberContainer(node);
+    }
+    collector.enter(node);
+    if (type == CMARK_NODE_LIST) {
+      lists.append(node);
+    }
+  }
+  collector.finish();
+  iter.reset();
+  if (working.m_lists.size() != p_structure.m_lists.size() ||
+      working.m_items.size() != p_structure.m_items.size()) {
+    return false;
+  }
+  for (int index = 0; index < working.m_lists.size(); ++index) {
+    const int root = roots.at(index);
+    if (!requested.at(root) || rejected.at(root)) {
+      continue;
+    }
+    const auto &before = p_structure.m_lists.at(index);
+    const auto &actual = working.m_lists.at(index);
+    bool valid = before.m_items == actual.m_items && before.m_ordered == actual.m_ordered &&
+                 before.m_marker == actual.m_marker &&
+                 before.m_startNumber == actual.m_startNumber &&
+                 sameListNumberAncestors(p_structure, before.m_parentContainer, working,
+                                         actual.m_parentContainer);
+    for (int itemIndex : before.m_items) {
+      const auto &left = p_structure.m_items.at(itemIndex);
+      const auto &right = working.m_items.at(itemIndex);
+      valid = valid && right.m_sourceValid && right.m_prefixValid &&
+              left.m_startBlock == right.m_startBlock && left.m_endBlock == right.m_endBlock &&
+              left.m_markerStart == right.m_markerStart && left.m_markerEnd == right.m_markerEnd &&
+              left.m_contentStart == right.m_contentStart &&
+              left.m_sourceNumber == right.m_sourceNumber && left.m_marker == right.m_marker &&
+              left.m_task == right.m_task &&
+              sameListNumberAncestors(p_structure, left.m_container, working, right.m_container);
+    }
+    if (!valid) {
+      rejected[root] = true;
+    }
+  }
+  QVector<int> actualRoots;
+  if (!listNumberRoots(working, actualRoots, containerLists) || actualRoots != roots ||
+      listNumberInterrupted()) {
+    return false;
+  }
+  QVector<int> paddingChanges(working.m_containers.size(), 0);
+  QVector<int> active;
+  QVector<int> chain;
+  QVector<ListPrefixSegment> segments;
+  QByteArray prefix;
+  QVector<QPair<int, int>> digits;
+  QVector<ListNumberPendingEdit> pending;
+  pending.reserve(working.m_items.size());
+  int nextContainer = 0;
+  for (int block = 0; block < offsets.lineCount(); ++block) {
+    if ((block & 1023) == 0 && listNumberInterrupted()) {
+      return false;
+    }
+    while (!active.isEmpty() && working.m_containers.at(active.constLast()).m_endBlock < block) {
+      active.removeLast();
+    }
+    while (nextContainer < working.m_containers.size() &&
+           working.m_containers.at(nextContainer).m_startBlock == block) {
+      const int parent = working.m_containers.at(nextContainer).m_parent;
+      while (!active.isEmpty() && active.constLast() != parent) {
+        active.removeLast();
+      }
+      if ((active.isEmpty() ? -1 : active.constLast()) != parent) {
+        return false;
+      }
+      active.append(nextContainer++);
+    }
+    if (active.isEmpty()) {
+      continue;
+    }
+    const int container = active.constLast();
+    const int list = containerLists.at(container);
+    if (list < 0) {
+      continue;
+    }
+    const int root = roots.at(list);
+    if (requested.at(root) && !rejected.at(root) &&
+        !buildListNumberLine(p_source, working, offsets, block, container, numbers, paddingChanges,
+                             chain, segments, prefix, digits, root, pending)) {
+      rejected[root] = true;
+    }
+  }
+  if (nextContainer != working.m_containers.size()) {
+    return false;
+  }
+  QVector<ListSourceEdit> edits;
+  edits.reserve(pending.size());
+  qint64 size = p_source.size();
+  int previousEnd = 0;
+  for (auto &entry : pending) {
+    if (rejected.at(entry.m_unit)) {
+      continue;
+    }
+    auto &edit = entry.m_edit;
+    if (edit.m_start < previousEnd || edit.m_start > edit.m_end) {
+      return false;
+    }
+    previousEnd = edit.m_end;
+    size += edit.m_after.size() - edit.m_before.size();
+    edits.append(std::move(edit));
+  }
+  accepted = false;
+  for (int index = 0; index < starts.size(); ++index) {
+    if (starts.at(index) >= 0 && !rejected.at(roots.at(index))) {
+      accepted = true;
+      if (!cmark_node_set_list_start(lists.at(index), starts.at(index))) {
+        return false;
+      }
+    }
+  }
+  if (!accepted || size < 0 || size > std::numeric_limits<int>::max() || listNumberInterrupted()) {
+    return false;
+  }
+  if (edits.isEmpty()) {
+    p_after = p_structure;
+    return true;
+  }
+  QString candidate;
+  candidate.reserve(static_cast<int>(size));
+  int copied = 0;
+  for (const auto &edit : edits) {
+    candidate.append(p_source.constData() + copied, edit.m_start - copied);
+    candidate.append(edit.m_after);
+    copied = edit.m_end;
+  }
+  candidate.append(p_source.constData() + copied, p_source.size() - copied);
+  const auto candidateUtf8 = candidate.toUtf8();
+  if (listNumberInterrupted()) {
+    return false;
+  }
+  ListNumberTree proposed(
+      cmark_parse_document(candidateUtf8.constData(), candidateUtf8.size(), CMARK_OPT_DEFAULT),
+      &cmark_node_free);
+  if (!proposed || listNumberInterrupted()) {
+    return false;
+  }
+  LineOffsetTable candidateOffsets(candidateUtf8);
+  ListStructure after;
+  ListMarkerReader candidateMarkers(candidateUtf8, candidateOffsets);
+  ListCollector candidateCollector(after, candidateUtf8, candidateOffsets, candidateMarkers, 0, 0);
+  if (!sameListNumberBlocks(original.get(), proposed.get(), p_structure.m_source, candidateUtf8,
+                            offsets, candidateOffsets, edits, candidateCollector) ||
+      listNumberInterrupted()) {
+    return false;
+  }
+  for (int index = 0; index < after.m_items.size(); ++index) {
+    const auto &item = after.m_items.at(index);
+    const int root = roots.at(item.m_list);
+    if (requested.at(root) && !rejected.at(root) &&
+        (!item.m_sourceValid || !item.m_prefixValid ||
+         (numbers.at(index) >= 0 &&
+          (item.m_sourceNumber != numbers.at(index) ||
+           item.m_markerEnd - item.m_markerStart - 1 != listNumberWidth(numbers.at(index)))))) {
+      return false;
+    }
+  }
+  // Render inert strings only. The original tree differs solely in accepted LIST
+  // starts; SOURCEPOS is deliberately absent. Each tree owns its allocator.
+  char *beforeHtml = cmark_render_html(original.get(), CMARK_OPT_UNSAFE);
+  if (!beforeHtml) {
+    return false;
+  }
+  if (listNumberInterrupted()) {
+    original->mem->free(beforeHtml);
+    return false;
+  }
+  char *afterHtml = cmark_render_html(proposed.get(), CMARK_OPT_UNSAFE);
+  const bool equivalent = afterHtml && std::strcmp(beforeHtml, afterHtml) == 0;
+  original->mem->free(beforeHtml);
+  proposed->mem->free(afterHtml);
+  if (!equivalent || listNumberInterrupted()) {
+    return false;
+  }
+  p_edits = std::move(edits);
+  p_after = std::move(after);
+  return true;
 }
 
 // Whether a multi-line unit of @p_style must leave the leading indentation of
@@ -202,48 +1564,24 @@ static void addFoldingRegion(ASTWalkResult &p_result, int p_style, int p_startBl
   p_result.foldingRegions.append(region);
 }
 
-static void handleListDirect(cmark_node *p_listNode, const LineOffsetTable &p_offsets,
-                             ASTWalkResult &p_result, int p_startBlock, int p_numBlocks) {
-  cmark_list_type listType = cmark_node_get_list_type(p_listNode);
-  int startNum = cmark_node_get_list_start(p_listNode);
-
-  int itemIdx = 0;
-  for (cmark_node *item = cmark_node_first_child(p_listNode); item != nullptr;
-       item = cmark_node_next(item)) {
-    if (cmark_node_get_type(item) != CMARK_NODE_ITEM) {
-      continue;
-    }
-
-    int sl = cmark_node_get_start_line(item);
-    int sc = cmark_node_get_start_column(item);
-    int docPos = p_offsets.toDocPosition(sl, sc);
-
-    int lineIdx = sl - 1;
-    int blockNum = p_startBlock + lineIdx;
-    if (blockNum < 0 || blockNum >= p_numBlocks) {
-      ++itemIdx;
-      continue;
-    }
-
-    int lineStartQChar = p_offsets.lineStartQCharOffset(lineIdx);
-    int style;
-    int span;
-    if (listType == CMARK_BULLET_LIST) {
-      style = STYLE_LIST_BULLET;
-      span = 1;
-    } else {
-      style = STYLE_LIST_ENUMERATOR;
-      int num = startNum + itemIdx;
-      span = numberWidth(num) + 1;
-    }
-
-    HLUnit unit;
-    unit.start = docPos - lineStartQChar;
-    unit.length = span;
-    unit.styleIndex = style;
-    p_result.blocksHighlights[blockNum].append(unit);
-    ++itemIdx;
+static void handleListDirect(cmark_node *p_itemNode, ListMarkerReader &p_markers,
+                             const LineOffsetTable &p_offsets, ASTWalkResult &p_result,
+                             int p_startBlock, int p_numBlocks) {
+  const int line = cmark_node_get_start_line(p_itemNode) - 1;
+  const int block = p_startBlock + line;
+  if (block < 0 || block >= p_numBlocks) {
+    return;
   }
+  const auto &marker = p_markers.marker(p_itemNode);
+  if (!marker.m_sourceValid) {
+    return;
+  }
+  HLUnit unit;
+  unit.start = marker.m_markerStart - p_offsets.lineStartQCharOffset(line);
+  unit.length = marker.m_markerEnd - marker.m_markerStart;
+  unit.styleIndex = p_itemNode->as.list.list_type == CMARK_ORDERED_LIST ? STYLE_LIST_ENUMERATOR
+                                                                        : STYLE_LIST_BULLET;
+  p_result.blocksHighlights[block].append(unit);
 }
 
 // Return the raw QChar text of the given 0-indexed source line, excluding the
@@ -1113,11 +2451,13 @@ static void extractTypedElement(cmark_node *p_node, cmark_node_type p_type, int 
 }
 
 ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int p_offset,
-                             int p_startBlock, bool p_fast) {
+                             int p_startBlock, bool p_fast, bool p_collectLists) {
+  const bool collectLists = p_collectLists && !p_fast;
   ASTWalkResult result;
   result.blocksHighlights.resize(p_numBlocks);
 
   if (p_utf8Text.isEmpty()) {
+    result.listStructure.m_valid = collectLists;
     return result;
   }
 
@@ -1129,6 +2469,10 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
 
   LineOffsetTable offsets(p_utf8Text);
 
+  ListMarkerReader listMarkers(p_utf8Text, offsets);
+  ListCollector lists(result.listStructure, p_utf8Text, offsets, listMarkers, p_offset,
+                      p_startBlock);
+
   // Decode only when an HTML node needs verified QChar source positions.
   // Ordinary Markdown, including code that merely spells HTML, needs no copy.
   QString text;
@@ -1138,11 +2482,19 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
   RawTextState rawText;
 
   cmark_iter *iter = cmark_iter_new(doc);
+  if (!iter) {
+    cmark_node_free(doc);
+    return result;
+  }
   cmark_event_type ev;
 
   while ((ev = cmark_iter_next(iter)) != CMARK_EVENT_DONE) {
     cmark_node *node = cmark_iter_get_node(iter);
     cmark_node_type type = cmark_node_get_type(node);
+
+    if (collectLists && ev == CMARK_EVENT_ENTER) {
+      lists.enter(node);
+    }
 
     if (type == CMARK_NODE_DOCUMENT) {
       continue;
@@ -1152,8 +2504,11 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
       continue;
     }
 
-    if (type == CMARK_NODE_LIST && ev == CMARK_EVENT_ENTER) {
-      handleListDirect(node, offsets, result, p_startBlock, p_numBlocks);
+    if (type == CMARK_NODE_LIST) {
+      continue;
+    }
+    if (type == CMARK_NODE_ITEM && ev == CMARK_EVENT_ENTER) {
+      handleListDirect(node, listMarkers, offsets, result, p_startBlock, p_numBlocks);
       continue;
     }
 
@@ -1265,6 +2620,9 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
   }
 
   cmark_iter_free(iter);
+  if (collectLists) {
+    lists.finish();
+  }
 
   fontColors.appendHighlights(result, offsets, p_startBlock, text.size());
 

@@ -122,6 +122,17 @@ private slots:
   void testTableSourceFormatUndoRedo();
   void testTableSourceFormatSyntaxBoundaries();
   void testTableSourceFormatIdempotence();
+
+  // AST-aware Enter and opt-in automatic ordered-list source numbering.
+  void testListAstContinuation();
+  void testListAstExitAndSelection();
+  void testListAstCodeAndStaleness();
+  void testListAutoNumberStructuralEdits();
+  void testListAutoNumberNestedWidths();
+  void testListAutoNumberConfigAndReplay();
+  void testListAutoNumberProtectedPositions();
+  void testListAndTableSourceFormatting();
+  void testListAutoNumberStaleWorker();
 };
 } // namespace tests
 

@@ -127,6 +127,7 @@ public:
   QVector<md::CodeElement> m_codeElements;
   QVector<md::MathElement> m_mathElements;
   QVector<md::TableElement> m_tableElements;
+  md::ListStructure m_listStructure;
 
   // Headings with their AST-derived title and anchor text, published to the
   // host through MarkdownHighlighter::headingsUpdated().

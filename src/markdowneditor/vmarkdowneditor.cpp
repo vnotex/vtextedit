@@ -34,57 +34,122 @@
 #include <QScrollBar>
 #include <QStringList>
 #include <QTextLayout>
+#include <QThread>
 #include <QTimer>
 
+#include <algorithm>
 #include <utility>
 
 using namespace vte;
 
 namespace vte {
-// Scheduling and source positions belong to the editor, not to a preview sheet.
-// This QObject child deliberately adds no state to an exported class.
-class TableSourceFormatter final : public QObject {
+class ListSourceWorker final : public QThread {
   Q_OBJECT
 public:
-  explicit TableSourceFormatter(VMarkdownEditor *p_editor)
-      : QObject(p_editor), m_editor(p_editor), m_doc(p_editor->document()) {
-    setObjectName(QStringLiteral("vte_table_source_formatter"));
+  enum class Work { Baseline, Numbering };
+
+  explicit ListSourceWorker(QObject *p_parent) : QThread(p_parent) {}
+
+  void prepare(Work p_work, quint64 p_epoch, quint64 p_generation,
+               const md::ListStructure &p_structure, const QByteArray &p_seed,
+               const QHash<int, int> &p_listStarts) {
+    Q_ASSERT(!isRunning());
+    m_work = p_work;
+    m_epoch = p_epoch;
+    m_generation = p_generation;
+    m_structure = p_structure;
+    m_seed = p_seed;
+    m_starts = p_listStarts;
+    m_edits.clear();
+    m_succeeded = false;
+  }
+
+  const md::ListStructure &structure() const { return m_structure; }
+  const QVector<md::ListSourceEdit> &edits() const { return m_edits; }
+  bool succeeded() const { return m_succeeded; }
+
+protected:
+  void run() Q_DECL_OVERRIDE {
+    if (isInterruptionRequested()) {
+      return;
+    }
+    if (m_work == Work::Baseline) {
+      m_structure = md::parseListStructure(m_seed);
+      m_seed.clear();
+      m_succeeded = m_structure.m_valid && !isInterruptionRequested();
+      return;
+    }
+    // The controller already compared values and digit widths. Decode only a
+    // nonempty proposal, on this thread; the builder owns its two-tree check.
+    const QString source = QString::fromUtf8(m_structure.m_source);
+    if (isInterruptionRequested()) {
+      return;
+    }
+    md::ListStructure after;
+    const bool accepted = md::buildListNumberEdits(source, m_structure, m_starts, m_edits, after);
+    if (!accepted || isInterruptionRequested()) {
+      m_edits.clear();
+      return;
+    }
+    m_structure = std::move(after);
+    m_succeeded = true;
+  }
+
+private:
+  Work m_work = Work::Baseline;
+  quint64 m_epoch = 0;
+  quint64 m_generation = 0;
+  md::ListStructure m_structure;
+  QByteArray m_seed;
+  QHash<int, int> m_starts;
+  QVector<md::ListSourceEdit> m_edits;
+  bool m_succeeded = false;
+};
+
+// Scheduling and source positions belong to the editor, not to a preview sheet.
+// This QObject child deliberately adds no state to an exported class.
+class MarkdownSourceFormatter final : public QObject {
+  Q_OBJECT
+public:
+  explicit MarkdownSourceFormatter(VMarkdownEditor *p_editor)
+      : QObject(p_editor), m_editor(p_editor), m_doc(p_editor->document()),
+        m_worker(new ListSourceWorker(this)) {
+    setObjectName(QStringLiteral("vte_markdown_source_formatter"));
     m_timer.setSingleShot(true);
     m_timer.setTimerType(Qt::PreciseTimer);
     m_timer.setInterval(500);
-    connect(&m_timer, &QTimer::timeout, this, &TableSourceFormatter::attempt);
-    connect(m_doc, &QTextDocument::contentsChange, this, &TableSourceFormatter::contentsChange);
-    connect(m_doc, &QTextDocument::contentsChanged, this, &TableSourceFormatter::contentsChanged);
+    connect(&m_timer, &QTimer::timeout, this, &MarkdownSourceFormatter::attempt);
+    connect(m_doc, &QTextDocument::contentsChange, this, &MarkdownSourceFormatter::contentsChange);
+    connect(m_doc, &QTextDocument::contentsChanged, this,
+            &MarkdownSourceFormatter::contentsChanged);
     connect(m_doc, &QTextDocument::undoCommandAdded, this, [this]() {
       if (!m_applying) {
         m_newUndoCommand = true;
       }
     });
     connect(p_editor->getHighlighter(), &MarkdownHighlighter::highlightCompleted, this,
-            &TableSourceFormatter::queueAttempt);
+            &MarkdownSourceFormatter::queueAttempt);
     connect(p_editor->documentLayout(), &TextDocumentLayout::becameIdle, this,
-            &TableSourceFormatter::queueAttempt);
+            &MarkdownSourceFormatter::queueAttempt);
+    connect(m_worker, &QThread::finished, this, &MarkdownSourceFormatter::workerFinished);
     auto edit = p_editor->getTextEdit();
-    connect(edit, &QTextEdit::cursorPositionChanged, this, &TableSourceFormatter::queueAttempt);
-    connect(edit, &QTextEdit::selectionChanged, this, &TableSourceFormatter::queueAttempt);
+    connect(edit, &QTextEdit::cursorPositionChanged, this, &MarkdownSourceFormatter::queueAttempt);
+    connect(edit, &QTextEdit::selectionChanged, this, &MarkdownSourceFormatter::queueAttempt);
     edit->installEventFilter(this);
     edit->viewport()->installEventFilter(this);
     observeDocument();
   }
 
-  void setEnabled(bool p_enabled) {
-    if (m_enabled == p_enabled) {
-      return;
-    }
-    m_enabled = p_enabled;
-    cancel();
-    m_baseline.clear();
-    m_nextBaseline.clear();
-    if (m_enabled) {
-      captureBaseline();
-    }
-    observeDocument();
+  ~MarkdownSourceFormatter() Q_DECL_OVERRIDE {
+    m_timer.stop();
+    m_worker->requestInterruption();
+    m_worker->quit();
+    m_worker->wait();
   }
+
+  void setEnabled(bool p_tablesEnabled, bool p_listsEnabled);
+  bool handleListReturn();
+  bool takeListReturnSuppression();
 
 protected:
   bool eventFilter(QObject *p_object, QEvent *p_event) Q_DECL_OVERRIDE {
@@ -113,202 +178,969 @@ private:
     QVector<int> m_bordersBefore;
     QVector<int> m_bordersAfter;
     bool m_delimiter = false;
-
     bool map(int p_position, int &p_mapped) const;
   };
 
-  void observeDocument() {
-    m_revision = m_doc->revision();
-    m_characters = m_doc->characterCount();
-    m_undoSteps = m_doc->availableUndoSteps();
-    m_redoSteps = m_doc->availableRedoSteps();
-    m_newUndoCommand = false;
-    m_sourceChanged = false;
-  }
+  struct Mutation {
+    int m_position;
+    int m_removed;
+    int m_added;
+  };
 
-  void cancel() {
-    ++m_generation;
-    m_pending = false;
-    m_timer.stop();
-  }
+  struct SourceRun {
+    int m_old;
+    int m_current;
+    int m_length;
+  };
 
-  QHash<int, int> baselinePositions() const {
-    QHash<int, int> positions;
-    positions.reserve(m_baseline.size());
-    for (int i = 0; i < m_baseline.size(); ++i) {
-      if (m_baseline[i].m_block.isValid()) {
-        positions.insert(m_baseline[i].m_block.position(), i);
-      }
-    }
-    return positions;
-  }
+  struct Marker {
+    QTextBlock m_block;
+    int m_blockStart = 0;
+    int m_blockLength = 0;
+    int m_start = -1;
+    int m_end = -1;
+    int m_ordinal = 0;
+    int m_directOrdinal = 0;
+    int m_list = -1;
+    int m_container = -1;
+    int m_number = 0;
+    QChar m_marker;
+    QString m_prefix;
+    QString m_spelling;
+    bool m_valid = false;
+  };
 
-  void captureBaseline(const QSet<int> &p_deferredBlocks = QSet<int>()) {
-    const auto positions = baselinePositions();
-    m_nextBaseline.resize(0);
-    m_nextBaseline.reserve(m_doc->blockCount());
-    for (auto block = m_doc->begin(); block.isValid(); block = block.next()) {
-      const int old = positions.value(block.position(), -1);
-      const bool retained = old >= 0 && m_baseline[old].m_block == block;
-      if (p_deferredBlocks.contains(block.blockNumber())) {
-        if (retained) {
-          m_nextBaseline.append(m_baseline[old]);
-        }
-        continue;
-      }
-      const QString text = block.text();
-      if (retained && m_baseline[old].m_text == text) {
-        m_nextBaseline.append(m_baseline[old]);
-      } else {
-        m_nextBaseline.append({block, text});
-      }
-    }
-    m_baseline.swap(m_nextBaseline);
-  }
+  struct ListBaseline {
+    QVector<Marker> m_markers;
+    QVector<md::ListInfo> m_lists;
+    QVector<md::ListContainerInfo> m_containers;
+    int m_characters = 0;
+    bool m_valid = false;
+  };
 
-  void contentsChange(int p_position, int p_removed, int p_added) {
-    // Qt clear removes the terminal character as well. Cursor select-all does
-    // not, and a rehighlight does not leave a now-empty document.
-    const bool reset = p_position == 0 && p_added == 0 && p_removed > m_characters - 1 &&
-                       m_doc->characterCount() == 1;
-    if (reset) {
-      cancel();
-      m_baseline.clear();
-      m_nextBaseline.clear();
-      m_reset = !m_doc->isUndoRedoEnabled();
-      if (m_enabled) {
-        captureBaseline();
-      }
-      observeDocument();
-      return;
-    }
-    // The paired setPlainText insertion includes Qt's terminal character;
-    // an ordinary cursor insertion after bare clear never does. Clear itself
-    // need not emit a final contentsChanged, even with undo disabled.
-    if (m_reset && (p_position != 0 || p_removed != 0 || p_added != m_doc->characterCount())) {
-      m_reset = false;
-    }
-    if (!m_applying && (p_removed != 0 || p_added != 0) && m_doc->revision() != m_revision) {
-      m_sourceChanged = true;
-    }
-    m_characters = m_doc->characterCount();
-  }
+  struct SeedBlock {
+    QTextBlock m_block;
+    int m_position;
+    int m_length;
+  };
 
-  void contentsChanged() {
-    if (m_reset) {
-      // setPlainText's paired insertion is complete, still with undo disabled.
-      // No queued reset flag may consume a cursor edit after the load returns.
-      m_reset = false;
-      if (m_enabled) {
-        captureBaseline();
-      }
-      observeDocument();
-      return;
-    }
-    if (m_applying || !m_enabled) {
-      observeDocument();
-      return;
-    }
-    if (!m_sourceChanged || m_doc->revision() == m_revision) {
-      // A nested highlight notification may precede our contentsChange slot.
-      // Do not consume its revision or undo-command evidence here.
-      return;
-    }
-    const int undo = m_doc->availableUndoSteps();
-    const int redo = m_doc->availableRedoSteps();
-    const bool replay =
-        m_doc->isUndoRedoEnabled() &&
-        (undo < m_undoSteps || (undo > m_undoSteps && redo < m_redoSteps && !m_newUndoCommand));
-    if (replay || m_editor->isReadOnly()) {
-      cancel();
-      captureBaseline();
-    } else {
-      ++m_generation;
-      m_pending = true;
-      m_idle.restart();
-      m_timer.start();
-    }
-    observeDocument();
-  }
+  struct Replacement {
+    int m_position;
+    QString m_before;
+    QString m_after;
+    int m_row = -1;
+  };
 
-  void queueAttempt() {
-    if (!m_pending || m_applying || m_queued) {
-      return;
-    }
-    m_queued = true;
-    const auto generation = m_generation;
-    QTimer::singleShot(0, this, [this, generation]() {
-      m_queued = false;
-      if (generation == m_generation) {
-        attempt();
-      } else if (m_pending) {
-        queueAttempt();
-      }
-    });
-  }
+  struct Endpoints {
+    QVector<int> m_positions;
+    bool m_overridden = false;
+  };
 
-  void attempt() {
-    if (!m_enabled || !m_pending || m_applying) {
-      return;
-    }
-    if (m_editor->isReadOnly()) {
-      cancel();
-      captureBaseline();
-      return;
-    }
-    if (m_idle.elapsed() < 500) {
-      m_timer.start(500 - int(m_idle.elapsed()));
-      return;
-    }
-    auto layout = m_editor->documentLayout();
-    if (layout->isBusy()) {
-      layout->requestIdleNotification();
-      return;
-    }
-    auto edit = m_editor->getTextEdit();
-    if (edit->isViewportWidgetFocused() ||
-        !edit->getSelections().getAdditionalSelections().isEmpty()) {
-      return;
-    }
-    for (auto block = m_doc->begin(); block.isValid(); block = block.next()) {
-      if (block.layout() && !block.layout()->preeditAreaText().isEmpty()) {
-        return;
-      }
-    }
-    const auto highlighter = m_editor->getHighlighter();
-    // Highlight-only edit blocks advance document revision without invalidating
-    // the AST. formatTables snapshots and rechecks the live revision at apply.
-    if (!highlighter->m_result || !highlighter->m_result->matched(highlighter->m_timeStamp)) {
-      return;
-    }
-    formatTables(highlighter->m_result->m_tableElements);
-  }
+  void observeDocument();
+  void resetBaselines();
+  QHash<int, int> baselinePositions() const;
+  void captureBaseline(const QSet<int> &p_deferredBlocks = QSet<int>());
+  void contentsChange(int p_position, int p_removed, int p_added);
+  void contentsChanged();
+  bool hasPending() const;
+  void queueAttempt();
+  void attempt();
+  bool guarded() const;
+  const MarkdownHighlighterResult *freshResult() const;
 
+  void beginListEpoch();
+  void startSeed();
+  void releaseWorkerResult();
+  void workerFinished();
+  void bindListBaseline(const md::ListStructure &p_structure,
+                        const QVector<SeedBlock> *p_seedBlocks = nullptr,
+                        const QVector<Replacement> &p_afterEdits = {});
+  bool survivingSource(QVector<SourceRun> &p_runs) const;
+  QVector<Marker> currentMarkers(const md::ListStructure &p_structure,
+                                 const QVector<SeedBlock> *p_seedBlocks = nullptr,
+                                 const QVector<Replacement> &p_afterEdits = {}) const;
+  QHash<int, int> changedLists(const md::ListStructure &p_structure) const;
+  static bool needsNumbering(const md::ListStructure &p_structure, const QHash<int, int> &p_starts);
+  static bool sameMarker(const Marker &p_left, const Marker &p_right);
+  void prepareLists(const MarkdownHighlighterResult &p_result);
+
+  Endpoints endpoints() const;
   bool prepareTable(const md::TableElement &p_table, QVector<Row> &p_rows) const;
-  void formatTables(const QVector<md::TableElement> &p_tables);
+  void prepareTables(const QVector<md::TableElement> &p_tables, const Endpoints &p_endpoints,
+                     QVector<Row> &p_rows, QSet<int> &p_deferred) const;
+  bool apply(const QVector<Row> &p_rows, const QVector<md::ListSourceEdit> &p_listEdits,
+             Endpoints p_endpoints, quint64 p_generation, int p_revision, bool p_tables,
+             bool p_lists);
 
   VMarkdownEditor *m_editor;
   QTextDocument *m_doc;
+  ListSourceWorker *m_worker;
   QTimer m_timer;
   QElapsedTimer m_idle;
   QVector<Baseline> m_baseline;
   QVector<Baseline> m_nextBaseline;
+  ListBaseline m_listBaseline;
+  QVector<Mutation> m_mutations;
+  QVector<SeedBlock> m_seedBlocks;
+  QByteArray m_seed;
+  int m_seedCharacters = 0;
   quint64 m_generation = 0;
+  quint64 m_epoch = 0;
+  quint64 m_jobEpoch = 0;
+  quint64 m_jobGeneration = 0;
+  TimeStamp m_jobTimeStamp = 0;
+  ListSourceWorker::Work m_jobWork = ListSourceWorker::Work::Baseline;
   int m_revision = 0;
   int m_characters = 1;
   int m_undoSteps = 0;
   int m_redoSteps = 0;
   bool m_enabled = false;
+  bool m_listsEnabled = false;
   bool m_pending = false;
+  bool m_listsPending = false;
+  bool m_seedRequired = false;
+  bool m_workerActive = false;
+  bool m_numberingReady = false;
   bool m_queued = false;
   bool m_applying = false;
   bool m_reset = false;
   bool m_sourceChanged = false;
   bool m_newUndoCommand = false;
+  bool m_listReturnSuppressed = false;
 };
 
-bool TableSourceFormatter::prepareTable(const md::TableElement &p_table,
-                                        QVector<Row> &p_rows) const {
+void MarkdownSourceFormatter::setEnabled(bool p_tablesEnabled, bool p_listsEnabled) {
+  if (m_enabled == p_tablesEnabled && m_listsEnabled == p_listsEnabled) {
+    return;
+  }
+  if (m_enabled != p_tablesEnabled) {
+    m_enabled = p_tablesEnabled;
+    m_pending = false;
+    m_baseline.clear();
+    m_nextBaseline.clear();
+    if (m_enabled) {
+      captureBaseline();
+    }
+  }
+  if (m_listsEnabled != p_listsEnabled) {
+    m_listsEnabled = p_listsEnabled;
+    beginListEpoch();
+  }
+  // A config change is not source activity. In particular it must neither
+  // restart the other mode's deadline nor consume its undo/revision evidence.
+  if (!hasPending()) {
+    m_timer.stop();
+  } else {
+    queueAttempt();
+  }
+}
+
+void MarkdownSourceFormatter::observeDocument() {
+  m_revision = m_doc->revision();
+  m_characters = m_doc->characterCount();
+  m_undoSteps = m_doc->availableUndoSteps();
+  m_redoSteps = m_doc->availableRedoSteps();
+  m_newUndoCommand = false;
+  m_sourceChanged = false;
+}
+
+void MarkdownSourceFormatter::resetBaselines() {
+  ++m_generation;
+  m_pending = false;
+  m_timer.stop();
+  m_baseline.clear();
+  m_nextBaseline.clear();
+  if (m_enabled) {
+    captureBaseline();
+  }
+  beginListEpoch();
+}
+
+QHash<int, int> MarkdownSourceFormatter::baselinePositions() const {
+  QHash<int, int> positions;
+  positions.reserve(m_baseline.size());
+  for (int i = 0; i < m_baseline.size(); ++i) {
+    if (m_baseline[i].m_block.isValid()) {
+      positions.insert(m_baseline[i].m_block.position(), i);
+    }
+  }
+  return positions;
+}
+
+void MarkdownSourceFormatter::captureBaseline(const QSet<int> &p_deferredBlocks) {
+  const auto positions = baselinePositions();
+  m_nextBaseline.resize(0);
+  m_nextBaseline.reserve(m_doc->blockCount());
+  for (auto block = m_doc->begin(); block.isValid(); block = block.next()) {
+    const int old = positions.value(block.position(), -1);
+    const bool retained = old >= 0 && m_baseline[old].m_block == block;
+    if (p_deferredBlocks.contains(block.blockNumber())) {
+      if (retained) {
+        m_nextBaseline.append(m_baseline[old]);
+      }
+      continue;
+    }
+    const QString text = block.text();
+    if (retained && m_baseline[old].m_text == text) {
+      m_nextBaseline.append(m_baseline[old]);
+    } else {
+      m_nextBaseline.append({block, text});
+    }
+  }
+  m_baseline.swap(m_nextBaseline);
+}
+
+void MarkdownSourceFormatter::contentsChange(int p_position, int p_removed, int p_added) {
+  const bool reset = p_position == 0 && p_added == 0 && p_removed > m_characters - 1 &&
+                     m_doc->characterCount() == 1;
+  if (reset) {
+    m_reset = !m_doc->isUndoRedoEnabled();
+    resetBaselines();
+    observeDocument();
+    return;
+  }
+  if (m_reset && (p_position != 0 || p_removed != 0 || p_added != m_doc->characterCount())) {
+    m_reset = false;
+  }
+  // QTextDocument reports document-wide format changes as a replacement that
+  // includes its terminal character. A cursor source replacement cannot cover
+  // that character; clear/setPlainText resets were handled above. Treating this
+  // as deleted source would erase every baseline marker during a rehighlight.
+  if (!m_reset && p_position == 0 && p_removed == p_added && p_removed == m_characters &&
+      p_added == m_doc->characterCount()) {
+    if (!m_sourceChanged && !m_applying) {
+      observeDocument();
+    }
+    return;
+  }
+  if ((p_removed != 0 || p_added != 0) && m_doc->revision() != m_revision) {
+    // This slot never visits a marker, copies source or follows a block chain.
+    // The shared apply path records its own exact edits separately.
+    if (m_listsEnabled && !m_reset && !m_applying) {
+      if (!m_mutations.isEmpty() && p_removed == 0 && m_mutations.last().m_removed == 0 &&
+          p_position == m_mutations.last().m_position + m_mutations.last().m_added) {
+        m_mutations.last().m_added += p_added;
+      } else {
+        m_mutations.append({p_position, p_removed, p_added});
+      }
+    }
+    if (!m_applying) {
+      ++m_generation;
+      m_sourceChanged = true;
+      if (m_workerActive && m_jobWork == ListSourceWorker::Work::Numbering) {
+        m_worker->requestInterruption();
+      }
+    }
+  }
+  m_characters = m_doc->characterCount();
+}
+
+void MarkdownSourceFormatter::contentsChanged() {
+  if (m_reset) {
+    m_reset = false;
+    resetBaselines();
+    observeDocument();
+    return;
+  }
+  if (m_applying || (!m_enabled && !m_listsEnabled)) {
+    observeDocument();
+    return;
+  }
+  if (!m_sourceChanged || m_doc->revision() == m_revision) {
+    return;
+  }
+  const int undo = m_doc->availableUndoSteps();
+  const int redo = m_doc->availableRedoSteps();
+  const bool replay =
+      m_doc->isUndoRedoEnabled() &&
+      (undo < m_undoSteps || (undo > m_undoSteps && redo < m_redoSteps && !m_newUndoCommand));
+  if (replay) {
+    resetBaselines();
+  } else {
+    if (m_editor->isReadOnly()) {
+      m_pending = false;
+      if (m_enabled) {
+        captureBaseline();
+      }
+    } else {
+      m_pending = m_pending || m_enabled;
+    }
+    m_listsPending = m_listsPending || m_listsEnabled;
+    m_idle.restart();
+    m_timer.start();
+  }
+  observeDocument();
+}
+
+bool MarkdownSourceFormatter::hasPending() const {
+  return m_pending || m_listsPending || m_seedRequired || m_numberingReady;
+}
+
+void MarkdownSourceFormatter::queueAttempt() {
+  if (!hasPending() || m_applying || m_queued) {
+    return;
+  }
+  m_queued = true;
+  QTimer::singleShot(0, this, [this]() {
+    m_queued = false;
+    attempt();
+  });
+}
+
+const MarkdownHighlighterResult *MarkdownSourceFormatter::freshResult() const {
+  const auto highlighter = m_editor->getHighlighter();
+  if (!highlighter->m_result || !highlighter->m_result->matched(highlighter->m_timeStamp)) {
+    return nullptr;
+  }
+  return highlighter->m_result.data();
+}
+
+bool MarkdownSourceFormatter::guarded() const {
+  if (m_editor->isReadOnly() || m_applying || !m_idle.isValid() || m_idle.elapsed() < 500) {
+    return false;
+  }
+  auto layout = m_editor->documentLayout();
+  if (layout->isBusy()) {
+    layout->requestIdleNotification();
+    return false;
+  }
+  auto edit = m_editor->getTextEdit();
+  if (edit->isViewportWidgetFocused() ||
+      !edit->getSelections().getAdditionalSelections().isEmpty()) {
+    return false;
+  }
+  for (auto block = m_doc->begin(); block.isValid(); block = block.next()) {
+    if (block.layout() && !block.layout()->preeditAreaText().isEmpty()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void MarkdownSourceFormatter::beginListEpoch() {
+  ++m_epoch;
+  m_listsPending = false;
+  m_seedRequired = false;
+  m_numberingReady = false;
+  m_seed.clear();
+  m_seedBlocks.clear();
+  m_mutations.clear();
+  m_listBaseline = {};
+  if (m_workerActive) {
+    m_worker->requestInterruption();
+  } else {
+    releaseWorkerResult();
+  }
+  if (!m_listsEnabled) {
+    return;
+  }
+  if (m_doc->isEmpty()) {
+    m_listBaseline.m_valid = true;
+    return;
+  }
+  if (const auto result = freshResult()) {
+    if (result->m_listStructure.m_valid) {
+      bindListBaseline(result->m_listStructure);
+      return;
+    }
+  }
+  // Once per epoch, before returning to the caller which may immediately edit.
+  // Keep this seed (not a later highlight) until its old markers are bound.
+  m_seed = m_doc->toPlainText().toUtf8();
+  m_seedCharacters = m_doc->characterCount() - 1;
+  m_seedBlocks.reserve(m_doc->blockCount());
+  for (auto block = m_doc->begin(); block.isValid(); block = block.next()) {
+    m_seedBlocks.append({block, block.position(), block.length()});
+  }
+  m_seedRequired = true;
+  startSeed();
+}
+
+void MarkdownSourceFormatter::releaseWorkerResult() {
+  Q_ASSERT(!m_workerActive);
+  m_worker->prepare(ListSourceWorker::Work::Baseline, m_epoch, m_generation, {}, {}, {});
+}
+
+void MarkdownSourceFormatter::startSeed() {
+  if (!m_listsEnabled || !m_seedRequired || m_workerActive) {
+    return;
+  }
+  m_jobWork = ListSourceWorker::Work::Baseline;
+  m_jobEpoch = m_epoch;
+  m_jobGeneration = m_generation;
+  m_worker->prepare(m_jobWork, m_jobEpoch, m_jobGeneration, {}, m_seed, {});
+  m_seed.clear();
+  m_workerActive = true;
+  m_worker->start();
+}
+
+void MarkdownSourceFormatter::workerFinished() {
+  m_workerActive = false;
+  if (!m_listsEnabled || m_jobEpoch != m_epoch) {
+    releaseWorkerResult();
+    startSeed();
+    queueAttempt();
+    return;
+  }
+  if (m_jobWork == ListSourceWorker::Work::Baseline) {
+    if (m_worker->succeeded()) {
+      // Do not require the source generation to match: the seed intentionally
+      // predates immediate edits. Its journal has not been cleared meanwhile.
+      bindListBaseline(m_worker->structure(), &m_seedBlocks);
+    }
+    m_seedRequired = false;
+    m_seedBlocks.clear();
+    releaseWorkerResult();
+  } else {
+    const auto result = freshResult();
+    if (m_jobGeneration == m_generation && result && result->m_timeStamp == m_jobTimeStamp) {
+      if (m_worker->succeeded()) {
+        m_numberingReady = true;
+      } else {
+        // A rejected batch is consumed. Only a later real structural change
+        // can schedule it again; cursor/layout notifications cannot spin it.
+        bindListBaseline(result->m_listStructure);
+        m_listsPending = false;
+        releaseWorkerResult();
+      }
+    } else {
+      releaseWorkerResult();
+    }
+  }
+  queueAttempt();
+}
+
+QVector<MarkdownSourceFormatter::Marker>
+MarkdownSourceFormatter::currentMarkers(const md::ListStructure &p_structure,
+                                        const QVector<SeedBlock> *p_seedBlocks,
+                                        const QVector<Replacement> &p_afterEdits) const {
+  QVector<Marker> markers;
+  markers.reserve(p_structure.m_items.size());
+  int previousBlock = -1;
+  int cachedBlock = -1;
+  int ordinal = 0;
+  int sourceBlock = 0;
+  int sourceLine = 0;
+  int sourceEnd = -1;
+  QString line;
+  int editIndex = 0;
+  int delta = 0;
+  for (const auto &item : p_structure.m_items) {
+    Marker marker;
+    marker.m_list = item.m_list;
+    marker.m_container = item.m_container;
+    marker.m_number = item.m_sourceNumber;
+    marker.m_marker = item.m_marker;
+    marker.m_ordinal = item.m_startBlock == previousBlock ? ++ordinal : (ordinal = 0);
+    if (item.m_startBlock < 0 || !item.m_sourceValid) {
+      markers.append(std::move(marker));
+      previousBlock = item.m_startBlock;
+      continue;
+    }
+    int start = item.m_markerStart;
+    int end = item.m_markerEnd;
+    if (p_seedBlocks) {
+      if (item.m_startBlock >= p_seedBlocks->size()) {
+        markers.append(std::move(marker));
+        previousBlock = item.m_startBlock;
+        continue;
+      }
+      const auto &captured = (*p_seedBlocks)[item.m_startBlock];
+      marker.m_block = captured.m_block;
+      marker.m_blockStart = captured.m_position;
+      marker.m_blockLength = captured.m_length;
+      if (cachedBlock != item.m_startBlock) {
+        while (sourceBlock < item.m_startBlock) {
+          const int newline = p_structure.m_source.indexOf('\n', sourceLine);
+          if (newline < 0) {
+            sourceLine = p_structure.m_source.size();
+            break;
+          }
+          sourceLine = newline + 1;
+          ++sourceBlock;
+        }
+        sourceEnd = p_structure.m_source.indexOf('\n', sourceLine);
+        if (sourceEnd < 0) {
+          sourceEnd = p_structure.m_source.size();
+        }
+        line = QString::fromUtf8(p_structure.m_source.constData() + sourceLine,
+                                 sourceEnd - sourceLine);
+        cachedBlock = item.m_startBlock;
+      }
+    } else {
+      marker.m_block = m_doc->findBlockByNumber(item.m_startBlock);
+      if (!marker.m_block.isValid()) {
+        markers.append(std::move(marker));
+        previousBlock = item.m_startBlock;
+        continue;
+      }
+      marker.m_blockStart = marker.m_block.position();
+      marker.m_blockLength = marker.m_block.length();
+      while (editIndex < p_afterEdits.size() &&
+             p_afterEdits[editIndex].m_position + p_afterEdits[editIndex].m_before.size() < start) {
+        delta += p_afterEdits[editIndex].m_after.size() - p_afterEdits[editIndex].m_before.size();
+        ++editIndex;
+      }
+      // Table prefixes retain the exact marker spelling and offset. No list
+      // marker lies in a table cell, so an enclosing row preserves this offset.
+      start += delta;
+      end += delta;
+      if (cachedBlock != item.m_startBlock) {
+        line = marker.m_block.text();
+        cachedBlock = item.m_startBlock;
+      }
+    }
+    const int offset = start - marker.m_blockStart;
+    const int length = end - start;
+    if (offset >= 0 && length > 0 && offset <= line.size() && length <= line.size() - offset) {
+      marker.m_start = start;
+      marker.m_end = end;
+      marker.m_prefix = line.left(offset);
+      marker.m_spelling = line.mid(offset, length);
+      md::ListItemInfo scanned;
+      marker.m_valid =
+          md::scanListMarker(line, offset, scanned) && scanned.m_markerEnd == offset + length &&
+          scanned.m_marker == item.m_marker && scanned.m_sourceNumber == item.m_sourceNumber;
+    }
+    markers.append(std::move(marker));
+    previousBlock = item.m_startBlock;
+  }
+  for (const auto &list : p_structure.m_lists) {
+    for (int i = 0; i < list.m_items.size(); ++i) {
+      markers[list.m_items[i]].m_directOrdinal = i;
+    }
+  }
+  return markers;
+}
+
+void MarkdownSourceFormatter::bindListBaseline(const md::ListStructure &p_structure,
+                                               const QVector<SeedBlock> *p_seedBlocks,
+                                               const QVector<Replacement> &p_afterEdits) {
+  m_listBaseline.m_markers = currentMarkers(p_structure, p_seedBlocks, p_afterEdits);
+  m_listBaseline.m_lists = p_structure.m_lists;
+  m_listBaseline.m_containers = p_structure.m_containers;
+  m_listBaseline.m_characters = p_seedBlocks ? m_seedCharacters : m_doc->characterCount() - 1;
+  m_listBaseline.m_valid = p_structure.m_valid;
+  if (!p_seedBlocks) {
+    m_mutations.clear();
+  }
+}
+
+bool MarkdownSourceFormatter::survivingSource(QVector<SourceRun> &p_runs) const {
+  // Build an implicit piece tree from the coalesced journal, not one marker
+  // update per key. Splitting/splicing costs O(log journal); the final ordered
+  // run sweep applies suffix deltas to every unaffected marker just once.
+  struct Pieces {
+    struct Node {
+      int left = 0;
+      int right = 0;
+      int old = -1;
+      int length = 0;
+      int total = 0;
+      quint32 priority = 0;
+    };
+    QVector<Node> nodes{Node{}};
+    quint32 state = 0x9e3779b9U;
+    int size(int n) const { return nodes[n].total; }
+    void update(int n) {
+      if (n) {
+        nodes[n].total = size(nodes[n].left) + nodes[n].length + size(nodes[n].right);
+      }
+    }
+    int make(int old, int length) {
+      if (length <= 0) {
+        return 0;
+      }
+      state ^= state << 13;
+      state ^= state >> 17;
+      state ^= state << 5;
+      nodes.append({0, 0, old, length, length, state});
+      return nodes.size() - 1;
+    }
+    int merge(int left, int right) {
+      if (!left || !right) {
+        return left ? left : right;
+      }
+      if (nodes[left].priority < nodes[right].priority) {
+        nodes[left].right = merge(nodes[left].right, right);
+        update(left);
+        return left;
+      }
+      nodes[right].left = merge(left, nodes[right].left);
+      update(right);
+      return right;
+    }
+    std::pair<int, int> split(int root, int position) {
+      if (!root) {
+        return {0, 0};
+      }
+      const int leftSize = size(nodes[root].left);
+      if (position <= leftSize) {
+        const auto parts = split(nodes[root].left, position);
+        nodes[root].left = 0;
+        update(root);
+        return {parts.first, merge(parts.second, root)};
+      }
+      if (position >= leftSize + nodes[root].length) {
+        const auto parts = split(nodes[root].right, position - leftSize - nodes[root].length);
+        nodes[root].right = 0;
+        update(root);
+        return {merge(root, parts.first), parts.second};
+      }
+      const int cut = position - leftSize;
+      const int right = nodes[root].right;
+      const int old = nodes[root].old < 0 ? -1 : nodes[root].old + cut;
+      const int fragment = make(old, nodes[root].length - cut);
+      nodes[root].length = cut;
+      nodes[root].right = 0;
+      update(root);
+      return {root, merge(fragment, right)};
+    }
+    void collect(int root, int &position, QVector<SourceRun> &runs) const {
+      if (!root) {
+        return;
+      }
+      const auto &node = nodes[root];
+      collect(node.left, position, runs);
+      if (node.old >= 0) {
+        if (!runs.isEmpty() && runs.last().m_old + runs.last().m_length == node.old &&
+            runs.last().m_current + runs.last().m_length == position) {
+          runs.last().m_length += node.length;
+        } else {
+          runs.append({node.old, position, node.length});
+        }
+      }
+      position += node.length;
+      collect(node.right, position, runs);
+    }
+  } pieces;
+  pieces.nodes.reserve(3 * m_mutations.size() + 2);
+  int root = pieces.make(0, m_listBaseline.m_characters);
+  for (const auto &change : m_mutations) {
+    if (change.m_position < 0 || change.m_position > pieces.size(root) || change.m_removed < 0 ||
+        change.m_removed > pieces.size(root) - change.m_position) {
+      return false;
+    }
+    const auto before = pieces.split(root, change.m_position);
+    const auto after = pieces.split(before.second, change.m_removed);
+    root = pieces.merge(pieces.merge(before.first, pieces.make(-1, change.m_added)), after.second);
+  }
+  p_runs.reserve(m_mutations.size() + 1);
+  int position = 0;
+  pieces.collect(root, position, p_runs);
+  return position == m_doc->characterCount() - 1;
+}
+
+bool MarkdownSourceFormatter::sameMarker(const Marker &p_left, const Marker &p_right) {
+  return p_left.m_valid && p_right.m_valid && p_left.m_marker == p_right.m_marker &&
+         p_left.m_spelling == p_right.m_spelling && p_left.m_prefix == p_right.m_prefix;
+}
+
+QHash<int, int> MarkdownSourceFormatter::changedLists(const md::ListStructure &p_structure) const {
+  const auto current = currentMarkers(p_structure);
+  const auto &old = m_listBaseline.m_markers;
+  QVector<SourceRun> runs;
+  if (!survivingSource(runs)) {
+    return {};
+  }
+  QVector<int> currentToOld(current.size(), -1);
+  QVector<int> oldToCurrent(old.size(), -1);
+  QVector<bool> broadRecovery(old.size(), false);
+  QHash<quint64, int> liveMarkers;
+  liveMarkers.reserve(current.size());
+  const auto blockKey = [](int p_position, int p_ordinal) {
+    return (quint64(quint32(p_position)) << 32) | quint32(p_ordinal);
+  };
+  for (int i = 0; i < current.size(); ++i) {
+    if (current[i].m_valid) {
+      liveMarkers.insert(blockKey(current[i].m_blockStart, current[i].m_ordinal), i);
+    }
+  }
+  int run = 0;
+  int next = 0;
+  for (int i = 0; i < old.size(); ++i) {
+    const auto &marker = old[i];
+    if (!marker.m_valid) {
+      continue;
+    }
+    while (run < runs.size() && runs[run].m_old + runs[run].m_length <= marker.m_start) {
+      ++run;
+    }
+    if (run < runs.size() && runs[run].m_old < marker.m_end) {
+      const int surviving = qMax(marker.m_start, runs[run].m_old);
+      const int position = runs[run].m_current + surviving - runs[run].m_old;
+      while (next < current.size() && (!current[next].m_valid || current[next].m_end <= position)) {
+        ++next;
+      }
+      if (next < current.size() && current[next].m_start <= position && currentToOld[next] < 0) {
+        currentToOld[next] = i;
+        oldToCurrent[i] = next;
+      }
+    } else {
+      // A real deletion can leave its first QTextBlock on the following item.
+      // Never use that boundary handle as an identity. A *whole interior*
+      // block surviving a removed span, however, proves Qt coalesced several
+      // edits into one broad notification rather than deleting this block.
+      const int gapStart = run ? runs[run - 1].m_old + runs[run - 1].m_length : 0;
+      const int gapEnd = run < runs.size() ? runs[run].m_old : m_listBaseline.m_characters;
+      broadRecovery[i] = marker.m_block.isValid() && marker.m_blockStart > gapStart &&
+                         marker.m_blockStart + marker.m_blockLength - 1 <= gapEnd;
+    }
+  }
+  for (int i = 0; i < old.size(); ++i) {
+    if (!broadRecovery[i] || oldToCurrent[i] >= 0) {
+      continue;
+    }
+    const int candidate =
+        liveMarkers.value(blockKey(old[i].m_block.position(), old[i].m_ordinal), -1);
+    if (candidate >= 0 && currentToOld[candidate] < 0 && sameMarker(old[i], current[candidate])) {
+      oldToCurrent[i] = candidate;
+      currentToOld[candidate] = i;
+    }
+  }
+  // Reconcile displaced boundary handles from direct surviving neighbours.
+  // Do not search equal text elsewhere: an identical newly pasted LIST with
+  // no surviving anchor remains new. Each marker is considered at most twice.
+  for (const auto &list : p_structure.m_lists) {
+    int previous = -1;
+    for (int item : list.m_items) {
+      if (currentToOld[item] >= 0) {
+        previous = currentToOld[item];
+        continue;
+      }
+      if (previous < 0 || old[previous].m_list < 0) {
+        continue;
+      }
+      const auto &siblings = m_listBaseline.m_lists[old[previous].m_list].m_items;
+      const int ordinal = old[previous].m_directOrdinal + 1;
+      if (ordinal < siblings.size()) {
+        const int candidate = siblings[ordinal];
+        if (oldToCurrent[candidate] < 0 && sameMarker(old[candidate], current[item])) {
+          oldToCurrent[candidate] = item;
+          currentToOld[item] = candidate;
+          previous = candidate;
+          continue;
+        }
+      }
+      previous = -1;
+    }
+    int following = -1;
+    for (int ordinal = list.m_items.size() - 1; ordinal >= 0; --ordinal) {
+      const int item = list.m_items[ordinal];
+      if (currentToOld[item] >= 0) {
+        following = currentToOld[item];
+        continue;
+      }
+      if (following < 0 || old[following].m_list < 0) {
+        continue;
+      }
+      const auto &siblings = m_listBaseline.m_lists[old[following].m_list].m_items;
+      const int previousOrdinal = old[following].m_directOrdinal - 1;
+      if (previousOrdinal >= 0) {
+        const int candidate = siblings[previousOrdinal];
+        if (oldToCurrent[candidate] < 0 && sameMarker(old[candidate], current[item])) {
+          oldToCurrent[candidate] = item;
+          currentToOld[item] = candidate;
+          following = candidate;
+          continue;
+        }
+      }
+      following = -1;
+    }
+  }
+
+  const auto &containers = p_structure.m_containers;
+  const auto &oldContainers = m_listBaseline.m_containers;
+  QVector<int> containerToOld(containers.size(), -1);
+  QVector<int> oldToContainer(oldContainers.size(), -1);
+  for (int i = 0; i < current.size(); ++i) {
+    if (currentToOld[i] < 0) {
+      continue;
+    }
+    int now = current[i].m_container;
+    int before = old[currentToOld[i]].m_container;
+    while (now >= 0 && before >= 0) {
+      if (containerToOld[now] == before && oldToContainer[before] == now) {
+        break;
+      }
+      containerToOld[now] = containerToOld[now] == -1 ? before : -2;
+      oldToContainer[before] = oldToContainer[before] == -1 ? now : -2;
+      now = containers[now].m_parent;
+      before = oldContainers[before].m_parent;
+    }
+  }
+  QVector<int> sameContainer(containers.size(), -1);
+  const auto sameAncestry = [&](auto &&self, int p_current, int p_old) -> bool {
+    if (p_current < 0 || p_old < 0) {
+      return p_current == p_old;
+    }
+    if (containerToOld[p_current] != p_old || oldToContainer[p_old] != p_current) {
+      return false;
+    }
+    if (sameContainer[p_current] >= 0) {
+      return sameContainer[p_current] != 0;
+    }
+    const auto &now = containers[p_current];
+    const auto &before = oldContainers[p_old];
+    const bool same = now.m_kind == before.m_kind && now.m_markerOffset == before.m_markerOffset &&
+                      now.m_padding == before.m_padding &&
+                      (now.m_kind != md::ListContainerInfo::Kind::Item ||
+                       (now.m_item >= 0 && currentToOld[now.m_item] == before.m_item)) &&
+                      self(self, now.m_parent, before.m_parent);
+    sameContainer[p_current] = int(same);
+    return same;
+  };
+
+  // One old list can split. Its earliest surviving direct item, not whichever
+  // fragment happens to be visited first, decides which fragment keeps start.
+  QVector<int> inheritor(m_listBaseline.m_lists.size(), -1);
+  for (int i = 0; i < old.size(); ++i) {
+    if (oldToCurrent[i] >= 0 && old[i].m_list >= 0 && inheritor[old[i].m_list] < 0) {
+      inheritor[old[i].m_list] = current[oldToCurrent[i]].m_list;
+    }
+  }
+  QHash<int, int> starts;
+  for (int l = 0; l < p_structure.m_lists.size(); ++l) {
+    const auto &list = p_structure.m_lists[l];
+    if (!list.m_ordered || list.m_items.isEmpty()) {
+      continue;
+    }
+    int contributor = -1;
+    for (int item : list.m_items) {
+      if (currentToOld[item] >= 0) {
+        contributor = old[currentToOld[item]].m_list;
+        break;
+      }
+    }
+    bool changed = contributor < 0;
+    if (!changed) {
+      const auto &before = m_listBaseline.m_lists[contributor];
+      changed = before.m_ordered != list.m_ordered || before.m_marker != list.m_marker ||
+                before.m_items.size() != list.m_items.size() ||
+                !sameAncestry(sameAncestry, list.m_parentContainer, before.m_parentContainer);
+      if (!changed) {
+        for (int ordinal = 0; ordinal < list.m_items.size(); ++ordinal) {
+          const int item = list.m_items[ordinal];
+          const int prior = before.m_items[ordinal];
+          if (currentToOld[item] != prior || !sameMarker(old[prior], current[item]) ||
+              !sameAncestry(sameAncestry, current[item].m_container, old[prior].m_container)) {
+            changed = true;
+            break;
+          }
+        }
+      }
+    }
+    if (!changed) {
+      continue;
+    }
+    const int first = list.m_items.first();
+    const int oldFirst = currentToOld[first];
+    int start = current[first].m_number;
+    if (oldFirst >= 0 && contributor >= 0 && inheritor[contributor] == l &&
+        current[first].m_number == old[oldFirst].m_number) {
+      start = m_listBaseline.m_lists[contributor].m_startNumber;
+    }
+    // A new earlier marker or an explicitly renumbered first survivor wins
+    // over deletion/merge inheritance. A later split keeps its authored start.
+    starts.insert(l, start);
+  }
+  return starts;
+}
+
+bool MarkdownSourceFormatter::needsNumbering(const md::ListStructure &p_structure,
+                                             const QHash<int, int> &p_starts) {
+  for (auto it = p_starts.cbegin(); it != p_starts.cend(); ++it) {
+    const auto &list = p_structure.m_lists[it.key()];
+    const int start = it.value();
+    if (start < 0 || start > 999999999 || list.m_items.size() - 1 > 999999999 - start) {
+      // Let the builder reject the connected unit; other lists may be valid.
+      return true;
+    }
+    for (int ordinal = 0; ordinal < list.m_items.size(); ++ordinal) {
+      const auto &item = p_structure.m_items[list.m_items[ordinal]];
+      int width = 1;
+      const int target = start + ordinal;
+      for (int number = target; number >= 10; number /= 10) {
+        ++width;
+      }
+      if (!item.m_sourceValid || item.m_sourceNumber != target ||
+          item.m_markerEnd - item.m_markerStart - 1 != width) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+void MarkdownSourceFormatter::prepareLists(const MarkdownHighlighterResult &p_result) {
+  if (!m_listsEnabled || !m_listsPending || m_seedRequired || m_workerActive || m_numberingReady ||
+      !p_result.m_listStructure.m_valid) {
+    return;
+  }
+  if (!m_listBaseline.m_valid) {
+    // An invalid seed never authorizes guessed old membership. Establish a
+    // sound baseline without rewriting; later structural edits may proceed.
+    bindListBaseline(p_result.m_listStructure);
+    m_listsPending = false;
+    return;
+  }
+  auto starts = changedLists(p_result.m_listStructure);
+  const auto &structure = p_result.m_listStructure;
+  QVector<int> roots(structure.m_lists.size(), -1);
+  const auto rootOf = [&](auto &&self, int p_list) -> int {
+    if (roots[p_list] >= 0) {
+      return roots[p_list];
+    }
+    int parent = structure.m_lists[p_list].m_parentContainer;
+    while (parent >= 0) {
+      const auto &container = structure.m_containers[parent];
+      if (container.m_kind == md::ListContainerInfo::Kind::Item && container.m_item >= 0) {
+        return roots[p_list] = self(self, structure.m_items[container.m_item].m_list);
+      }
+      parent = container.m_parent;
+    }
+    return roots[p_list] = p_list;
+  };
+  QSet<int> rejected;
+  for (auto it = starts.cbegin(); it != starts.cend(); ++it) {
+    const auto &list = structure.m_lists[it.key()];
+    bool valid = it.value() >= 0 && it.value() <= 999999999 &&
+                 list.m_items.size() - 1 <= 999999999 - it.value();
+    int previousEnd = -1;
+    for (int index : list.m_items) {
+      const auto &item = structure.m_items[index];
+      valid = valid && item.m_sourceValid && item.m_prefixValid &&
+              item.m_markerStart >= previousEnd && item.m_markerEnd > item.m_markerStart &&
+              item.m_marker == list.m_marker;
+      previousEnd = item.m_markerEnd;
+    }
+    if (!valid) {
+      rejected.insert(rootOf(rootOf, it.key()));
+    }
+  }
+  for (auto it = starts.begin(); it != starts.end();) {
+    if (rejected.contains(rootOf(rootOf, it.key()))) {
+      it = starts.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  if (!needsNumbering(p_result.m_listStructure, starts)) {
+    bindListBaseline(p_result.m_listStructure);
+    m_listsPending = false;
+    return;
+  }
+  m_jobWork = ListSourceWorker::Work::Numbering;
+  m_jobEpoch = m_epoch;
+  m_jobGeneration = m_generation;
+  m_jobTimeStamp = p_result.m_timeStamp;
+  m_worker->prepare(m_jobWork, m_jobEpoch, m_jobGeneration, p_result.m_listStructure, {}, starts);
+  m_workerActive = true;
+  m_worker->start();
+}
+
+bool MarkdownSourceFormatter::prepareTable(const md::TableElement &p_table,
+                                           QVector<Row> &p_rows) const {
   if (p_table.m_syntax != md::TableElement::Syntax::Markdown || p_table.m_columns <= 0 ||
       p_table.m_rows.size() < 2 || p_table.m_alignments.size() != p_table.m_columns) {
     return false;
@@ -396,7 +1228,7 @@ bool TableSourceFormatter::prepareTable(const md::TableElement &p_table,
 
 // Positions are UTF-16 boundaries, not display columns. A boundary belonging
 // to retained cell text wins over the pipe immediately following that text.
-bool TableSourceFormatter::Row::map(int p_position, int &p_mapped) const {
+bool MarkdownSourceFormatter::Row::map(int p_position, int &p_mapped) const {
   if (m_before == m_after || p_position < m_bordersBefore[0]) {
     p_mapped = p_position;
     return true;
@@ -466,24 +1298,10 @@ bool TableSourceFormatter::Row::map(int p_position, int &p_mapped) const {
   return false;
 }
 
-void TableSourceFormatter::formatTables(const QVector<md::TableElement> &p_tables) {
-  const auto generation = m_generation;
-  const int revision = m_doc->revision();
-  const int undoSteps = m_undoSteps;
-  auto edit = m_editor->getTextEdit();
-  const QTextCursor original = edit->textCursor();
-  const auto selection = edit->getSelection();
-  const bool overridden =
-      selection.isValid() &&
-      !(selection == VTextEdit::Selection(original.anchor(), original.position()));
-  QVector<int> endpoints{original.anchor(), original.position()};
-  if (overridden) {
-    endpoints.append(selection.start());
-    endpoints.append(selection.end());
-  }
+void MarkdownSourceFormatter::prepareTables(const QVector<md::TableElement> &p_tables,
+                                            const Endpoints &p_endpoints, QVector<Row> &p_rows,
+                                            QSet<int> &p_deferred) const {
   const auto positions = baselinePositions();
-  QSet<int> deferred;
-  QVector<Row> rows;
   for (const auto &table : p_tables) {
     if (table.m_syntax != md::TableElement::Syntax::Markdown) {
       continue;
@@ -525,7 +1343,7 @@ void TableSourceFormatter::formatTables(const QVector<md::TableElement> &p_table
     }
     bool representable = true;
     for (const auto &row : tableRows) {
-      for (int endpoint : endpoints) {
+      for (int endpoint : p_endpoints.m_positions) {
         if (endpoint >= row.m_position && endpoint <= row.m_position + row.m_before.size()) {
           int mapped = 0;
           if (!row.map(endpoint - row.m_position, mapped)) {
@@ -536,90 +1354,422 @@ void TableSourceFormatter::formatTables(const QVector<md::TableElement> &p_table
     }
     if (!representable) {
       for (int r = 0; r < table.m_rows.size(); ++r) {
-        deferred.insert(table.m_startBlock + r);
+        p_deferred.insert(table.m_startBlock + r);
       }
       continue;
     }
     for (auto &row : tableRows) {
       if (row.m_before != row.m_after) {
-        rows.append(std::move(row));
+        p_rows.append(std::move(row));
       }
     }
   }
-  // Mapping all endpoints against one immutable set of row rewrites preserves
-  // direction and positions outside tables, including the next block's zero.
-  for (auto &endpoint : endpoints) {
+}
+
+MarkdownSourceFormatter::Endpoints MarkdownSourceFormatter::endpoints() const {
+  const auto edit = m_editor->getTextEdit();
+  const auto original = edit->textCursor();
+  const auto selection = edit->getSelection();
+  Endpoints result;
+  result.m_overridden =
+      selection.isValid() &&
+      !(selection == VTextEdit::Selection(original.anchor(), original.position()));
+  result.m_positions = {original.anchor(), original.position()};
+  if (result.m_overridden) {
+    result.m_positions.append(selection.start());
+    result.m_positions.append(selection.end());
+  }
+  return result;
+}
+
+bool MarkdownSourceFormatter::apply(const QVector<Row> &p_rows,
+                                    const QVector<md::ListSourceEdit> &p_listEdits,
+                                    Endpoints p_endpoints, quint64 p_generation, int p_revision,
+                                    bool p_tables, bool p_lists) {
+  QVector<Replacement> replacements;
+  replacements.reserve(p_rows.size() + p_listEdits.size());
+  int row = 0;
+  int list = 0;
+  while (row < p_rows.size() || list < p_listEdits.size()) {
+    if (list == p_listEdits.size() ||
+        (row < p_rows.size() && p_rows[row].m_position < p_listEdits[list].m_start)) {
+      const auto &item = p_rows[row];
+      replacements.append({item.m_position, item.m_before, item.m_after, row});
+      ++row;
+    } else {
+      const auto &item = p_listEdits[list++];
+      if (item.m_end < item.m_start || item.m_end - item.m_start != item.m_before.size()) {
+        return false;
+      }
+      replacements.append({item.m_start, item.m_before, item.m_after, -1});
+    }
+  }
+  int previousEnd = -1;
+  QTextCursor probe(m_doc);
+  for (const auto &replacement : replacements) {
+    const int end = replacement.m_position + replacement.m_before.size();
+    if (replacement.m_position < previousEnd || replacement.m_position < 0 ||
+        end > m_doc->characterCount() - 1) {
+      return false;
+    }
+    probe.setPosition(replacement.m_position);
+    probe.setPosition(end, QTextCursor::KeepAnchor);
+    QString before = probe.selectedText();
+    before.replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
+    if (before != replacement.m_before) {
+      return false;
+    }
+    previousEnd = end;
+  }
+  // Every controller-owned endpoint is mapped against the immutable batch,
+  // including endpoints set by external programmatic QTextCursor edits.
+  for (auto &endpoint : p_endpoints.m_positions) {
     int delta = 0;
-    for (const auto &row : rows) {
-      if (endpoint < row.m_position) {
+    for (const auto &replacement : replacements) {
+      if (endpoint < replacement.m_position) {
         break;
       }
-      if (endpoint <= row.m_position + row.m_before.size()) {
-        int mapped = 0;
-        if (!row.map(endpoint - row.m_position, mapped)) {
-          return;
+      const int end = replacement.m_position + replacement.m_before.size();
+      if (endpoint < end || (replacement.m_row >= 0 && endpoint == end)) {
+        int mapped = qBound(0, endpoint - replacement.m_position, int(replacement.m_after.size()));
+        if (replacement.m_row >= 0 &&
+            !p_rows[replacement.m_row].map(endpoint - replacement.m_position, mapped)) {
+          return false;
         }
-        endpoint = row.m_position + mapped;
+        endpoint = replacement.m_position + mapped;
         break;
       }
-      delta += row.m_after.size() - row.m_before.size();
+      delta += replacement.m_after.size() - replacement.m_before.size();
     }
     endpoint += delta;
   }
-  if (!m_enabled || generation != m_generation || revision != m_doc->revision() ||
-      m_editor->isReadOnly() || m_applying || m_idle.elapsed() < 500) {
-    return;
+  if ((p_tables && !m_enabled) || (p_lists && !m_listsEnabled) || p_generation != m_generation ||
+      p_revision != m_doc->revision() || !guarded()) {
+    return false;
   }
-  if (m_editor->documentLayout()->isBusy()) {
-    m_editor->documentLayout()->requestIdleNotification();
-    return;
+  if (replacements.isEmpty()) {
+    return true;
   }
-  if (!rows.isEmpty()) {
+  auto edit = m_editor->getTextEdit();
+  const int horizontal = edit->horizontalScrollBar()->value();
+  const int vertical = edit->verticalScrollBar()->value();
+  {
     QScopedValueRollback<bool> applying(m_applying, true);
-    const int horizontal = edit->horizontalScrollBar()->value();
-    const int vertical = edit->verticalScrollBar()->value();
     QTextCursor cursor(m_doc);
     // Qt can reopen an edit block but cannot promote a bare insert into one.
-    // Preserve that grouping rather than undoing and replaying user input.
-    if (m_doc->isUndoRedoEnabled() && undoSteps > 0 && undoSteps == m_doc->availableUndoSteps() &&
-        m_doc->availableRedoSteps() == 0) {
+    if (m_doc->isUndoRedoEnabled() && m_undoSteps > 0 &&
+        m_undoSteps == m_doc->availableUndoSteps() && m_doc->availableRedoSteps() == 0) {
       cursor.joinPreviousEditBlock();
     } else {
       cursor.beginEditBlock();
     }
-    for (int r = rows.size() - 1; r >= 0; --r) {
-      const auto &row = rows[r];
+    for (int r = replacements.size() - 1; r >= 0; --r) {
+      const auto &replacement = replacements[r];
       int prefix = 0;
-      const int beforeSize = row.m_before.size();
-      const int afterSize = row.m_after.size();
+      const int beforeSize = replacement.m_before.size();
+      const int afterSize = replacement.m_after.size();
       while (prefix < beforeSize && prefix < afterSize &&
-             row.m_before[prefix] == row.m_after[prefix]) {
+             replacement.m_before[prefix] == replacement.m_after[prefix]) {
         ++prefix;
       }
       int suffix = 0;
       while (suffix < beforeSize - prefix && suffix < afterSize - prefix &&
-             row.m_before[beforeSize - suffix - 1] == row.m_after[afterSize - suffix - 1]) {
+             replacement.m_before[beforeSize - suffix - 1] ==
+                 replacement.m_after[afterSize - suffix - 1]) {
         ++suffix;
       }
-      cursor.setPosition(row.m_position + prefix);
-      cursor.setPosition(row.m_position + beforeSize - suffix, QTextCursor::KeepAnchor);
-      cursor.insertText(row.m_after.mid(prefix, afterSize - prefix - suffix));
+      // Minimal edits also let Qt rebase independently-owned external cursors
+      // without replacing their unchanged body text. Qt has no public API for
+      // enumerating/reassigning another caller's QTextCursor endpoints.
+      cursor.setPosition(replacement.m_position + prefix);
+      cursor.setPosition(replacement.m_position + beforeSize - suffix, QTextCursor::KeepAnchor);
+      if (m_listsEnabled && !p_lists) {
+        // Numbering candidates rebaseline after the transaction. Table-only
+        // work instead rebases the existing baseline or in-flight epoch seed.
+        m_mutations.append({replacement.m_position + prefix, beforeSize - prefix - suffix,
+                            afterSize - prefix - suffix});
+      }
+      cursor.insertText(replacement.m_after.mid(prefix, afterSize - prefix - suffix));
     }
     cursor.endEditBlock();
     QTextCursor restored(m_doc);
-    restored.setPosition(endpoints[0]);
-    restored.setPosition(endpoints[1], QTextCursor::KeepAnchor);
+    restored.setPosition(p_endpoints.m_positions[0]);
+    restored.setPosition(p_endpoints.m_positions[1], QTextCursor::KeepAnchor);
     edit->setTextCursor(restored);
-    if (overridden) {
-      edit->setOverriddenSelection(endpoints[2], endpoints[3]);
+    if (p_endpoints.m_overridden) {
+      edit->setOverriddenSelection(p_endpoints.m_positions[2], p_endpoints.m_positions[3]);
     }
     edit->horizontalScrollBar()->setValue(horizontal);
     edit->verticalScrollBar()->setValue(vertical);
   }
-  m_pending = !deferred.isEmpty();
-  captureBaseline(deferred);
+  ++m_generation;
   observeDocument();
+  return true;
 }
+
+void MarkdownSourceFormatter::attempt() {
+  if (m_applying || !hasPending()) {
+    return;
+  }
+  startSeed();
+  if (m_numberingReady && (m_jobEpoch != m_epoch || m_jobGeneration != m_generation)) {
+    m_numberingReady = false;
+    releaseWorkerResult();
+  }
+  if (!m_pending && !m_listsPending && !m_numberingReady) {
+    return;
+  }
+  if (m_editor->isReadOnly()) {
+    // Preserve numbering's structural baseline until editing resumes. Table
+    // mode retains its existing read-only cancellation contract independently.
+    if (m_pending) {
+      m_pending = false;
+      captureBaseline();
+    }
+    return;
+  }
+  if (m_idle.isValid() && m_idle.elapsed() < 500) {
+    m_timer.start(500 - int(m_idle.elapsed()));
+    return;
+  }
+  if (!guarded()) {
+    return;
+  }
+  const auto result = freshResult();
+  if (!result) {
+    return;
+  }
+  if (m_numberingReady && result->m_timeStamp != m_jobTimeStamp) {
+    m_numberingReady = false;
+    releaseWorkerResult();
+  }
+  prepareLists(*result);
+  if (m_listsEnabled && m_workerActive && m_jobEpoch == m_epoch &&
+      m_jobWork == ListSourceWorker::Work::Numbering) {
+    // Hold the table plan, not a stale copy of its rows, until the current
+    // numbering job completes. Then disjoint work shares one transaction.
+    return;
+  }
+  const auto generation = m_generation;
+  const int revision = m_doc->revision();
+  const auto positions = endpoints();
+  QVector<Row> rows;
+  QSet<int> deferred;
+  const bool tables = m_enabled && m_pending;
+  if (tables) {
+    prepareTables(result->m_tableElements, positions, rows, deferred);
+  }
+  const bool lists = m_listsEnabled && m_numberingReady;
+  const QVector<md::ListSourceEdit> empty;
+  const auto &listEdits = lists ? m_worker->edits() : empty;
+  bool overlap = false;
+  int listIndex = 0;
+  for (const auto &row : rows) {
+    while (listIndex < listEdits.size() &&
+           (listEdits[listIndex].m_end < row.m_position ||
+            (listEdits[listIndex].m_end == row.m_position &&
+             listEdits[listIndex].m_start < listEdits[listIndex].m_end))) {
+      ++listIndex;
+    }
+    if (listIndex < listEdits.size() &&
+        listEdits[listIndex].m_start < row.m_position + row.m_before.size()) {
+      overlap = true;
+      break;
+    }
+  }
+  if (overlap) {
+    // Keep every table's old dirty baseline. The candidate indentation changes
+    // prefixes; only a later full parse may supply new table row positions.
+    rows.clear();
+  }
+  if (!apply(rows, listEdits, positions, generation, revision, tables && !overlap, lists)) {
+    return;
+  }
+  if (lists) {
+    QVector<Replacement> tableChanges;
+    tableChanges.reserve(rows.size());
+    int delta = 0;
+    listIndex = 0;
+    for (const auto &row : rows) {
+      while (listIndex < listEdits.size() && listEdits[listIndex].m_end <= row.m_position) {
+        delta += listEdits[listIndex].m_after.size() - listEdits[listIndex].m_before.size();
+        ++listIndex;
+      }
+      tableChanges.append({row.m_position + delta, row.m_before, row.m_after, -1});
+    }
+    // The verified candidate is already parsed. Disjoint table rewrites only
+    // shift positions; no third parse is necessary to bind its live markers.
+    bindListBaseline(m_worker->structure(), nullptr, tableChanges);
+    m_listsPending = false;
+    m_numberingReady = false;
+    releaseWorkerResult();
+  }
+  if (tables && !overlap) {
+    m_pending = !deferred.isEmpty();
+    captureBaseline(deferred);
+  }
+  observeDocument();
+  if (!hasPending()) {
+    m_timer.stop();
+  } else if (overlap) {
+    // This queued attempt will wait for a fresh timestamp; it does not retry
+    // on a timer or submit another numbering job for our own source edits.
+    queueAttempt();
+  }
+}
+bool MarkdownSourceFormatter::takeListReturnSuppression() {
+  const bool suppressed = m_listReturnSuppressed;
+  m_listReturnSuppressed = false;
+  return suppressed;
+}
+
+bool MarkdownSourceFormatter::handleListReturn() {
+  m_listReturnSuppressed = false;
+  auto edit = m_editor->getTextEdit();
+  auto cursor = edit->textCursor();
+  if (cursor.hasSelection()) {
+    return false;
+  }
+  const auto block = cursor.block();
+  const auto highlighter = m_editor->getHighlighter();
+  const auto context = highlighter->getBlockContext(block.blockNumber());
+  if (context.m_valid && context.m_inFencedCode) {
+    m_listReturnSuppressed = true;
+    return false;
+  }
+  const auto &result = highlighter->m_result;
+  const bool fresh =
+      result && result->matched(highlighter->m_timeStamp) && result->m_listStructure.m_valid;
+  const QString line = block.text();
+  md::ListItemInfo marker;
+  QString prefix;
+  int number = 0;
+  bool empty = false;
+  if (fresh) {
+    // A negative full-AST query vetoes the post-hook's lexical fallback too.
+    m_listReturnSuppressed = true;
+    const auto &structure = result->m_listStructure;
+    const int blockNumber = block.blockNumber();
+    int itemIndex = -1;
+    const auto paragraph =
+        std::upper_bound(structure.m_paragraphs.cbegin(), structure.m_paragraphs.cend(),
+                         blockNumber, [](int p_block, const md::ListParagraphInfo &p_paragraph) {
+                           return p_block < p_paragraph.m_startBlock;
+                         });
+    if (paragraph != structure.m_paragraphs.cbegin()) {
+      const auto &previous = *(paragraph - 1);
+      if (blockNumber <= previous.m_endBlock) {
+        itemIndex = previous.m_item;
+      }
+    }
+    auto opening = std::upper_bound(
+        structure.m_items.cbegin(), structure.m_items.cend(), blockNumber,
+        [](int p_block, const md::ListItemInfo &p_item) { return p_block < p_item.m_startBlock; });
+    // Multiple opening markers on one line are ordered outermost first.
+    while (opening != structure.m_items.cbegin() && (opening - 1)->m_startBlock == blockNumber &&
+           (opening - 1)->m_markerStart > cursor.position()) {
+      --opening;
+    }
+    if (opening != structure.m_items.cbegin()) {
+      const int candidate = int(opening - structure.m_items.cbegin()) - 1;
+      const auto &item = structure.m_items[candidate];
+      if (item.m_startBlock == blockNumber) {
+        if (!item.m_sourceValid || item.m_contentStart < block.position()) {
+          return false;
+        }
+        // A marker-only parent can have children, but it is not an empty ITEM.
+        // Nonparagraph opening content (code/HTML/heading/quote/table/math) is
+        // not a list-body Return, even though its marker shares this line.
+        if (candidate != itemIndex &&
+            !line.mid(item.m_contentStart - block.position()).trimmed().isEmpty()) {
+          return false;
+        }
+        itemIndex = candidate;
+      }
+    }
+    if (itemIndex < 0 || itemIndex >= structure.m_items.size()) {
+      return false;
+    }
+    const auto &item = structure.m_items[itemIndex];
+    const int boundary = item.m_startBlock == blockNumber &&
+                                 line.mid(item.m_markerEnd - block.position()).trimmed().isEmpty()
+                             ? item.m_markerEnd
+                             : item.m_contentStart;
+    if (!item.m_sourceValid || cursor.position() < boundary ||
+        !md::listContinuationPrefix(structure, itemIndex, prefix)) {
+      return false;
+    }
+    const auto firstBlock = m_doc->findBlockByNumber(item.m_startBlock);
+    if (!firstBlock.isValid()) {
+      return false;
+    }
+    const QString firstLine = item.m_startBlock == blockNumber ? line : firstBlock.text();
+    if (!md::scanListMarker(firstLine, item.m_markerStart - firstBlock.position(), marker) ||
+        marker.m_marker != item.m_marker || marker.m_sourceNumber != item.m_sourceNumber ||
+        marker.m_markerEnd - marker.m_markerStart != item.m_markerEnd - item.m_markerStart) {
+      return false;
+    }
+    empty = blockNumber == item.m_startBlock && marker.m_empty && item.m_empty;
+    number = item.m_sourceNumber;
+    const auto &list = structure.m_lists[item.m_list];
+    if (m_listsEnabled && list.m_ordered) {
+      const auto ordinal = std::lower_bound(list.m_items.cbegin(), list.m_items.cend(), itemIndex);
+      const int nextOrdinal = int(ordinal - list.m_items.cbegin()) + 1;
+      if (ordinal == list.m_items.cend() || *ordinal != itemIndex ||
+          nextOrdinal > 999999999 - list.m_startNumber) {
+        return false;
+      }
+      number = list.m_startNumber + nextOrdinal - 1;
+    }
+  } else {
+    // The cold/stale path examines only the authored current line. In
+    // particular it cannot infer markerless membership from an older tree.
+    QString indent, quote, rest;
+    int depth = 0;
+    int start = 0;
+    if (MarkdownUtils::isQuote(line, indent, quote, rest, depth)) {
+      start = int(line.size() - rest.size()) + TextUtils::fetchIndentation(rest);
+    } else {
+      start = TextUtils::fetchIndentation(line);
+    }
+    if (!md::scanListMarker(line, start, marker) ||
+        cursor.positionInBlock() < (marker.m_empty ? marker.m_markerEnd : marker.m_contentStart)) {
+      return false;
+    }
+    prefix = line.left(marker.m_markerStart);
+    number = marker.m_sourceNumber;
+    empty = marker.m_empty;
+  }
+  if (empty) {
+    cursor.beginEditBlock();
+    cursor.setPosition(block.position() + marker.m_markerStart);
+    cursor.setPosition(block.position() + line.size(), QTextCursor::KeepAnchor);
+    cursor.removeSelectedText();
+    cursor.endEditBlock();
+    edit->setTextCursor(cursor);
+    return true;
+  }
+  const bool ordered = marker.m_marker == QLatin1Char('.') || marker.m_marker == QLatin1Char(')');
+  if (ordered && number >= 999999999) {
+    m_listReturnSuppressed = true;
+    return false;
+  }
+  if (ordered) {
+    prefix += QString::number(number + 1);
+  }
+  prefix += marker.m_marker;
+  prefix += QLatin1Char(' ');
+  if (marker.m_task) {
+    prefix += QStringLiteral("[ ] ");
+  }
+  cursor.beginEditBlock();
+  cursor.insertBlock();
+  cursor.insertText(prefix);
+  cursor.endEditBlock();
+  edit->setTextCursor(cursor);
+  return true;
+}
+
 } // namespace vte
 
 VMarkdownEditor::VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_config,
@@ -669,7 +1819,7 @@ VMarkdownEditor::VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_c
   connect(m_textEdit, &VTextEdit::preKeyTab, this, &VMarkdownEditor::preKeyTab);
   connect(m_textEdit, &VTextEdit::preKeyBacktab, this, &VMarkdownEditor::preKeyBacktab);
 
-  new TableSourceFormatter(this);
+  new MarkdownSourceFormatter(this);
   updateFromConfig();
 
   // Trigger update of stuffs after init.
@@ -677,8 +1827,8 @@ VMarkdownEditor::VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_c
 }
 
 VMarkdownEditor::~VMarkdownEditor() {
-  delete findChild<TableSourceFormatter *>(QStringLiteral("vte_table_source_formatter"),
-                                           Qt::FindDirectChildrenOnly);
+  delete findChild<MarkdownSourceFormatter *>(QStringLiteral("vte_markdown_source_formatter"),
+                                              Qt::FindDirectChildrenOnly);
   // The host is an ordinary QObject child, and QObject destroys its children
   // in creation order - which puts m_textEdit, its viewport and every preview
   // widget parented to it *before* the host. Its destructor asks a dirty sheet
@@ -965,9 +2115,10 @@ void VMarkdownEditor::updateFromConfig() {
     host->setTableSourceAlignEnabled(m_config->m_autoFormatTableSourceEnabled);
   }
 
-  if (auto formatter = findChild<TableSourceFormatter *>(
-          QStringLiteral("vte_table_source_formatter"), Qt::FindDirectChildrenOnly)) {
-    formatter->setEnabled(m_config->m_autoFormatTableSourceEnabled);
+  if (auto formatter = findChild<MarkdownSourceFormatter *>(
+          QStringLiteral("vte_markdown_source_formatter"), Qt::FindDirectChildrenOnly)) {
+    formatter->setEnabled(m_config->m_autoFormatTableSourceEnabled,
+                          m_config->m_autoNumberOrderedListsEnabled);
   }
 
   applyLineSpacing();
@@ -1229,10 +2380,13 @@ void VMarkdownEditor::updateSpaceWidth() {
 
 void VMarkdownEditor::preKeyReturn(int p_modifiers, bool *p_changed, bool *p_handled) {
   Q_ASSERT(!m_textEdit->isReadOnly());
+  auto formatter = findChild<MarkdownSourceFormatter *>(
+      QStringLiteral("vte_markdown_source_formatter"), Qt::FindDirectChildrenOnly);
+  Q_ASSERT(formatter);
+  formatter->takeListReturnSuppression();
 
-  // Probe the AST before any block is inserted, so postKeyReturn can consume it.
+  // Probe before splitting; only this Return may consume the quote context.
   m_returnBlockContext = getHighlighter()->getBlockContext(m_textEdit->textCursor().blockNumber());
-
   if (p_modifiers == Qt::ShiftModifier) {
     *p_changed = true;
     auto cursor = m_textEdit->textCursor();
@@ -1241,66 +2395,27 @@ void VMarkdownEditor::preKeyReturn(int p_modifiers, bool *p_changed, bool *p_han
     cursor.endEditBlock();
     m_textEdit->setTextCursor(cursor);
   } else if (p_modifiers == Qt::NoModifier) {
-    auto cursor = m_textEdit->textCursor();
-    if (cursor.hasSelection()) {
-      // Let handleKeyReturn perform its normal selection-replacing block split.
-      // The probe was taken at the active end of the selection, which is not
-      // necessarily the line surviving the split, so it must not be able to
-      // drive an insertion. Suppression-only data is kept: vetoing is always
-      // the safe direction.
-      m_returnBlockContext.m_fresh = false;
-      m_returnBlockContext.m_quoteDepth = 0;
-      return;
-    }
-
-    if (m_returnBlockContext.m_valid && m_returnBlockContext.m_inFencedCode) {
-      // Never strip markers inside a fence.
-      return;
-    }
-
-    const auto block = cursor.block();
-    const auto text = block.text().left(cursor.positionInBlock());
-
-    QString indent, quotePrefix, rest;
-    int depth = 0;
-    const bool quoted = MarkdownUtils::isQuote(text, indent, quotePrefix, rest, depth);
-    const QString &listSource = quoted ? rest : text;
-
-    QChar listMark;
-    QString listNumber;
-    bool isEmpty = false;
-    const bool isList = MarkdownUtils::isTodoList(listSource, listMark, isEmpty) ||
-                        MarkdownUtils::isUnorderedList(listSource, listMark, isEmpty) ||
-                        MarkdownUtils::isOrderedList(listSource, listNumber, isEmpty);
-
-    QString replacement;
-    bool handled = false;
-    if (isList && isEmpty) {
-      // Drop only the list marker.
-      replacement = quoted ? (indent + quotePrefix + TextUtils::fetchIndentationSpaces(rest))
-                           : TextUtils::fetchIndentationSpaces(text);
-      handled = true;
-    }
-    // A bare quote line ("> " or ">") is a blank line *inside* the quote, not a
-    // request to leave it, so no quote level is ever stripped here. Enter just
-    // starts another quote line via postKeyReturn.
-
-    if (handled) {
-      cursor.beginEditBlock();
-      cursor.setPosition(block.position(), QTextCursor::KeepAnchor);
-      cursor.removeSelectedText();
-      cursor.insertText(replacement);
-      cursor.endEditBlock();
-      m_textEdit->setTextCursor(cursor);
-
+    if (formatter->handleListReturn()) {
       *p_changed = true;
       *p_handled = true;
+      m_returnBlockContext = md::BlockContext();
+      return;
+    }
+    if (m_textEdit->textCursor().hasSelection()) {
+      // The base split retains the selection's first line, not necessarily
+      // its active endpoint. Only the surviving source may drive continuation.
+      m_returnBlockContext.m_fresh = false;
+      m_returnBlockContext.m_quoteDepth = 0;
     }
   }
 }
 
 void VMarkdownEditor::postKeyReturn(int p_modifiers) {
   Q_ASSERT(!m_textEdit->isReadOnly());
+  auto formatter = findChild<MarkdownSourceFormatter *>(
+      QStringLiteral("vte_markdown_source_formatter"), Qt::FindDirectChildrenOnly);
+  Q_ASSERT(formatter);
+  const bool suppressList = formatter->takeListReturnSuppression();
   const auto blockContext = m_returnBlockContext;
   m_returnBlockContext = md::BlockContext();
 
@@ -1343,15 +2458,21 @@ void VMarkdownEditor::postKeyReturn(int p_modifiers) {
   const QString &listSource = quoted ? rest : preText;
 
   QString marker;
-  QChar listMark;
-  QString listNumber;
-  bool isEmpty = false;
-  if (MarkdownUtils::isTodoList(listSource, listMark, isEmpty)) {
-    marker = QStringLiteral("%1 [ ] ").arg(listMark);
-  } else if (MarkdownUtils::isUnorderedList(listSource, listMark, isEmpty)) {
-    marker = QStringLiteral("%1 ").arg(listMark);
-  } else if (MarkdownUtils::isOrderedList(listSource, listNumber, isEmpty)) {
-    marker = QStringLiteral("%1. ").arg(listNumber.toInt() + 1);
+  md::ListItemInfo listMarker;
+  if (!suppressList &&
+      md::scanListMarker(listSource, TextUtils::fetchIndentation(listSource), listMarker)) {
+    const bool ordered =
+        listMarker.m_marker == QLatin1Char('.') || listMarker.m_marker == QLatin1Char(')');
+    if (!ordered || listMarker.m_sourceNumber < 999999999) {
+      if (ordered) {
+        marker = QString::number(listMarker.m_sourceNumber + 1);
+      }
+      marker += listMarker.m_marker;
+      marker += QLatin1Char(' ');
+      if (listMarker.m_task) {
+        marker += QStringLiteral("[ ] ");
+      }
+    }
   }
 
   const QString innerIndent = quoted ? TextUtils::fetchIndentationSpaces(rest) : QString();
@@ -1398,7 +2519,9 @@ void VMarkdownEditor::preKeyTab(int p_modifiers, bool *p_handled) {
     if (MarkdownUtils::isOrderedList(text, listNumber, isEmpty) && isEmpty) {
       *p_handled = true;
       // Reset the list number and indent the empty ordered list.
-      auto afterText = MarkdownUtils::setOrderedListNumber(text, 1);
+      const auto afterText = m_config->m_autoNumberOrderedListsEnabled
+                                 ? text
+                                 : MarkdownUtils::setOrderedListNumber(text, 1);
       cursor.beginEditBlock();
       if (afterText != text) {
         cursor.movePosition(QTextCursor::StartOfBlock, QTextCursor::KeepAnchor);
@@ -1449,29 +2572,31 @@ void VMarkdownEditor::preKeyBacktab(int p_modifiers, bool *p_handled) {
       // Unindent the empty ordered list.
       TextEditUtils::unindentBlock(cursor, m_textEdit->getTabStopWidthInSpaces());
 
-      const auto newText = block.text().left(cursor.positionInBlock());
-      Q_ASSERT(MarkdownUtils::isOrderedList(newText, listNumber, isEmpty));
+      if (!m_config->m_autoNumberOrderedListsEnabled) {
+        const auto newText = block.text().left(cursor.positionInBlock());
+        Q_ASSERT(MarkdownUtils::isOrderedList(newText, listNumber, isEmpty));
 
-      // Try to correct the list number.
-      int newNumber = 1;
-      {
-        const auto preBlock = block.previous();
-        if (preBlock.isValid()) {
-          const auto preText = preBlock.text();
-          if (TextUtils::fetchIndentation(preText) == TextUtils::fetchIndentation(newText)) {
-            QString preListNumber;
-            bool preIsEmpty = false;
-            if (MarkdownUtils::isOrderedList(preText, preListNumber, preIsEmpty)) {
-              newNumber = preListNumber.toInt() + 1;
+        // Try to correct the list number.
+        int newNumber = 1;
+        {
+          const auto preBlock = block.previous();
+          if (preBlock.isValid()) {
+            const auto preText = preBlock.text();
+            if (TextUtils::fetchIndentation(preText) == TextUtils::fetchIndentation(newText)) {
+              QString preListNumber;
+              bool preIsEmpty = false;
+              if (MarkdownUtils::isOrderedList(preText, preListNumber, preIsEmpty)) {
+                newNumber = preListNumber.toInt() + 1;
+              }
             }
           }
         }
-      }
 
-      auto afterText = MarkdownUtils::setOrderedListNumber(newText, newNumber);
-      if (afterText != newText) {
-        cursor.movePosition(QTextCursor::StartOfBlock, QTextCursor::KeepAnchor);
-        cursor.insertText(afterText);
+        auto afterText = MarkdownUtils::setOrderedListNumber(newText, newNumber);
+        if (afterText != newText) {
+          cursor.movePosition(QTextCursor::StartOfBlock, QTextCursor::KeepAnchor);
+          cursor.insertText(afterText);
+        }
       }
       cursor.endEditBlock();
       m_textEdit->setTextCursor(cursor);

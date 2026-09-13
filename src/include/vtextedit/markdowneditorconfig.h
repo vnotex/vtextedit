@@ -54,6 +54,14 @@ public:
   // formatting undo step.
   bool m_autoFormatTableSourceEnabled = false;
 
+  // Normalize structurally changed ordered lists after 500 ms of source-edit
+  // inactivity, including programmatic cursor edits, keeping each list's start.
+  // Opt-in: load, enabling this option and undo/redo never normalize source.
+  // Joins the preceding edit block where Qt permits; a bare cursor insertion
+  // may retain a separate formatting undo step. Identical config reapplication
+  // preserves pending work; disabling cancels numbering, not table formatting.
+  bool m_autoNumberOrderedListsEnabled = false;
+
 private:
   void overrideTextStyle();
 };

@@ -41,8 +41,7 @@ const QString MarkdownUtils::c_linkRegExp =
 const QString MarkdownUtils::c_headerRegExp =
     QStringLiteral("^(#{1,6})(\\s+)((\\d{1,3}(?:\\.\\d+)*\\.?(?=\\s))?(\\s*)(?:\\S.*)?)$");
 
-const QString MarkdownUtils::c_todoListRegExp =
-    QStringLiteral("^(\\s*)([\\*\\-\\+])\\s+\\[([ x])\\]\\s*(.*)$");
+const QString MarkdownUtils::c_todoListRegExp = md::todoListPattern();
 
 const QString MarkdownUtils::c_orderedListRegExp = QStringLiteral("^(\\s*)(\\d+)\\.\\s+(.*)$");
 
@@ -1377,19 +1376,7 @@ MarkdownUtils::HeaderMatch MarkdownUtils::matchHeader(const QString &p_text) {
 }
 
 bool MarkdownUtils::isTodoList(const QString &p_text, QChar &p_listMark, bool &p_empty) {
-  if (p_text.isEmpty()) {
-    return false;
-  }
-
-  QRegularExpression reg(c_todoListRegExp);
-  auto match = reg.match(p_text);
-  if (match.hasMatch()) {
-    p_listMark = match.captured(2)[0];
-    p_empty = match.captured(4).isEmpty();
-    return true;
-  }
-
-  return false;
+  return md::scanTodoList(p_text, p_listMark, p_empty);
 }
 
 bool MarkdownUtils::isUnorderedList(const QString &p_text, QChar &p_listMark, bool &p_empty) {

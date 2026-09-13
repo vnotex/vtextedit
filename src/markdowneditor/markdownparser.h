@@ -106,6 +106,7 @@ struct MarkdownParseResult {
   QVector<CodeElement> m_codeElements;
   QVector<MathElement> m_mathElements;
   QVector<TableElement> m_tableElements;
+  ListStructure m_listStructure;
 
   // Headings with their AST-derived title and anchor text.
   // Sorted by start position ascendingly.

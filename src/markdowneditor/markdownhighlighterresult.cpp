@@ -57,6 +57,7 @@ MarkdownHighlighterResult::MarkdownHighlighterResult(
   m_codeElements = p_result->m_codeElements;
   m_mathElements = p_result->m_mathElements;
   m_tableElements = p_result->m_tableElements;
+  m_listStructure = p_result->m_listStructure;
   m_headingElements = p_result->m_headingElements;
 
   // ATTENTION: build this from p_result, never from a member. The old

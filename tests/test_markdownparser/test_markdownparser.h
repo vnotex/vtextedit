@@ -27,6 +27,8 @@ private slots:
   void testHtmlBlockClosingTagIsStyled();
   void testHtmlBlockKeepsContainerPrefixUnstyled();
   void testLists();
+  void testListStructureSourceSpans();
+  void testListNumberEditsPreserveStructure();
   void testFrontmatter();
   void testDisplayFormula();
   void testTables();
