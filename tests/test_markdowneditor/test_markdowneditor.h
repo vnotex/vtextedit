@@ -128,6 +128,7 @@ private slots:
   void testListAstExitAndSelection();
   void testListAstCodeAndStaleness();
   void testListAutoNumberStructuralEdits();
+  void testListAutoNumberSplit();
   void testListAutoNumberNestedWidths();
   void testListAutoNumberConfigAndReplay();
   void testListAutoNumberProtectedPositions();

@@ -1053,12 +1053,11 @@ QHash<int, int> MarkdownSourceFormatter::changedLists(const md::ListStructure &p
     const int first = list.m_items.first();
     const int oldFirst = currentToOld[first];
     int start = current[first].m_number;
-    if (oldFirst >= 0 && contributor >= 0 && inheritor[contributor] == l &&
-        current[first].m_number == old[oldFirst].m_number) {
-      start = m_listBaseline.m_lists[contributor].m_startNumber;
+    if (oldFirst >= 0 && contributor >= 0 && current[first].m_number == old[oldFirst].m_number) {
+      start = inheritor[contributor] == l ? m_listBaseline.m_lists[contributor].m_startNumber : 1;
     }
     // A new earlier marker or an explicitly renumbered first survivor wins
-    // over deletion/merge inheritance. A later split keeps its authored start.
+    // over inheritance. Otherwise a newly split later fragment restarts at one.
     starts.insert(l, start);
   }
   return starts;

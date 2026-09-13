@@ -2361,9 +2361,9 @@ void TestMarkdownEditor::testListAutoNumberStructuralEdits() {
       // Removing the separator merges two old lists; the earlier start wins.
       {QStringLiteral("3. a\n8. b\n\nseparator\n\n7. c\n2. d"), 1, 4, 13, QStringLiteral("\n"),
        QStringLiteral("3. a\n4. b\n5. c\n6. d")},
-      // Only the fragment with the earliest surviving marker keeps the old start.
+      // The earliest surviving fragment keeps its start; later fragments restart.
       {QStringLiteral("3. a\n8. b\n9. c\n2. d"), 2, 0, 0, QStringLiteral("\nseparator\n\n"),
-       QStringLiteral("3. a\n4. b\n\nseparator\n\n9. c\n10. d")},
+       QStringLiteral("3. a\n4. b\n\nseparator\n\n1. c\n2. d")},
       // A newly authored first marker outranks the old list's start.
       {QStringLiteral("7. a\n9. b"), 0, 0, 0, QStringLiteral("2. new\n"),
        QStringLiteral("2. new\n3. a\n4. b")},
@@ -2431,6 +2431,101 @@ void TestMarkdownEditor::testListAutoNumberStructuralEdits() {
     QGuiApplication::clipboard()->setText(QStringLiteral("0) a\n9) b"));
     fixture.edit()->paste();
     QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("intro\n\n0) a\n1) b"), 5000);
+  }
+}
+
+void TestMarkdownEditor::testListAutoNumberSplit() {
+  const QString source = QStringLiteral("1. very simple questions\n2. Test the list;\n"
+                                        "3. List item 2;\n4. very good\n5. hahahaha");
+  const QString separated = QStringLiteral("1. very simple questions\n\nabcjdkejj\n\n"
+                                           "2. Test the list;\n3. List item 2;\n"
+                                           "4. very good\n5. hahahaha");
+  const QString restarted = QStringLiteral("1. very simple questions\n\nabcjdkejj\n\n"
+                                           "1. Test the list;\n2. List item 2;\n"
+                                           "3. very good\n4. hahahaha");
+  const QString independent = QStringLiteral("\n\nindependent\n\n7) keep\n3) authored");
+  for (bool fresh : {false, true}) {
+    Fixture fixture(source + independent, 0, -1, makeListSourceConfig());
+    if (fresh) {
+      fixture.waitForFreshListAst();
+    }
+    replaceTableSource(*fixture.editor(), 1, 0, 0, QStringLiteral("\nabcjdkejj\n\n"));
+    QCOMPARE(fixture.text(), separated + independent);
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), restarted + independent, 5000);
+    verifyListStructurePreserved(separated + independent, fixture.text(), {1, 1, 7});
+    fixture.edit()->undo();
+    QCOMPARE(fixture.text(), source + independent);
+    fixture.waitForFreshListAst();
+    QTest::qWait(800);
+    QCOMPARE(fixture.text(), source + independent);
+    QVERIFY(fixture.editor()->document()->isRedoAvailable());
+    fixture.edit()->redo();
+    QCOMPARE(fixture.text(), restarted + independent);
+  }
+  {
+    // Already separate lists are authored input, not a structural split event.
+    Fixture fixture(separated, 0, -1, makeListSourceConfig());
+    const bool modified = fixture.editor()->document()->isModified();
+    const int undoSteps = fixture.editor()->document()->availableUndoSteps();
+    fixture.waitForFreshListAst();
+    QTest::qWait(800);
+    QCOMPARE(fixture.text(), separated);
+    QCOMPARE(fixture.editor()->document()->isModified(), modified);
+    QCOMPARE(fixture.editor()->document()->availableUndoSteps(), undoSteps);
+  }
+  {
+    // A blank between nonempty items makes a loose list, not a second list.
+    Fixture fixture(QStringLiteral("3. a\n8. b\n9. c"), 0, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    replaceTableSource(*fixture.editor(), 1, 0, 0, QStringLiteral("\n"));
+    QTest::qWait(800);
+    QCOMPARE(fixture.text(), QStringLiteral("3. a\n\n8. b\n9. c"));
+    replaceTableSource(*fixture.editor(), 1, 0, 0, QStringLiteral("\nbreak\n"));
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("3. a\n\nbreak\n\n1. b\n2. c"), 5000);
+  }
+  {
+    // An explicit first-number edit in the split transaction takes precedence.
+    Fixture fixture(QStringLiteral("3. a\n8. b\n9. c\n2. d"), 0, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    QTextCursor cursor(fixture.editor()->document());
+    const int start = tableSourcePosition(fixture.editor()->document(), 2, 0);
+    cursor.beginEditBlock();
+    cursor.setPosition(start);
+    cursor.setPosition(start + 1, QTextCursor::KeepAnchor);
+    cursor.insertText(QStringLiteral("5"));
+    cursor.setPosition(start);
+    cursor.insertText(QStringLiteral("\nbreak\n\n"));
+    cursor.endEditBlock();
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("3. a\n4. b\n\nbreak\n\n5. c\n6. d"),
+                              5000);
+  }
+  {
+    // Both later fragments restart, while the original zero start survives.
+    Fixture fixture(QStringLiteral("0. a\n8. b\n9. c\n2. d\n4. e\n5. f"), 0, -1,
+                    makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    QTextCursor cursor(fixture.editor()->document());
+    cursor.beginEditBlock();
+    cursor.setPosition(tableSourcePosition(fixture.editor()->document(), 4, 0));
+    cursor.insertText(QStringLiteral("\nsecond break\n\n"));
+    cursor.setPosition(tableSourcePosition(fixture.editor()->document(), 2, 0));
+    cursor.insertText(QStringLiteral("\nfirst break\n\n"));
+    cursor.endEditBlock();
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(),
+                              QStringLiteral("0. a\n1. b\n\nfirst break\n\n1. c\n2. d\n\n"
+                                             "second break\n\n1. e\n2. f"),
+                              5000);
+  }
+  {
+    // Restarting a two-digit fragment keeps its child under the same item.
+    Fixture fixture(QStringLiteral("10. a\n11. b\n    - child\n12. c"), 0, -1,
+                    makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    replaceTableSource(*fixture.editor(), 1, 0, 0, QStringLiteral("\nbreak\n\n"));
+    const QString authored = fixture.text();
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(),
+                              QStringLiteral("10. a\n\nbreak\n\n1. b\n   - child\n2. c"), 5000);
+    verifyListStructurePreserved(authored, fixture.text(), {10, 1});
   }
 }
 
@@ -2557,8 +2652,8 @@ void TestMarkdownEditor::testListAutoNumberNestedWidths() {
     cursor.insertText(QStringLiteral(")"));
     cursor.endEditBlock();
     const QString authored = fixture.text();
-    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("3. a\n8) b\n9) c\n4. d"), 5000);
-    verifyListStructurePreserved(authored, fixture.text());
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("3. a\n1) b\n2) c\n1. d"), 5000);
+    verifyListStructurePreserved(authored, fixture.text(), {3, 1, 1});
   }
   {
     Fixture fixture(QStringLiteral("5. keep\n2. odd\n\nplain\n\n"), 5, 0, makeListSourceConfig());
