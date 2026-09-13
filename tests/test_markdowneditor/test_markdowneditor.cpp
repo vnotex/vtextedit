@@ -1694,6 +1694,12 @@ QSharedPointer<MarkdownEditorConfig> makeListSourceConfig(bool p_enabled = true,
   return config;
 }
 
+QSharedPointer<MarkdownEditorConfig> makeViListSourceConfig(bool p_enabled = false) {
+  auto config = makeListSourceConfig(p_enabled);
+  config->m_textEditorConfig->m_inputMode = InputMode::ViMode;
+  return config;
+}
+
 // Clipboard-based cut/paste must not leave state behind for another test.
 class ClipboardRestore {
 public:
@@ -2010,6 +2016,241 @@ void TestMarkdownEditor::testListAstCodeAndStaleness() {
     fixture.moveTo(0);
     QTest::keyClick(fixture.edit(), Qt::Key_Return, Qt::KeypadModifier);
     QCOMPARE(fixture.text(), QStringLiteral("3) a  \n4) \n"));
+  }
+}
+
+void TestMarkdownEditor::testViListOpenLines() {
+  struct MarkerCase {
+    QString m_source;
+    QString m_above;
+    QString m_below;
+  };
+  const MarkerCase cases[] = {
+      {QStringLiteral("- alpha"), QStringLiteral("- "), QStringLiteral("- ")},
+      {QStringLiteral("3. alpha"), QStringLiteral("3. "), QStringLiteral("4. ")},
+      {QStringLiteral("7) alpha"), QStringLiteral("7) "), QStringLiteral("8) ")},
+      {QStringLiteral("> - [x] alpha"), QStringLiteral("> - [ ] "), QStringLiteral("> - [ ] ")},
+      {QStringLiteral("- [x] "), QStringLiteral("- [ ] "), QStringLiteral("- [ ] ")},
+      {QStringLiteral("9. "), QStringLiteral("9. "), QStringLiteral("10. ")},
+  };
+  for (bool fresh : {false, true}) {
+    for (bool above : {false, true}) {
+      for (const auto &item : cases) {
+        Fixture fixture(item.m_source, 0, item.m_source.size() / 2, makeViListSourceConfig());
+        if (fresh) {
+          fixture.waitForFreshListAst();
+        }
+        QTest::keyClicks(fixture.edit(), above ? QStringLiteral("O") : QStringLiteral("o"));
+        const auto prefix = above ? item.m_above : item.m_below;
+        QCOMPARE(fixture.text(), above ? prefix + QLatin1Char('\n') + item.m_source
+                                       : item.m_source + QLatin1Char('\n') + prefix);
+        QCOMPARE(fixture.edit()->textCursor().blockNumber(), above ? 0 : 1);
+        QCOMPARE(fixture.edit()->textCursor().positionInBlock(), prefix.size());
+      }
+    }
+
+    // The preceding block belongs to a different list. O must classify 1), not '-'.
+    Fixture fixture(QStringLiteral("- previous\n1) alpha"), 1, 5, makeViListSourceConfig());
+    if (fresh) {
+      fixture.waitForFreshListAst();
+    }
+    QTest::keyClicks(fixture.edit(), QStringLiteral("O"));
+    QCOMPARE(fixture.text(), QStringLiteral("- previous\n1) \n1) alpha"));
+    QCOMPARE(fixture.edit()->textCursor().blockNumber(), 1);
+    QCOMPARE(fixture.edit()->textCursor().positionInBlock(), 3);
+  }
+}
+
+void TestMarkdownEditor::testViListOpenContext() {
+  struct ContextCase {
+    QString m_source;
+    int m_block;
+    QString m_cold;
+    QString m_fresh;
+  };
+  const ContextCase cases[] = {
+      // Even O on block zero uses the deepest same-line item when fresh.
+      {QStringLiteral("- - alpha"), 0, QStringLiteral("- "), QStringLiteral("  - ")},
+      {QStringLiteral("- parent\n  continuation"), 1, QStringLiteral("  "), QStringLiteral("- ")},
+      {QStringLiteral("- parent\n\n  - child\n    continuation"), 3, QStringLiteral("    "),
+       QStringLiteral("  - ")},
+      {QStringLiteral("> - parent\ncontinuation"), 1, QString(), QStringLiteral("> - ")},
+  };
+  for (bool fresh : {false, true}) {
+    for (bool above : {false, true}) {
+      for (const auto &item : cases) {
+        Fixture fixture(item.m_source, item.m_block, 4, makeViListSourceConfig());
+        if (fresh) {
+          fixture.waitForFreshListAst();
+        }
+        QTest::keyClicks(fixture.edit(), above ? QStringLiteral("O") : QStringLiteral("o"));
+        const auto prefix = fresh ? item.m_fresh : item.m_cold;
+        const int insertedBlock = item.m_block + (above ? 0 : 1);
+        auto expected = item.m_source.split(QLatin1Char('\n'));
+        expected.insert(insertedBlock, prefix);
+        QCOMPARE(fixture.text(), expected.join(QLatin1Char('\n')));
+        QCOMPARE(fixture.edit()->textCursor().blockNumber(), insertedBlock);
+        QCOMPARE(fixture.edit()->textCursor().positionInBlock(), prefix.size());
+      }
+
+      // The blank separator makes 3) a nested list, not a lazy parent paragraph.
+      const QString source = QStringLiteral("- parent\n\n  3) alpha\n  9) sibling\n- tail");
+      Fixture nested(source, 2, 6, makeViListSourceConfig());
+      if (fresh) {
+        nested.waitForFreshListAst();
+      }
+      QTest::keyClicks(nested.edit(), above ? QStringLiteral("O") : QStringLiteral("o"));
+      auto expected = source.split(QLatin1Char('\n'));
+      expected.insert(above ? 2 : 3, above ? QStringLiteral("  3) ") : QStringLiteral("  4) "));
+      QCOMPARE(nested.text(), expected.join(QLatin1Char('\n')));
+      QCOMPARE(nested.edit()->textCursor().blockNumber(), above ? 2 : 3);
+      QCOMPARE(nested.edit()->textCursor().positionInBlock(), 5);
+    }
+  }
+
+  struct CodeCase {
+    QString m_source;
+    int m_block;
+    QString m_indent;
+  };
+  const CodeCase code[] = {
+      {QStringLiteral("```\n- code\n```"), 1, QString()},
+      {QStringLiteral("    - code"), 0, QStringLiteral("    ")},
+      {QStringLiteral("- parent\n\n      3) code"), 2, QStringLiteral("      ")},
+  };
+  for (bool above : {false, true}) {
+    for (const auto &item : code) {
+      Fixture fixture(item.m_source, item.m_block, 4, makeViListSourceConfig());
+      fixture.waitForFreshListAst();
+      QTest::keyClicks(fixture.edit(), above ? QStringLiteral("O") : QStringLiteral("o"));
+      const int insertedBlock = item.m_block + (above ? 0 : 1);
+      auto expected = item.m_source.split(QLatin1Char('\n'));
+      expected.insert(insertedBlock, item.m_indent);
+      QCOMPARE(fixture.text(), expected.join(QLatin1Char('\n')));
+      QCOMPARE(fixture.edit()->textCursor().blockNumber(), insertedBlock);
+      QCOMPARE(fixture.edit()->textCursor().positionInBlock(), item.m_indent.size());
+    }
+  }
+}
+
+void TestMarkdownEditor::testViListOpenNumbering() {
+  const QString untouched = QStringLiteral("\n\nseparate\n\n7. keep\n3. odd");
+  const QString source = QStringLiteral("5. alpha\n9. beta\n2. gamma") + untouched;
+  for (bool enabled : {false, true}) {
+    for (bool above : {false, true}) {
+      Fixture fixture(source, 1, 5, makeViListSourceConfig(enabled));
+      fixture.waitForFreshListAst();
+      QTest::keyClicks(fixture.edit(), above ? QStringLiteral("O") : QStringLiteral("o"));
+      const auto prefix =
+          QString::number(enabled ? (above ? 6 : 7) : (above ? 9 : 10)) + QStringLiteral(". ");
+      const int insertedBlock = above ? 1 : 2;
+      auto lines = source.split(QLatin1Char('\n'));
+      lines.insert(insertedBlock, prefix);
+      QCOMPARE(fixture.text(), lines.join(QLatin1Char('\n')));
+      QCOMPARE(fixture.edit()->textCursor().blockNumber(), insertedBlock);
+      QCOMPARE(fixture.edit()->textCursor().positionInBlock(), prefix.size());
+      QTest::keyClicks(fixture.edit(), QStringLiteral("new"));
+      QTest::keyClick(fixture.edit(), Qt::Key_Escape);
+      lines[insertedBlock] += QStringLiteral("new");
+      QString expected = lines.join(QLatin1Char('\n'));
+      QCOMPARE(fixture.text(), expected);
+      if (enabled) {
+        expected = (above ? QStringLiteral("5. alpha\n6. new\n7. beta\n8. gamma")
+                          : QStringLiteral("5. alpha\n6. beta\n7. new\n8. gamma")) +
+                   untouched;
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), expected, 5000);
+      } else {
+        QTest::qWait(800); // Disabled numbering must leave every authored sibling alone.
+        QCOMPARE(fixture.text(), expected);
+      }
+      QTest::keyClick(fixture.edit(), Qt::Key_U);
+      QCOMPARE(fixture.text(), source);
+      QTest::keyClick(fixture.edit(), Qt::Key_R, Qt::ControlModifier);
+      QCOMPARE(fixture.text(), expected);
+    }
+  }
+
+  Fixture first(QStringLiteral("7) alpha\n3) beta"), 0, 5, makeViListSourceConfig(true));
+  first.waitForFreshListAst();
+  QTest::keyClicks(first.edit(), QStringLiteral("O"));
+  QCOMPARE(first.text(), QStringLiteral("7) \n7) alpha\n3) beta"));
+  QCOMPARE(first.edit()->textCursor().position(), 3);
+  QTest::keyClicks(first.edit(), QStringLiteral("new"));
+  QTest::keyClick(first.edit(), Qt::Key_Escape);
+  QTRY_COMPARE_WITH_TIMEOUT(first.text(), QStringLiteral("7) new\n8) alpha\n9) beta"), 5000);
+}
+
+void TestMarkdownEditor::testViListOpenUndoAndReplay() {
+  const QString origin = QStringLiteral("- [x] alpha\n");
+  const QString tail = QStringLiteral("- [ ] tail");
+  const QString source = origin + tail;
+  const QString inserted = QStringLiteral("- [ ] new\n");
+  for (bool above : {false, true}) {
+    for (int count : {1, 3}) {
+      Fixture fixture(source, 0, 8, makeViListSourceConfig());
+      fixture.waitForFreshListAst();
+      if (count > 1) {
+        QTest::keyClicks(fixture.edit(), QString::number(count));
+      }
+      QTest::keyClicks(fixture.edit(), above ? QStringLiteral("O") : QStringLiteral("o"));
+      QTest::keyClicks(fixture.edit(), QStringLiteral("new"));
+      QTest::keyClick(fixture.edit(), Qt::Key_Escape);
+      const auto expected =
+          above ? inserted.repeated(count) + source : origin + inserted.repeated(count) + tail;
+      QCOMPARE(fixture.text(), expected);
+      QTest::keyClick(fixture.edit(), Qt::Key_U);
+      QCOMPARE(fixture.text(), source);
+      QTest::keyClick(fixture.edit(), Qt::Key_R, Qt::ControlModifier);
+      QCOMPARE(fixture.text(), expected);
+
+      // Repeats must capture only "new", not the generated unchecked task prefix.
+      fixture.moveTo(above ? count - 1 : count);
+      QTest::keyClick(fixture.edit(), Qt::Key_Period);
+      QCOMPARE(fixture.text(), above ? inserted.repeated(count * 2) + source
+                                     : origin + inserted.repeated(count * 2) + tail);
+      QTest::keyClick(fixture.edit(), Qt::Key_U);
+      QCOMPARE(fixture.text(), expected);
+    }
+  }
+  // A cold provisional 10. shrinks to 3. while insert mode is still active.
+  // The repeat start must follow that rewrite without capturing marker bytes.
+  Fixture numbered(QStringLiteral("1. alpha\n9. beta\n10. gamma"), 1, 7,
+                   makeViListSourceConfig(true));
+  numbered.waitForFreshListAst();
+  numbered.makeAstStale();
+  QTest::keyClicks(numbered.edit(), QStringLiteral("3onew"));
+  QCOMPARE(numbered.blockText(2), QStringLiteral("10. new"));
+  QTRY_COMPARE_WITH_TIMEOUT(numbered.text(), QStringLiteral("1. alpha\n2. betax\n3. new\n4. gamma"),
+                            5000);
+  QTest::keyClick(numbered.edit(), Qt::Key_Escape);
+  QTRY_COMPARE_WITH_TIMEOUT(numbered.text(),
+                            QStringLiteral("1. alpha\n2. betax\n3. new\n4. new\n5. new\n6. gamma"),
+                            5000);
+}
+
+void TestMarkdownEditor::testViListInsertReturn() {
+  struct ReturnCase {
+    QString m_source;
+    int m_column;
+    QString m_expected;
+    int m_caret;
+  };
+  const ReturnCase cases[] = {
+      {QStringLiteral("3) alpha"), 5, QStringLiteral("3) al\n4) pha"), 3},
+      {QStringLiteral("- [x] alpha"), 8, QStringLiteral("- [x] al\n- [ ] pha"), 6},
+      {QStringLiteral("> - [x] "), 8, QStringLiteral("> "), 2},
+  };
+  for (bool fresh : {false, true}) {
+    for (const auto &item : cases) {
+      Fixture fixture(item.m_source, 0, item.m_column, makeViListSourceConfig());
+      if (fresh) {
+        fixture.waitForFreshListAst();
+      }
+      QTest::keyClick(fixture.edit(), Qt::Key_I);
+      fixture.pressReturn();
+      QCOMPARE(fixture.text(), item.m_expected);
+      QCOMPARE(fixture.edit()->textCursor().positionInBlock(), item.m_caret);
+    }
   }
 }
 

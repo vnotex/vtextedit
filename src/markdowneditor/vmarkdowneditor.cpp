@@ -133,6 +133,12 @@ public:
             &MarkdownSourceFormatter::queueAttempt);
     connect(m_worker, &QThread::finished, this, &MarkdownSourceFormatter::workerFinished);
     auto edit = p_editor->getTextEdit();
+    connect(edit, &VTextEdit::openLineRequested, this,
+            [this](VTextEdit::BlockInsertion p_placement, bool *p_handled) {
+              if (!*p_handled) {
+                *p_handled = handleListInsertion(p_placement);
+              }
+            });
     connect(edit, &QTextEdit::cursorPositionChanged, this, &MarkdownSourceFormatter::queueAttempt);
     connect(edit, &QTextEdit::selectionChanged, this, &MarkdownSourceFormatter::queueAttempt);
     edit->installEventFilter(this);
@@ -148,7 +154,7 @@ public:
   }
 
   void setEnabled(bool p_tablesEnabled, bool p_listsEnabled);
-  bool handleListReturn();
+  bool handleListInsertion(VTextEdit::BlockInsertion p_operation);
   bool takeListReturnSuppression();
 
 protected:
@@ -162,6 +168,17 @@ protected:
   }
 
 private:
+  // Classification is read-only and precedes the single insertion transaction.
+  struct ListInsertionPlan {
+    QString m_prefix;
+    int m_removeStart = -1;
+    int m_removeEnd = -1;
+    bool m_suppressFallback = false;
+  };
+
+  bool resolveListInsertion(QTextCursor p_origin, VTextEdit::BlockInsertion p_operation,
+                            ListInsertionPlan &p_plan) const;
+
   struct Baseline {
     QTextBlock m_block;
     QString m_text;
@@ -1623,18 +1640,23 @@ bool MarkdownSourceFormatter::takeListReturnSuppression() {
   return suppressed;
 }
 
-bool MarkdownSourceFormatter::handleListReturn() {
-  m_listReturnSuppressed = false;
-  auto edit = m_editor->getTextEdit();
-  auto cursor = edit->textCursor();
-  if (cursor.hasSelection()) {
+bool MarkdownSourceFormatter::resolveListInsertion(QTextCursor p_origin,
+                                                   VTextEdit::BlockInsertion p_operation,
+                                                   ListInsertionPlan &p_plan) const {
+  const bool split = p_operation == VTextEdit::BlockInsertion::Split;
+  if (split && p_origin.hasSelection()) {
     return false;
   }
-  const auto block = cursor.block();
+  if (!split) {
+    // Open-line commands classify the original block, not the caret's column
+    // or (for Above) the preceding block. This cursor is never installed live.
+    p_origin.movePosition(QTextCursor::EndOfBlock);
+  }
+  const auto block = p_origin.block();
   const auto highlighter = m_editor->getHighlighter();
   const auto context = highlighter->getBlockContext(block.blockNumber());
   if (context.m_valid && context.m_inFencedCode) {
-    m_listReturnSuppressed = true;
+    p_plan.m_suppressFallback = true;
     return false;
   }
   const auto &result = highlighter->m_result;
@@ -1645,9 +1667,10 @@ bool MarkdownSourceFormatter::handleListReturn() {
   QString prefix;
   int number = 0;
   bool empty = false;
+  const int increment = p_operation == VTextEdit::BlockInsertion::Above ? 0 : 1;
   if (fresh) {
     // A negative full-AST query vetoes the post-hook's lexical fallback too.
-    m_listReturnSuppressed = true;
+    p_plan.m_suppressFallback = true;
     const auto &structure = result->m_listStructure;
     const int blockNumber = block.blockNumber();
     int itemIndex = -1;
@@ -1667,7 +1690,7 @@ bool MarkdownSourceFormatter::handleListReturn() {
         [](int p_block, const md::ListItemInfo &p_item) { return p_block < p_item.m_startBlock; });
     // Multiple opening markers on one line are ordered outermost first.
     while (opening != structure.m_items.cbegin() && (opening - 1)->m_startBlock == blockNumber &&
-           (opening - 1)->m_markerStart > cursor.position()) {
+           (opening - 1)->m_markerStart > p_origin.position()) {
       --opening;
     }
     if (opening != structure.m_items.cbegin()) {
@@ -1695,7 +1718,7 @@ bool MarkdownSourceFormatter::handleListReturn() {
                                  line.mid(item.m_markerEnd - block.position()).trimmed().isEmpty()
                              ? item.m_markerEnd
                              : item.m_contentStart;
-    if (!item.m_sourceValid || cursor.position() < boundary ||
+    if (!item.m_sourceValid || p_origin.position() < boundary ||
         !md::listContinuationPrefix(structure, itemIndex, prefix)) {
       return false;
     }
@@ -1714,12 +1737,12 @@ bool MarkdownSourceFormatter::handleListReturn() {
     const auto &list = structure.m_lists[item.m_list];
     if (m_listsEnabled && list.m_ordered) {
       const auto ordinal = std::lower_bound(list.m_items.cbegin(), list.m_items.cend(), itemIndex);
-      const int nextOrdinal = int(ordinal - list.m_items.cbegin()) + 1;
+      const int nextOrdinal = int(ordinal - list.m_items.cbegin()) + increment;
       if (ordinal == list.m_items.cend() || *ordinal != itemIndex ||
           nextOrdinal > 999999999 - list.m_startNumber) {
         return false;
       }
-      number = list.m_startNumber + nextOrdinal - 1;
+      number = list.m_startNumber + nextOrdinal - increment;
     }
   } else {
     // The cold/stale path examines only the authored current line. In
@@ -1733,38 +1756,69 @@ bool MarkdownSourceFormatter::handleListReturn() {
       start = TextUtils::fetchIndentation(line);
     }
     if (!md::scanListMarker(line, start, marker) ||
-        cursor.positionInBlock() < (marker.m_empty ? marker.m_markerEnd : marker.m_contentStart)) {
+        p_origin.positionInBlock() <
+            (marker.m_empty ? marker.m_markerEnd : marker.m_contentStart)) {
       return false;
     }
     prefix = line.left(marker.m_markerStart);
     number = marker.m_sourceNumber;
     empty = marker.m_empty;
   }
-  if (empty) {
-    cursor.beginEditBlock();
-    cursor.setPosition(block.position() + marker.m_markerStart);
-    cursor.setPosition(block.position() + line.size(), QTextCursor::KeepAnchor);
-    cursor.removeSelectedText();
-    cursor.endEditBlock();
-    edit->setTextCursor(cursor);
+  if (split && empty) {
+    p_plan.m_removeStart = block.position() + marker.m_markerStart;
+    p_plan.m_removeEnd = block.position() + line.size();
     return true;
   }
   const bool ordered = marker.m_marker == QLatin1Char('.') || marker.m_marker == QLatin1Char(')');
-  if (ordered && number >= 999999999) {
-    m_listReturnSuppressed = true;
+  if (ordered && number > 999999999 - increment) {
+    p_plan.m_suppressFallback = true;
     return false;
   }
   if (ordered) {
-    prefix += QString::number(number + 1);
+    prefix += QString::number(number + increment);
   }
   prefix += marker.m_marker;
   prefix += QLatin1Char(' ');
   if (marker.m_task) {
     prefix += QStringLiteral("[ ] ");
   }
+  p_plan.m_prefix = std::move(prefix);
+  return true;
+}
+
+bool MarkdownSourceFormatter::handleListInsertion(VTextEdit::BlockInsertion p_operation) {
+  auto edit = m_editor->getTextEdit();
+  auto cursor = edit->textCursor();
+  ListInsertionPlan plan;
+  const bool resolved = resolveListInsertion(cursor, p_operation, plan);
+  if (p_operation == VTextEdit::BlockInsertion::Split) {
+    m_listReturnSuppressed = plan.m_suppressFallback;
+  }
+  if (!resolved) {
+    return false;
+  }
+
   cursor.beginEditBlock();
-  cursor.insertBlock();
-  cursor.insertText(prefix);
+  if (plan.m_removeStart >= 0) {
+    cursor.setPosition(plan.m_removeStart);
+    cursor.setPosition(plan.m_removeEnd, QTextCursor::KeepAnchor);
+    cursor.removeSelectedText();
+  } else {
+    if (p_operation == VTextEdit::BlockInsertion::Above) {
+      cursor.movePosition(QTextCursor::StartOfBlock);
+      const int position = cursor.position();
+      cursor.insertBlock();
+      // insertBlock leaves the cursor in the original block; the new block is
+      // before it, even at document position zero.
+      cursor.setPosition(position);
+    } else {
+      if (p_operation == VTextEdit::BlockInsertion::Below) {
+        cursor.movePosition(QTextCursor::EndOfBlock);
+      }
+      cursor.insertBlock();
+    }
+    cursor.insertText(plan.m_prefix);
+  }
   cursor.endEditBlock();
   edit->setTextCursor(cursor);
   return true;
@@ -2395,7 +2449,7 @@ void VMarkdownEditor::preKeyReturn(int p_modifiers, bool *p_changed, bool *p_han
     cursor.endEditBlock();
     m_textEdit->setTextCursor(cursor);
   } else if (p_modifiers == Qt::NoModifier) {
-    if (formatter->handleListReturn()) {
+    if (formatter->handleListInsertion(VTextEdit::BlockInsertion::Split)) {
       *p_changed = true;
       *p_handled = true;
       m_returnBlockContext = md::BlockContext();

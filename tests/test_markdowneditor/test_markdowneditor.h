@@ -4,7 +4,7 @@
 #include <QtTest>
 
 namespace tests {
-// Integration coverage of the real Enter pipeline of VMarkdownEditor, plus the
+// Integration coverage of the real Return and Vi o/O pipelines of VMarkdownEditor, plus the
 // MarkdownUtils quote helpers it is built on.
 class TestMarkdownEditor : public QObject {
   Q_OBJECT
@@ -133,6 +133,13 @@ private slots:
   void testListAutoNumberProtectedPositions();
   void testListAndTableSourceFormatting();
   void testListAutoNumberStaleWorker();
+
+  // Vi open-line completion through the real normal/insert-mode key pipeline.
+  void testViListOpenLines();
+  void testViListOpenContext();
+  void testViListOpenNumbering();
+  void testViListOpenUndoAndReplay();
+  void testViListInsertReturn();
 };
 } // namespace tests
 

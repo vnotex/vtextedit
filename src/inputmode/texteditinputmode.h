@@ -161,7 +161,8 @@ public:
 
   void backspace() Q_DECL_OVERRIDE;
 
-  void newLine(KateViI::NewLineIndent p_indent) Q_DECL_OVERRIDE;
+  void newLine(KateViI::NewLineIndent p_indent,
+               KateViI::NewLinePosition p_position) Q_DECL_OVERRIDE;
 
   void abortCompletion() Q_DECL_OVERRIDE;
 

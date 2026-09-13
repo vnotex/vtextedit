@@ -821,12 +821,7 @@ bool NormalViMode::commandChangeCaseLine() {
 bool NormalViMode::commandOpenNewLineUnder() {
   m_interface->setUndoMergeAllEdits(true);
 
-  KateViI::Cursor c(m_interface->cursorPosition());
-
-  c.setColumn(m_interface->lineLength(c.line()));
-  updateCursor(c);
-
-  m_interface->newLine();
+  m_interface->newLine(KateViI::NewLineIndent::Indent, KateViI::NewLinePosition::Below);
 
   m_stickyColumn = -1;
   startInsertMode();
@@ -839,19 +834,7 @@ bool NormalViMode::commandOpenNewLineUnder() {
 bool NormalViMode::commandOpenNewLineOver() {
   m_interface->setUndoMergeAllEdits(true);
 
-  KateViI::Cursor c(m_interface->cursorPosition());
-
-  if (c.line() == 0) {
-    m_interface->insertLine(0, QString());
-    c.setColumn(0);
-    c.setLine(0);
-    updateCursor(c);
-  } else {
-    c.setLine(c.line() - 1);
-    c.setColumn(getLine(c.line()).length());
-    updateCursor(c);
-    m_interface->newLine();
-  }
+  m_interface->newLine(KateViI::NewLineIndent::Indent, KateViI::NewLinePosition::Above);
 
   m_stickyColumn = -1;
   startInsertMode();
