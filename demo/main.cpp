@@ -53,6 +53,7 @@ static VMarkdownEditor *setupMarkdownEditor(QWidget *p_parent) {
   // The editable table sheet is opt-in, because it writes back to the document.
   markdownEditorConfig->m_inplacePreviewSources |= MarkdownEditorConfig::Table;
   markdownEditorConfig->m_autoFormatTableSourceEnabled = true;
+  markdownEditorConfig->m_autoNumberOrderedListsEnabled = true;
   auto editorParas = QSharedPointer<TextEditorParameters>::create();
   editorParas->m_spellCheckEnabled = false;
 
