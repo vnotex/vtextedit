@@ -25,10 +25,11 @@ MarkdownHighlighterFastResult::MarkdownHighlighterFastResult(
 
 // The full-result boundary owns this projection; no source decoding or per-line map.
 static QVector<md::ListItemRange> buildListItemRanges(const md::ListStructure &p_structure,
-                                                      int p_numBlocks) {
+                                                      const QTextDocument *p_doc) {
   if (!p_structure.m_valid) {
     return {};
   }
+  const int numBlocks = p_doc->blockCount();
   const auto &items = p_structure.m_items;
   const auto &containers = p_structure.m_containers;
   QVector<int> included(items.size(), -1);
@@ -38,11 +39,17 @@ static QVector<md::ListItemRange> buildListItemRanges(const md::ListStructure &p
     const auto &item = items.at(i);
     if (!item.m_sourceValid || item.m_markerStart < 0 || item.m_markerEnd <= item.m_markerStart ||
         item.m_startBlock < 0 || item.m_endBlock < item.m_startBlock ||
-        item.m_endBlock >= p_numBlocks) {
+        item.m_endBlock >= numBlocks) {
+      continue;
+    }
+    const auto block = p_doc->findBlockByNumber(item.m_startBlock);
+    const int markerStart = item.m_markerStart - block.position();
+    const int markerEnd = item.m_markerEnd - block.position();
+    if (markerStart < 0 || markerEnd >= block.length()) {
       continue;
     }
     included[i] = ranges.size();
-    ranges.append({item.m_startBlock, item.m_endBlock, item.m_markerStart, item.m_markerEnd, -1});
+    ranges.append({item.m_startBlock, item.m_endBlock, markerStart, markerEnd, -1});
   }
 
   QVector<int> nearest(containers.size(), -1);
@@ -83,8 +90,9 @@ static QVector<md::ListItemRange> buildListItemRanges(const md::ListStructure &p
     const int parent = containers.at(item.m_container).m_parent;
     range.m_parent = parent < 0 ? -1 : nearest.at(parent);
     if (range.m_parent >= output ||
-        (output > 0 && (ranges.at(output - 1).m_markerEnd > range.m_markerStart ||
-                        ranges.at(output - 1).m_startBlock > range.m_startBlock))) {
+        (output > 0 && (ranges.at(output - 1).m_startBlock > range.m_startBlock ||
+                        (ranges.at(output - 1).m_startBlock == range.m_startBlock &&
+                         ranges.at(output - 1).m_markerEnd > range.m_markerStart)))) {
       return {};
     }
     while (!ancestors.isEmpty() &&
@@ -135,7 +143,7 @@ MarkdownHighlighterResult::MarkdownHighlighterResult(
   m_mathElements = p_result->m_mathElements;
   m_tableElements = p_result->m_tableElements;
   m_listStructure = p_result->m_listStructure;
-  m_listItemRanges = buildListItemRanges(m_listStructure, m_numOfBlocks);
+  m_listItemRanges = buildListItemRanges(m_listStructure, p_peg->document());
   m_headingElements = p_result->m_headingElements;
 
   // ATTENTION: build this from p_result, never from a member. The old

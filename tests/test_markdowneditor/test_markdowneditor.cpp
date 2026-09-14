@@ -3722,6 +3722,53 @@ void TestMarkdownEditor::testListItemDecorationsFreshness() {
     QCOMPARE(typing.blockText(4), QStringLiteral("  typingxyz"));
   }
 
+  {
+    const QString source = QStringLiteral("intro\n\n1. parent\n   body\n   - - child\n"
+                                          "       tail\n\n     outer tail\n2. sibling\n"
+                                          "   end\n\noutside");
+    Fixture stable(source, 2, -1, makeListDecorationConfig());
+    showListDecorationFixture(stable);
+    const qreal parentX = listDecorationMarkerX(stable, 2, 0, 2);
+    const qreal outerX = listDecorationMarkerX(stable, 4, 3, 4);
+    const qreal innerX = listDecorationMarkerX(stable, 4, 5, 6);
+    const qreal siblingX = listDecorationMarkerX(stable, 8, 0, 2);
+    auto verifyStable = [&]() {
+      // Lookup must use the same block/column ordering as the cached anchors,
+      // including two markers on one line after an edit in a preceding block.
+      for (int column : {4, 6}) {
+        stable.select(4, column, 4, column);
+        for (qreal dpr : {1.0, 2.0}) {
+          const auto raster = renderListDecorations(stable, dpr);
+          verifyListGuideBand(raster, parentX, listDecorationLineBand(stable, 3), true);
+          for (qreal x : {parentX, outerX, innerX}) {
+            verifyListGuideBand(raster, x, listDecorationLineBand(stable, 5), true);
+          }
+          verifyListGuideBand(raster, siblingX, listDecorationLineBand(stable, 9), true);
+          verifyListActiveRow(stable, raster, 3, false);
+          verifyListActiveRow(stable, raster, 5, true);
+          verifyListActiveRow(stable, raster, 7, column == 4);
+          verifyListActiveRow(stable, raster, 9, false);
+        }
+      }
+    };
+    verifyStable();
+    auto doc = stable.editor()->document();
+    const QString added = QStringLiteral("xyz\U0001F680");
+    for (int block : {0, 2, 3, 7}) {
+      QTextCursor edit(doc->findBlockByNumber(block));
+      edit.movePosition(QTextCursor::EndOfBlock);
+      const int end = edit.position();
+      edit.insertText(added);
+      verifyStable(); // No event processing or parse between the edit and draw.
+      edit.setPosition(end, QTextCursor::KeepAnchor);
+      edit.removeSelectedText();
+      verifyStable();
+    }
+    QCOMPARE(stable.text(), source);
+    stable.waitForFreshListAst();
+    verifyStable();
+  }
+
   const QString source = QStringLiteral("- parent\n  continuation\n\noutside");
   Fixture fixture(source, 1, -1, makeListDecorationConfig());
   showListDecorationFixture(fixture);

@@ -131,14 +131,19 @@ int TextDocumentLayout::listItemAtPosition(int p_position) const {
   if (!block.isValid()) {
     return -1;
   }
-  const auto next = std::upper_bound(
-      m_listItemRanges.cbegin(), m_listItemRanges.cend(), p_position,
-      [](int p_pos, const md::ListItemRange &p_range) { return p_pos < p_range.m_markerStart; });
+  const int blockNumber = block.blockNumber();
+  const int column = p_position - block.position();
+  const auto next = std::upper_bound(m_listItemRanges.cbegin(), m_listItemRanges.cend(), column,
+                                     [blockNumber](int p_column, const md::ListItemRange &p_range) {
+                                       return blockNumber < p_range.m_startBlock ||
+                                              (blockNumber == p_range.m_startBlock &&
+                                               p_column < p_range.m_markerStart);
+                                     });
   int item = static_cast<int>(next - m_listItemRanges.cbegin()) - 1;
   while (item >= 0) {
     const auto &range = m_listItemRanges.at(item);
-    if (range.m_startBlock <= block.blockNumber() && block.blockNumber() <= range.m_endBlock &&
-        p_position >= range.m_markerStart) {
+    if (range.m_startBlock <= blockNumber && blockNumber <= range.m_endBlock &&
+        (blockNumber > range.m_startBlock || column >= range.m_markerStart)) {
       return item;
     }
     item = range.m_parent;
@@ -294,8 +299,8 @@ TextDocumentLayout::ListGuideAnchor TextDocumentLayout::listGuideAnchor(int p_it
   if (!data || !data->hasOffset() || !layout || !layout->preeditAreaText().isEmpty()) {
     return {};
   }
-  const int start = range.m_markerStart - block.position();
-  const int end = range.m_markerEnd - block.position();
+  const int start = range.m_markerStart;
+  const int end = range.m_markerEnd;
   if (start < 0 || end <= start || end >= block.length()) {
     return {};
   }

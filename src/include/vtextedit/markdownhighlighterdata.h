@@ -47,7 +47,8 @@ struct VTEXTEDIT_EXPORT BlockContext {
   int m_quoteDepth = 0;
 };
 
-// Inclusive AST ITEM block extent; marker bounds are absolute UTF-16, half-open.
+// Inclusive AST ITEM block extent; marker bounds are half-open UTF-16 columns
+// within m_startBlock, independent of edits in preceding blocks.
 // Parent indexes refer to the nearest included ITEM in the same source-ordered vector.
 struct ListItemRange {
   int m_startBlock = -1;
