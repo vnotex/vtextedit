@@ -8,6 +8,7 @@
 #include <QSize>
 #include <QVector>
 
+#include <vtextedit/markdownhighlighterdata.h>
 #include <vtextedit/orderedintset.h>
 #include <vtextedit/preview.h>
 #include <vtextedit/previewdata.h>
@@ -165,6 +166,11 @@ public:
   void relayout(const OrderedIntSet &p_blocks);
 
   void setPreviewMarkerForeground(const QColor &p_color);
+
+  void setListItemRanges(TimeStamp p_timeStamp, const QVector<md::ListItemRange> &p_ranges);
+  void setListItemDecorationColors(const QColor &p_guideForeground,
+                                   const QColor &p_activeBackground);
+  void setListItemCursorPosition(int p_position);
 
   // Request update block by block number.
   void updateBlockByNumber(int p_blockNumber);
@@ -387,6 +393,32 @@ private:
   // relayouted and the published rectangle would stay stale, leaving the
   // widget over unrelated text - so the rule lives here once.
   QTextBlock blockForSpec(const WidgetPreviewSpec &p_spec) const;
+
+  struct ListGuideAnchor {
+    qreal m_x = 0;
+    qreal m_startY = 0;
+    bool m_valid = false;
+  };
+  struct ActiveListGuide {
+    int m_item = -1;
+    ListGuideAnchor m_anchor;
+  };
+
+  int listItemAtPosition(int p_position) const;
+  ListGuideAnchor listGuideAnchor(int p_item) const;
+  qreal listDecorationBottom(const QTextBlock &p_block, const BlockLayoutData &p_data) const;
+  void drawActiveListItemBackground(QPainter *p_painter, const QTextBlock &p_block,
+                                    const BlockLayoutData &p_data, const QRectF &p_clip) const;
+  void drawListItemGuides(QPainter *p_painter, const QTextBlock &p_block,
+                          const BlockLayoutData &p_data, const QVector<ActiveListGuide> &p_active,
+                          const QRectF &p_clip) const;
+
+  QVector<md::ListItemRange> m_listItemRanges;
+  TimeStamp m_listItemTimeStamp = 0;
+  QColor m_listGuideForeground;
+  QColor m_activeListBackground;
+  int m_listItemCursor = -1;
+  int m_activeListItem = -1;
 
   // Document margin on left/right/bottom.
   qreal m_margin = 0;

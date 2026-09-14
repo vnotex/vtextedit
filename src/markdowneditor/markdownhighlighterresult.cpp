@@ -23,6 +23,83 @@ MarkdownHighlighterFastResult::MarkdownHighlighterFastResult(
   m_blockOverlays = p_result->m_blockOverlays;
 }
 
+// The full-result boundary owns this projection; no source decoding or per-line map.
+static QVector<md::ListItemRange> buildListItemRanges(const md::ListStructure &p_structure,
+                                                      int p_numBlocks) {
+  if (!p_structure.m_valid) {
+    return {};
+  }
+  const auto &items = p_structure.m_items;
+  const auto &containers = p_structure.m_containers;
+  QVector<int> included(items.size(), -1);
+  QVector<md::ListItemRange> ranges;
+  ranges.reserve(items.size());
+  for (int i = 0; i < items.size(); ++i) {
+    const auto &item = items.at(i);
+    if (!item.m_sourceValid || item.m_markerStart < 0 || item.m_markerEnd <= item.m_markerStart ||
+        item.m_startBlock < 0 || item.m_endBlock < item.m_startBlock ||
+        item.m_endBlock >= p_numBlocks) {
+      continue;
+    }
+    included[i] = ranges.size();
+    ranges.append({item.m_startBlock, item.m_endBlock, item.m_markerStart, item.m_markerEnd, -1});
+  }
+
+  QVector<int> nearest(containers.size(), -1);
+  for (int i = 0; i < containers.size(); ++i) {
+    const auto &container = containers.at(i);
+    if (container.m_parent < -1 || container.m_parent >= i) {
+      return {};
+    }
+    int owner = container.m_parent < 0 ? -1 : nearest.at(container.m_parent);
+    if (container.m_kind == md::ListContainerInfo::Kind::Item) {
+      if (container.m_item < 0 || container.m_item >= items.size() ||
+          items.at(container.m_item).m_container != i) {
+        return {};
+      }
+      const int output = included.at(container.m_item);
+      if (output >= 0) {
+        owner = output;
+      }
+    } else if (container.m_item != -1) {
+      return {};
+    }
+    nearest[i] = owner;
+  }
+
+  QVector<int> ancestors;
+  for (int i = 0; i < items.size(); ++i) {
+    const auto &item = items.at(i);
+    if (item.m_container < 0 || item.m_container >= containers.size() ||
+        containers.at(item.m_container).m_kind != md::ListContainerInfo::Kind::Item ||
+        containers.at(item.m_container).m_item != i) {
+      return {};
+    }
+    const int output = included.at(i);
+    if (output < 0) {
+      continue;
+    }
+    auto &range = ranges[output];
+    const int parent = containers.at(item.m_container).m_parent;
+    range.m_parent = parent < 0 ? -1 : nearest.at(parent);
+    if (range.m_parent >= output ||
+        (output > 0 && (ranges.at(output - 1).m_markerEnd > range.m_markerStart ||
+                        ranges.at(output - 1).m_startBlock > range.m_startBlock))) {
+      return {};
+    }
+    while (!ancestors.isEmpty() &&
+           ranges.at(ancestors.constLast()).m_endBlock < range.m_startBlock) {
+      ancestors.removeLast();
+    }
+    if (range.m_parent != (ancestors.isEmpty() ? -1 : ancestors.constLast()) ||
+        (range.m_parent >= 0 && ranges.at(range.m_parent).m_endBlock < range.m_endBlock)) {
+      return {};
+    }
+    ancestors.append(output);
+  }
+  return ranges;
+}
+
 MarkdownHighlighterResult::MarkdownHighlighterResult(
     const MarkdownHighlighter *p_peg, const QSharedPointer<md::MarkdownParseResult> &p_result,
     TimeStamp p_curTimeStamp, const ContentsChange &p_lastContentsChange)
@@ -58,6 +135,7 @@ MarkdownHighlighterResult::MarkdownHighlighterResult(
   m_mathElements = p_result->m_mathElements;
   m_tableElements = p_result->m_tableElements;
   m_listStructure = p_result->m_listStructure;
+  m_listItemRanges = buildListItemRanges(m_listStructure, m_numOfBlocks);
   m_headingElements = p_result->m_headingElements;
 
   // ATTENTION: build this from p_result, never from a member. The old

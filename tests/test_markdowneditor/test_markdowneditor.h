@@ -135,6 +135,12 @@ private slots:
   void testListAndTableSourceFormatting();
   void testListAutoNumberStaleWorker();
 
+  // AST-owned list-item decorations through public document-layout painting.
+  void testListItemGuides();
+  void testListItemActiveBackground();
+  void testListItemDecorationsFreshness();
+  void testListItemDecorationsGeometry();
+  void testListItemDecorationsFoldingAndPreviews();
   // Vi open-line completion through the real normal/insert-mode key pipeline.
   void testViListOpenLines();
   void testViListOpenContext();

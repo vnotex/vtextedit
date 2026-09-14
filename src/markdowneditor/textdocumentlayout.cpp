@@ -11,6 +11,9 @@
 #include <QTextFrame>
 #include <QTextLayout>
 
+#include <algorithm>
+#include <cmath>
+
 #include <vtextedit/previewdata.h>
 #include <vtextedit/textblockdata.h>
 
@@ -67,6 +70,81 @@ TextDocumentLayout::PassGuard::~PassGuard() {
 TextDocumentLayout::TextDocumentLayout(QTextDocument *p_doc, DocumentResourceMgr *p_resourceMgr)
     : QAbstractTextDocumentLayout(p_doc), m_margin(p_doc->documentMargin()),
       m_resourceMgr(p_resourceMgr) {}
+
+void TextDocumentLayout::setListItemRanges(TimeStamp p_timeStamp,
+                                           const QVector<md::ListItemRange> &p_ranges) {
+  if (p_timeStamp < m_listItemTimeStamp ||
+      (p_timeStamp == m_listItemTimeStamp && m_listItemRanges.constData() == p_ranges.constData() &&
+       m_listItemRanges.size() == p_ranges.size())) {
+    return;
+  }
+  const bool wasVisible =
+      (m_listGuideForeground.isValid() && !m_listItemRanges.isEmpty()) || m_activeListItem >= 0;
+  m_listItemTimeStamp = p_timeStamp;
+  m_listItemRanges = p_ranges;
+  m_activeListItem = m_activeListBackground.isValid() ? listItemAtPosition(m_listItemCursor) : -1;
+  if (wasVisible || (m_listGuideForeground.isValid() && !m_listItemRanges.isEmpty()) ||
+      m_activeListItem >= 0) {
+    emit update();
+  }
+}
+
+void TextDocumentLayout::setListItemDecorationColors(const QColor &p_guideForeground,
+                                                     const QColor &p_activeBackground) {
+  if (p_guideForeground == m_listGuideForeground && p_activeBackground == m_activeListBackground) {
+    return;
+  }
+  const bool guidesChanged =
+      p_guideForeground != m_listGuideForeground && !m_listItemRanges.isEmpty();
+  const int oldActive = m_activeListItem;
+  const bool backgroundChanged = p_activeBackground != m_activeListBackground;
+  m_listGuideForeground = p_guideForeground;
+  m_activeListBackground = p_activeBackground;
+  if (backgroundChanged) {
+    m_activeListItem = p_activeBackground.isValid() ? listItemAtPosition(m_listItemCursor) : -1;
+  }
+  if (guidesChanged || (backgroundChanged && (oldActive >= 0 || m_activeListItem >= 0))) {
+    emit update();
+  }
+}
+
+void TextDocumentLayout::setListItemCursorPosition(int p_position) {
+  if (m_listItemCursor == p_position) {
+    return;
+  }
+  m_listItemCursor = p_position;
+  if (!m_activeListBackground.isValid()) {
+    return;
+  }
+  const int active = listItemAtPosition(p_position);
+  if (active != m_activeListItem) {
+    m_activeListItem = active;
+    emit update();
+  }
+}
+
+int TextDocumentLayout::listItemAtPosition(int p_position) const {
+  if (p_position < 0 || m_listItemRanges.isEmpty()) {
+    return -1;
+  }
+  const auto block = document()->findBlock(p_position);
+  if (!block.isValid()) {
+    return -1;
+  }
+  const auto next = std::upper_bound(
+      m_listItemRanges.cbegin(), m_listItemRanges.cend(), p_position,
+      [](int p_pos, const md::ListItemRange &p_range) { return p_pos < p_range.m_markerStart; });
+  int item = static_cast<int>(next - m_listItemRanges.cbegin()) - 1;
+  while (item >= 0) {
+    const auto &range = m_listItemRanges.at(item);
+    if (range.m_startBlock <= block.blockNumber() && block.blockNumber() <= range.m_endBlock &&
+        p_position >= range.m_markerStart) {
+      return item;
+    }
+    item = range.m_parent;
+  }
+  return -1;
+}
 
 static void fillBackground(QPainter *p_painter, const QRectF &p_rect, QBrush p_brush,
                            QRectF p_gradientRect = QRectF()) {
@@ -201,6 +279,234 @@ int TextDocumentLayout::findBlockByPosition(const QPointF &p_point) const {
   return 0;
 }
 
+TextDocumentLayout::ListGuideAnchor TextDocumentLayout::listGuideAnchor(int p_item) const {
+  const auto &range = m_listItemRanges.at(p_item);
+  const auto block = document()->findBlockByNumber(range.m_startBlock);
+  if (!block.isValid() || !block.isVisible()) {
+    return {};
+  }
+  const auto blockData = dynamic_cast<TextBlockData *>(block.userData());
+  if (!blockData) {
+    return {};
+  }
+  const auto &data = blockData->getBlockLayoutData();
+  const auto layout = block.layout();
+  if (!data || !data->hasOffset() || !layout || !layout->preeditAreaText().isEmpty()) {
+    return {};
+  }
+  const int start = range.m_markerStart - block.position();
+  const int end = range.m_markerEnd - block.position();
+  if (start < 0 || end <= start || end >= block.length()) {
+    return {};
+  }
+  const auto line = layout->lineForTextPosition(start);
+  if (!line.isValid() || end - 1 >= line.textStart() + line.textLength()) {
+    return {};
+  }
+  return {(line.cursorToX(start) + line.cursorToX(end)) / 2,
+          data->m_offset + line.y() + line.height(), true};
+}
+
+qreal TextDocumentLayout::listDecorationBottom(const QTextBlock &p_block,
+                                               const BlockLayoutData &p_data) const {
+  qreal bottom = 0;
+  const auto layout = p_block.layout();
+  for (int i = 0; i < layout->lineCount(); ++i) {
+    const auto line = layout->lineAt(i);
+    bottom = qMax(bottom, line.y() + line.height());
+  }
+  for (const auto &image : p_data.m_images) {
+    bottom = qMax(bottom, image.m_rect.bottom());
+  }
+  for (const auto &widget : p_data.m_widgets) {
+    bottom = qMax(bottom, widget.m_rect.bottom());
+  }
+  return qMin(p_data.bottom(), p_data.m_offset + bottom);
+}
+
+void TextDocumentLayout::drawActiveListItemBackground(QPainter *p_painter,
+                                                      const QTextBlock &p_block,
+                                                      const BlockLayoutData &p_data,
+                                                      const QRectF &p_clip) const {
+  const auto &range = m_listItemRanges.at(m_activeListItem);
+  const int number = p_block.blockNumber();
+  if (number < range.m_startBlock || number > range.m_endBlock ||
+      p_block.layout()->preeditAreaText().size() > 0) {
+    return;
+  }
+  const qreal width =
+      document()->pageSize().width() <= 0 ? m_width - 2 * m_margin : availableContentWidth();
+  if (width <= 0) {
+    return;
+  }
+  const qreal bottom =
+      number == range.m_endBlock ? listDecorationBottom(p_block, p_data) : p_data.bottom();
+  QRectF band(m_margin, p_data.top(), width, bottom - p_data.top());
+  if (!p_clip.isNull()) {
+    band = band.intersected(p_clip);
+  }
+  if (!band.isEmpty()) {
+    p_painter->fillRect(band, m_activeListBackground);
+  }
+}
+
+void TextDocumentLayout::drawListItemGuides(QPainter *p_painter, const QTextBlock &p_block,
+                                            const BlockLayoutData &p_data,
+                                            const QVector<ActiveListGuide> &p_active,
+                                            const QRectF &p_clip) const {
+  const auto layout = p_block.layout();
+  if (p_active.isEmpty() || !m_listGuideForeground.isValid() ||
+      !layout->preeditAreaText().isEmpty()) {
+    return;
+  }
+  const auto transform = p_painter->deviceTransform();
+  bool invertible = false;
+  const auto inverse = transform.inverted(&invertible);
+  if (!invertible) {
+    return;
+  }
+
+  // Runs are cached per visual line for all the guides crossing this block.
+  // Document-backed QTextLayout::text() may be empty; query only the
+  // characters needed for occlusion, without copying the block or document.
+  struct WhitespaceRun {
+    int m_start;
+    int m_end;
+    qreal m_left;
+    qreal m_right;
+    bool m_contiguous;
+  };
+  const auto doc = document();
+  const int blockStart = p_block.position();
+  const int blockLength = p_block.length() - 1;
+  QVector<QVector<WhitespaceRun>> whitespace(layout->lineCount());
+  QVector<QPair<qreal, qreal>> excluded;
+  excluded.reserve(layout->lineCount() + p_data.m_images.size() + p_data.m_widgets.size());
+
+  p_painter->save();
+  p_painter->setRenderHint(QPainter::Antialiasing, false);
+  QPen pen(m_listGuideForeground);
+  pen.setWidth(0);
+  pen.setCosmetic(true);
+  pen.setStyle(Qt::SolidLine);
+  pen.setCapStyle(Qt::FlatCap);
+  p_painter->setPen(pen);
+
+  for (const auto &guide : p_active) {
+    if (!guide.m_anchor.m_valid) {
+      continue;
+    }
+    const auto &range = m_listItemRanges.at(guide.m_item);
+    qreal top = qMax(p_data.top(), guide.m_anchor.m_startY);
+    qreal bottom = p_block.blockNumber() == range.m_endBlock ? listDecorationBottom(p_block, p_data)
+                                                             : p_data.bottom();
+    if (!p_clip.isNull()) {
+      top = qMax(top, p_clip.top());
+      bottom = qMin(bottom, p_clip.bottom());
+    }
+    if (bottom <= top) {
+      continue;
+    }
+    auto devicePoint = transform.map(QPointF(guide.m_anchor.m_x, top));
+    devicePoint.setX(std::floor(devicePoint.x()) + 0.5);
+    const qreal x = inverse.map(devicePoint).x();
+    if (!p_clip.isNull() && (x < p_clip.left() || x > p_clip.right())) {
+      continue;
+    }
+    excluded.clear();
+    for (int i = 0; i < layout->lineCount(); ++i) {
+      const auto line = layout->lineAt(i);
+      const qreal lineTop = p_data.m_offset + line.y();
+      const qreal lineBottom = lineTop + line.height();
+      if (lineBottom <= top || lineTop >= bottom) {
+        continue;
+      }
+      const auto occupied = line.naturalTextRect();
+      if (x + 1 <= occupied.left() || x - 1 >= occupied.right()) {
+        continue;
+      }
+      bool clear = false;
+      const int character = line.xToCursor(x, QTextLine::CursorOnCharacter);
+      const int start = line.textStart();
+      const int end = qMin(start + line.textLength(), blockLength);
+      if (character >= start && character < end &&
+          doc->characterAt(blockStart + character).isSpace()) {
+        auto &runs = whitespace[i];
+        const WhitespaceRun *run = nullptr;
+        for (const auto &cached : runs) {
+          if (character >= cached.m_start && character < cached.m_end) {
+            run = &cached;
+            break;
+          }
+        }
+        if (!run) {
+          int begin = character;
+          int finish = character + 1;
+          while (begin > start && doc->characterAt(blockStart + begin - 1).isSpace()) {
+            --begin;
+          }
+          while (finish < end && doc->characterAt(blockStart + finish).isSpace()) {
+            ++finish;
+          }
+          qreal previous = line.cursorToX(begin);
+          qreal left = previous, right = previous;
+          int direction = 0;
+          bool contiguous = true;
+          for (int c = begin + 1; c <= finish; ++c) {
+            const qreal edge = line.cursorToX(c);
+            const int step = edge > previous ? 1 : (edge < previous ? -1 : 0);
+            if (direction && step && direction != step) {
+              contiguous = false;
+            }
+            if (step) {
+              direction = step;
+            }
+            left = qMin(left, edge);
+            right = qMax(right, edge);
+            previous = edge;
+          }
+          runs.append({begin, finish, left, right, contiguous});
+          run = &runs.constLast();
+        }
+        clear = run->m_contiguous && x - 1 >= run->m_left && x + 1 <= run->m_right;
+      }
+      if (!clear) {
+        excluded.append({lineTop, lineBottom});
+      }
+    }
+    const auto excludePreview = [&](const QRectF &p_rect) {
+      if (x >= p_rect.left() - 1 && x <= p_rect.right() + 1) {
+        excluded.append({p_data.m_offset + p_rect.top(), p_data.m_offset + p_rect.bottom()});
+      }
+    };
+    for (const auto &image : p_data.m_images) {
+      excludePreview(image.m_rect);
+    }
+    for (const auto &widget : p_data.m_widgets) {
+      excludePreview(widget.m_rect);
+    }
+    std::sort(excluded.begin(), excluded.end());
+    // Union the exclusions while drawing their complement, so adjacent free
+    // bands become one segment rather than acquiring a cap at every line.
+    for (const auto &interval : excluded) {
+      if (interval.second <= top) {
+        continue;
+      }
+      if (interval.first > top) {
+        p_painter->drawLine(QPointF(x, top), QPointF(x, qMin(bottom, interval.first)));
+      }
+      top = qMax(top, interval.second);
+      if (top >= bottom) {
+        break;
+      }
+    }
+    if (top < bottom) {
+      p_painter->drawLine(QPointF(x, top), QPointF(x, bottom));
+    }
+  }
+  p_painter->restore();
+}
+
 void TextDocumentLayout::draw(QPainter *p_painter, const PaintContext &p_context) {
   // Conservative: draw() emits nothing today, but it must never become a
   // window in which a widget can mutate the document.
@@ -227,10 +533,43 @@ void TextDocumentLayout::draw(QPainter *p_painter, const PaintContext &p_context
   QPointF offset(0, 0);
   QTextBlock lastBlock = doc->findBlockByNumber(last);
 
+  const bool guidesEnabled = m_listGuideForeground.isValid() && !m_listItemRanges.isEmpty();
+  QVector<ActiveListGuide> activeGuides;
+  int nextItem = 0;
+  if (guidesEnabled) {
+    const auto next = std::lower_bound(m_listItemRanges.cbegin(), m_listItemRanges.cend(), first,
+                                       [](const md::ListItemRange &p_range, int p_block) {
+                                         return p_range.m_startBlock < p_block;
+                                       });
+    nextItem = static_cast<int>(next - m_listItemRanges.cbegin());
+    for (int item = nextItem - 1; item >= 0; item = m_listItemRanges.at(item).m_parent) {
+      if (m_listItemRanges.at(item).m_endBlock >= first) {
+        activeGuides.append({item, listGuideAnchor(item)});
+      }
+    }
+    std::reverse(activeGuides.begin(), activeGuides.end());
+  }
+
   QPen oldPen = p_painter->pen();
   p_painter->setPen(p_context.palette.color(QPalette::Text));
 
   while (block.isValid()) {
+    if (guidesEnabled) {
+      const int blockNumber = block.blockNumber();
+      while (!activeGuides.isEmpty() &&
+             m_listItemRanges.at(activeGuides.constLast().m_item).m_endBlock < blockNumber) {
+        activeGuides.removeLast();
+      }
+      while (nextItem < m_listItemRanges.size() &&
+             m_listItemRanges.at(nextItem).m_startBlock <= blockNumber) {
+        const auto &range = m_listItemRanges.at(nextItem);
+        while (!activeGuides.isEmpty() && activeGuides.constLast().m_item != range.m_parent) {
+          activeGuides.removeLast();
+        }
+        activeGuides.append({nextItem, listGuideAnchor(nextItem)});
+        ++nextItem;
+      }
+    }
     auto info = BlockLayoutData::get(block);
     Q_ASSERT(info->hasOffset());
 
@@ -268,6 +607,13 @@ void TextDocumentLayout::draw(QPainter *p_painter, const PaintContext &p_context
       int x = offset.x();
       int y = offset.y();
       fillBackground(p_painter, rect.adjusted(x, y, x, y), bg);
+    }
+
+    if (m_activeListBackground.isValid() && m_activeListItem >= 0) {
+      drawActiveListItemBackground(p_painter, block, *info, p_context.clip);
+    }
+    if (guidesEnabled) {
+      drawListItemGuides(p_painter, block, *info, activeGuides, p_context.clip);
     }
 
     auto selections = formatRangeFromSelection(block, p_context.selections);

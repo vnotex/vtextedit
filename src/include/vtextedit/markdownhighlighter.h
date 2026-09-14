@@ -118,6 +118,9 @@ signals:
   // Emitted when folding regions have been computed from a new parsing result.
   void foldingRegionsUpdated(const QVector<md::FoldingRegion> &p_foldingRegions);
 
+  // Fresh full-result ownership; an empty vector invalidates decorations immediately.
+  void listItemRangesUpdated(TimeStamp p_timeStamp, const QVector<md::ListItemRange> &p_ranges);
+
   // Emitted when immutable typed preview snapshots have been produced from an
   // accepted parse result. @p_revision is the parse generation of the result.
   void previewElementsUpdated(quint64 p_revision,

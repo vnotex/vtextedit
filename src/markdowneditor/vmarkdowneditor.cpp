@@ -28,6 +28,7 @@
 #include "textdocumentlayout.h"
 #include "webcodeblockhighlighter.h"
 
+#include <QApplication>
 #include <QDebug>
 #include <QFontMetricsF>
 #include <QScopedValueRollback>
@@ -1922,6 +1923,8 @@ void VMarkdownEditor::setupSyntaxHighlighter() {
   m_highlighter =
       new MarkdownHighlighter(m_highlighterInterface.data(), document(), theme(),
                               codeBlockHighlighter, highlighterConfig, m_mathBlockHighlighter);
+  connect(getHighlighter(), &MarkdownHighlighter::listItemRangesUpdated, documentLayout(),
+          &TextDocumentLayout::setListItemRanges);
   updateSpellCheck();
   connect(getHighlighter(), &MarkdownHighlighter::highlightCompleted, this, [this]() {
     m_textEdit->updateCursorWidth();
@@ -1945,6 +1948,14 @@ void VMarkdownEditor::setupDocumentLayout() {
   docLayout->setPreviewEnabled(true);
 
   document()->setDocumentLayout(docLayout);
+
+  const auto refreshListItemCursor = [this]() {
+    documentLayout()->setListItemCursorPosition(
+        m_textEdit->isViewportWidgetFocused() ? -1 : m_textEdit->textCursor().position());
+  };
+  connect(m_textEdit, &VTextEdit::cursorPositionChanged, this, refreshListItemCursor);
+  connect(qApp, &QApplication::focusChanged, this, refreshListItemCursor);
+  refreshListItemCursor();
 
   connect(m_textEdit, &VTextEdit::cursorWidthChanged, this,
           [this]() { documentLayout()->setCursorWidth(m_textEdit->cursorWidth()); });
@@ -2153,6 +2164,10 @@ void VMarkdownEditor::updateFromConfig() {
 
   documentLayout()->setConstrainPreviewWidthEnabled(
       m_config->m_constrainInplacePreviewWidthEnabled);
+
+  documentLayout()->setListItemDecorationColors(
+      theme()->editorStyle(Theme::ListItemGuide).textColor(),
+      theme()->editorStyle(Theme::ActiveListItem).backgroundColor());
 
   updateInplacePreviewSources();
 

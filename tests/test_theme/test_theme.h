@@ -15,6 +15,8 @@ private slots:
 
   void testCreateThemeFromContent_emptyString();
 
+  void testListItemDecorationStyles();
+
   void cleanupTestCase();
 };
 } // namespace tests

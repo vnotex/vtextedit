@@ -1,5 +1,6 @@
 #include "test_markdowneditor.h"
 
+#include <QAbstractTextDocumentLayout>
 #include <QBuffer>
 #include <QClipboard>
 #include <QDir>
@@ -7,7 +8,10 @@
 #include <QGuiApplication>
 #include <QImage>
 #include <QInputMethodEvent>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMimeData>
+#include <QPainter>
 #include <QPixmap>
 #include <QScrollBar>
 #include <QSharedPointer>
@@ -16,9 +20,11 @@
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
+#include <QTextEdit>
 #include <QTextLayout>
 #include <QTimer>
 
+#include <QtMath>
 #include <cmark.h>
 
 #include <memory>
@@ -27,7 +33,10 @@
 #include <vtextedit/markdownhighlighter.h>
 #include <vtextedit/markdownutils.h>
 #include <vtextedit/previewmgr.h>
+#include <vtextedit/previewwidget.h>
 #include <vtextedit/texteditorconfig.h>
+#include <vtextedit/texteditutils.h>
+#include <vtextedit/theme.h>
 #include <vtextedit/vmarkdowneditor.h>
 #include <vtextedit/vtextedit.h>
 
@@ -3223,6 +3232,867 @@ void TestMarkdownEditor::testListAutoNumberStaleWorker() {
     QTRY_COMPARE_WITH_TIMEOUT(successor.text(), QStringLiteral("4. a\n5. b"), 5000);
     successor.edit()->undo();
     QCOMPARE(successor.text(), QStringLiteral("4. a\n9. b"));
+  }
+}
+
+namespace {
+const QColor c_listGuideColor(QStringLiteral("#ed00a8"));
+const QColor c_listActiveColor(QStringLiteral("#a4efd0"));
+const QColor c_listSelectionColor(QStringLiteral("#315cb7"));
+const QColor c_listCursorLineColor(QStringLiteral("#e7cc74"));
+const QColor c_listSyntaxColor(QStringLiteral("#efb572"));
+
+QSharedPointer<MarkdownEditorConfig>
+makeListDecorationConfig(const QColor &p_guide = c_listGuideColor,
+                         const QColor &p_active = c_listActiveColor,
+                         const QColor &p_cursorLine = QColor(), int p_fontSize = 12) {
+  QJsonObject styles;
+  styles.insert(
+      QStringLiteral("Text"),
+      QJsonObject{{QStringLiteral("font-family"), QStringLiteral("Arial")},
+                  {QStringLiteral("font-size"), p_fontSize},
+                  {QStringLiteral("text-color"), QStringLiteral("#202020")},
+                  {QStringLiteral("selected-text-color"), QStringLiteral("#ffffff")},
+                  {QStringLiteral("selected-background-color"), c_listSelectionColor.name()},
+                  {QStringLiteral("background-color"), QStringLiteral("#ffffff")}});
+  styles.insert(QStringLiteral("SelectedText"),
+                QJsonObject{{QStringLiteral("text-color"), QStringLiteral("#ffffff")},
+                            {QStringLiteral("background-color"), c_listSelectionColor.name()}});
+  if (p_cursorLine.isValid()) {
+    styles.insert(QStringLiteral("CursorLine"),
+                  QJsonObject{{QStringLiteral("background-color"), p_cursorLine.name()}});
+  }
+  QJsonObject markdownStyles;
+  if (p_guide.isValid()) {
+    markdownStyles.insert(QStringLiteral("ListItemGuide"),
+                          QJsonObject{{QStringLiteral("text-color"), p_guide.name()}});
+  }
+  if (p_active.isValid()) {
+    markdownStyles.insert(QStringLiteral("ActiveListItem"),
+                          QJsonObject{{QStringLiteral("background-color"), p_active.name()}});
+  }
+  const QJsonObject json{
+      {QStringLiteral("metadata"),
+       QJsonObject{{QStringLiteral("type"), QStringLiteral("vtextedit")}}},
+      {QStringLiteral("editor-styles"), styles},
+      {QStringLiteral("markdown-editor-styles"), markdownStyles},
+      {QStringLiteral("markdown-syntax-styles"),
+       QJsonObject{{QStringLiteral("CODE"),
+                    QJsonObject{{QStringLiteral("background-color"), c_listSyntaxColor.name()}}}}}};
+  auto textConfig = QSharedPointer<TextEditorConfig>::create();
+  textConfig->m_theme = Theme::createThemeFromContent(
+      QString::fromUtf8(QJsonDocument(json).toJson(QJsonDocument::Compact)));
+  Q_ASSERT(textConfig->m_theme);
+  textConfig->m_inputMode = InputMode::NormalMode;
+  textConfig->m_lineNumberType = VTextEditor::LineNumberType::None;
+  auto config = QSharedPointer<MarkdownEditorConfig>::create(textConfig);
+  config->m_inplacePreviewSources = MarkdownEditorConfig::NoInplacePreview;
+  config->m_autoFoldPreviewedBlocksEnabled = false;
+  config->m_autoNumberOrderedListsEnabled = false;
+  config->m_autoFormatTableSourceEnabled = false;
+  return config;
+}
+
+void showListDecorationFixture(Fixture &p_fixture, const QSize &p_size = QSize(640, 480)) {
+  p_fixture.editor()->setSpellCheckEnabled(false);
+  p_fixture.editor()->resize(p_size);
+  p_fixture.editor()->show();
+  QVERIFY(QTest::qWaitForWindowExposed(p_fixture.editor()));
+  p_fixture.editor()->activateWindow();
+  p_fixture.edit()->setFocus();
+  QTRY_VERIFY_WITH_TIMEOUT(p_fixture.edit()->hasFocus(), 5000);
+  p_fixture.waitForFreshListAst();
+  QTest::qWait(50);
+  QCoreApplication::processEvents();
+}
+
+// Coordinates remain document-local even when the image represents a clipped
+// viewport or has a different device pixel ratio. No internal layout access.
+struct ListDecorationRaster {
+  QImage m_image;
+  QRectF m_clip;
+  qreal m_dpr = 1;
+};
+
+ListDecorationRaster renderListDecorations(Fixture &p_fixture, qreal p_dpr = 1,
+                                           QRectF p_clip = QRectF(), bool p_selections = false) {
+  auto doc = p_fixture.editor()->document();
+  auto layout = doc->documentLayout();
+  if (p_clip.isNull()) {
+    const auto size = layout->documentSize();
+    p_clip = QRectF(0, 0, qMax(size.width(), doc->pageSize().width()), size.height() + 16);
+  }
+  ListDecorationRaster result;
+  result.m_clip = p_clip;
+  result.m_dpr = p_dpr;
+  result.m_image = QImage(qCeil(p_clip.width() * p_dpr), qCeil(p_clip.height() * p_dpr),
+                          QImage::Format_ARGB32_Premultiplied);
+  result.m_image.setDevicePixelRatio(p_dpr);
+  result.m_image.fill(Qt::white);
+  QPainter painter(&result.m_image);
+  painter.translate(-p_clip.topLeft());
+  painter.setClipRect(p_clip);
+  QAbstractTextDocumentLayout::PaintContext context;
+  context.clip = p_clip;
+  context.palette = p_fixture.edit()->palette();
+  // Most checks deliberately inspect the underlay without a selection. The
+  // precedence checks pass the editor's real extra selections and selection.
+  if (p_selections) {
+    for (const auto &extra : p_fixture.edit()->extraSelections()) {
+      QAbstractTextDocumentLayout::Selection selection;
+      selection.cursor = extra.cursor;
+      selection.format = extra.format;
+      context.selections.append(selection);
+    }
+    if (p_fixture.edit()->textCursor().hasSelection()) {
+      QAbstractTextDocumentLayout::Selection selection;
+      selection.cursor = p_fixture.edit()->textCursor();
+      selection.format.setForeground(context.palette.brush(QPalette::HighlightedText));
+      selection.format.setBackground(context.palette.brush(QPalette::Highlight));
+      context.selections.append(selection);
+    }
+  }
+  layout->draw(&painter, context);
+  return result;
+}
+
+QRect listDecorationPixels(const ListDecorationRaster &p_raster, QRectF p_rect = QRectF()) {
+  if (p_rect.isNull()) {
+    return p_raster.m_image.rect();
+  }
+  p_rect = p_rect.intersected(p_raster.m_clip);
+  if (p_rect.isEmpty()) {
+    return QRect();
+  }
+  p_rect.translate(-p_raster.m_clip.topLeft());
+  return QRect(QPoint(qCeil(p_rect.left() * p_raster.m_dpr), qCeil(p_rect.top() * p_raster.m_dpr)),
+               QPoint(qCeil(p_rect.right() * p_raster.m_dpr) - 1,
+                      qCeil(p_rect.bottom() * p_raster.m_dpr) - 1))
+      .intersected(p_raster.m_image.rect());
+}
+
+int listDecorationColorCount(const ListDecorationRaster &p_raster, const QColor &p_color,
+                             const QRectF &p_rect = QRectF()) {
+  const auto pixels = listDecorationPixels(p_raster, p_rect);
+  int count = 0;
+  for (int y = pixels.top(); !pixels.isEmpty() && y <= pixels.bottom(); ++y) {
+    for (int x = pixels.left(); x <= pixels.right(); ++x) {
+      count += p_raster.m_image.pixelColor(x, y) == p_color;
+    }
+  }
+  return count;
+}
+
+QRectF listDecorationColorBounds(const ListDecorationRaster &p_raster, const QColor &p_color) {
+  QRect bounds;
+  for (int y = 0; y < p_raster.m_image.height(); ++y) {
+    for (int x = 0; x < p_raster.m_image.width(); ++x) {
+      if (p_raster.m_image.pixelColor(x, y) == p_color) {
+        bounds |= QRect(x, y, 1, 1);
+      }
+    }
+  }
+  if (bounds.isEmpty()) {
+    return QRectF();
+  }
+  return QRectF(bounds.x() / p_raster.m_dpr, bounds.y() / p_raster.m_dpr,
+                bounds.width() / p_raster.m_dpr, bounds.height() / p_raster.m_dpr)
+      .translated(p_raster.m_clip.topLeft());
+}
+
+QRectF listDecorationLineBand(Fixture &p_fixture, int p_block, int p_line = 0) {
+  auto doc = p_fixture.editor()->document();
+  const auto block = doc->findBlockByNumber(p_block);
+  const auto line = block.layout()->lineAt(p_line);
+  return QRectF(0, doc->documentLayout()->blockBoundingRect(block).top() + line.y(),
+                qMax(doc->pageSize().width(), doc->documentLayout()->documentSize().width()),
+                line.height());
+}
+
+qreal listDecorationMarkerX(Fixture &p_fixture, int p_block, int p_start, int p_end) {
+  const auto block = p_fixture.editor()->document()->findBlockByNumber(p_block);
+  const auto line = block.layout()->lineForTextPosition(p_start);
+  return (line.cursorToX(p_start) + line.cursorToX(p_end)) / 2;
+}
+
+void verifyListGuideBand(const ListDecorationRaster &p_raster, qreal p_x, const QRectF &p_band,
+                         bool p_present, const QColor &p_color = c_listGuideColor) {
+  // Exactly one physical pixel of horizontal tolerance, independent of DPR.
+  const int center = qFloor((p_x - p_raster.m_clip.left()) * p_raster.m_dpr);
+  const auto band = listDecorationPixels(p_raster, p_band.adjusted(0, 1, 0, -1));
+  QVERIFY(!band.isEmpty());
+  for (int y : {band.top(), band.center().y(), band.bottom()}) {
+    int count = 0;
+    for (int x = qMax(0, center - 1); x <= qMin(center + 1, p_raster.m_image.width() - 1); ++x) {
+      count += p_raster.m_image.pixelColor(x, y) == p_color;
+    }
+    if (p_present) {
+      QVERIFY2(count == 1,
+               qPrintable(QStringLiteral("hairline count %1 at x=%2 y=%3 bandTop=%4 DPR=%5")
+                              .arg(count)
+                              .arg(p_x)
+                              .arg(y)
+                              .arg(p_band.top())
+                              .arg(p_raster.m_dpr)));
+    } else {
+      QCOMPARE(count, 0);
+    }
+  }
+}
+
+void verifyListActiveRow(Fixture &p_fixture, const ListDecorationRaster &p_raster, int p_block,
+                         bool p_present, const QColor &p_color = c_listActiveColor) {
+  const auto band = listDecorationLineBand(p_fixture, p_block);
+  // Well inside the content edge, away from this fixture's short source text.
+  const qreal x = band.width() - p_fixture.editor()->document()->documentMargin() - 24;
+  const int px = qFloor((x - p_raster.m_clip.left()) * p_raster.m_dpr);
+  const int py = qFloor((band.center().y() - p_raster.m_clip.top()) * p_raster.m_dpr);
+  QVERIFY(p_raster.m_image.rect().contains(px, py));
+  QCOMPARE(p_raster.m_image.pixelColor(px, py) == p_color, p_present);
+}
+
+void verifyListInkPreserved(const ListDecorationRaster &p_plain,
+                            const ListDecorationRaster &p_guided) {
+  QCOMPARE(p_plain.m_image.size(), p_guided.m_image.size());
+  QCOMPARE(p_plain.m_clip, p_guided.m_clip);
+  int ink = 0;
+  for (int y = 0; y < p_plain.m_image.height(); ++y) {
+    for (int x = 0; x < p_plain.m_image.width(); ++x) {
+      const auto pixel = p_plain.m_image.pixel(x, y);
+      if (pixel != qRgb(255, 255, 255)) {
+        ++ink;
+        QVERIFY2(pixel == p_guided.m_image.pixel(x, y),
+                 qPrintable(QStringLiteral("guide altered glyph pixel (%1, %2)").arg(x).arg(y)));
+      }
+    }
+  }
+  QVERIFY(ink > 0);
+}
+
+QVector<QRectF> listDecorationBlockRects(Fixture &p_fixture) {
+  QVector<QRectF> result;
+  auto doc = p_fixture.editor()->document();
+  for (auto block = doc->firstBlock(); block.isValid(); block = block.next()) {
+    result.append(doc->documentLayout()->blockBoundingRect(block));
+  }
+  return result;
+}
+
+QSharedPointer<PreviewItem> makeListDecorationPreview(QTextDocument *p_doc, int p_block,
+                                                      int p_height) {
+  const auto block = p_doc->findBlockByNumber(p_block);
+  auto item = QSharedPointer<PreviewItem>::create();
+  item->m_blockNumber = p_block;
+  item->m_blockPos = block.position();
+  item->m_startPos = block.position();
+  item->m_endPos = block.position() + qMax(1, block.length() - 1);
+  item->m_isBlockwise = true;
+  item->m_name = QStringLiteral("list_decoration_preview_%1_%2").arg(p_block).arg(p_height);
+  item->m_image = QPixmap(120, p_height);
+  item->m_image.fill(Qt::transparent);
+  // Transparent interior makes a misplaced guide observable even though image
+  // painting itself follows the guide pass. The border locates the reservation.
+  QPainter painter(&item->m_image);
+  painter.fillRect(0, 0, 120, 2, Qt::red);
+  painter.fillRect(0, p_height - 2, 120, 2, Qt::red);
+  painter.fillRect(0, 0, 2, p_height, Qt::red);
+  painter.fillRect(118, 0, 2, p_height, Qt::red);
+  return item;
+}
+} // namespace
+
+void TestMarkdownEditor::testListItemGuides() {
+  // This slot uses no active color and can run before active tint is implemented.
+  const QString source = QStringLiteral("1. parent\n   continuation\n   - child\n"
+                                        "     child text\n2. sibling\n\noutside");
+  Fixture fixture(source, 1, -1, makeListDecorationConfig(c_listGuideColor, QColor()));
+  showListDecorationFixture(fixture);
+  const qreal parentX = listDecorationMarkerX(fixture, 0, 0, 2);
+  const qreal childX = listDecorationMarkerX(fixture, 2, 3, 4);
+  for (qreal dpr : {1.0, 2.0}) {
+    const auto raster = renderListDecorations(fixture, dpr);
+    for (int block : {1, 2, 3}) {
+      verifyListGuideBand(raster, parentX, listDecorationLineBand(fixture, block), true);
+    }
+    verifyListGuideBand(raster, childX, listDecorationLineBand(fixture, 1), false);
+    verifyListGuideBand(raster, childX, listDecorationLineBand(fixture, 2), false);
+    verifyListGuideBand(raster, childX, listDecorationLineBand(fixture, 3), true);
+    for (int block : {4, 6}) {
+      QCOMPARE(listDecorationColorCount(raster, c_listGuideColor,
+                                        listDecorationLineBand(fixture, block)),
+               0);
+    }
+  }
+  QCOMPARE(fixture.text(), source);
+
+  {
+    Fixture single(QStringLiteral("- only"), 0, -1,
+                   makeListDecorationConfig(c_listGuideColor, QColor()));
+    showListDecorationFixture(single);
+    QCOMPARE(listDecorationColorCount(renderListDecorations(single), c_listGuideColor), 0);
+  }
+  {
+    Fixture markers(QStringLiteral("9) parent\n   continuation\n\n- [x] task\n"
+                                   "  continuation\n\noutside"),
+                    0, -1, makeListDecorationConfig(c_listGuideColor, QColor()));
+    showListDecorationFixture(markers);
+    const auto raster = renderListDecorations(markers, 2);
+    verifyListGuideBand(raster, listDecorationMarkerX(markers, 0, 0, 2),
+                        listDecorationLineBand(markers, 1), true);
+    verifyListGuideBand(raster, listDecorationMarkerX(markers, 3, 0, 1),
+                        listDecorationLineBand(markers, 4), true);
+    verifyListGuideBand(raster, listDecorationMarkerX(markers, 3, 2, 5),
+                        listDecorationLineBand(markers, 4), false);
+  }
+
+  // A quote marker is text, while the following tab is a real whitespace run.
+  // Surrogates and bidi text must retain exactly their undecorated glyph pixels.
+  const QString quote = QStringLiteral(
+      "> - \U0001F600 abc \u05d0\u05d1\n>\t continued abc\n>   - child\n>     tail\n\noutside");
+  const QString wrapped = QStringLiteral("- parent\n  ") + QString(220, QLatin1Char('W')) +
+                          QStringLiteral("\n\noutside");
+  for (const auto &text :
+       {quote, QStringLiteral("- parent\nlazy continuation\n\noutside"), wrapped}) {
+    Fixture occlusion(text, 1, -1, makeListDecorationConfig(QColor(), QColor()));
+    showListDecorationFixture(occlusion, QSize(260, 480));
+    const auto rects = listDecorationBlockRects(occlusion);
+    const auto plain1 = renderListDecorations(occlusion);
+    const auto plain2 = renderListDecorations(occlusion, 2);
+    occlusion.editor()->setConfig(makeListDecorationConfig(c_listGuideColor, QColor()));
+    occlusion.waitForFreshListAst();
+    QCOMPARE(listDecorationBlockRects(occlusion), rects);
+    const auto guided1 = renderListDecorations(occlusion);
+    const auto guided2 = renderListDecorations(occlusion, 2);
+    verifyListInkPreserved(plain1, guided1);
+    verifyListInkPreserved(plain2, guided2);
+    const qreal x =
+        listDecorationMarkerX(occlusion, 0, text == quote ? 2 : 0, text == quote ? 3 : 1);
+    if (text == quote) {
+      verifyListGuideBand(guided2, x, listDecorationLineBand(occlusion, 1), true);
+      verifyListGuideBand(guided2, x, listDecorationLineBand(occlusion, 3), true);
+    } else if (text == wrapped) {
+      const auto layout = occlusion.editor()->document()->findBlockByNumber(1).layout();
+      QVERIFY(layout->lineCount() > 2);
+      verifyListGuideBand(guided2, x, listDecorationLineBand(occlusion, 1), true);
+      for (int line = 1; line < layout->lineCount(); ++line) {
+        verifyListGuideBand(guided2, x, listDecorationLineBand(occlusion, 1, line), false);
+      }
+    } else {
+      verifyListGuideBand(guided1, x, listDecorationLineBand(occlusion, 1), false);
+      verifyListGuideBand(guided2, x, listDecorationLineBand(occlusion, 1), false);
+    }
+    QCOMPARE(occlusion.text(), text);
+  }
+
+  QString longItem = QStringLiteral("- parent\n");
+  for (int i = 0; i < 70; ++i) {
+    longItem += QStringLiteral("  continuation %1 with enough words to wrap on resize\n").arg(i);
+  }
+  longItem += QStringLiteral("\noutside");
+  Fixture scrolled(longItem, 22, -1, makeListDecorationConfig(c_listGuideColor, QColor()));
+  showListDecorationFixture(scrolled, QSize(460, 260));
+  for (int zoom : {0, 2, 0}) {
+    scrolled.editor()->resize(zoom == 2 ? 300 : 460, 260);
+    scrolled.editor()->zoom(zoom);
+    QCoreApplication::processEvents();
+    scrolled.moveTo(22);
+    TextEditUtils::scrollBlockInPage(scrolled.edit(), 20, TextEditUtils::PagePosition::Top);
+    QCoreApplication::processEvents();
+    const int first = TextEditUtils::firstVisibleBlock(scrolled.edit()).blockNumber();
+    QVERIFY(first > 0);
+    const QRectF clip(0, TextEditUtils::contentOffsetAtTop(scrolled.edit()),
+                      scrolled.edit()->viewport()->width(), scrolled.edit()->viewport()->height());
+    QVERIFY(listDecorationLineBand(scrolled, 0).bottom() < clip.top());
+    const qreal x = listDecorationMarkerX(scrolled, 0, 0, 1);
+    for (qreal dpr : {1.0, 2.0}) {
+      const auto raster = renderListDecorations(scrolled, dpr, clip);
+      verifyListGuideBand(raster, x, listDecorationLineBand(scrolled, first + 1), true);
+    }
+    auto doc = scrolled.editor()->document();
+    const auto block = doc->findBlockByNumber(first + 1);
+    const auto line = block.layout()->lineAt(0);
+    const QPointF point(line.cursorToX(5),
+                        listDecorationLineBand(scrolled, first + 1).center().y());
+    QCOMPARE(doc->documentLayout()->hitTest(point, Qt::FuzzyHit), block.position() + 5);
+    QCOMPARE(scrolled.text(), longItem);
+  }
+}
+
+void TestMarkdownEditor::testListItemActiveBackground() {
+  const QString source = QStringLiteral("1. parent\n   continuation\n   - child\n"
+                                        "     child text\n2. sibling\n\noutside");
+  Fixture fixture(source, 1, -1, makeListDecorationConfig());
+  showListDecorationFixture(fixture);
+  auto verifyScope = [&](const QList<int> &rows) {
+    const auto raster = renderListDecorations(fixture);
+    for (int block : {0, 1, 2, 3, 4, 6}) {
+      verifyListActiveRow(fixture, raster, block, rows.contains(block));
+    }
+  };
+  verifyScope({0, 1, 2, 3});
+  fixture.moveTo(3);
+  verifyScope({2, 3});
+  fixture.moveTo(4);
+  verifyScope({4});
+  fixture.moveTo(6);
+  verifyScope({});
+  fixture.select(1, 3, 3, 5);
+  verifyScope({2, 3});
+  fixture.select(3, 5, 1, 3);
+  verifyScope({0, 1, 2, 3});
+  fixture.edit()->setOverriddenSelection(
+      fixture.editor()->document()->findBlockByNumber(3).position(), fixture.blockEnd(3));
+  verifyScope({0, 1, 2, 3});
+  fixture.edit()->clearOverriddenSelection();
+  QCOMPARE(fixture.text(), source);
+
+  {
+    Fixture sameLine(QStringLiteral("- - child\n    child text\n\n  outer tail\n\noutside"), 0, 1,
+                     makeListDecorationConfig());
+    showListDecorationFixture(sameLine);
+    auto raster = renderListDecorations(sameLine);
+    for (int block : {0, 1, 2, 3}) {
+      verifyListActiveRow(sameLine, raster, block, true);
+    }
+    sameLine.select(0, 4, 0, 4);
+    raster = renderListDecorations(sameLine);
+    verifyListActiveRow(sameLine, raster, 0, true);
+    verifyListActiveRow(sameLine, raster, 1, true);
+    verifyListActiveRow(sameLine, raster, 3, false);
+    sameLine.select(0, 4, 0, 1);
+    verifyListActiveRow(sameLine, renderListDecorations(sameLine), 3, true);
+    sameLine.select(0, 1, 0, 4);
+    verifyListActiveRow(sameLine, renderListDecorations(sameLine), 3, false);
+  }
+  {
+    Fixture indented(QStringLiteral("  - parent\n    body\n\noutside"), 0, 0,
+                     makeListDecorationConfig());
+    showListDecorationFixture(indented);
+    QCOMPARE(listDecorationColorCount(renderListDecorations(indented), c_listActiveColor), 0);
+    indented.select(0, 2, 0, 2);
+    verifyListActiveRow(indented, renderListDecorations(indented), 1, true);
+  }
+  for (const auto &source : {QStringLiteral("- parent\nlazy continuation\n\noutside"),
+                             QStringLiteral("- parent\n\n  continuation\n\noutside")}) {
+    Fixture owned(source, 0, -1, makeListDecorationConfig());
+    showListDecorationFixture(owned);
+    const auto raster = renderListDecorations(owned, 2);
+    verifyListActiveRow(owned, raster, 1, true); // Lazy text or an ITEM-owned blank row.
+    verifyListActiveRow(owned, raster, owned.editor()->document()->blockCount() - 1, false);
+  }
+  {
+    Fixture wrapped(QStringLiteral("- parent\n  ") + QString(180, QLatin1Char('W')), 1, -1,
+                    makeListDecorationConfig());
+    showListDecorationFixture(wrapped, QSize(260, 480));
+    const auto layout = wrapped.editor()->document()->findBlockByNumber(1).layout();
+    QVERIFY(layout->lineCount() > 2);
+    const auto raster = renderListDecorations(wrapped, 2);
+    for (int line = 0; line < layout->lineCount(); ++line) {
+      QVERIFY(listDecorationColorCount(raster, c_listActiveColor,
+                                       listDecorationLineBand(wrapped, 1, line)) > 0);
+    }
+  }
+}
+
+void TestMarkdownEditor::testListItemDecorationsFreshness() {
+  const QString source = QStringLiteral("- parent\n  continuation\n\noutside");
+  Fixture fixture(source, 1, -1, makeListDecorationConfig());
+  showListDecorationFixture(fixture);
+  auto doc = fixture.editor()->document();
+  auto verifyAbsent = [&]() {
+    const auto raster = renderListDecorations(fixture);
+    QCOMPARE(listDecorationColorCount(raster, c_listGuideColor), 0);
+    QCOMPARE(listDecorationColorCount(raster, c_listActiveColor), 0);
+  };
+  auto verifyRestored = [&]() {
+    fixture.moveTo(1);
+    const auto raster = renderListDecorations(fixture);
+    verifyListGuideBand(raster, listDecorationMarkerX(fixture, 0, 0, 1),
+                        listDecorationLineBand(fixture, 1), true);
+    verifyListActiveRow(fixture, raster, 1, true);
+  };
+  verifyRestored();
+  QTextCursor edit(doc);
+  edit.setPosition(0);
+  edit.setPosition(2, QTextCursor::KeepAnchor);
+  edit.removeSelectedText();
+  verifyAbsent(); // No event processing or full parse between edit and draw.
+  fixture.waitForFreshListAst();
+  verifyAbsent();
+  doc->undo();
+  verifyAbsent();
+  fixture.waitForFreshListAst();
+  QCOMPARE(fixture.text(), source);
+  verifyRestored();
+  doc->redo();
+  verifyAbsent();
+  fixture.waitForFreshListAst();
+  verifyAbsent();
+
+  TimeStamp emptyTime = 0;
+  TimeStamp restoredTime = 0;
+  bool sawEmpty = false;
+  const auto publication = QObject::connect(
+      fixture.editor()->getHighlighter(), &MarkdownHighlighter::listItemRangesUpdated,
+      fixture.editor(), [&](TimeStamp time, const QVector<md::ListItemRange> &ranges) {
+        if (ranges.isEmpty()) {
+          sawEmpty = true;
+          emptyTime = time;
+        } else {
+          restoredTime = time;
+        }
+      });
+  edit.setPosition(0);
+  edit.insertText(QStringLiteral("- "));
+  verifyAbsent();
+  QVERIFY(sawEmpty);
+  fixture.waitForFreshListAst();
+  QCOMPARE(restoredTime, emptyTime);
+  verifyRestored(); // An empty publication must not block a same-timestamp full result.
+  QObject::disconnect(publication);
+  fixture.waitForFreshListAst(); // Matched updateHighlight() re-publication remains visible.
+  verifyRestored();
+
+  const auto rects = listDecorationBlockRects(fixture);
+  const auto size = doc->documentLayout()->documentSize();
+  const int revision = doc->revision();
+  const int undoSteps = doc->availableUndoSteps();
+  const int redoSteps = doc->availableRedoSteps();
+  const bool modified = doc->isModified();
+  for (int block : {0, 1, 3, 1, 0, 3}) {
+    fixture.moveTo(block);
+    renderListDecorations(fixture);
+    renderListDecorations(fixture, 2);
+  }
+  QCoreApplication::processEvents();
+  QCOMPARE(fixture.text(), source);
+  QCOMPARE(doc->revision(), revision);
+  QCOMPARE(doc->availableUndoSteps(), undoSteps);
+  QCOMPARE(doc->availableRedoSteps(), redoSteps);
+  QCOMPARE(doc->isModified(), modified);
+  QCOMPARE(doc->documentLayout()->documentSize(), size);
+  QCOMPARE(listDecorationBlockRects(fixture), rects);
+
+  fixture.editor()->setText(QStringLiteral("1. parent\n   continuation\n2. sibling\n   tail"));
+  verifyAbsent();
+  fixture.waitForFreshListAst();
+  edit = QTextCursor(doc);
+  edit.setPosition(doc->findBlockByNumber(2).position());
+  edit.insertText(QStringLiteral("\nabcjdkejj\n\n")); // testListAutoNumberSplit separator.
+  verifyAbsent();
+  fixture.waitForFreshListAst();
+  fixture.moveTo(1);
+  auto raster = renderListDecorations(fixture);
+  verifyListActiveRow(fixture, raster, 1, true);
+  verifyListActiveRow(fixture, raster, 3, false);
+  QCOMPARE(listDecorationColorCount(raster, c_listGuideColor, listDecorationLineBand(fixture, 3)),
+           0);
+  fixture.moveTo(6);
+  raster = renderListDecorations(fixture);
+  verifyListActiveRow(fixture, raster, 0, false);
+  verifyListActiveRow(fixture, raster, 5, true);
+  verifyListActiveRow(fixture, raster, 6, true);
+  verifyListGuideBand(raster, listDecorationMarkerX(fixture, 5, 0, 2),
+                      listDecorationLineBand(fixture, 6), true);
+  QCOMPARE(fixture.text(), QStringLiteral("1. parent\n   continuation\n\nabcjdkejj\n\n"
+                                          "2. sibling\n   tail")); // Numbering is disabled.
+  doc->clear();
+  verifyAbsent();
+  fixture.editor()->setText(source);
+  verifyAbsent();
+  fixture.waitForFreshListAst();
+  verifyRestored();
+}
+
+void TestMarkdownEditor::testListItemDecorationsGeometry() {
+  const QString source = QStringLiteral("1. parent \U0001F600 \u05d0\u05d1\n"
+                                        "   continuation\n   - child\n     child text\n\noutside");
+  Fixture fixture(source, 1, -1, makeListDecorationConfig(QColor(), QColor()));
+  showListDecorationFixture(fixture);
+  auto doc = fixture.editor()->document();
+  const auto rects = listDecorationBlockRects(fixture);
+  const auto size = doc->documentLayout()->documentSize();
+  const auto cursorRect = fixture.edit()->cursorRect();
+  const int cursorPosition = fixture.edit()->textCursor().position();
+  const auto body = doc->findBlockByNumber(1);
+  const auto line = body.layout()->lineAt(0);
+  const QPointF hitPoint(line.cursorToX(5), listDecorationLineBand(fixture, 1).center().y());
+  const int hit = doc->documentLayout()->hitTest(hitPoint, Qt::FuzzyHit);
+  QCOMPARE(hit, body.position() + 5);
+  const QColor otherGuide(QStringLiteral("#004ee8"));
+  const QColor otherActive(QStringLiteral("#f0c1e5"));
+  const QList<QPair<QColor, QColor>> colors{{c_listGuideColor, QColor()},
+                                            {QColor(), c_listActiveColor},
+                                            {c_listGuideColor, c_listActiveColor},
+                                            {otherGuide, otherActive},
+                                            {QColor(), QColor()}};
+  for (const auto &colorsForConfig : colors) {
+    // A complete new config/theme, not a mutation of TextEditorConfig::defaultTheme().
+    fixture.editor()->setConfig(
+        makeListDecorationConfig(colorsForConfig.first, colorsForConfig.second));
+    fixture.waitForFreshListAst();
+    QCoreApplication::processEvents();
+    QCOMPARE(listDecorationBlockRects(fixture), rects);
+    QCOMPARE(doc->documentLayout()->documentSize(), size);
+    QCOMPARE(fixture.edit()->cursorRect(), cursorRect);
+    QCOMPARE(fixture.edit()->textCursor().position(), cursorPosition);
+    QCOMPARE(doc->documentLayout()->hitTest(hitPoint, Qt::FuzzyHit), hit);
+    for (qreal dpr : {1.0, 2.0}) {
+      const auto raster = renderListDecorations(fixture, dpr);
+      if (colorsForConfig.first.isValid()) {
+        verifyListGuideBand(raster, listDecorationMarkerX(fixture, 0, 0, 2),
+                            listDecorationLineBand(fixture, 1), true, colorsForConfig.first);
+      }
+      if (colorsForConfig.second.isValid()) {
+        verifyListActiveRow(fixture, raster, 1, true, colorsForConfig.second);
+        verifyListActiveRow(fixture, raster, 3, true, colorsForConfig.second);
+      }
+      for (const auto &oldColor : {c_listGuideColor, otherGuide}) {
+        if (oldColor != colorsForConfig.first) {
+          QCOMPARE(listDecorationColorCount(raster, oldColor), 0);
+        }
+      }
+      for (const auto &oldColor : {c_listActiveColor, otherActive}) {
+        if (oldColor != colorsForConfig.second) {
+          QCOMPARE(listDecorationColorCount(raster, oldColor), 0);
+        }
+      }
+    }
+    QCOMPARE(fixture.text(), source);
+  }
+
+  {
+    Fixture precedence(
+        QStringLiteral("- parent\n  `code` body\n  tail\n\noutside"), 1, -1,
+        makeListDecorationConfig(c_listGuideColor, c_listActiveColor, c_listCursorLineColor));
+    showListDecorationFixture(precedence);
+    auto raster = renderListDecorations(precedence, 1, QRectF(), true);
+    verifyListActiveRow(precedence, raster, 1, true, c_listCursorLineColor);
+    verifyListActiveRow(precedence, raster, 2, true);
+    precedence.select(1, 9, 1, 13);
+    raster = renderListDecorations(precedence, 1, QRectF(), true);
+    const auto selectionBand = listDecorationLineBand(precedence, 1);
+    QVERIFY(listDecorationColorCount(raster, c_listSelectionColor, selectionBand) > 0);
+    // Syntax background survives the tint on a different, non-current source row.
+    precedence.moveTo(2);
+    raster = renderListDecorations(precedence, 2, QRectF(), true);
+    QVERIFY(listDecorationColorCount(raster, c_listSyntaxColor,
+                                     listDecorationLineBand(precedence, 1)) > 0);
+    verifyListActiveRow(precedence, raster, 1, true);
+  }
+
+  QString sourceRows = QStringLiteral("- parent\n");
+  for (int i = 0; i < 60; ++i) {
+    sourceRows += QStringLiteral("  row %1 with wrapping words and more wrapping words\n").arg(i);
+  }
+  sourceRows += QStringLiteral("\noutside");
+  Fixture scrolled(sourceRows, 25, -1, makeListDecorationConfig());
+  showListDecorationFixture(scrolled, QSize(340, 260));
+  for (int zoom : {2, 0}) {
+    scrolled.editor()->zoom(zoom);
+    scrolled.editor()->resize(zoom == 2 ? 280 : 340, 260);
+    QCoreApplication::processEvents();
+    scrolled.moveTo(25);
+    TextEditUtils::scrollBlockInPage(scrolled.edit(), 23, TextEditUtils::PagePosition::Top);
+    QCoreApplication::processEvents();
+    const int top = TextEditUtils::contentOffsetAtTop(scrolled.edit());
+    const int first = TextEditUtils::firstVisibleBlock(scrolled.edit()).blockNumber();
+    QVERIFY(first > 0);
+    const QRectF clip(0, top, scrolled.edit()->viewport()->width(),
+                      scrolled.edit()->viewport()->height());
+    const auto raster = renderListDecorations(scrolled, 2, clip);
+    const auto band = listDecorationLineBand(scrolled, first + 1);
+    verifyListGuideBand(raster, listDecorationMarkerX(scrolled, 0, 0, 1), band, true);
+    QVERIFY(listDecorationColorCount(raster, c_listActiveColor, band) > 0);
+    const auto enabledRects = listDecorationBlockRects(scrolled);
+    const auto enabledCursor = scrolled.edit()->cursorRect();
+    // setConfig() applies the theme's font independently of zoom. Keep the
+    // presented font identical so this comparison isolates decoration colors.
+    const int pointSize = scrolled.editor()->editorFontPointSize();
+    scrolled.editor()->setConfig(makeListDecorationConfig(QColor(), QColor(), QColor(), pointSize));
+    scrolled.waitForFreshListAst();
+    QCOMPARE(listDecorationBlockRects(scrolled), enabledRects);
+    QCOMPARE(scrolled.edit()->cursorRect(), enabledCursor);
+    QCOMPARE(TextEditUtils::contentOffsetAtTop(scrolled.edit()), top);
+    const auto disabled = renderListDecorations(scrolled, 2, clip);
+    QCOMPARE(listDecorationColorCount(disabled, c_listGuideColor), 0);
+    QCOMPARE(listDecorationColorCount(disabled, c_listActiveColor), 0);
+    scrolled.editor()->setConfig(
+        makeListDecorationConfig(c_listGuideColor, c_listActiveColor, QColor(), pointSize));
+    scrolled.waitForFreshListAst();
+    QCOMPARE(scrolled.text(), sourceRows);
+  }
+}
+
+void TestMarkdownEditor::testListItemDecorationsFoldingAndPreviews() {
+  {
+    const QString source = QStringLiteral("- parent\n  ```text\n  alpha\n  beta\n  ```\n"
+                                          "  after\n\noutside");
+    Fixture fixture(source, 2, -1, makeListDecorationConfig());
+    showListDecorationFixture(fixture);
+    auto doc = fixture.editor()->document();
+    const qreal expandedHeight = doc->documentLayout()->documentSize().height();
+    const auto expandedRects = listDecorationBlockRects(fixture);
+    QVERIFY(fixture.editor()->foldAtCursor());
+    QTRY_VERIFY_WITH_TIMEOUT(!doc->findBlockByNumber(2).isVisible(), 5000);
+    QVERIFY(!doc->findBlockByNumber(3).isVisible());
+    const qreal foldedHeight = doc->documentLayout()->documentSize().height();
+    QVERIFY(foldedHeight < expandedHeight);
+    QCOMPARE(doc->documentLayout()->blockBoundingRect(doc->findBlockByNumber(2)).height(), 0.0);
+    QCOMPARE(doc->documentLayout()->blockBoundingRect(doc->findBlockByNumber(3)).height(), 0.0);
+    auto raster = renderListDecorations(fixture);
+    verifyListGuideBand(raster, listDecorationMarkerX(fixture, 0, 0, 1),
+                        listDecorationLineBand(fixture, 5), true);
+    verifyListActiveRow(fixture, raster, 5, true);
+    QCOMPARE(doc->documentLayout()->documentSize().height(), foldedHeight);
+    QVERIFY(fixture.editor()->unfoldAtCursor());
+    QTRY_VERIFY_WITH_TIMEOUT(doc->findBlockByNumber(2).isVisible(), 5000);
+    QVERIFY(doc->findBlockByNumber(3).isVisible());
+    QCOMPARE(listDecorationBlockRects(fixture), expandedRects);
+    QCOMPARE(doc->documentLayout()->documentSize().height(), expandedHeight);
+    fixture.moveTo(2);
+    raster = renderListDecorations(fixture);
+    verifyListActiveRow(fixture, raster, 2, true);
+
+    auto mgr = fixture.editor()->getPreviewMgr();
+    mgr->setPreviewEnabled(PreviewData::CodeBlock, true);
+    qreal previousAfter = 0;
+    for (int height : {60, 130}) {
+      mgr->updateCodeBlocks({makeListDecorationPreview(doc, 2, height)});
+      QCoreApplication::processEvents();
+      raster = renderListDecorations(fixture, 2);
+      const auto imageRect = listDecorationColorBounds(raster, Qt::red);
+      QVERIFY(!imageRect.isEmpty());
+      QVERIFY2(qAbs(imageRect.height() - height) <= 1,
+               qPrintable(QStringLiteral("painted height %1, requested %2")
+                              .arg(imageRect.height())
+                              .arg(height)));
+      const qreal x = listDecorationMarkerX(fixture, 0, 0, 1);
+      QVERIFY(imageRect.left() <= x && x <= imageRect.right());
+      QCOMPARE(listDecorationColorCount(raster, c_listGuideColor, imageRect), 0);
+      verifyListGuideBand(raster, x, listDecorationLineBand(fixture, 5), true);
+      verifyListActiveRow(fixture, raster, 5, true);
+      const qreal after = listDecorationLineBand(fixture, 5).top();
+      if (previousAfter > 0) {
+        QVERIFY(qAbs(after - previousAfter - 70) <= 1);
+      }
+      previousAfter = after;
+      QCOMPARE(fixture.text(), source);
+    }
+  }
+  {
+    // The terminal preview bottom, not the last block's extra padding, ends both decorations.
+    Fixture ending(QStringLiteral("- parent\n  body"), 1, -1, makeListDecorationConfig());
+    showListDecorationFixture(ending);
+    auto doc = ending.editor()->document();
+    ending.editor()->getPreviewMgr()->setPreviewEnabled(PreviewData::CodeBlock, true);
+    ending.editor()->getPreviewMgr()->updateCodeBlocks({makeListDecorationPreview(doc, 1, 60)});
+    QCoreApplication::processEvents();
+    const auto raster = renderListDecorations(ending, 2);
+    const auto imageRect = listDecorationColorBounds(raster, Qt::red);
+    QVERIFY(!imageRect.isEmpty());
+    const QRectF below(0, imageRect.bottom() + 1, raster.m_clip.width(),
+                       raster.m_clip.bottom() - imageRect.bottom() - 1);
+    QCOMPARE(listDecorationColorCount(raster, c_listGuideColor, below), 0);
+    QCOMPARE(listDecorationColorCount(raster, c_listActiveColor, below), 0);
+  }
+  {
+    auto config = makeListDecorationConfig();
+    config->m_inplacePreviewSources = MarkdownEditorConfig::Table;
+    const QString source = QStringLiteral("- parent\n\n  | h1 | h2 |\n  | --- | --- |\n"
+                                          "  | a | b |\n\n  tail\n\noutside");
+    Fixture table(source, 6, -1, config);
+    showListDecorationFixture(table, QSize(680, 560));
+    auto widgets = [&]() {
+      return table.edit()->viewport()->findChildren<PreviewWidget *>(QString(),
+                                                                     Qt::FindDirectChildrenOnly);
+    };
+    QTRY_COMPARE_WITH_TIMEOUT(widgets().size(), 1, 5000);
+    auto widget = widgets().first();
+    QTRY_VERIFY_WITH_TIMEOUT(widget->isVisible(), 5000);
+    auto sheet = widget->findChild<QTextEdit *>();
+    QVERIFY(sheet);
+    table.moveTo(6);
+    const auto raster = renderListDecorations(table, 2);
+    const QRectF widgetRect = QRectF(widget->geometry())
+                                  .translated(table.edit()->horizontalScrollBar()->value(),
+                                              TextEditUtils::contentOffsetAtTop(table.edit()));
+    const qreal x = listDecorationMarkerX(table, 0, 0, 1);
+    QVERIFY(widgetRect.left() <= x && x <= widgetRect.right());
+    QCOMPARE(listDecorationColorCount(raster, c_listGuideColor, widgetRect), 0);
+    verifyListGuideBand(raster, x, listDecorationLineBand(table, 6), true);
+    verifyListActiveRow(table, raster, 0, true);
+    auto verifyChildSurface = [&]() {
+      // The source underlay must not recolor the embedded sheet itself.
+      ListDecorationRaster child;
+      child.m_image = widget->grab().toImage();
+      QVERIFY(!child.m_image.isNull());
+      QCOMPARE(listDecorationColorCount(child, c_listActiveColor), 0);
+      QCOMPARE(listDecorationColorCount(child, c_listGuideColor), 0);
+    };
+    verifyChildSurface();
+    sheet->setFocus();
+    QTRY_VERIFY_WITH_TIMEOUT(table.edit()->isViewportWidgetFocused(), 5000);
+    const auto focused = renderListDecorations(table, 2);
+    QCOMPARE(listDecorationColorCount(focused, c_listActiveColor), 0);
+    verifyListGuideBand(focused, x, listDecorationLineBand(table, 6), true);
+    verifyChildSurface();
+    table.edit()->setFocus();
+    QTRY_VERIFY_WITH_TIMEOUT(table.edit()->hasFocus(), 5000);
+    verifyListActiveRow(table, renderListDecorations(table, 2), 0, true);
+    QCOMPARE(table.text(), source);
+  }
+  {
+    const QString source =
+        QStringLiteral("- parent\n  continuation\n  - child\n    child text\n\noutside");
+    Fixture ime(source, 1, -1, makeListDecorationConfig());
+    showListDecorationFixture(ime);
+    auto doc = ime.editor()->document();
+    const QString composition = QStringLiteral("\u3042");
+    for (int block : {1, 0}) {
+      ime.moveTo(block);
+      const int cursor = ime.edit()->textCursor().position();
+      QInputMethodEvent preedit(composition, QList<QInputMethodEvent::Attribute>());
+      QCoreApplication::sendEvent(ime.edit(), &preedit);
+      QCOMPARE(doc->findBlockByNumber(block).layout()->preeditAreaText(), composition);
+      // Qt's composition edit block emits a contentsChange even without a
+      // commit. Exercise per-block suppression with fresh ownership while the
+      // composition remains active, not with its deliberately invalidated AST.
+      ime.waitForFreshListAst();
+      const auto raster = renderListDecorations(ime, 2);
+      const auto band = listDecorationLineBand(ime, block);
+      QCOMPARE(listDecorationColorCount(raster, c_listGuideColor, band), 0);
+      QCOMPARE(listDecorationColorCount(raster, c_listActiveColor, band), 0);
+      const qreal parentX = listDecorationMarkerX(ime, 0, 0, 1);
+      if (block == 0) {
+        verifyListGuideBand(raster, parentX, listDecorationLineBand(ime, 1), false);
+      }
+      verifyListGuideBand(raster, listDecorationMarkerX(ime, 2, 2, 3),
+                          listDecorationLineBand(ime, 3), true);
+      verifyListActiveRow(ime, raster, 3, true);
+      QCOMPARE(ime.text(), source);
+      QCOMPARE(ime.edit()->textCursor().position(), cursor);
+      QCOMPARE(doc->findBlockByNumber(block).layout()->preeditAreaText(), composition);
+      QInputMethodEvent cancel;
+      QCoreApplication::sendEvent(ime.edit(), &cancel);
+      ime.waitForFreshListAst();
+      QCOMPARE(doc->findBlockByNumber(block).layout()->preeditAreaText(), QString());
+      const auto restored = renderListDecorations(ime, 2);
+      verifyListGuideBand(restored, listDecorationMarkerX(ime, 0, 0, 1),
+                          listDecorationLineBand(ime, 1), true);
+      verifyListActiveRow(ime, restored, block, true);
+    }
+    ime.moveTo(1);
+    QInputMethodEvent preedit(composition, QList<QInputMethodEvent::Attribute>());
+    QCoreApplication::sendEvent(ime.edit(), &preedit);
+    QInputMethodEvent commit;
+    commit.setCommitString(composition);
+    QCoreApplication::sendEvent(ime.edit(), &commit);
+    QCOMPARE(listDecorationColorCount(renderListDecorations(ime), c_listActiveColor), 0);
+    ime.waitForFreshListAst();
+    QCOMPARE(ime.blockText(1), QStringLiteral("  continuation\u3042"));
+    QCOMPARE(doc->findBlockByNumber(1).layout()->preeditAreaText(), QString());
+    verifyListActiveRow(ime, renderListDecorations(ime), 1, true);
   }
 }
 

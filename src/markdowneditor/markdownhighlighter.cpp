@@ -297,6 +297,7 @@ void MarkdownHighlighter::handleContentsChange(int p_position, int p_charsRemove
   }
 
   ++m_timeStamp;
+  emit listItemRangesUpdated(m_timeStamp, {});
 
   m_parseTimer->stop();
 
@@ -843,6 +844,9 @@ void MarkdownHighlighter::completeHighlight(QSharedPointer<MarkdownHighlighterRe
   emit headersUpdated(p_result->m_headerRegions);
   emit headingsUpdated(p_result->m_headingElements);
   emit foldingRegionsUpdated(p_result->m_foldingRegions);
+  if (p_result->matched(m_timeStamp)) {
+    emit listItemRangesUpdated(m_timeStamp, p_result->m_listItemRanges);
+  }
 
   // Snapshots are built here rather than when the result is constructed, so a
   // runtime change of the enabled element types takes effect on the next
