@@ -124,6 +124,7 @@ private slots:
   void testTableSourceFormatIdempotence();
 
   // AST-aware Enter and opt-in automatic ordered-list source numbering.
+  void testOrderedListEnterTabStartsNestedList();
   void testListAstContinuation();
   void testListAstExitAndSelection();
   void testListAstCodeAndStaleness();

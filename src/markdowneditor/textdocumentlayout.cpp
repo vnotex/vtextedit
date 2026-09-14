@@ -370,6 +370,8 @@ void TextDocumentLayout::drawListItemGuides(QPainter *p_painter, const QTextBloc
   if (!invertible) {
     return;
   }
+  // A cosmetic guide occupies one device pixel, not two logical pixels.
+  const qreal halfPixel = (qAbs(inverse.m11()) + qAbs(inverse.m21())) / 2;
 
   // Runs are cached per visual line for all the guides crossing this block.
   // Document-backed QTextLayout::text() may be empty; query only the
@@ -427,7 +429,7 @@ void TextDocumentLayout::drawListItemGuides(QPainter *p_painter, const QTextBloc
         continue;
       }
       const auto occupied = line.naturalTextRect();
-      if (x + 1 <= occupied.left() || x - 1 >= occupied.right()) {
+      if (x + halfPixel <= occupied.left() || x - halfPixel >= occupied.right()) {
         continue;
       }
       bool clear = false;
@@ -473,14 +475,14 @@ void TextDocumentLayout::drawListItemGuides(QPainter *p_painter, const QTextBloc
           runs.append({begin, finish, left, right, contiguous});
           run = &runs.constLast();
         }
-        clear = run->m_contiguous && x - 1 >= run->m_left && x + 1 <= run->m_right;
+        clear = run->m_contiguous && x - halfPixel >= run->m_left && x + halfPixel <= run->m_right;
       }
       if (!clear) {
         excluded.append({lineTop, lineBottom});
       }
     }
     const auto excludePreview = [&](const QRectF &p_rect) {
-      if (x >= p_rect.left() - 1 && x <= p_rect.right() + 1) {
+      if (x >= p_rect.left() - halfPixel && x <= p_rect.right() + halfPixel) {
         excluded.append({p_data.m_offset + p_rect.top(), p_data.m_offset + p_rect.bottom()});
       }
     };

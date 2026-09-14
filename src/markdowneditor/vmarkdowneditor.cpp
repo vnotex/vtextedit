@@ -2640,10 +2640,9 @@ void VMarkdownEditor::preKeyTab(int p_modifiers, bool *p_handled) {
     QString listNumber;
     if (MarkdownUtils::isOrderedList(text, listNumber, isEmpty) && isEmpty) {
       *p_handled = true;
-      // Reset the list number and indent the empty ordered list.
-      const auto afterText = m_config->m_autoNumberOrderedListsEnabled
-                                 ? text
-                                 : MarkdownUtils::setOrderedListNumber(text, 1);
+      // A non-one ordered marker cannot interrupt its parent's paragraph, so
+      // asynchronous numbering cannot repair the missing nested list.
+      const auto afterText = MarkdownUtils::setOrderedListNumber(text, 1);
       cursor.beginEditBlock();
       if (afterText != text) {
         cursor.movePosition(QTextCursor::StartOfBlock, QTextCursor::KeepAnchor);

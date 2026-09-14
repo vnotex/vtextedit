@@ -1769,6 +1769,84 @@ void verifyListStructurePreserved(const QString &p_before, const QString &p_afte
 }
 } // namespace
 
+void TestMarkdownEditor::testOrderedListEnterTabStartsNestedList() {
+  const QString afterReturn = QStringLiteral("1. first\n2. \n2. second");
+  const QString afterTab = QStringLiteral("1. first\n    1. \n2. second");
+  for (bool enabled : {false, true}) {
+    for (bool fresh : {false, true}) {
+      auto config = makeListSourceConfig(enabled);
+      config->m_textEditorConfig->m_expandTab = true;
+      config->m_textEditorConfig->m_tabStopWidth = 4;
+      Fixture fixture(QStringLiteral("1. first\n2. second"), 0, -1, config);
+      if (fresh) {
+        fixture.waitForFreshListAst();
+      }
+
+      fixture.pressReturn();
+      QCOMPARE(fixture.text(), afterReturn);
+      // Do not pump events: Tab must reset the marker before asynchronous numbering runs.
+      QTest::keyClick(fixture.edit(), Qt::Key_Tab);
+      QCOMPARE(fixture.text(), afterTab);
+      QCOMPARE(fixture.edit()->textCursor().blockNumber(), 1);
+      QCOMPARE(fixture.edit()->textCursor().positionInBlock(), 7);
+      QVERIFY(!fixture.edit()->textCursor().hasSelection());
+
+      fixture.edit()->undo();
+      QCOMPARE(fixture.text(), afterReturn);
+      fixture.edit()->redo();
+      QCOMPARE(fixture.text(), afterTab);
+      QCOMPARE(fixture.edit()->textCursor().blockNumber(), 1);
+      QCOMPARE(fixture.edit()->textCursor().positionInBlock(), 7);
+      QVERIFY(!fixture.edit()->textCursor().hasSelection());
+
+      QTest::keyClicks(fixture.edit(), QStringLiteral("child"));
+      fixture.waitForFreshListAst();
+      QTest::qWait(800);
+      QCOMPARE(fixture.text(), QStringLiteral("1. first\n    1. child\n2. second"));
+
+      // Empty markers cannot interrupt a paragraph either; inspect the tree after typing.
+      const auto utf8 = fixture.text().toUtf8();
+      using Tree = std::unique_ptr<cmark_node, decltype(&cmark_node_free)>;
+      Tree tree(cmark_parse_document(utf8.constData(), utf8.size(), CMARK_OPT_DEFAULT),
+                &cmark_node_free);
+      QVERIFY(tree);
+      QCOMPARE(cmark_node_get_type(tree.get()), CMARK_NODE_DOCUMENT);
+      const auto outer = cmark_node_first_child(tree.get());
+      QVERIFY(outer);
+      QCOMPARE(cmark_node_get_type(outer), CMARK_NODE_LIST);
+      QCOMPARE(cmark_node_get_list_type(outer), CMARK_ORDERED_LIST);
+      QVERIFY(!cmark_node_next(outer));
+
+      const auto first = cmark_node_first_child(outer);
+      QVERIFY(first);
+      QCOMPARE(cmark_node_get_type(first), CMARK_NODE_ITEM);
+      const auto second = cmark_node_next(first);
+      QVERIFY(second);
+      QCOMPARE(cmark_node_get_type(second), CMARK_NODE_ITEM);
+      QVERIFY(!cmark_node_next(second));
+
+      const auto paragraph = cmark_node_first_child(first);
+      QVERIFY(paragraph);
+      QCOMPARE(cmark_node_get_type(paragraph), CMARK_NODE_PARAGRAPH);
+      const auto nested = cmark_node_next(paragraph);
+      QVERIFY(nested);
+      QCOMPARE(cmark_node_get_type(nested), CMARK_NODE_LIST);
+      QCOMPARE(cmark_node_get_list_type(nested), CMARK_ORDERED_LIST);
+      QCOMPARE(cmark_node_get_list_start(nested), 1);
+      QVERIFY(!cmark_node_next(nested));
+      const auto child = cmark_node_first_child(nested);
+      QVERIFY(child);
+      QCOMPARE(cmark_node_get_type(child), CMARK_NODE_ITEM);
+      QVERIFY(!cmark_node_next(child));
+
+      const auto secondParagraph = cmark_node_first_child(second);
+      QVERIFY(secondParagraph);
+      QCOMPARE(cmark_node_get_type(secondParagraph), CMARK_NODE_PARAGRAPH);
+      QVERIFY(!cmark_node_next(secondParagraph));
+    }
+  }
+}
+
 void TestMarkdownEditor::testListAstContinuation() {
   struct LocalCase {
     QString m_source;
@@ -2412,9 +2490,9 @@ void TestMarkdownEditor::testListAutoNumberStructuralEdits() {
                     makeListSourceConfig(enabled));
     fixture.waitForFreshListAst();
     QTest::keyClick(fixture.edit(), Qt::Key_Tab);
-    QCOMPARE(fixture.blockText(1), enabled ? QStringLiteral("    8. ") : QStringLiteral("    1. "));
+    QCOMPARE(fixture.blockText(1), QStringLiteral("    1. "));
     if (enabled) {
-      QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("5. parent\n    8. \n6. tail"),
+      QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("5. parent\n    1. \n6. tail"),
                                 5000);
     }
     QTest::keyClick(fixture.edit(), Qt::Key_Backtab, Qt::ShiftModifier);
