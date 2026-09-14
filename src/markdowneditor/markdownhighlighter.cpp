@@ -297,7 +297,6 @@ void MarkdownHighlighter::handleContentsChange(int p_position, int p_charsRemove
   }
 
   ++m_timeStamp;
-  emit listItemRangesUpdated(m_timeStamp, {});
 
   m_parseTimer->stop();
 

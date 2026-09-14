@@ -3695,6 +3695,33 @@ void TestMarkdownEditor::testListItemActiveBackground() {
 }
 
 void TestMarkdownEditor::testListItemDecorationsFreshness() {
+  {
+    Fixture typing(QStringLiteral("- parent\n  before\n  after\n- sibling\n"
+                                  "  typing\n  untouched\n\noutside"),
+                   4, -1, makeListDecorationConfig());
+    showListDecorationFixture(typing);
+    const qreal parentX = listDecorationMarkerX(typing, 0, 0, 1);
+    const qreal siblingX = listDecorationMarkerX(typing, 3, 0, 1);
+    // Render synchronously after each edit, before another full parse can run.
+    // Guides in the untouched item and the active item's untouched rows stay visible.
+    for (const auto character : QStringLiteral("xyz")) {
+      typing.edit()->insertPlainText(QString(character));
+      const auto raster = renderListDecorations(typing);
+      for (int block : {1, 2}) {
+        verifyListGuideBand(raster, parentX, listDecorationLineBand(typing, block), true);
+        verifyListActiveRow(typing, raster, block, false);
+      }
+      for (int block : {4, 5}) {
+        verifyListGuideBand(raster, siblingX, listDecorationLineBand(typing, block), true);
+      }
+      for (int block : {3, 4, 5}) {
+        verifyListActiveRow(typing, raster, block, true);
+      }
+      verifyListActiveRow(typing, raster, 7, false);
+    }
+    QCOMPARE(typing.blockText(4), QStringLiteral("  typingxyz"));
+  }
+
   const QString source = QStringLiteral("- parent\n  continuation\n\noutside");
   Fixture fixture(source, 1, -1, makeListDecorationConfig());
   showListDecorationFixture(fixture);
@@ -3716,7 +3743,8 @@ void TestMarkdownEditor::testListItemDecorationsFreshness() {
   edit.setPosition(0);
   edit.setPosition(2, QTextCursor::KeepAnchor);
   edit.removeSelectedText();
-  verifyAbsent(); // No event processing or full parse between edit and draw.
+  // Structural edits may leave stale decoration until the full result replaces it.
+  verifyListActiveRow(fixture, renderListDecorations(fixture), 1, true);
   fixture.waitForFreshListAst();
   verifyAbsent();
   doc->undo();
@@ -3725,31 +3753,15 @@ void TestMarkdownEditor::testListItemDecorationsFreshness() {
   QCOMPARE(fixture.text(), source);
   verifyRestored();
   doc->redo();
-  verifyAbsent();
+  verifyListActiveRow(fixture, renderListDecorations(fixture), 1, true);
   fixture.waitForFreshListAst();
   verifyAbsent();
 
-  TimeStamp emptyTime = 0;
-  TimeStamp restoredTime = 0;
-  bool sawEmpty = false;
-  const auto publication = QObject::connect(
-      fixture.editor()->getHighlighter(), &MarkdownHighlighter::listItemRangesUpdated,
-      fixture.editor(), [&](TimeStamp time, const QVector<md::ListItemRange> &ranges) {
-        if (ranges.isEmpty()) {
-          sawEmpty = true;
-          emptyTime = time;
-        } else {
-          restoredTime = time;
-        }
-      });
   edit.setPosition(0);
   edit.insertText(QStringLiteral("- "));
-  verifyAbsent();
-  QVERIFY(sawEmpty);
+  verifyAbsent(); // The retained result has no list until a new full result arrives.
   fixture.waitForFreshListAst();
-  QCOMPARE(restoredTime, emptyTime);
-  verifyRestored(); // An empty publication must not block a same-timestamp full result.
-  QObject::disconnect(publication);
+  verifyRestored();
   fixture.waitForFreshListAst(); // Matched updateHighlight() re-publication remains visible.
   verifyRestored();
 
@@ -3774,12 +3786,10 @@ void TestMarkdownEditor::testListItemDecorationsFreshness() {
   QCOMPARE(listDecorationBlockRects(fixture), rects);
 
   fixture.editor()->setText(QStringLiteral("1. parent\n   continuation\n2. sibling\n   tail"));
-  verifyAbsent();
   fixture.waitForFreshListAst();
   edit = QTextCursor(doc);
   edit.setPosition(doc->findBlockByNumber(2).position());
   edit.insertText(QStringLiteral("\nabcjdkejj\n\n")); // testListAutoNumberSplit separator.
-  verifyAbsent();
   fixture.waitForFreshListAst();
   fixture.moveTo(1);
   auto raster = renderListDecorations(fixture);
@@ -3797,6 +3807,7 @@ void TestMarkdownEditor::testListItemDecorationsFreshness() {
   QCOMPARE(fixture.text(), QStringLiteral("1. parent\n   continuation\n\nabcjdkejj\n\n"
                                           "2. sibling\n   tail")); // Numbering is disabled.
   doc->clear();
+  fixture.waitForFreshListAst();
   verifyAbsent();
   fixture.editor()->setText(source);
   verifyAbsent();
@@ -4055,10 +4066,7 @@ void TestMarkdownEditor::testListItemDecorationsFoldingAndPreviews() {
       QInputMethodEvent preedit(composition, QList<QInputMethodEvent::Attribute>());
       QCoreApplication::sendEvent(ime.edit(), &preedit);
       QCOMPARE(doc->findBlockByNumber(block).layout()->preeditAreaText(), composition);
-      // Qt's composition edit block emits a contentsChange even without a
-      // commit. Exercise per-block suppression with fresh ownership while the
-      // composition remains active, not with its deliberately invalidated AST.
-      ime.waitForFreshListAst();
+      // Composition keeps cached ownership; paint omits only its preedit block.
       const auto raster = renderListDecorations(ime, 2);
       const auto band = listDecorationLineBand(ime, block);
       QCOMPARE(listDecorationColorCount(raster, c_listGuideColor, band), 0);
@@ -4075,7 +4083,6 @@ void TestMarkdownEditor::testListItemDecorationsFoldingAndPreviews() {
       QCOMPARE(doc->findBlockByNumber(block).layout()->preeditAreaText(), composition);
       QInputMethodEvent cancel;
       QCoreApplication::sendEvent(ime.edit(), &cancel);
-      ime.waitForFreshListAst();
       QCOMPARE(doc->findBlockByNumber(block).layout()->preeditAreaText(), QString());
       const auto restored = renderListDecorations(ime, 2);
       verifyListGuideBand(restored, listDecorationMarkerX(ime, 0, 0, 1),
@@ -4088,7 +4095,7 @@ void TestMarkdownEditor::testListItemDecorationsFoldingAndPreviews() {
     QInputMethodEvent commit;
     commit.setCommitString(composition);
     QCoreApplication::sendEvent(ime.edit(), &commit);
-    QCOMPARE(listDecorationColorCount(renderListDecorations(ime), c_listActiveColor), 0);
+    verifyListActiveRow(ime, renderListDecorations(ime), 1, true);
     ime.waitForFreshListAst();
     QCOMPARE(ime.blockText(1), QStringLiteral("  continuation\u3042"));
     QCOMPARE(doc->findBlockByNumber(1).layout()->preeditAreaText(), QString());

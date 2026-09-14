@@ -118,7 +118,8 @@ signals:
   // Emitted when folding regions have been computed from a new parsing result.
   void foldingRegionsUpdated(const QVector<md::FoldingRegion> &p_foldingRegions);
 
-  // Fresh full-result ownership; an empty vector invalidates decorations immediately.
+  // Published only from matched full results. Consumers may retain the last
+  // ownership snapshot during edits until a new result replaces it.
   void listItemRangesUpdated(TimeStamp p_timeStamp, const QVector<md::ListItemRange> &p_ranges);
 
   // Emitted when immutable typed preview snapshots have been produced from an
