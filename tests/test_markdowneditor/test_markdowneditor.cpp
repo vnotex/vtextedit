@@ -2444,6 +2444,64 @@ void TestMarkdownEditor::testListAutoNumberStructuralEdits() {
 }
 
 void TestMarkdownEditor::testListAutoNumberSplit() {
+  const QString fenceList = QStringLiteral("1. Nested code block\n2. List item 2");
+  const QString openFence = QStringLiteral("```cpp\n#include <iostream>\n");
+  const QString fenced =
+      QStringLiteral("1. Nested code block\n") + openFence + QStringLiteral("```\n2. List item 2");
+  const QString fencedRestarted =
+      QStringLiteral("1. Nested code block\n") + openFence + QStringLiteral("```\n1. List item 2");
+  for (bool fresh : {false, true}) {
+    // A parsed, still-open fence must not erase the later marker's identity.
+    const QString ending = fresh ? QStringLiteral("\n") : QString();
+    Fixture fixture(fenceList + ending, 0, -1, makeListSourceConfig());
+    if (fresh) {
+      fixture.waitForFreshListAst();
+    }
+    replaceTableSource(*fixture.editor(), 1, 0, 0, openFence);
+    fixture.waitForFreshListAst();
+    QTest::qWait(800); // Let the no-numbering idle pass run before closing the fence.
+    QCOMPARE(fixture.text(), QStringLiteral("1. Nested code block\n") + openFence +
+                                 QStringLiteral("2. List item 2") + ending);
+    replaceTableSource(*fixture.editor(), 3, 0, 0, QStringLiteral("```\n"));
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), fencedRestarted + ending, 5000);
+    verifyListStructurePreserved(fenced + ending, fixture.text(), {1, 1});
+  }
+  {
+    // Other lists still normalize while the paused split retains its baseline.
+    const QString prefix = QStringLiteral("3. before\n9. before tail\n\nbreak\n\n");
+    const QString normalizedPrefix = QStringLiteral("3. before\n4. before tail\n\nbreak\n\n");
+    Fixture fixture(prefix + fenceList, 0, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    replaceTableSource(*fixture.editor(), 6, 0, 0, openFence);
+    fixture.waitForFreshListAst();
+    QTest::qWait(800);
+    replaceTableSource(*fixture.editor(), 1, 0, 1, QStringLiteral("8"));
+    const QString pending =
+        QStringLiteral("1. Nested code block\n") + openFence + QStringLiteral("2. List item 2");
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), normalizedPrefix + pending, 5000);
+    replaceTableSource(*fixture.editor(), 8, 0, 0, QStringLiteral("```\n"));
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), normalizedPrefix + fencedRestarted, 5000);
+  }
+  for (const auto &replacement : {QStringLiteral("7"), QStringLiteral("2.")}) {
+    // Preserve an explicitly changed number or a wholly retyped marker, even
+    // when it was edited while hidden inside the open fence.
+    Fixture fixture(fenceList, 0, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    replaceTableSource(*fixture.editor(), 1, 0, 0, openFence);
+    fixture.waitForFreshListAst();
+    QTest::qWait(800);
+    replaceTableSource(*fixture.editor(), 3, 0, replacement.size(), replacement);
+    fixture.waitForFreshListAst();
+    QTest::qWait(800);
+    replaceTableSource(*fixture.editor(), 3, 0, 0, QStringLiteral("```\n"));
+    fixture.waitForFreshListAst();
+    QTest::qWait(800);
+    const QString marker =
+        replacement == QStringLiteral("7") ? QStringLiteral("7.") : QStringLiteral("2.");
+    QCOMPARE(fixture.text(), QStringLiteral("1. Nested code block\n") + openFence +
+                                 QStringLiteral("```\n") + marker + QStringLiteral(" List item 2"));
+  }
+
   const QString source = QStringLiteral("1. very simple questions\n2. Test the list;\n"
                                         "3. List item 2;\n4. very good\n5. hahahaha");
   const QString separated = QStringLiteral("1. very simple questions\n\nabcjdkejj\n\n"

@@ -277,9 +277,12 @@ private:
   QVector<Marker> currentMarkers(const md::ListStructure &p_structure,
                                  const QVector<SeedBlock> *p_seedBlocks = nullptr,
                                  const QVector<Replacement> &p_afterEdits = {}) const;
-  QHash<int, int> changedLists(const md::ListStructure &p_structure) const;
+  QHash<int, int> changedLists(const md::ListStructure &p_structure,
+                               QVector<SourceRun> &p_survivingSource) const;
   static bool needsNumbering(const md::ListStructure &p_structure, const QHash<int, int> &p_starts);
   static bool sameMarker(const Marker &p_left, const Marker &p_right);
+  bool hasListMarkersInOpenFence(const MarkdownHighlighterResult &p_result,
+                                 const QVector<SourceRun> &p_runs) const;
   void prepareLists(const MarkdownHighlighterResult &p_result);
 
   Endpoints endpoints() const;
@@ -319,6 +322,7 @@ private:
   bool m_seedRequired = false;
   bool m_workerActive = false;
   bool m_numberingReady = false;
+  bool m_preserveListBaseline = false;
   bool m_queued = false;
   bool m_applying = false;
   bool m_reset = false;
@@ -540,6 +544,7 @@ void MarkdownSourceFormatter::beginListEpoch() {
   m_listsPending = false;
   m_seedRequired = false;
   m_numberingReady = false;
+  m_preserveListBaseline = false;
   m_seed.clear();
   m_seedBlocks.clear();
   m_mutations.clear();
@@ -617,7 +622,9 @@ void MarkdownSourceFormatter::workerFinished() {
       } else {
         // A rejected batch is consumed. Only a later real structural change
         // can schedule it again; cursor/layout notifications cannot spin it.
-        bindListBaseline(result->m_listStructure);
+        if (!m_preserveListBaseline) {
+          bindListBaseline(result->m_listStructure);
+        }
         m_listsPending = false;
         releaseWorkerResult();
       }
@@ -854,11 +861,13 @@ bool MarkdownSourceFormatter::sameMarker(const Marker &p_left, const Marker &p_r
          p_left.m_spelling == p_right.m_spelling && p_left.m_prefix == p_right.m_prefix;
 }
 
-QHash<int, int> MarkdownSourceFormatter::changedLists(const md::ListStructure &p_structure) const {
+QHash<int, int> MarkdownSourceFormatter::changedLists(const md::ListStructure &p_structure,
+                                                      QVector<SourceRun> &p_survivingSource) const {
   const auto current = currentMarkers(p_structure);
   const auto &old = m_listBaseline.m_markers;
-  QVector<SourceRun> runs;
+  auto &runs = p_survivingSource;
   if (!survivingSource(runs)) {
+    runs.clear();
     return {};
   }
   QVector<int> currentToOld(current.size(), -1);
@@ -1089,6 +1098,42 @@ bool MarkdownSourceFormatter::needsNumbering(const md::ListStructure &p_structur
   return false;
 }
 
+bool MarkdownSourceFormatter::hasListMarkersInOpenFence(const MarkdownHighlighterResult &p_result,
+                                                        const QVector<SourceRun> &p_runs) const {
+  auto lastBlock = m_doc->lastBlock();
+  if (lastBlock.length() == 1 && lastBlock.previous().isValid()) {
+    lastBlock = lastBlock.previous();
+  }
+  if (p_result.m_codeBlocksState.value(lastBlock.blockNumber(), md::Normal) != md::CodeBlock) {
+    return false;
+  }
+  const int lastClosedBlock =
+      p_result.m_codeBlocks.isEmpty() ? -1 : p_result.m_codeBlocks.constLast().m_endBlock;
+  int run = 0;
+  for (const auto &marker : m_listBaseline.m_markers) {
+    if (!marker.m_valid || marker.m_list < 0 ||
+        m_listBaseline.m_lists[marker.m_list].m_ordered == false) {
+      continue;
+    }
+    while (run < p_runs.size() && p_runs[run].m_old + p_runs[run].m_length <= marker.m_start) {
+      ++run;
+    }
+    // Only unchanged source carries old identity. A deleted/retyped marker is
+    // newly authored even if Qt reuses its block or its spelling is identical.
+    if (run == p_runs.size() || p_runs[run].m_old > marker.m_start ||
+        p_runs[run].m_old + p_runs[run].m_length < marker.m_end) {
+      continue;
+    }
+    const int position = p_runs[run].m_current + marker.m_start - p_runs[run].m_old;
+    const auto block = m_doc->findBlock(position);
+    if (block.blockNumber() > lastClosedBlock &&
+        p_result.m_codeBlocksState.value(block.blockNumber(), md::Normal) == md::CodeBlock) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void MarkdownSourceFormatter::prepareLists(const MarkdownHighlighterResult &p_result) {
   if (!m_listsEnabled || !m_listsPending || m_seedRequired || m_workerActive || m_numberingReady ||
       !p_result.m_listStructure.m_valid) {
@@ -1101,7 +1146,12 @@ void MarkdownSourceFormatter::prepareLists(const MarkdownHighlighterResult &p_re
     m_listsPending = false;
     return;
   }
-  auto starts = changedLists(p_result.m_listStructure);
+  // An opening fence can temporarily hide the later items of an existing
+  // list. Keep their lineage until the fence closes instead of treating those
+  // surviving markers as newly authored when they reappear in the AST.
+  QVector<SourceRun> runs;
+  auto starts = changedLists(p_result.m_listStructure, runs);
+  m_preserveListBaseline = hasListMarkersInOpenFence(p_result, runs);
   const auto &structure = p_result.m_listStructure;
   QVector<int> roots(structure.m_lists.size(), -1);
   const auto rootOf = [&](auto &&self, int p_list) -> int {
@@ -1143,7 +1193,9 @@ void MarkdownSourceFormatter::prepareLists(const MarkdownHighlighterResult &p_re
     }
   }
   if (!needsNumbering(p_result.m_listStructure, starts)) {
-    bindListBaseline(p_result.m_listStructure);
+    if (!m_preserveListBaseline) {
+      bindListBaseline(p_result.m_listStructure);
+    }
     m_listsPending = false;
     return;
   }
@@ -1500,9 +1552,9 @@ bool MarkdownSourceFormatter::apply(const QVector<Row> &p_rows,
       // enumerating/reassigning another caller's QTextCursor endpoints.
       cursor.setPosition(replacement.m_position + prefix);
       cursor.setPosition(replacement.m_position + beforeSize - suffix, QTextCursor::KeepAnchor);
-      if (m_listsEnabled && !p_lists) {
-        // Numbering candidates rebaseline after the transaction. Table-only
-        // work instead rebases the existing baseline or in-flight epoch seed.
+      if (m_listsEnabled && (!p_lists || m_preserveListBaseline)) {
+        // Retained split lineage must follow our own edits too, including an
+        // unrelated list normalized while a fence still hides its old sibling.
         m_mutations.append({replacement.m_position + prefix, beforeSize - prefix - suffix,
                             afterSize - prefix - suffix});
       }
@@ -1616,7 +1668,9 @@ void MarkdownSourceFormatter::attempt() {
     }
     // The verified candidate is already parsed. Disjoint table rewrites only
     // shift positions; no third parse is necessary to bind its live markers.
-    bindListBaseline(m_worker->structure(), nullptr, tableChanges);
+    if (!m_preserveListBaseline) {
+      bindListBaseline(m_worker->structure(), nullptr, tableChanges);
+    }
     m_listsPending = false;
     m_numberingReady = false;
     releaseWorkerResult();
