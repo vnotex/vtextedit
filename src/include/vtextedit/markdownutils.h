@@ -4,6 +4,7 @@
 #include "vtextedit_export.h"
 
 #include <QPixmap>
+#include <QRegularExpression>
 #include <QString>
 #include <QVector>
 
@@ -13,6 +14,30 @@ class QTextCursor;
 class QTextBlock;
 
 namespace vte {
+namespace md {
+// Header-only lexical layer: parsers and MarkdownUtils share the same task
+// spelling without linking the editor widget implementation.
+inline QString todoListPattern() {
+  return QStringLiteral("^(\\s*)([\\*\\-\\+])\\s+\\[([ x])\\]\\s*(.*)$");
+}
+
+inline bool scanTodoList(const QString &p_text, QChar &p_listMark, bool &p_empty) {
+  if (p_text.isEmpty()) {
+    return false;
+  }
+
+  const QRegularExpression reg(todoListPattern());
+  auto match = reg.match(p_text);
+  if (match.hasMatch()) {
+    p_listMark = match.captured(2)[0];
+    p_empty = match.captured(4).isEmpty();
+    return true;
+  }
+
+  return false;
+}
+} // namespace md
+
 class VTextEdit;
 
 // One image or resource link found in a Markdown document, with everything the callers

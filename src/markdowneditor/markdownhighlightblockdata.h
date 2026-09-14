@@ -18,9 +18,14 @@ public:
 
   QVector<md::HLUnit> &getHighlight() { return m_highlight; }
 
+  void setHighlightOverlays(const QVector<md::HLUnitStyle> &p_overlays) {
+    m_highlightOverlays = p_overlays;
+  }
+
   void clearHighlight() {
     m_highlightTimeStamp = 0;
     m_highlight.clear();
+    m_highlightOverlays.clear();
   }
 
   TimeStamp getCodeBlockHighlightTimeStamp() const { return m_codeBlockHighlightTimeStamp; }
@@ -36,8 +41,10 @@ public:
     m_codeBlockHighlight.clear();
   }
 
-  bool isBlockHighlightMatched(const QVector<md::HLUnit> &p_highlight) const {
-    if (m_highlightTimeStamp == 0 || p_highlight.size() != m_highlight.size()) {
+  bool isBlockHighlightMatched(const QVector<md::HLUnit> &p_highlight,
+                               const QVector<md::HLUnitStyle> &p_overlays) const {
+    if (m_highlightTimeStamp == 0 || p_highlight.size() != m_highlight.size() ||
+        p_overlays != m_highlightOverlays) {
       return false;
     }
 
@@ -114,6 +121,9 @@ private:
 
   // Highlight cache for this block.
   QVector<md::HLUnit> m_highlight;
+
+  // Applied overlays participate in repaint decisions even when syntax is unchanged.
+  QVector<md::HLUnitStyle> m_highlightOverlays;
 
   TimeStamp m_codeBlockHighlightTimeStamp = 0;
 

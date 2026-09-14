@@ -2,6 +2,7 @@
 #define MARKDOWNASTWALKER_H
 
 #include <QByteArray>
+#include <QHash>
 #include <QMap>
 #include <QString>
 #include <QVector>
@@ -142,8 +143,84 @@ struct TableElement : public TypedPreviewElement {
   QVector<TableRowElement> m_rows;
 };
 
+// Value-only list projection. Container and item indexes belong to this snapshot.
+struct ListContainerInfo {
+  enum class Kind { Quote, Item, Indent };
+  Kind m_kind = Kind::Item;
+  int m_parent = -1;
+  int m_item = -1;
+  int m_startBlock = -1;
+  int m_endBlock = -1;
+  int m_markerOffset = 0;
+  int m_padding = 0;
+};
+
+struct ListItemInfo {
+  int m_list = -1;
+  // This item's own Kind::Item container, whose parent encloses the LIST.
+  int m_container = -1;
+  int m_startBlock = -1;
+  int m_endBlock = -1;
+  // Absolute UTF-16, half-open marker bounds; the checkbox is not the marker.
+  int m_markerStart = -1;
+  int m_markerEnd = -1;
+  int m_contentStart = -1;
+  int m_sourceNumber = 0;
+  QChar m_marker;
+  bool m_task = false;
+  bool m_empty = false;
+  bool m_sourceValid = false;
+  bool m_prefixValid = false;
+  QString m_siblingPrefix;
+};
+
+struct ListInfo {
+  int m_parentContainer = -1;
+  int m_startNumber = 0;
+  bool m_ordered = false;
+  QChar m_marker;
+  QVector<int> m_items;
+};
+
+struct ListParagraphInfo {
+  int m_startBlock = -1;
+  int m_endBlock = -1;
+  int m_item = -1;
+};
+
+struct ListStructure {
+  bool m_valid = false;
+  // Implicitly shared original UTF-8, retained only when there are lists.
+  QByteArray m_source;
+  QVector<ListContainerInfo> m_containers;
+  QVector<ListInfo> m_lists;
+  // Source order, with deeper same-line markers after their ancestors.
+  QVector<ListItemInfo> m_items;
+  // Source-sorted, disjoint inclusive ranges, only paragraphs directly in ITEMs.
+  QVector<ListParagraphInfo> m_paragraphs;
+};
+
+struct ListSourceEdit {
+  int m_start = 0;
+  int m_end = 0;
+  QString m_before;
+  QString m_after;
+};
+
+// Anchored, line-local lexical fields only; membership/verification stay unset.
+bool scanListMarker(const QString &p_line, int p_start, ListItemInfo &p_marker);
+ListStructure parseListStructure(const QByteArray &p_utf8Text, int p_offset = 0,
+                                 int p_startBlock = 0);
+// Constant-time access to the prefix verified and cached during projection.
+bool listContinuationPrefix(const ListStructure &p_structure, int p_item, QString &p_prefix);
+bool buildListNumberEdits(const QString &p_source, const ListStructure &p_structure,
+                          const QHash<int, int> &p_listStarts, QVector<ListSourceEdit> &p_edits,
+                          ListStructure &p_after);
+
 struct ASTWalkResult {
   QVector<QVector<HLUnit>> blocksHighlights; // indexed by block number
+  // Source-ordered, disjoint foreground overlays; only populated blocks are stored.
+  QHash<int, QVector<HLUnitStyle>> blockOverlays; // keyed by global block number
   // NOT the editor's image channel. Nothing in production reads this any more:
   // the highlighter publishes md::ImageLinkInfo built from imageElements, which
   // also carries the destination and the declared `=WxH` size. This survives
@@ -165,6 +242,7 @@ struct ASTWalkResult {
   QVector<CodeElement> codeElements;
   QVector<MathElement> mathElements;
   QVector<TableElement> tableElements;
+  ListStructure listStructure;
 
   // Headings with their AST-derived title and anchor text.
   // Sorted by start position.
@@ -172,13 +250,15 @@ struct ASTWalkResult {
 };
 
 // Single-pass AST walker. Parses markdown with cmark, walks AST once,
-// produces per-block HLUnits and region vectors directly.
+// produces per-block HLUnits, sparse foreground overlays and region vectors directly.
 // p_numBlocks: total blocks in document (sizes blocksHighlights vector)
 // p_offset: QChar offset of text start in document (for region positions)
 // p_startBlock: first block number of the sliced text (maps local line 0 -> global block
-// p_startBlock) p_fast: if true, skip region collection (only produce blocksHighlights)
+// p_startBlock) p_fast: if true, skip region collection (retain highlights and overlays)
+// p_collectLists: collect the editing projection only for a non-fast walk
 ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int p_offset = 0,
-                             int p_startBlock = 0, bool p_fast = false);
+                             int p_startBlock = 0, bool p_fast = false,
+                             bool p_collectLists = false);
 
 // Project the walker's image elements onto what the highlighter publishes:
 // region, destination and declared size. Order is preserved, one entry per

@@ -690,18 +690,22 @@ void TestTablePreviewInputMode::testOpenLineInsertsNoRow() {
 
   const int blocks = sheet->document()->blockCount();
 
-  putCaretIn(sheet, 1, 0);
-  QTest::keyClick(sheet, Qt::Key_O);
-  QTest::keyClick(sheet, Qt::Key_Escape);
-  QTest::keyClicks(sheet, QStringLiteral("O"));
-  QTest::keyClick(sheet, Qt::Key_Escape);
-
-  // insertLine() refuses: a row is one source line and the serializer rejects
-  // every separator that could end one. "One more row" is Enter in the last
-  // cell, which is table vocabulary rather than a mode command.
-  QCOMPARE(sheet->document()->blockCount(), blocks);
-  QCOMPARE(tableOf(sheet->document())->rows(), 2);
-  QVERIFY(sheet->tableDocument()->isIntact());
+  // Both newLine placements refuse, including counted insert-mode repeats.
+  // A row is one source line; only Enter in the last cell may add another row.
+  for (const auto &command :
+       {QStringLiteral("o"), QStringLiteral("O"), QStringLiteral("3o"), QStringLiteral("3O")}) {
+    putCaretIn(sheet, 1, 0);
+    QTest::keyClicks(sheet, command);
+    QTest::keyClick(sheet, Qt::Key_Escape);
+    QCOMPARE(sheet->document()->blockCount(), blocks);
+    QCOMPARE(tableOf(sheet->document())->rows(), 2);
+    QCOMPARE(tableOf(sheet->document())->columns(), 2);
+    QCOMPARE(cellText(sheet->document(), 0, 0), QStringLiteral("h1"));
+    QCOMPARE(cellText(sheet->document(), 0, 1), QStringLiteral("h2"));
+    QCOMPARE(cellText(sheet->document(), 1, 0), QStringLiteral("alpha"));
+    QCOMPARE(cellText(sheet->document(), 1, 1), QStringLiteral("beta"));
+    QVERIFY(sheet->tableDocument()->isIntact());
+  }
 }
 
 void TestTablePreviewInputMode::testALinewisePutStaysInTheCell() {

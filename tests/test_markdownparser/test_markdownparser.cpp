@@ -90,7 +90,7 @@ static int countBlocks(const QByteArray &p_utf8) {
 static vte::md::ASTWalkResult parse(const QString &p_text) {
   QByteArray utf8 = p_text.toUtf8();
   int numBlocks = countBlocks(utf8);
-  return vte::md::walkAndConvert(utf8, numBlocks);
+  return vte::md::walkAndConvert(utf8, numBlocks, 0, 0, false, true);
 }
 
 // Helper: count HLUnits with given style across all blocks.
@@ -396,6 +396,181 @@ void TestMarkdownParser::testHTMLNodesAreStyledLikeCode() {
   QCOMPARE(formatAt(inner, 4).background().color(), QColor(QStringLiteral("#654321")));
 }
 
+void TestMarkdownParser::testFontColorHighlighting_data() {
+  QTest::addColumn<QString>("source");
+  QTest::addColumn<QStringList>("tokens");
+  QTest::addColumn<QStringList>("colors");
+
+  QTest::newRow("attribute-syntax")
+      << QStringLiteral("<font color=red>named</font> "
+                        "<FONT COLOR = '&#35;008000' title='a>b'>hexadecimal</FONT> "
+                        "<font color=\"#00f\">shorthex</font> outside")
+      << QStringList({"named", "hexadecimal", "shorthex", "outside", "<font", "</FONT>"})
+      << QStringList({"red", "#008000", "blue", "", "", ""});
+  QTest::newRow("nested-inheritance")
+      << QStringLiteral("<font color=red>outer <font color=blue>inner</font> restored "
+                        "<font color=invalid>inherited</font> "
+                        "<font size=4>unspecified</font></font> outside")
+      << QStringList({"outer", "inner", "restored", "inherited", "unspecified", "outside"})
+      << QStringList({"red", "blue", "red", "red", "red", ""});
+  QTest::newRow("multiline-and-unicode")
+      << QString::fromUtf8("\xF0\x9F\x98\x80 <font color=red>first\n"
+                           "middle\nsecond</font> outside\n\n"
+                           "<font color=blue>\nblockcontent\n</font>\n\noutsideblock")
+      << QStringList({"first", "middle", "second", "outside", "blockcontent", "outsideblock"})
+      << QStringList({"red", "red", "red", "", "blue", ""});
+  QTest::newRow("lazy-quote-continuation")
+      << QStringLiteral("> lead <font color=red>first\n"
+                        "lazy <font color=blue>inner</font> restored</font> outside")
+      << QStringList({"first", "lazy", "inner", "restored", "outside"})
+      << QStringList({"red", "red", "blue", "red", ""});
+  QTest::newRow("code-is-literal")
+      << QStringLiteral("`<font color=red>inlinecode</font>`\n\n"
+                        "```html\n<font color=red>fencedcode</font>\n```\n\n"
+                        "    <font color=red>indentedcode</font>\n\n"
+                        "<font color=red>prose `codeinside` aftercode</font>")
+      << QStringList(
+             {"inlinecode", "fencedcode", "indentedcode", "prose", "codeinside", "aftercode"})
+      << QStringList({"", "", "", "red", "", "red"});
+  QTest::newRow("html-is-not-source-code")
+      << QStringLiteral("<!-- <font color=red>comment</font> -->\n\n"
+                        "<script>let s = '<font color=red>scripttext</font>';</script>\n\n"
+                        "prefix <textarea><font color=red>rawtext</font></textarea>\n\n"
+                        "<div title='<font color=red>attribute</font>'>ordinary</div>\n\n"
+                        "<font color=red>before <b>boldhtml</b> "
+                        "<!-- hiddencomment --> after</font>")
+      << QStringList({"comment", "scripttext", "rawtext", "attribute", "ordinary", "before",
+                      "boldhtml", "<b>", "hiddencomment", "after"})
+      << QStringList({"", "", "", "", "", "red", "red", "", "", "red"});
+  QTest::newRow("invalid-and-unmatched")
+      << QStringLiteral("<font color=invalid>invalidcolor</font> "
+                        "<font>missingcolor</font> "
+                        "&lt;font color=red&gt;escaped&lt;/font&gt;\n\n"
+                        "<font color=red>unfinished\n\ntrailing")
+      << QStringList({"invalidcolor", "missingcolor", "escaped", "unfinished", "trailing"})
+      << QStringList({"", "", "", "", ""});
+}
+
+void TestMarkdownParser::testFontColorHighlighting() {
+  QFETCH(QString, source);
+  QFETCH(QStringList, tokens);
+  QFETCH(QStringList, colors);
+  auto textConfig = QSharedPointer<vte::TextEditorConfig>::create();
+  auto config = QSharedPointer<vte::MarkdownEditorConfig>::create(textConfig);
+  config->m_inplacePreviewSources = vte::MarkdownEditorConfig::NoInplacePreview;
+  auto parameters = QSharedPointer<vte::TextEditorParameters>::create();
+  vte::VMarkdownEditor editor(config, parameters);
+  QSignalSpy completed(editor.getHighlighter(), &vte::MarkdownHighlighter::highlightCompleted);
+  editor.setText(source);
+  editor.getHighlighter()->updateHighlight();
+  QTRY_VERIFY(completed.count() > 0);
+
+  for (int i = 0; i < tokens.size(); ++i) {
+    const int start = source.indexOf(tokens[i]);
+    QVERIFY(start >= 0);
+    for (int pos = start; pos < start + tokens[i].size(); ++pos) {
+      const auto block = editor.document()->findBlock(pos);
+      const auto actual = formatAt(block, pos - block.position()).foreground();
+      if (colors[i].isEmpty()) {
+        QVERIFY2(actual.style() == Qt::NoBrush ||
+                     (actual.color() != QColor(Qt::red) && actual.color() != QColor(Qt::blue) &&
+                      actual.color() != QColor(QStringLiteral("#008000"))),
+                 qPrintable(tokens[i]));
+      } else {
+        QCOMPARE(actual.color(), QColor(colors[i]));
+      }
+    }
+  }
+  QCOMPARE(editor.getText(), source);
+}
+
+void TestMarkdownParser::testFontColorPreservesMarkdownAndUpdates() {
+  auto theme = vte::Theme::createThemeFromContent(QStringLiteral(R"({
+    "metadata": {"type": "vtextedit", "name": "FontColorTest"},
+    "markdown-syntax-styles": {
+      "STRONG": {"bold": true, "background-color": "#123456"},
+      "EMPH": {"italic": true}
+    }
+  })"));
+  QVERIFY(theme);
+  auto textConfig = QSharedPointer<vte::TextEditorConfig>::create();
+  textConfig->m_theme = theme;
+  auto config = QSharedPointer<vte::MarkdownEditorConfig>::create(textConfig);
+  config->m_inplacePreviewSources = vte::MarkdownEditorConfig::NoInplacePreview;
+  auto parameters = QSharedPointer<vte::TextEditorParameters>::create();
+  vte::VMarkdownEditor editor(config, parameters);
+  const QString source = QStringLiteral("**bold <font color=red>colored** plain *italic*"
+                                        "</font> outside");
+  QSignalSpy completed(editor.getHighlighter(), &vte::MarkdownHighlighter::highlightCompleted);
+  editor.setText(source);
+  editor.getHighlighter()->updateHighlight();
+  QTRY_VERIFY(completed.count() > 0);
+  auto at = [&editor](const QString &p_token) {
+    const int pos = editor.getText().indexOf(p_token);
+    const auto block = editor.document()->findBlock(pos);
+    return formatAt(block, pos - block.position());
+  };
+  QCOMPARE(at(QStringLiteral("colored")).foreground().color(), QColor(Qt::red));
+  QCOMPARE(at(QStringLiteral("colored")).fontWeight(), int(QFont::Bold));
+  QCOMPARE(at(QStringLiteral("colored")).background().color(), QColor(QStringLiteral("#123456")));
+  QVERIFY(at(QStringLiteral("plain")).fontWeight() != QFont::Bold);
+  QVERIFY(at(QStringLiteral("plain")).background().style() == Qt::NoBrush);
+  QCOMPARE(at(QStringLiteral("italic")).foreground().color(), QColor(Qt::red));
+  QVERIFY(at(QStringLiteral("italic")).fontItalic());
+  QVERIFY(!at(QStringLiteral("outside")).fontItalic());
+
+  // Same-length attribute edits must invalidate the cached highlights, not just ranges.
+  QTextCursor cursor(editor.document());
+  cursor.setPosition(source.indexOf(QStringLiteral("red")));
+  cursor.setPosition(cursor.position() + 3, QTextCursor::KeepAnchor);
+  cursor.insertText(QStringLiteral("tan"));
+  QTRY_COMPARE(at(QStringLiteral("colored")).foreground().color(), QColor(QStringLiteral("tan")));
+  QCOMPARE(at(QStringLiteral("colored")).fontWeight(), int(QFont::Bold));
+  editor.getTextEdit()->undo();
+  QTRY_COMPARE(at(QStringLiteral("colored")).foreground().color(), QColor(Qt::red));
+
+  cursor.setPosition(source.indexOf(QStringLiteral("</font>")));
+  cursor.setPosition(cursor.position() + 7, QTextCursor::KeepAnchor);
+  cursor.removeSelectedText();
+  QTRY_VERIFY(at(QStringLiteral("colored")).foreground().color() != QColor(Qt::red));
+  QCOMPARE(at(QStringLiteral("colored")).fontWeight(), int(QFont::Bold));
+}
+
+void TestMarkdownParser::testFontColorUpdatesUneditedContinuation() {
+  auto textConfig = QSharedPointer<vte::TextEditorConfig>::create();
+  auto config = QSharedPointer<vte::MarkdownEditorConfig>::create(textConfig);
+  config->m_inplacePreviewSources = vte::MarkdownEditorConfig::NoInplacePreview;
+  auto parameters = QSharedPointer<vte::TextEditorParameters>::create();
+  vte::VMarkdownEditor editor(config, parameters);
+  // Exceed the bounded fast-parse window: only a full result can repaint the
+  // unedited continuation blocks whose ordinary highlights remain identical.
+  const QString source = QStringLiteral("<font color=red>first\n") +
+                         QStringLiteral("continuation\n").repeated(20) +
+                         QStringLiteral("last</font> outside");
+  editor.setText(source);
+  editor.getHighlighter()->updateHighlight();
+  const QTextBlock middle = editor.document()->findBlockByNumber(10);
+  auto color = [&middle]() { return formatAt(middle, 0).foreground().color(); };
+  QTRY_COMPARE(color(), QColor(Qt::red));
+  const int revision = middle.revision();
+
+  QTextCursor cursor(editor.document());
+  cursor.setPosition(source.indexOf(QStringLiteral("red")));
+  cursor.setPosition(cursor.position() + 3, QTextCursor::KeepAnchor);
+  cursor.insertText(QStringLiteral("tan"));
+  QTRY_COMPARE(color(), QColor(QStringLiteral("tan")));
+  QCOMPARE(middle.revision(), revision);
+  editor.getTextEdit()->undo();
+  QTRY_COMPARE(color(), QColor(Qt::red));
+
+  // Removing the closing tag must clear overlays from the same unchanged blocks.
+  cursor.setPosition(source.indexOf(QStringLiteral("</font>")));
+  cursor.setPosition(cursor.position() + 7, QTextCursor::KeepAnchor);
+  cursor.removeSelectedText();
+  QTRY_VERIFY(color() != QColor(Qt::red));
+  QCOMPARE(middle.revision(), revision);
+}
+
 void TestMarkdownParser::testIndentedCodeBlocks() {
   const QString input = QStringLiteral("    indented code\n");
   auto result = parse(input);
@@ -484,6 +659,410 @@ void TestMarkdownParser::testLists() {
   QCOMPARE((int)enums[0].second, 21);
   QCOMPARE((int)enums[1].first, 28);
   QCOMPARE((int)enums[1].second, 30);
+
+  // Authored marker width is independent of the list's start plus ordinal.
+  const QString irregular = QStringLiteral("98. first\n1. repeated\n0007. padded\n1. again\n\n"
+                                           "0) zero\n999999999) limit\n1) repeated\n");
+  auto irregularEnums = findElements(parse(irregular), HLT_LIST_ENUMERATOR, irregular);
+  std::sort(irregularEnums.begin(), irregularEnums.end());
+  const QStringList markers{QStringLiteral("98."),   QStringLiteral("1."),
+                            QStringLiteral("0007."), QStringLiteral("1."),
+                            QStringLiteral("0)"),    QStringLiteral("999999999)"),
+                            QStringLiteral("1)")};
+  QCOMPARE(irregularEnums.size(), markers.size());
+  int searchFrom = 0;
+  for (int i = 0; i < markers.size(); ++i) {
+    const int start = irregular.indexOf(markers[i], searchFrom);
+    QCOMPARE((int)irregularEnums[i].first, start);
+    QCOMPARE((int)irregularEnums[i].second, start + markers[i].size());
+    searchFrom = start + markers[i].size();
+  }
+}
+
+void TestMarkdownParser::testListStructureSourceSpans() {
+  using namespace vte::md;
+
+  struct Item {
+    int block;
+    int column;
+    const char *marker;
+    const char *content;
+    const char *prefix;
+    int number = 0;
+    bool task = false;
+    bool empty = false;
+  };
+  struct Case {
+    const char *markdown;
+    QVector<Item> items;
+  };
+  const QVector<Case> cases{
+      {"98. first\n1. repeated\n0007. padded\n1. again\n",
+       {{0, 0, "98.", "first", "", 98},
+        {1, 0, "1.", "repeated", "", 1},
+        {2, 0, "0007.", "padded", "", 7},
+        {3, 0, "1.", "again", "", 1}}},
+      {"0) zero\n999999999) limit\n",
+       {{0, 0, "0)", "zero", "", 0}, {1, 0, "999999999)", "limit", "", 999999999}}},
+      {"> - [x] done\n>   + [ ] pending\n> - [X] literal\n",
+       {{0, 2, "-", "done", "> ", 0, true},
+        {1, 4, "+", "pending", ">   ", 0, true},
+        {2, 2, "-", "[X] literal", "> "}}},
+      // ITEM-enter order, including two markers on one line, not all outer siblings first.
+      {"- - a\n  - b\n- c\n",
+       {{0, 0, "-", "- a", ""},
+        {0, 2, "-", "a", "  "},
+        {1, 2, "-", "b", "  "},
+        {2, 0, "-", "c", ""}}},
+      {"- > - deep\n", {{0, 0, "-", "> - deep", ""}, {0, 4, "-", "deep", "  > "}}},
+      // Keep untouched tabs; replace the same-line parent opener with indentation.
+      {"-\t- one\n\t- two\n",
+       {{0, 0, "-", "- one", ""}, {0, 2, "-", "one", " \t"}, {1, 1, "-", "two", "\t"}}},
+      // The quote consumes only one column of this tab, not the whole byte.
+      {">\t- tabbed\n", {{0, 2, "-", "tabbed", ">\t"}}},
+      {"\xF0\x9F\x98\x80 preface\n\n- \xF0\x9F\x98\x80 body\n- after\n",
+       {{2, 0, "-", "\xF0\x9F\x98\x80 body", ""}, {3, 0, "-", "after", ""}}},
+      // A marker-only parent with a child must not be offered as an empty-item exit.
+      {"-\n  - child\n\n- [ ] \t\n",
+       {{0, 0, "-", "", ""}, {1, 2, "-", "child", "  "}, {3, 0, "-", "", "", 0, true, true}}},
+      {"  - \t\n", {{0, 2, "-", "", "  ", 0, false, true}}},
+  };
+
+  for (const auto &c : cases) {
+    const QString input = QString::fromUtf8(c.markdown);
+    const auto structure = parse(input).listStructure;
+    QVERIFY2(structure.m_valid, c.markdown);
+    QCOMPARE(structure.m_items.size(), c.items.size());
+    const QStringList lines = input.split(QLatin1Char('\n'));
+    for (int i = 0; i < c.items.size(); ++i) {
+      const auto &expected = c.items[i];
+      const auto &item = structure.m_items[i];
+      int blockStart = 0;
+      for (int block = 0; block < expected.block; ++block) {
+        blockStart += lines[block].size() + 1;
+      }
+      const QString marker = QString::fromUtf8(expected.marker);
+      const QString content = QString::fromUtf8(expected.content);
+      QVERIFY2(item.m_sourceValid, c.markdown);
+      QCOMPARE(item.m_startBlock, expected.block);
+      QCOMPARE(item.m_markerStart, blockStart + expected.column);
+      QCOMPARE(input.mid(item.m_markerStart, item.m_markerEnd - item.m_markerStart), marker);
+      QCOMPARE(item.m_contentStart, blockStart + lines[expected.block].size() - content.size());
+      QCOMPARE(item.m_marker, marker.back());
+      QCOMPARE(item.m_sourceNumber, expected.number);
+      QCOMPARE(item.m_task, expected.task);
+      QCOMPARE(item.m_empty, expected.empty);
+      QString prefix;
+      QVERIFY2(listContinuationPrefix(structure, i, prefix), c.markdown);
+      QCOMPARE(prefix, QString::fromUtf8(expected.prefix));
+    }
+  }
+
+  // Only direct-item paragraphs offer markerless continuation: not a nested quote or code.
+  const QString paragraphs = QStringLiteral("> - head\nlazy\n>   indented\n>\n>   > quote\n>\n"
+                                            ">   ```\n>   - code\n>   ```\n>\n"
+                                            ">   - child\n>     continuation\n> - tail\n");
+  const auto structure = parse(paragraphs).listStructure;
+  QVERIFY(structure.m_valid);
+  QCOMPARE(structure.m_items.size(), 3);
+  QCOMPARE(structure.m_lists.size(), 2);
+  QCOMPARE(structure.m_lists[0].m_items, QVector<int>({0, 2}));
+  QCOMPARE(structure.m_lists[1].m_items, QVector<int>({1}));
+  QCOMPARE(structure.m_items[0].m_endBlock, 11);
+  QCOMPARE(structure.m_paragraphs.size(), 3);
+  const QVector<QPair<int, int>> ranges{{0, 2}, {10, 11}, {12, 12}};
+  const QStringList prefixes{QStringLiteral("> "), QStringLiteral(">   "), QStringLiteral("> ")};
+  for (int i = 0; i < ranges.size(); ++i) {
+    const auto &paragraph = structure.m_paragraphs[i];
+    QCOMPARE(paragraph.m_startBlock, ranges[i].first);
+    QCOMPARE(paragraph.m_endBlock, ranges[i].second);
+    QString prefix;
+    QVERIFY(listContinuationPrefix(structure, paragraph.m_item, prefix));
+    QCOMPARE(prefix, prefixes[i]);
+  }
+
+  // The standalone worker projection uses document UTF-16 coordinates, including slices.
+  const QString preceding = QString::fromUtf8("\xF0\x9F\x98\x80 preface\n\n");
+  const QString slice = QStringLiteral("  07) value\n");
+  const QString document = preceding + slice;
+  const auto sliced = parseListStructure(slice.toUtf8(), preceding.size(), 2);
+  QVERIFY(sliced.m_valid);
+  QCOMPARE(sliced.m_items.size(), 1);
+  const auto &item = sliced.m_items.first();
+  QVERIFY(item.m_sourceValid);
+  QCOMPARE(item.m_startBlock, 2);
+  QCOMPARE(item.m_markerStart, preceding.size() + 2);
+  QCOMPARE(document.mid(item.m_markerStart, item.m_markerEnd - item.m_markerStart),
+           QStringLiteral("07)"));
+  QCOMPARE(document.mid(item.m_contentStart, 5), QStringLiteral("value"));
+  QString prefix;
+  QVERIFY(listContinuationPrefix(sliced, 0, prefix));
+  QCOMPARE(prefix, QStringLiteral("  "));
+  QVERIFY(!listContinuationPrefix(sliced, -1, prefix));
+  QVERIFY(!listContinuationPrefix(sliced, sliced.m_items.size(), prefix));
+
+  const QVector<const char *> nonLists{
+      "",
+      "ordinary prose\n",
+      "```\n1. fenced\n- marker\n```\n",
+      "    1. indented\n    - marker\n",
+      "\t- code\n",
+      "<div>\n1. html\n- marker\n</div>\n",
+      "- - -\n",
+      "***\n",
+      "1000000000. too wide\n",
+      "\xD9\xA1. Unicode digit\n",
+      "1.no gap\n",
+      "-no gap\n",
+  };
+  for (const auto *input : nonLists) {
+    const auto empty = parseListStructure(QByteArray(input));
+    QVERIFY2(empty.m_valid, input);
+    QVERIFY2(empty.m_lists.isEmpty(), input);
+    QVERIFY2(empty.m_items.isEmpty(), input);
+    QVERIFY2(empty.m_paragraphs.isEmpty(), input);
+  }
+
+  // The stale-line lexer is anchored and enforces the same ASCII/nine-digit boundary.
+  ListItemInfo marker;
+  const QString line = QStringLiteral("> 999999999) body");
+  QVERIFY(!scanListMarker(line, 0, marker));
+  QVERIFY(scanListMarker(line, 2, marker));
+  QCOMPARE(line.mid(marker.m_markerStart, marker.m_markerEnd - marker.m_markerStart),
+           QStringLiteral("999999999)"));
+  QCOMPARE(marker.m_sourceNumber, 999999999);
+  QCOMPARE(line.mid(marker.m_contentStart), QStringLiteral("body"));
+  for (const auto *invalid : {"1000000000. body", "\xD9\xA1. body", "1.no gap", "-no gap"}) {
+    QVERIFY2(!scanListMarker(QString::fromUtf8(invalid), 0, marker), invalid);
+  }
+  QVERIFY(scanListMarker(QStringLiteral("9)"), 0, marker));
+  QCOMPARE(marker.m_contentStart, 2);
+  QVERIFY(marker.m_empty);
+}
+
+// Compare cmark's public block tree and rendering, not a second source-list parser.
+// Parent indexes plus source lines distinguish the owner of every original block;
+// columns intentionally change when marker widths and container indentation change.
+struct ListNumberingObservation {
+  bool m_valid = false;
+  QByteArray m_html;
+  QVector<QVector<int>> m_blocks;
+};
+
+static ListNumberingObservation observeListNumbering(const QString &p_source,
+                                                     const QHash<int, int> &p_starts = {}) {
+  ListNumberingObservation result;
+  const QByteArray utf8 = p_source.toUtf8();
+  cmark_node *document = cmark_parse_document(utf8.constData(), utf8.size(), CMARK_OPT_DEFAULT);
+  if (!document) {
+    return result;
+  }
+
+  bool valid = true;
+  int listIndex = 0;
+  int changedStarts = 0;
+  QHash<cmark_node *, int> blockIndexes;
+  cmark_iter *iter = cmark_iter_new(document);
+  cmark_event_type event;
+  while ((event = cmark_iter_next(iter)) != CMARK_EVENT_DONE) {
+    cmark_node *node = cmark_iter_get_node(iter);
+    if (event != CMARK_EVENT_ENTER || !cmark_node_is_block(node)) {
+      continue;
+    }
+    const auto type = cmark_node_get_type(node);
+    if (type == CMARK_NODE_LIST) {
+      const auto start = p_starts.constFind(listIndex++);
+      if (start != p_starts.constEnd()) {
+        valid = cmark_node_set_list_start(node, start.value()) && valid;
+        ++changedStarts;
+      }
+    }
+    QVector<int> block{int(type), blockIndexes.value(cmark_node_parent(node), -1),
+                       cmark_node_get_start_line(node), cmark_node_get_end_line(node)};
+    if (type == CMARK_NODE_LIST) {
+      block.append(int(cmark_node_get_list_type(node)));
+      block.append(int(cmark_node_get_list_delim(node)));
+      block.append(cmark_node_get_list_start(node));
+      block.append(cmark_node_get_list_tight(node));
+    }
+    blockIndexes.insert(node, result.m_blocks.size());
+    result.m_blocks.append(block);
+  }
+  cmark_iter_free(iter);
+  char *html = cmark_render_html(document, CMARK_OPT_UNSAFE);
+  if (html) {
+    result.m_html = QByteArray(html);
+    cmark_get_default_mem_allocator()->free(html);
+  } else {
+    valid = false;
+  }
+  cmark_node_free(document);
+  result.m_valid = valid && changedStarts == p_starts.size();
+  return result;
+}
+
+// A consumer applies the immutable, source-ordered replacements in one forward pass.
+static bool applyListNumberEdits(const QString &p_source,
+                                 const QVector<vte::md::ListSourceEdit> &p_edits,
+                                 QString &p_output) {
+  p_output.clear();
+  int cursor = 0;
+  for (const auto &edit : p_edits) {
+    if (edit.m_start < cursor || edit.m_end < edit.m_start || edit.m_end > p_source.size() ||
+        p_source.mid(edit.m_start, edit.m_end - edit.m_start) != edit.m_before) {
+      return false;
+    }
+    p_output += p_source.mid(cursor, edit.m_start - cursor);
+    p_output += edit.m_after;
+    cursor = edit.m_end;
+  }
+  p_output += p_source.mid(cursor);
+  return true;
+}
+
+void TestMarkdownParser::testListNumberEditsPreserveStructure() {
+  using namespace vte::md;
+
+  auto verify = [](const char *p_name, const QString &p_input, const QHash<int, int> &p_starts,
+                   const QString &p_expected, const QHash<int, int> &p_expectedStarts) {
+    const auto structure = parseListStructure(p_input.toUtf8());
+    QVERIFY2(structure.m_valid, p_name);
+    QVector<ListSourceEdit> edits;
+    ListStructure after;
+    QVERIFY2(buildListNumberEdits(p_input, structure, p_starts, edits, after), p_name);
+    QString output;
+    QVERIFY2(applyListNumberEdits(p_input, edits, output), p_name);
+    QCOMPARE(output, p_expected);
+    QCOMPARE(edits.isEmpty(), p_input == p_expected);
+
+    const auto intended = observeListNumbering(p_input, p_expectedStarts);
+    const auto actual = observeListNumbering(output);
+    QVERIFY2(intended.m_valid && actual.m_valid, p_name);
+    QCOMPARE(actual.m_html, intended.m_html);
+    QCOMPARE(actual.m_blocks, intended.m_blocks);
+
+    // The returned candidate must be safe to use as the next normalization baseline.
+    QVector<ListSourceEdit> repeatedEdits;
+    ListStructure repeatedAfter;
+    QVERIFY2(buildListNumberEdits(output, after, p_expectedStarts, repeatedEdits, repeatedAfter),
+             p_name);
+    QVERIFY2(repeatedEdits.isEmpty(), p_name);
+  };
+
+  struct Case {
+    const char *name;
+    const char *input;
+    const char *expected;
+    QHash<int, int> starts;
+  };
+  const QVector<Case> cases{
+      {"growth keeps paragraph, task child, blank lines and fenced bytes under the second item",
+       "9. first\n9. second \xF0\x9F\x98\x80\n   continued paragraph\nlazy continuation\n"
+       "   \t\n   - [x] child\n     child continuation\n\n   ```cpp\n"
+       "   auto text = \"9. code\";\t// unchanged\n   ```\n9. tail\n",
+       "9. first\n10. second \xF0\x9F\x98\x80\n    continued paragraph\nlazy continuation\n"
+       "   \t\n    - [x] child\n      child continuation\n\n    ```cpp\n"
+       "    auto text = \"9. code\";\t// unchanged\n    ```\n11. tail\n",
+       {{0, 9}}},
+      {"shrink keeps child and fenced code under their original item",
+       "10. first\n10. second\n    - child\n      continuation\n\n"
+       "    ```text\n    10. code\tstill code\n    ```\n",
+       "8. first\n9. second\n   - child\n     continuation\n\n"
+       "   ```text\n   10. code\tstill code\n   ```\n",
+       {{0, 8}}},
+      {"partial continuation tabs retain indentation relative to item content",
+       "9. first\n9. second\n\t- child\n\t  continuation\n",
+       "9. first\n10. second\n     - child\n       continuation\n",
+       {{0, 9}}},
+      {"opening tab absorbs digit growth without increasing required padding",
+       "9.\tfirst\n9.\tsecond\n\t- child\n\t  continuation\n",
+       "9.\tfirst\n10.\tsecond\n\t- child\n\t  continuation\n",
+       {{0, 9}}},
+      {"quote partial tab is expanded only where changed item indentation splits it",
+       ">\t9. first\n>\t9. second\n>\t   - child\n",
+       ">\t9. first\n>\t10. second\n>       - child\n",
+       {{0, 9}}},
+      {"quote markers and quote-only blank lines remain authored bytes",
+       "> 9) first\n> 9) second\n>    > quote\n>    > continuation\n>\n"
+       ">    - child\n>      body\n",
+       "> 9) first\n> 10) second\n>     > quote\n>     > continuation\n>\n"
+       ">     - child\n>       body\n",
+       {{0, 9}}},
+      {"simultaneous parent and child width growth composes on original coordinates",
+       "9. first\n9. parent\n\n   9. child first\n   9. child second\n"
+       "      - grandchild\n        continuation\n",
+       "9. first\n10. parent\n\n    9. child first\n    10. child second\n"
+       "        - grandchild\n          continuation\n",
+       {{0, 9}, {1, 9}}},
+      {"same-line nested openers compose both affected list widths",
+       "9. 9. child first\n   9. child second\n      - grandchild\n9. tail\n",
+       "10. 9. child first\n    10. child second\n        - grandchild\n11. tail\n",
+       {{0, 10}, {1, 9}}},
+      {"nested quote list preserves its own delimiter and child ownership",
+       "9. first\n9. parent\n   > 9) quoted first\n   > 9) quoted second\n"
+       "   >    - child\n",
+       "9. first\n10. parent\n    > 9) quoted first\n    > 10) quoted second\n"
+       "    >     - child\n",
+       {{0, 9}, {1, 9}}},
+      {"padded repeated zero starts normalize and retain task checkbox spelling",
+       "000) first\n000) second\n     - [ ] child\n000) third\n",
+       "0) first\n1) second\n   - [ ] child\n2) third\n",
+       {{0, 0}}},
+      {"UTF-16 edits normalize repeated ones without touching an independent list",
+       "\xF0\x9F\x98\x80 preface\n\n1. first\n1. second\n1. third\n\n---\n\n"
+       "7) separate\n07) remains padded\n",
+       "\xF0\x9F\x98\x80 preface\n\n1. first\n2. second\n3. third\n\n---\n\n"
+       "7) separate\n07) remains padded\n",
+       {{0, 1}}},
+      {"last representable ordinal succeeds without crossing the nine-digit bound",
+       "999999998. first\n1. last\n   - child\n",
+       "999999998. first\n999999999. last\n           - child\n",
+       {{0, 999999998}}},
+      {"already consecutive source is an unchanged no-op",
+       "0) first\n1) second\n   - child\n",
+       "0) first\n1) second\n   - child\n",
+       {{0, 0}}},
+  };
+  for (const auto &c : cases) {
+    verify(c.name, QString::fromUtf8(c.input), c.starts, QString::fromUtf8(c.expected), c.starts);
+  }
+
+  // Reject the connected parent/child unit before proposing any of its edits,
+  // but do not discard an independent list whose complete sequence is representable.
+  const QString connected = QStringLiteral("9. parent\n   1. child first\n   1. child second\n"
+                                           "9. tail\n\n---\n\n7) safe first\n7) safe second\n");
+  verify("overflowing child rejects its targeted parent, not the independent list", connected,
+         {{0, 9}, {1, 999999999}, {2, 7}},
+         QStringLiteral("9. parent\n   1. child first\n   1. child second\n"
+                        "9. tail\n\n---\n\n7) safe first\n8) safe second\n"),
+         {{2, 7}});
+  verify("overflowing parent rejects its targeted descendant, not the independent list", connected,
+         {{0, 999999999}, {1, 5}, {2, 7}},
+         QStringLiteral("9. parent\n   1. child first\n   1. child second\n"
+                        "9. tail\n\n---\n\n7) safe first\n8) safe second\n"),
+         {{2, 7}});
+
+  const auto verifyRefusal = [](const QString &p_input, const QHash<int, int> &p_starts) {
+    // Seed real successful outputs so failure must clear a previous usable proposal,
+    // not merely leave default-constructed containers empty.
+    const QString seed = QStringLiteral("1. seed first\n1. seed second\n");
+    QVector<ListSourceEdit> edits;
+    ListStructure after;
+    QVERIFY(buildListNumberEdits(seed, parseListStructure(seed.toUtf8()), {{0, 1}}, edits, after));
+    const auto structure = parseListStructure(p_input.toUtf8());
+    QVERIFY(structure.m_valid);
+    QVERIFY(!buildListNumberEdits(p_input, structure, p_starts, edits, after));
+    QVERIFY(edits.isEmpty());
+    QVERIFY(!after.m_valid);
+  };
+  verifyRefusal(QStringLiteral("999999999. first\n1. second\n"), {{0, 999999999}});
+
+  // Only 1 can interrupt this paragraph. Changing its start to 2 has valid source
+  // spans and arithmetic but would turn the item into prose. Semantic refusal must
+  // discard the whole batch, including the independently safe second list's edits.
+  verifyRefusal(QStringLiteral("paragraph\n1. interrupting item\n\n---\n\n"
+                               "9) safe first\n9) safe second\n"),
+                {{0, 2}, {1, 9}});
 }
 
 void TestMarkdownParser::testFrontmatter() {

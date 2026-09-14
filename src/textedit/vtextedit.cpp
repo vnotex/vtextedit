@@ -980,6 +980,41 @@ QChar VTextEdit::matchingClosingBracket(const QChar &p_open) {
   return QChar();
 }
 
+bool VTextEdit::openLine(BlockInsertion p_placement, bool p_autoIndent) {
+  Q_ASSERT(p_placement != BlockInsertion::Split);
+  if (p_placement == BlockInsertion::Split || isReadOnly()) {
+    return false;
+  }
+
+  if (p_autoIndent) {
+    bool handled = false;
+    emit openLineRequested(p_placement, &handled);
+    if (handled) {
+      return true;
+    }
+  }
+
+  auto cursor = textCursor();
+  cursor.clearSelection();
+  const bool above = p_placement == BlockInsertion::Above;
+  const auto indentation =
+      p_autoIndent && above ? TextUtils::fetchIndentationSpaces(cursor.block().text()) : QString();
+  cursor.movePosition(above ? QTextCursor::StartOfBlock : QTextCursor::EndOfBlock);
+  cursor.beginEditBlock();
+  cursor.insertBlock();
+  if (above) {
+    cursor.movePosition(QTextCursor::PreviousBlock);
+    if (!indentation.isEmpty()) {
+      cursor.insertText(indentation);
+    }
+  } else if (p_autoIndent) {
+    AutoIndentHelper::autoIndent(cursor, !m_expandTab, m_tabStopWidthInSpaces);
+  }
+  cursor.endEditBlock();
+  setTextCursor(cursor);
+  return true;
+}
+
 bool VTextEdit::handleKeyReturn(QKeyEvent *p_event) {
   if (isReadOnly()) {
     return false;

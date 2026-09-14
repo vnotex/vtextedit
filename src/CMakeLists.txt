@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.16)
 # — not the root CMakeLists.txt — is what the SOVERSION at the bottom of this file
 # actually reads. The two declarations MUST be bumped together; bumping only the
 # root leaves the installed library carrying the previous soname.
-project(VTextEdit VERSION 6.0.0 LANGUAGES C CXX)
+project(VTextEdit VERSION 7.0.0 LANGUAGES C CXX)
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
@@ -223,6 +223,10 @@ endif()
 # the 3.0 entry: applications allocate that struct themselves, so its layout is
 # part of the ABI, and an already-linked consumer would write its other members
 # at the wrong offsets.
+#
+# 7.0: ListItemGuide and ActiveListItem enlarge Theme::m_editorStyles,
+# shifting subsequent members of the exported Theme object. Consumers must
+# rebuild against the new layout.
 set_target_properties(VTextEdit PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION ${PROJECT_VERSION_MAJOR}

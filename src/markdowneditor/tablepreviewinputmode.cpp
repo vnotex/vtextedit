@@ -628,13 +628,19 @@ void TablePreviewInputMode::backspace() {
 bool TablePreviewInputMode::insertLine(int p_line, const QString &p_str) {
   Q_UNUSED(p_line);
   Q_UNUSED(p_str);
-  // o, O and a linewise put have nowhere to put a line: a row is one source
+  // A linewise put has nowhere to put a line: a row is one source
   // line and the serializer rejects every separator that could end one. The
   // affordance for "one more row" is Enter in the last cell.
   return false;
 }
 
-void TablePreviewInputMode::newLine(KateViI::NewLineIndent p_indent) { Q_UNUSED(p_indent); }
+void TablePreviewInputMode::newLine(KateViI::NewLineIndent p_indent,
+                                    KateViI::NewLinePosition p_position) {
+  Q_UNUSED(p_indent);
+  Q_UNUSED(p_position);
+  // Neither o nor O may insert a source line inside a cell. Enter in the last
+  // cell is the affordance for adding a row.
+}
 
 void TablePreviewInputMode::joinLines(uint p_first, uint p_last, bool p_trimSpace) {
   Q_UNUSED(p_first);

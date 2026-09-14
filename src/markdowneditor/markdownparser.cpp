@@ -42,11 +42,12 @@ MarkdownParserWorker::parseMarkdown(const QSharedPointer<MarkdownParseConfig> &p
   QSharedPointer<MarkdownParseResult> result(new MarkdownParseResult(p_config));
 
   if (p_config->m_data.isEmpty()) {
+    result->m_listStructure.m_valid = !p_config->m_fast;
     return result;
   }
 
   auto walkResult = walkAndConvert(p_config->m_data, p_config->m_numOfBlocks, p_config->m_offset, 0,
-                                   p_config->m_fast);
+                                   p_config->m_fast, !p_config->m_fast);
 
   if (p_stop.loadAcquire() == 1) {
     return result;
@@ -54,6 +55,7 @@ MarkdownParserWorker::parseMarkdown(const QSharedPointer<MarkdownParseConfig> &p
 
   // Move walk results into parse result.
   result->m_blocksHighlights = std::move(walkResult.blocksHighlights);
+  result->m_blockOverlays = std::move(walkResult.blockOverlays);
   if (!p_config->m_fast) {
     result->m_imageRegions = std::move(walkResult.imageRegions);
     result->m_headerRegions = std::move(walkResult.headerRegions);
@@ -69,6 +71,7 @@ MarkdownParserWorker::parseMarkdown(const QSharedPointer<MarkdownParseConfig> &p
     result->m_codeElements = std::move(walkResult.codeElements);
     result->m_mathElements = std::move(walkResult.mathElements);
     result->m_tableElements = std::move(walkResult.tableElements);
+    result->m_listStructure = std::move(walkResult.listStructure);
     result->m_headingElements = std::move(walkResult.headingElements);
   }
 
@@ -114,13 +117,15 @@ MarkdownParser::parse(const QSharedPointer<MarkdownParseConfig> &p_config) {
   QSharedPointer<MarkdownParseResult> result(new MarkdownParseResult(p_config));
 
   if (p_config->m_data.isEmpty()) {
+    result->m_listStructure.m_valid = !p_config->m_fast;
     return result;
   }
 
   auto walkResult = walkAndConvert(p_config->m_data, p_config->m_numOfBlocks, p_config->m_offset, 0,
-                                   p_config->m_fast);
+                                   p_config->m_fast, !p_config->m_fast);
 
   result->m_blocksHighlights = std::move(walkResult.blocksHighlights);
+  result->m_blockOverlays = std::move(walkResult.blockOverlays);
   if (!p_config->m_fast) {
     result->m_imageRegions = std::move(walkResult.imageRegions);
     result->m_headerRegions = std::move(walkResult.headerRegions);
@@ -136,6 +141,7 @@ MarkdownParser::parse(const QSharedPointer<MarkdownParseConfig> &p_config) {
     result->m_codeElements = std::move(walkResult.codeElements);
     result->m_mathElements = std::move(walkResult.mathElements);
     result->m_tableElements = std::move(walkResult.tableElements);
+    result->m_listStructure = std::move(walkResult.listStructure);
     result->m_headingElements = std::move(walkResult.headingElements);
   }
 

@@ -13,6 +13,7 @@ add_executable(test_markdownparser
     ${MARKDOWNEDITOR_FOLDER}/markdownparser.cpp ${MARKDOWNEDITOR_FOLDER}/markdownparser.h
     ${MARKDOWNEDITOR_FOLDER}/markdownastwalker.cpp ${MARKDOWNEDITOR_FOLDER}/markdownastwalker.h
     ${MARKDOWNEDITOR_FOLDER}/cmarkadapter.cpp ${MARKDOWNEDITOR_FOLDER}/cmarkadapter.h
+    ${SRC_FOLDER}/utils/htmltagparse.cpp
     test_markdownparser.cpp test_markdownparser.h
 )
 target_include_directories(test_markdownparser PRIVATE

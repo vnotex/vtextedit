@@ -2,18 +2,32 @@
 
 #include <QAbstractTextDocumentLayout>
 #include <QBuffer>
+#include <QClipboard>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QGuiApplication>
 #include <QImage>
 #include <QInputMethodEvent>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QMimeData>
+#include <QPainter>
 #include <QPixmap>
 #include <QScrollBar>
 #include <QSharedPointer>
+#include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
+#include <QTextEdit>
 #include <QTextLayout>
+#include <QTimer>
+
+#include <QtMath>
+#include <cmark.h>
+
+#include <memory>
 
 #include <vtextedit/markdowneditorconfig.h>
 #include <vtextedit/markdownhighlighter.h>
@@ -21,6 +35,8 @@
 #include <vtextedit/previewmgr.h>
 #include <vtextedit/previewwidget.h>
 #include <vtextedit/texteditorconfig.h>
+#include <vtextedit/texteditutils.h>
+#include <vtextedit/theme.h>
 #include <vtextedit/vmarkdowneditor.h>
 #include <vtextedit/vtextedit.h>
 
@@ -41,8 +57,9 @@ QSharedPointer<MarkdownEditorConfig> makeConfig() {
 // @p_positionInBlock (a negative position means end of block).
 class Fixture {
 public:
-  explicit Fixture(const QString &p_text, int p_block = -1, int p_positionInBlock = -1)
-      : m_editor(makeConfig(), QSharedPointer<TextEditorParameters>::create(), nullptr) {
+  explicit Fixture(const QString &p_text, int p_block = -1, int p_positionInBlock = -1,
+                   const QSharedPointer<MarkdownEditorConfig> &p_config = makeConfig())
+      : m_editor(p_config, QSharedPointer<TextEditorParameters>::create(), nullptr) {
     m_editor.setText(p_text);
     auto doc = m_editor.document();
     const int blockNumber = p_block < 0 ? doc->blockCount() - 1 : p_block;
@@ -116,6 +133,15 @@ public:
   void waitForFreshAst(int p_blockNumber) {
     auto highlighter = m_editor.getHighlighter();
     QTRY_VERIFY_WITH_TIMEOUT(highlighter->getBlockContext(p_blockNumber).m_fresh, 5000);
+  }
+
+  // BlockContext can be fresh from a sliced fast parse. List ownership requires
+  // a full publication, which updateHighlight also republishes when current.
+  void waitForFreshListAst() {
+    auto highlighter = m_editor.getHighlighter();
+    QSignalSpy publication(highlighter, &MarkdownHighlighter::previewElementsUpdated);
+    highlighter->updateHighlight();
+    QTRY_VERIFY_WITH_TIMEOUT(!publication.isEmpty(), 5000);
   }
 
 private:
@@ -2959,6 +2985,2519 @@ void TestMarkdownEditor::testHeadingSourceTableCoexistence() {
   QCOMPARE(editor.document()->availableUndoSteps(), undoSteps);
   QCOMPARE(editor.getTextEdit()->textCursor().position(), cursor.position());
   QCOMPARE(editor.getTextEdit()->textCursor().anchor(), cursor.anchor());
+}
+
+namespace {
+QSharedPointer<MarkdownEditorConfig> makeListSourceConfig(bool p_enabled = true,
+                                                          bool p_tablesEnabled = false) {
+  auto config = makeTableSourceConfig(p_tablesEnabled);
+  config->m_autoNumberOrderedListsEnabled = p_enabled;
+  return config;
+}
+
+QSharedPointer<MarkdownEditorConfig> makeViListSourceConfig(bool p_enabled = false) {
+  auto config = makeListSourceConfig(p_enabled);
+  config->m_textEditorConfig->m_inputMode = InputMode::ViMode;
+  return config;
+}
+
+// Clipboard-based cut/paste must not leave state behind for another test.
+class ClipboardRestore {
+public:
+  ClipboardRestore() : m_saved(new QMimeData) {
+    const auto original = QGuiApplication::clipboard()->mimeData();
+    if (original) {
+      for (const auto &format : original->formats()) {
+        m_saved->setData(format, original->data(format));
+      }
+    }
+  }
+  ~ClipboardRestore() { QGuiApplication::clipboard()->setMimeData(m_saved.release()); }
+
+private:
+  std::unique_ptr<QMimeData> m_saved;
+};
+
+// Compare consumer-visible trees and inert rendered HTML, independently of the
+// editor's projection. Only explicitly permitted ordered-list starts may differ.
+void verifyListStructurePreserved(const QString &p_before, const QString &p_after,
+                                  const QVector<int> &p_starts = {}, bool p_compareXml = true) {
+  const auto beforeUtf8 = p_before.toUtf8();
+  const auto afterUtf8 = p_after.toUtf8();
+  using Tree = std::unique_ptr<cmark_node, decltype(&cmark_node_free)>;
+  Tree before(cmark_parse_document(beforeUtf8.constData(), beforeUtf8.size(), CMARK_OPT_DEFAULT),
+              &cmark_node_free);
+  Tree after(cmark_parse_document(afterUtf8.constData(), afterUtf8.size(), CMARK_OPT_DEFAULT),
+             &cmark_node_free);
+  QVERIFY(before);
+  QVERIFY(after);
+  if (!p_starts.isEmpty()) {
+    std::unique_ptr<cmark_iter, decltype(&cmark_iter_free)> iter(cmark_iter_new(before.get()),
+                                                                 &cmark_iter_free);
+    int ordinal = 0;
+    cmark_event_type event;
+    while ((event = cmark_iter_next(iter.get())) != CMARK_EVENT_DONE) {
+      auto node = cmark_iter_get_node(iter.get());
+      if (event == CMARK_EVENT_ENTER && cmark_node_get_type(node) == CMARK_NODE_LIST &&
+          cmark_node_get_list_type(node) == CMARK_ORDERED_LIST) {
+        QVERIFY(ordinal < p_starts.size());
+        QVERIFY(cmark_node_set_list_start(node, p_starts[ordinal++]));
+      }
+    }
+    QCOMPARE(ordinal, p_starts.size());
+  }
+  auto release = cmark_get_default_mem_allocator()->free;
+  using Render = std::unique_ptr<char, decltype(release)>;
+  if (p_compareXml) {
+    Render beforeXml(cmark_render_xml(before.get(), CMARK_OPT_DEFAULT), release);
+    Render afterXml(cmark_render_xml(after.get(), CMARK_OPT_DEFAULT), release);
+    QVERIFY(beforeXml && afterXml);
+    QCOMPARE(QByteArray(afterXml.get()), QByteArray(beforeXml.get()));
+  }
+  Render beforeHtml(cmark_render_html(before.get(), CMARK_OPT_UNSAFE), release);
+  Render afterHtml(cmark_render_html(after.get(), CMARK_OPT_UNSAFE), release);
+  QVERIFY(beforeHtml && afterHtml);
+  QCOMPARE(QByteArray(afterHtml.get()), QByteArray(beforeHtml.get()));
+}
+} // namespace
+
+void TestMarkdownEditor::testListAstContinuation() {
+  struct LocalCase {
+    QString m_source;
+    QString m_expected;
+    int m_column;
+  };
+  const LocalCase local[] = {
+      {QStringLiteral("3) a"), QStringLiteral("3) a\n4) "), 3},
+      {QStringLiteral("> - [x] a"), QStringLiteral("> - [x] a\n> - [ ] "), 8},
+      {QStringLiteral("+ a"), QStringLiteral("+ a\n+ "), 2},
+      {QStringLiteral("* a"), QStringLiteral("* a\n* "), 2},
+      {QStringLiteral("0. a"), QStringLiteral("0. a\n1. "), 3},
+  };
+  for (bool fresh : {false, true}) {
+    for (const auto &item : local) {
+      Fixture fixture(item.m_source, 0);
+      if (fresh) {
+        fixture.waitForFreshListAst();
+      }
+      fixture.pressReturn();
+      QCOMPARE(fixture.text(), item.m_expected);
+      QCOMPARE(fixture.edit()->textCursor().positionInBlock(), item.m_column);
+      fixture.edit()->undo();
+      QCOMPARE(fixture.text(), item.m_source);
+    }
+  }
+
+  // The cold path knows only the visible outer marker/current-line indentation.
+  for (bool fresh : {false, true}) {
+    Fixture nested(QStringLiteral("- - a"), 0);
+    if (fresh) {
+      nested.waitForFreshListAst();
+    }
+    nested.pressReturn();
+    QCOMPARE(nested.text(), fresh ? QStringLiteral("- - a\n  - ") : QStringLiteral("- - a\n- "));
+
+    Fixture paragraph(QStringLiteral("- a\n  continuation"), 1);
+    if (fresh) {
+      paragraph.waitForFreshListAst();
+    }
+    paragraph.pressReturn();
+    QCOMPARE(paragraph.text(), fresh ? QStringLiteral("- a\n  continuation\n- ")
+                                     : QStringLiteral("- a\n  continuation\n  "));
+  }
+  {
+    Fixture fixture(QStringLiteral("> - a\ncontinuation"), 1);
+    fixture.waitForFreshListAst();
+    fixture.pressReturn();
+    QCOMPARE(fixture.text(), QStringLiteral("> - a\ncontinuation\n> - "));
+  }
+  {
+    Fixture fixture(QStringLiteral("- first\n\n  3) a\n- second\n\n  7) b"), 2);
+    fixture.waitForFreshListAst();
+    fixture.pressReturn();
+    QCOMPARE(fixture.text(), QStringLiteral("- first\n\n  3) a\n  4) \n- second\n\n  7) b"));
+  }
+  {
+    // A non-one ordered marker cannot interrupt the parent's paragraph.
+    Fixture fixture(QStringLiteral("- first\n  3) prose"), 1);
+    fixture.waitForFreshListAst();
+    fixture.pressReturn();
+    QCOMPARE(fixture.text(), QStringLiteral("- first\n  3) prose\n- "));
+  }
+  for (bool enabled : {false, true}) {
+    Fixture fixture(QStringLiteral("3. a\n9. b"), 1, -1, makeListSourceConfig(enabled));
+    fixture.waitForFreshListAst();
+    fixture.pressReturn();
+    QCOMPARE(fixture.text(),
+             enabled ? QStringLiteral("3. a\n9. b\n5. ") : QStringLiteral("3. a\n9. b\n10. "));
+    if (enabled) {
+      QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("3. a\n4. b\n5. "), 5000);
+    } else {
+      QTest::qWait(800);
+      QCOMPARE(fixture.text(), QStringLiteral("3. a\n9. b\n10. "));
+    }
+  }
+}
+
+void TestMarkdownEditor::testListAstExitAndSelection() {
+  struct ExitCase {
+    QString m_source;
+    int m_column;
+    QString m_expected;
+  };
+  const ExitCase exits[] = {
+      {QStringLiteral("  - "), 4, QStringLiteral("  ")},
+      {QStringLiteral("> - "), 4, QStringLiteral("> ")},
+      {QStringLiteral("  -   "), 4, QStringLiteral("  ")},
+      {QStringLiteral("> - [x]   "), 10, QStringLiteral("> ")},
+  };
+  for (bool fresh : {false, true}) {
+    for (const auto &item : exits) {
+      Fixture fixture(item.m_source, 0, item.m_column);
+      if (fresh) {
+        fixture.waitForFreshListAst();
+      }
+      fixture.pressReturn();
+      QCOMPARE(fixture.text(), item.m_expected);
+      QCOMPARE(fixture.edit()->textCursor().position(), item.m_expected.size());
+      fixture.edit()->undo();
+      QCOMPARE(fixture.text(), item.m_source);
+    }
+    for (const auto &marker : {QStringLiteral("- "), QStringLiteral("1. ")}) {
+      Fixture fixture(marker + QStringLiteral("text"), 0, marker.size());
+      if (fresh) {
+        fixture.waitForFreshListAst();
+      }
+      fixture.pressReturn();
+      const auto next = marker == QStringLiteral("- ") ? marker : QStringLiteral("2. ");
+      QCOMPARE(fixture.text(), marker + QLatin1Char('\n') + next + QStringLiteral("text"));
+      QCOMPARE(fixture.edit()->textCursor().blockNumber(), 1);
+      QCOMPARE(fixture.edit()->textCursor().positionInBlock(), next.size());
+      fixture.edit()->undo();
+      QCOMPARE(fixture.text(), marker + QStringLiteral("text"));
+    }
+    for (bool backward : {false, true}) {
+      const QString source = QStringLiteral("3) alpha\n4) beta");
+      Fixture fixture(source);
+      if (fresh) {
+        fixture.waitForFreshListAst();
+      }
+      if (backward) {
+        fixture.select(1, 5, 0, 5);
+      } else {
+        fixture.select(0, 5, 1, 5);
+      }
+      fixture.pressReturn();
+      QCOMPARE(fixture.text(), QStringLiteral("3) al\n4) ta"));
+      QCOMPARE(fixture.edit()->textCursor().position(), 9);
+      QVERIFY(!fixture.edit()->textCursor().hasSelection());
+      fixture.edit()->undo();
+      QCOMPARE(fixture.text(), source);
+
+      Fixture plain(QStringLiteral("plain\n> - item"));
+      if (fresh) {
+        plain.waitForFreshListAst();
+      }
+      if (backward) {
+        plain.select(1, 8, 0, 5);
+      } else {
+        plain.select(0, 5, 1, 8);
+      }
+      plain.pressReturn();
+      QCOMPARE(plain.text(), QStringLiteral("plain\n"));
+      QCOMPARE(plain.edit()->textCursor().position(), 6);
+      plain.edit()->undo();
+      QCOMPARE(plain.text(), QStringLiteral("plain\n> - item"));
+    }
+  }
+  {
+    Fixture fixture(QStringLiteral("- \n  - child"), 0);
+    fixture.waitForFreshListAst();
+    fixture.pressReturn();
+    QCOMPARE(fixture.text(), QStringLiteral("- \n- \n  - child"));
+    QCOMPARE(fixture.edit()->textCursor().blockNumber(), 1);
+    fixture.edit()->undo();
+    QCOMPARE(fixture.text(), QStringLiteral("- \n  - child"));
+  }
+  {
+    Fixture fixture(QStringLiteral("- text"), 0, 0);
+    fixture.waitForFreshListAst();
+    fixture.pressReturn();
+    QCOMPARE(fixture.text(), QStringLiteral("\n- text"));
+    QCOMPARE(fixture.edit()->textCursor().position(), 1);
+  }
+}
+
+void TestMarkdownEditor::testListAstCodeAndStaleness() {
+  struct VetoCase {
+    QString m_source;
+    int m_block;
+    QString m_expected;
+  };
+  const VetoCase cases[] = {
+      {QStringLiteral("```\n- a\n```"), 1, QStringLiteral("```\n- a\n\n```")},
+      {QStringLiteral("    - a"), 0, QStringLiteral("    - a\n    ")},
+      {QStringLiteral("<div>\n- a\n</div>"), 1, QStringLiteral("<div>\n- a\n\n</div>")},
+      {QStringLiteral("- - -"), 0, QStringLiteral("- - -\n")},
+      {QStringLiteral("- a\n  # heading"), 1, QStringLiteral("- a\n  # heading\n  ")},
+      {QStringLiteral("- a\n\n      - code"), 2, QStringLiteral("- a\n\n      - code\n      ")},
+      {QStringLiteral("- a\n\n  <div>\n  - html\n  </div>"), 3,
+       QStringLiteral("- a\n\n  <div>\n  - html\n  \n  </div>")},
+      {QStringLiteral("$$\n- a\n$$"), 1, QStringLiteral("$$\n- a\n\n$$")},
+      {QStringLiteral("- a\n  ```\n  1. code\n  ```"), 2,
+       QStringLiteral("- a\n  ```\n  1. code\n  \n  ```")},
+      {QStringLiteral("- a\n  > quoted"), 1, QStringLiteral("- a\n  > quoted\n  > ")},
+      {QStringLiteral("- a\n\n  | h | v |\n  | --- | --- |\n  | x | y |"), 4,
+       QStringLiteral("- a\n\n  | h | v |\n  | --- | --- |\n  | x | y |\n  ")},
+  };
+  for (const auto &item : cases) {
+    Fixture fixture(item.m_source, item.m_block);
+    fixture.waitForFreshListAst();
+    fixture.pressReturn();
+    QCOMPARE(fixture.text(), item.m_expected);
+    fixture.edit()->undo();
+    QCOMPARE(fixture.text(), item.m_source);
+  }
+  {
+    Fixture fixture(QStringLiteral("```\n3) code\n```"), 1);
+    fixture.waitForFreshListAst();
+    fixture.makeAstStale();
+    fixture.pressReturn();
+    QCOMPARE(fixture.text(), QStringLiteral("```\n3) codex\n\n```"));
+  }
+  {
+    Fixture fixture(QStringLiteral("3) a"), 0);
+    fixture.pressReturn();
+    QTest::keyClicks(fixture.edit(), QStringLiteral("b"));
+    fixture.pressReturn();
+    QTest::keyClicks(fixture.edit(), QStringLiteral("c"));
+    fixture.pressReturn();
+    QCOMPARE(fixture.text(), QStringLiteral("3) a\n4) b\n5) c\n6) "));
+  }
+  {
+    Fixture fixture(QStringLiteral("3. a"), 0);
+    fixture.waitForFreshListAst();
+    replaceTableSource(*fixture.editor(), 0, 0, 3, QString());
+    fixture.moveTo(0);
+    fixture.pressReturn();
+    QCOMPARE(fixture.text(), QStringLiteral("a\n"));
+  }
+  {
+    Fixture fixture(QStringLiteral("- a\n  continuation"), 1);
+    fixture.waitForFreshListAst();
+    fixture.makeAstStale();
+    fixture.pressReturn();
+    QCOMPARE(fixture.text(), QStringLiteral("- a\n  continuationx\n  "));
+  }
+  for (bool fresh : {false, true}) {
+    for (const auto &number : {QStringLiteral("999999999"), QStringLiteral("1000000000")}) {
+      Fixture fixture(number + QStringLiteral(". a"), 0);
+      if (fresh) {
+        fixture.waitForFreshListAst();
+      }
+      fixture.pressReturn();
+      QCOMPARE(fixture.text(), number + QStringLiteral(". a\n"));
+    }
+  }
+  {
+    Fixture fixture(QStringLiteral("- - -\n\n3) a"), 0);
+    fixture.waitForFreshListAst();
+    fixture.pressReturn(); // A fresh structural veto must be one-Return only.
+    fixture.moveTo(3);
+    fixture.pressCtrlReturn();
+    QCOMPARE(fixture.text(), QStringLiteral("- - -\n\n\n3) a"));
+    fixture.pressReturn();
+    QCOMPARE(fixture.text(), QStringLiteral("- - -\n\n\n3) a\n4) "));
+  }
+  {
+    Fixture fixture(QStringLiteral("3) a"), 0);
+    fixture.waitForFreshListAst();
+    fixture.pressShiftReturn();
+    QCOMPARE(fixture.text(), QStringLiteral("3) a  \n"));
+    fixture.moveTo(0);
+    QTest::keyClick(fixture.edit(), Qt::Key_Return, Qt::KeypadModifier);
+    QCOMPARE(fixture.text(), QStringLiteral("3) a  \n4) \n"));
+  }
+}
+
+void TestMarkdownEditor::testViListOpenLines() {
+  struct MarkerCase {
+    QString m_source;
+    QString m_above;
+    QString m_below;
+  };
+  const MarkerCase cases[] = {
+      {QStringLiteral("- alpha"), QStringLiteral("- "), QStringLiteral("- ")},
+      {QStringLiteral("3. alpha"), QStringLiteral("3. "), QStringLiteral("4. ")},
+      {QStringLiteral("7) alpha"), QStringLiteral("7) "), QStringLiteral("8) ")},
+      {QStringLiteral("> - [x] alpha"), QStringLiteral("> - [ ] "), QStringLiteral("> - [ ] ")},
+      {QStringLiteral("- [x] "), QStringLiteral("- [ ] "), QStringLiteral("- [ ] ")},
+      {QStringLiteral("9. "), QStringLiteral("9. "), QStringLiteral("10. ")},
+  };
+  for (bool fresh : {false, true}) {
+    for (bool above : {false, true}) {
+      for (const auto &item : cases) {
+        Fixture fixture(item.m_source, 0, item.m_source.size() / 2, makeViListSourceConfig());
+        if (fresh) {
+          fixture.waitForFreshListAst();
+        }
+        QTest::keyClicks(fixture.edit(), above ? QStringLiteral("O") : QStringLiteral("o"));
+        const auto prefix = above ? item.m_above : item.m_below;
+        QCOMPARE(fixture.text(), above ? prefix + QLatin1Char('\n') + item.m_source
+                                       : item.m_source + QLatin1Char('\n') + prefix);
+        QCOMPARE(fixture.edit()->textCursor().blockNumber(), above ? 0 : 1);
+        QCOMPARE(fixture.edit()->textCursor().positionInBlock(), prefix.size());
+      }
+    }
+
+    // The preceding block belongs to a different list. O must classify 1), not '-'.
+    Fixture fixture(QStringLiteral("- previous\n1) alpha"), 1, 5, makeViListSourceConfig());
+    if (fresh) {
+      fixture.waitForFreshListAst();
+    }
+    QTest::keyClicks(fixture.edit(), QStringLiteral("O"));
+    QCOMPARE(fixture.text(), QStringLiteral("- previous\n1) \n1) alpha"));
+    QCOMPARE(fixture.edit()->textCursor().blockNumber(), 1);
+    QCOMPARE(fixture.edit()->textCursor().positionInBlock(), 3);
+  }
+}
+
+void TestMarkdownEditor::testViListOpenContext() {
+  struct ContextCase {
+    QString m_source;
+    int m_block;
+    QString m_cold;
+    QString m_fresh;
+  };
+  const ContextCase cases[] = {
+      // Even O on block zero uses the deepest same-line item when fresh.
+      {QStringLiteral("- - alpha"), 0, QStringLiteral("- "), QStringLiteral("  - ")},
+      {QStringLiteral("- parent\n  continuation"), 1, QStringLiteral("  "), QStringLiteral("- ")},
+      {QStringLiteral("- parent\n\n  - child\n    continuation"), 3, QStringLiteral("    "),
+       QStringLiteral("  - ")},
+      {QStringLiteral("> - parent\ncontinuation"), 1, QString(), QStringLiteral("> - ")},
+  };
+  for (bool fresh : {false, true}) {
+    for (bool above : {false, true}) {
+      for (const auto &item : cases) {
+        Fixture fixture(item.m_source, item.m_block, 4, makeViListSourceConfig());
+        if (fresh) {
+          fixture.waitForFreshListAst();
+        }
+        QTest::keyClicks(fixture.edit(), above ? QStringLiteral("O") : QStringLiteral("o"));
+        const auto prefix = fresh ? item.m_fresh : item.m_cold;
+        const int insertedBlock = item.m_block + (above ? 0 : 1);
+        auto expected = item.m_source.split(QLatin1Char('\n'));
+        expected.insert(insertedBlock, prefix);
+        QCOMPARE(fixture.text(), expected.join(QLatin1Char('\n')));
+        QCOMPARE(fixture.edit()->textCursor().blockNumber(), insertedBlock);
+        QCOMPARE(fixture.edit()->textCursor().positionInBlock(), prefix.size());
+      }
+
+      // The blank separator makes 3) a nested list, not a lazy parent paragraph.
+      const QString source = QStringLiteral("- parent\n\n  3) alpha\n  9) sibling\n- tail");
+      Fixture nested(source, 2, 6, makeViListSourceConfig());
+      if (fresh) {
+        nested.waitForFreshListAst();
+      }
+      QTest::keyClicks(nested.edit(), above ? QStringLiteral("O") : QStringLiteral("o"));
+      auto expected = source.split(QLatin1Char('\n'));
+      expected.insert(above ? 2 : 3, above ? QStringLiteral("  3) ") : QStringLiteral("  4) "));
+      QCOMPARE(nested.text(), expected.join(QLatin1Char('\n')));
+      QCOMPARE(nested.edit()->textCursor().blockNumber(), above ? 2 : 3);
+      QCOMPARE(nested.edit()->textCursor().positionInBlock(), 5);
+    }
+  }
+
+  struct CodeCase {
+    QString m_source;
+    int m_block;
+    QString m_indent;
+  };
+  const CodeCase code[] = {
+      {QStringLiteral("```\n- code\n```"), 1, QString()},
+      {QStringLiteral("    - code"), 0, QStringLiteral("    ")},
+      {QStringLiteral("- parent\n\n      3) code"), 2, QStringLiteral("      ")},
+  };
+  for (bool above : {false, true}) {
+    for (const auto &item : code) {
+      Fixture fixture(item.m_source, item.m_block, 4, makeViListSourceConfig());
+      fixture.waitForFreshListAst();
+      QTest::keyClicks(fixture.edit(), above ? QStringLiteral("O") : QStringLiteral("o"));
+      const int insertedBlock = item.m_block + (above ? 0 : 1);
+      auto expected = item.m_source.split(QLatin1Char('\n'));
+      expected.insert(insertedBlock, item.m_indent);
+      QCOMPARE(fixture.text(), expected.join(QLatin1Char('\n')));
+      QCOMPARE(fixture.edit()->textCursor().blockNumber(), insertedBlock);
+      QCOMPARE(fixture.edit()->textCursor().positionInBlock(), item.m_indent.size());
+    }
+  }
+}
+
+void TestMarkdownEditor::testViListOpenNumbering() {
+  const QString untouched = QStringLiteral("\n\nseparate\n\n7. keep\n3. odd");
+  const QString source = QStringLiteral("5. alpha\n9. beta\n2. gamma") + untouched;
+  for (bool enabled : {false, true}) {
+    for (bool above : {false, true}) {
+      Fixture fixture(source, 1, 5, makeViListSourceConfig(enabled));
+      fixture.waitForFreshListAst();
+      QTest::keyClicks(fixture.edit(), above ? QStringLiteral("O") : QStringLiteral("o"));
+      const auto prefix =
+          QString::number(enabled ? (above ? 6 : 7) : (above ? 9 : 10)) + QStringLiteral(". ");
+      const int insertedBlock = above ? 1 : 2;
+      auto lines = source.split(QLatin1Char('\n'));
+      lines.insert(insertedBlock, prefix);
+      QCOMPARE(fixture.text(), lines.join(QLatin1Char('\n')));
+      QCOMPARE(fixture.edit()->textCursor().blockNumber(), insertedBlock);
+      QCOMPARE(fixture.edit()->textCursor().positionInBlock(), prefix.size());
+      QTest::keyClicks(fixture.edit(), QStringLiteral("new"));
+      QTest::keyClick(fixture.edit(), Qt::Key_Escape);
+      lines[insertedBlock] += QStringLiteral("new");
+      QString expected = lines.join(QLatin1Char('\n'));
+      QCOMPARE(fixture.text(), expected);
+      if (enabled) {
+        expected = (above ? QStringLiteral("5. alpha\n6. new\n7. beta\n8. gamma")
+                          : QStringLiteral("5. alpha\n6. beta\n7. new\n8. gamma")) +
+                   untouched;
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), expected, 5000);
+      } else {
+        QTest::qWait(800); // Disabled numbering must leave every authored sibling alone.
+        QCOMPARE(fixture.text(), expected);
+      }
+      QTest::keyClick(fixture.edit(), Qt::Key_U);
+      QCOMPARE(fixture.text(), source);
+      QTest::keyClick(fixture.edit(), Qt::Key_R, Qt::ControlModifier);
+      QCOMPARE(fixture.text(), expected);
+    }
+  }
+
+  Fixture first(QStringLiteral("7) alpha\n3) beta"), 0, 5, makeViListSourceConfig(true));
+  first.waitForFreshListAst();
+  QTest::keyClicks(first.edit(), QStringLiteral("O"));
+  QCOMPARE(first.text(), QStringLiteral("7) \n7) alpha\n3) beta"));
+  QCOMPARE(first.edit()->textCursor().position(), 3);
+  QTest::keyClicks(first.edit(), QStringLiteral("new"));
+  QTest::keyClick(first.edit(), Qt::Key_Escape);
+  QTRY_COMPARE_WITH_TIMEOUT(first.text(), QStringLiteral("7) new\n8) alpha\n9) beta"), 5000);
+}
+
+void TestMarkdownEditor::testViListOpenUndoAndReplay() {
+  const QString origin = QStringLiteral("- [x] alpha\n");
+  const QString tail = QStringLiteral("- [ ] tail");
+  const QString source = origin + tail;
+  const QString inserted = QStringLiteral("- [ ] new\n");
+  for (bool above : {false, true}) {
+    for (int count : {1, 3}) {
+      Fixture fixture(source, 0, 8, makeViListSourceConfig());
+      fixture.waitForFreshListAst();
+      if (count > 1) {
+        QTest::keyClicks(fixture.edit(), QString::number(count));
+      }
+      QTest::keyClicks(fixture.edit(), above ? QStringLiteral("O") : QStringLiteral("o"));
+      QTest::keyClicks(fixture.edit(), QStringLiteral("new"));
+      QTest::keyClick(fixture.edit(), Qt::Key_Escape);
+      const auto expected =
+          above ? inserted.repeated(count) + source : origin + inserted.repeated(count) + tail;
+      QCOMPARE(fixture.text(), expected);
+      QTest::keyClick(fixture.edit(), Qt::Key_U);
+      QCOMPARE(fixture.text(), source);
+      QTest::keyClick(fixture.edit(), Qt::Key_R, Qt::ControlModifier);
+      QCOMPARE(fixture.text(), expected);
+
+      // Repeats must capture only "new", not the generated unchecked task prefix.
+      fixture.moveTo(above ? count - 1 : count);
+      QTest::keyClick(fixture.edit(), Qt::Key_Period);
+      QCOMPARE(fixture.text(), above ? inserted.repeated(count * 2) + source
+                                     : origin + inserted.repeated(count * 2) + tail);
+      QTest::keyClick(fixture.edit(), Qt::Key_U);
+      QCOMPARE(fixture.text(), expected);
+    }
+  }
+  // A cold provisional 10. shrinks to 3. while insert mode is still active.
+  // The repeat start must follow that rewrite without capturing marker bytes.
+  Fixture numbered(QStringLiteral("1. alpha\n9. beta\n10. gamma"), 1, 7,
+                   makeViListSourceConfig(true));
+  numbered.waitForFreshListAst();
+  numbered.makeAstStale();
+  QTest::keyClicks(numbered.edit(), QStringLiteral("3onew"));
+  QCOMPARE(numbered.blockText(2), QStringLiteral("10. new"));
+  QTRY_COMPARE_WITH_TIMEOUT(numbered.text(), QStringLiteral("1. alpha\n2. betax\n3. new\n4. gamma"),
+                            5000);
+  QTest::keyClick(numbered.edit(), Qt::Key_Escape);
+  QTRY_COMPARE_WITH_TIMEOUT(numbered.text(),
+                            QStringLiteral("1. alpha\n2. betax\n3. new\n4. new\n5. new\n6. gamma"),
+                            5000);
+}
+
+void TestMarkdownEditor::testViListInsertReturn() {
+  struct ReturnCase {
+    QString m_source;
+    int m_column;
+    QString m_expected;
+    int m_caret;
+  };
+  const ReturnCase cases[] = {
+      {QStringLiteral("3) alpha"), 5, QStringLiteral("3) al\n4) pha"), 3},
+      {QStringLiteral("- [x] alpha"), 8, QStringLiteral("- [x] al\n- [ ] pha"), 6},
+      {QStringLiteral("> - [x] "), 8, QStringLiteral("> "), 2},
+  };
+  for (bool fresh : {false, true}) {
+    for (const auto &item : cases) {
+      Fixture fixture(item.m_source, 0, item.m_column, makeViListSourceConfig());
+      if (fresh) {
+        fixture.waitForFreshListAst();
+      }
+      QTest::keyClick(fixture.edit(), Qt::Key_I);
+      fixture.pressReturn();
+      QCOMPARE(fixture.text(), item.m_expected);
+      QCOMPARE(fixture.edit()->textCursor().positionInBlock(), item.m_caret);
+    }
+  }
+}
+
+void TestMarkdownEditor::testListAutoNumberStructuralEdits() {
+  {
+    Fixture fixture(QStringLiteral("1. a\n2. b\n3. c"), 0, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    fixture.pressReturn();
+    QTest::keyClicks(fixture.edit(), QStringLiteral("x"));
+    QCOMPARE(fixture.text(), QStringLiteral("1. a\n2. x\n2. b\n3. c"));
+    QTest::qWait(200);
+    QCOMPARE(fixture.text(), QStringLiteral("1. a\n2. x\n2. b\n3. c"));
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("1. a\n2. x\n3. b\n4. c"), 5000);
+    QCOMPARE(fixture.edit()->textCursor().blockNumber(), 1);
+    QCOMPARE(fixture.edit()->textCursor().positionInBlock(), 4);
+  }
+  for (bool fresh : {false, true}) {
+    // The cold case deletes the first marker before the initial highlight or
+    // asynchronously seeded baseline can be delivered.
+    Fixture fixture(QStringLiteral("1. a\n2. b\n3. c"), 0, -1, makeListSourceConfig());
+    if (fresh) {
+      fixture.waitForFreshListAst();
+    }
+    fixture.select(0, 0, 1, 0);
+    QTest::keyClick(fixture.edit(), Qt::Key_Backspace);
+    QCOMPARE(fixture.text(), QStringLiteral("2. b\n3. c"));
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("1. b\n2. c"), 5000);
+    fixture.edit()->undo();
+    QCOMPARE(fixture.text(), QStringLiteral("1. a\n2. b\n3. c"));
+  }
+  {
+    Fixture fixture(QStringLiteral("1. a\n8. b\n9. c"), 2, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    fixture.select(1, 4, 2, 4);
+    QTest::keyClick(fixture.edit(), Qt::Key_Delete);
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("1. a\n2. b"), 5000);
+  }
+  {
+    Fixture fixture(QStringLiteral("1. a\n2. b\n3. c"), 0, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    replaceTableSource(*fixture.editor(), 0, 0, 1, QStringLiteral("5"));
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("5. a\n6. b\n7. c"), 5000);
+  }
+  {
+    Fixture fixture(QStringLiteral("1. a\n2. b\n3. c"), 0, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    QTextCursor cursor(fixture.editor()->document());
+    cursor.beginEditBlock();
+    cursor.setPosition(5, QTextCursor::KeepAnchor);
+    cursor.removeSelectedText();
+    cursor.setPosition(0);
+    cursor.setPosition(1, QTextCursor::KeepAnchor);
+    cursor.insertText(QStringLiteral("5"));
+    cursor.endEditBlock();
+    // Explicitly changing the first survivor wins over the deleted old start.
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("5. b\n6. c"), 5000);
+  }
+  {
+    ClipboardRestore clipboard;
+    const QString source = QStringLiteral("1. a\n8. moved\n9. c\n\nseparator\n\n"
+                                          "5. d\n9. e\n\nuntouched\n\n7. keep\n3. odd");
+    Fixture fixture(source, 0, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    fixture.select(1, 0, 2, 0);
+    fixture.edit()->cut();
+    QCOMPARE(fixture.text(), QStringLiteral("1. a\n9. c\n\nseparator\n\n"
+                                            "5. d\n9. e\n\nuntouched\n\n7. keep\n3. odd"));
+    fixture.select(6, 0, 6, 0);
+    fixture.edit()->paste();
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(),
+                              QStringLiteral("1. a\n2. c\n\nseparator\n\n5. d\n6. moved\n7. e\n\n"
+                                             "untouched\n\n7. keep\n3. odd"),
+                              5000);
+  }
+  {
+    const QString source = QStringLiteral("1. a\n8. b\n\nmiddle\n\n7. keep\n3. odd\n\n"
+                                          "last\n\n5. c\n9. d");
+    Fixture fixture(source, 5, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    auto doc = fixture.editor()->document();
+    QTextCursor cursor(doc);
+    cursor.beginEditBlock();
+    cursor.setPosition(tableSourcePosition(doc, 11, 0));
+    cursor.setPosition(cursor.position() + 1, QTextCursor::KeepAnchor);
+    cursor.insertText(QStringLiteral("3"));
+    cursor.setPosition(tableSourcePosition(doc, 1, 0));
+    cursor.setPosition(cursor.position() + 1, QTextCursor::KeepAnchor);
+    cursor.insertText(QStringLiteral("4"));
+    cursor.endEditBlock();
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(),
+                              QStringLiteral("1. a\n2. b\n\nmiddle\n\n7. keep\n3. odd\n\n"
+                                             "last\n\n5. c\n6. d"),
+                              5000);
+    QCOMPARE(fixture.edit()->textCursor().blockNumber(), 5);
+    fixture.edit()->undo();
+    QCOMPARE(fixture.text(), source);
+  }
+
+  struct MembershipCase {
+    QString m_source;
+    int m_block;
+    int m_column;
+    int m_length;
+    QString m_insert;
+    QString m_expected;
+  };
+  const MembershipCase membership[] = {
+      // Removing the separator merges two old lists; the earlier start wins.
+      {QStringLiteral("3. a\n8. b\n\nseparator\n\n7. c\n2. d"), 1, 4, 13, QStringLiteral("\n"),
+       QStringLiteral("3. a\n4. b\n5. c\n6. d")},
+      // The earliest surviving fragment keeps its start; later fragments restart.
+      {QStringLiteral("3. a\n8. b\n9. c\n2. d"), 2, 0, 0, QStringLiteral("\nseparator\n\n"),
+       QStringLiteral("3. a\n4. b\n\nseparator\n\n1. c\n2. d")},
+      // A newly authored first marker outranks the old list's start.
+      {QStringLiteral("7. a\n9. b"), 0, 0, 0, QStringLiteral("2. new\n"),
+       QStringLiteral("2. new\n3. a\n4. b")},
+      // Inserting an identical list at column zero must not steal old identities.
+      {QStringLiteral("7. a\n3. b"), 0, 0, 0, QStringLiteral("7. a\n3. b\n\nbreak\n\n"),
+       QStringLiteral("7. a\n8. b\n\nbreak\n\n7. a\n3. b")},
+      // A child edit does not dirty the parent's unchanged direct sibling order.
+      {QStringLiteral("5. parent\n\n   2. child\n   8. sibling\n9. other"), 3, 0, 0,
+       QStringLiteral("   1. added\n"),
+       QStringLiteral("5. parent\n\n   2. child\n   3. added\n   4. sibling\n9. other")},
+  };
+  for (const auto &item : membership) {
+    Fixture fixture(item.m_source, 0, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    replaceTableSource(*fixture.editor(), item.m_block, item.m_column, item.m_length,
+                       item.m_insert);
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), item.m_expected, 5000);
+  }
+  {
+    Fixture fixture(QStringLiteral("7. a\n3. b"), 0, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    QTextCursor cursor(fixture.editor()->document());
+    cursor.beginEditBlock();
+    cursor.insertText(QStringLiteral("Intro.\n\n"));
+    cursor.movePosition(QTextCursor::End);
+    cursor.insertText(QStringLiteral("\n\nAfterward."));
+    cursor.endEditBlock();
+    const auto edited = fixture.text();
+    const int undoSteps = fixture.editor()->document()->availableUndoSteps();
+    QTest::qWait(800);
+    QCOMPARE(fixture.text(), QStringLiteral("Intro.\n\n7. a\n3. b\n\nAfterward."));
+    QCOMPARE(fixture.editor()->document()->availableUndoSteps(), undoSteps);
+    QCOMPARE(fixture.text(), edited);
+  }
+  for (bool enabled : {false, true}) {
+    Fixture fixture(QStringLiteral("5. parent\n8. \n9. tail"), 1, -1,
+                    makeListSourceConfig(enabled));
+    fixture.waitForFreshListAst();
+    QTest::keyClick(fixture.edit(), Qt::Key_Tab);
+    QCOMPARE(fixture.blockText(1), enabled ? QStringLiteral("    8. ") : QStringLiteral("    1. "));
+    if (enabled) {
+      QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("5. parent\n    8. \n6. tail"),
+                                5000);
+    }
+    QTest::keyClick(fixture.edit(), Qt::Key_Backtab, Qt::ShiftModifier);
+    if (enabled) {
+      QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("5. parent\n6. \n7. tail"), 5000);
+    } else {
+      QCOMPARE(fixture.text(), QStringLiteral("5. parent\n6. \n9. tail"));
+    }
+  }
+  {
+    Fixture fixture(QStringLiteral("01. a\n1. b\n0001. c"), 1, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    QTest::keyClicks(fixture.edit(), QStringLiteral("x"));
+    QTest::qWait(800);
+    QCOMPARE(fixture.text(), QStringLiteral("01. a\n1. bx\n0001. c"));
+    replaceTableSource(*fixture.editor(), 1, 0, 0, QStringLiteral("1. added\n"));
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("1. a\n2. added\n3. bx\n4. c"), 5000);
+  }
+  {
+    ClipboardRestore clipboard;
+    Fixture fixture(QStringLiteral("intro\n\n"), 2, 0, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    QGuiApplication::clipboard()->setText(QStringLiteral("0) a\n9) b"));
+    fixture.edit()->paste();
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("intro\n\n0) a\n1) b"), 5000);
+  }
+}
+
+void TestMarkdownEditor::testListAutoNumberSplit() {
+  const QString fenceList = QStringLiteral("1. Nested code block\n2. List item 2");
+  const QString openFence = QStringLiteral("```cpp\n#include <iostream>\n");
+  const QString fenced =
+      QStringLiteral("1. Nested code block\n") + openFence + QStringLiteral("```\n2. List item 2");
+  const QString fencedRestarted =
+      QStringLiteral("1. Nested code block\n") + openFence + QStringLiteral("```\n1. List item 2");
+  for (bool fresh : {false, true}) {
+    // A parsed, still-open fence must not erase the later marker's identity.
+    const QString ending = fresh ? QStringLiteral("\n") : QString();
+    Fixture fixture(fenceList + ending, 0, -1, makeListSourceConfig());
+    if (fresh) {
+      fixture.waitForFreshListAst();
+    }
+    replaceTableSource(*fixture.editor(), 1, 0, 0, openFence);
+    fixture.waitForFreshListAst();
+    QTest::qWait(800); // Let the no-numbering idle pass run before closing the fence.
+    QCOMPARE(fixture.text(), QStringLiteral("1. Nested code block\n") + openFence +
+                                 QStringLiteral("2. List item 2") + ending);
+    replaceTableSource(*fixture.editor(), 3, 0, 0, QStringLiteral("```\n"));
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), fencedRestarted + ending, 5000);
+    verifyListStructurePreserved(fenced + ending, fixture.text(), {1, 1});
+  }
+  {
+    // Other lists still normalize while the paused split retains its baseline.
+    const QString prefix = QStringLiteral("3. before\n9. before tail\n\nbreak\n\n");
+    const QString normalizedPrefix = QStringLiteral("3. before\n4. before tail\n\nbreak\n\n");
+    Fixture fixture(prefix + fenceList, 0, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    replaceTableSource(*fixture.editor(), 6, 0, 0, openFence);
+    fixture.waitForFreshListAst();
+    QTest::qWait(800);
+    replaceTableSource(*fixture.editor(), 1, 0, 1, QStringLiteral("8"));
+    const QString pending =
+        QStringLiteral("1. Nested code block\n") + openFence + QStringLiteral("2. List item 2");
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), normalizedPrefix + pending, 5000);
+    replaceTableSource(*fixture.editor(), 8, 0, 0, QStringLiteral("```\n"));
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), normalizedPrefix + fencedRestarted, 5000);
+  }
+  for (const auto &replacement : {QStringLiteral("7"), QStringLiteral("2.")}) {
+    // Preserve an explicitly changed number or a wholly retyped marker, even
+    // when it was edited while hidden inside the open fence.
+    Fixture fixture(fenceList, 0, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    replaceTableSource(*fixture.editor(), 1, 0, 0, openFence);
+    fixture.waitForFreshListAst();
+    QTest::qWait(800);
+    replaceTableSource(*fixture.editor(), 3, 0, replacement.size(), replacement);
+    fixture.waitForFreshListAst();
+    QTest::qWait(800);
+    replaceTableSource(*fixture.editor(), 3, 0, 0, QStringLiteral("```\n"));
+    fixture.waitForFreshListAst();
+    QTest::qWait(800);
+    const QString marker =
+        replacement == QStringLiteral("7") ? QStringLiteral("7.") : QStringLiteral("2.");
+    QCOMPARE(fixture.text(), QStringLiteral("1. Nested code block\n") + openFence +
+                                 QStringLiteral("```\n") + marker + QStringLiteral(" List item 2"));
+  }
+
+  const QString source = QStringLiteral("1. very simple questions\n2. Test the list;\n"
+                                        "3. List item 2;\n4. very good\n5. hahahaha");
+  const QString separated = QStringLiteral("1. very simple questions\n\nabcjdkejj\n\n"
+                                           "2. Test the list;\n3. List item 2;\n"
+                                           "4. very good\n5. hahahaha");
+  const QString restarted = QStringLiteral("1. very simple questions\n\nabcjdkejj\n\n"
+                                           "1. Test the list;\n2. List item 2;\n"
+                                           "3. very good\n4. hahahaha");
+  const QString independent = QStringLiteral("\n\nindependent\n\n7) keep\n3) authored");
+  for (bool fresh : {false, true}) {
+    Fixture fixture(source + independent, 0, -1, makeListSourceConfig());
+    if (fresh) {
+      fixture.waitForFreshListAst();
+    }
+    replaceTableSource(*fixture.editor(), 1, 0, 0, QStringLiteral("\nabcjdkejj\n\n"));
+    QCOMPARE(fixture.text(), separated + independent);
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), restarted + independent, 5000);
+    verifyListStructurePreserved(separated + independent, fixture.text(), {1, 1, 7});
+    fixture.edit()->undo();
+    QCOMPARE(fixture.text(), source + independent);
+    fixture.waitForFreshListAst();
+    QTest::qWait(800);
+    QCOMPARE(fixture.text(), source + independent);
+    QVERIFY(fixture.editor()->document()->isRedoAvailable());
+    fixture.edit()->redo();
+    QCOMPARE(fixture.text(), restarted + independent);
+  }
+  {
+    // Already separate lists are authored input, not a structural split event.
+    Fixture fixture(separated, 0, -1, makeListSourceConfig());
+    const bool modified = fixture.editor()->document()->isModified();
+    const int undoSteps = fixture.editor()->document()->availableUndoSteps();
+    fixture.waitForFreshListAst();
+    QTest::qWait(800);
+    QCOMPARE(fixture.text(), separated);
+    QCOMPARE(fixture.editor()->document()->isModified(), modified);
+    QCOMPARE(fixture.editor()->document()->availableUndoSteps(), undoSteps);
+  }
+  {
+    // A blank between nonempty items makes a loose list, not a second list.
+    Fixture fixture(QStringLiteral("3. a\n8. b\n9. c"), 0, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    replaceTableSource(*fixture.editor(), 1, 0, 0, QStringLiteral("\n"));
+    QTest::qWait(800);
+    QCOMPARE(fixture.text(), QStringLiteral("3. a\n\n8. b\n9. c"));
+    replaceTableSource(*fixture.editor(), 1, 0, 0, QStringLiteral("\nbreak\n"));
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("3. a\n\nbreak\n\n1. b\n2. c"), 5000);
+  }
+  {
+    // An explicit first-number edit in the split transaction takes precedence.
+    Fixture fixture(QStringLiteral("3. a\n8. b\n9. c\n2. d"), 0, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    QTextCursor cursor(fixture.editor()->document());
+    const int start = tableSourcePosition(fixture.editor()->document(), 2, 0);
+    cursor.beginEditBlock();
+    cursor.setPosition(start);
+    cursor.setPosition(start + 1, QTextCursor::KeepAnchor);
+    cursor.insertText(QStringLiteral("5"));
+    cursor.setPosition(start);
+    cursor.insertText(QStringLiteral("\nbreak\n\n"));
+    cursor.endEditBlock();
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("3. a\n4. b\n\nbreak\n\n5. c\n6. d"),
+                              5000);
+  }
+  {
+    // Both later fragments restart, while the original zero start survives.
+    Fixture fixture(QStringLiteral("0. a\n8. b\n9. c\n2. d\n4. e\n5. f"), 0, -1,
+                    makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    QTextCursor cursor(fixture.editor()->document());
+    cursor.beginEditBlock();
+    cursor.setPosition(tableSourcePosition(fixture.editor()->document(), 4, 0));
+    cursor.insertText(QStringLiteral("\nsecond break\n\n"));
+    cursor.setPosition(tableSourcePosition(fixture.editor()->document(), 2, 0));
+    cursor.insertText(QStringLiteral("\nfirst break\n\n"));
+    cursor.endEditBlock();
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(),
+                              QStringLiteral("0. a\n1. b\n\nfirst break\n\n1. c\n2. d\n\n"
+                                             "second break\n\n1. e\n2. f"),
+                              5000);
+  }
+  {
+    // Restarting a two-digit fragment keeps its child under the same item.
+    Fixture fixture(QStringLiteral("10. a\n11. b\n    - child\n12. c"), 0, -1,
+                    makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    replaceTableSource(*fixture.editor(), 1, 0, 0, QStringLiteral("\nbreak\n\n"));
+    const QString authored = fixture.text();
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(),
+                              QStringLiteral("10. a\n\nbreak\n\n1. b\n   - child\n2. c"), 5000);
+    verifyListStructurePreserved(authored, fixture.text(), {10, 1});
+  }
+}
+
+void TestMarkdownEditor::testListAutoNumberNestedWidths() {
+  struct WidthCase {
+    QString m_source;
+    int m_block;
+    int m_length;
+    QString m_insert;
+    QString m_expected;
+    QVector<int> m_starts;
+  };
+  const WidthCase cases[] = {
+      {QStringLiteral("9. a\n9. b\n   - child"),
+       1,
+       0,
+       QStringLiteral("10. new\n"),
+       QStringLiteral("9. a\n10. new\n11. b\n    - child"),
+       {}},
+      {QStringLiteral("9. gone\n10. b\n    - child\n11. c"),
+       0,
+       8,
+       QString(),
+       QStringLiteral("9. b\n   - child\n10. c"),
+       {9}},
+      // The old tab spans three consumed columns plus one child-relative column.
+      {QStringLiteral("9. a\n9. b\n\t- child"),
+       1,
+       0,
+       QStringLiteral("10. new\n"),
+       QStringLiteral("9. a\n10. new\n11. b\n     - child"),
+       {}},
+      // Keep authored opening-line whitespace; padding is not just digit width.
+      {QStringLiteral("9. a\n9.   b\n     - child"),
+       1,
+       0,
+       QStringLiteral("10. new\n"),
+       QStringLiteral("9. a\n10. new\n11.   b\n      - child"),
+       {}},
+      {QStringLiteral("9. a\n9.\tb\n    - child"),
+       1,
+       0,
+       QStringLiteral("10. new\n"),
+       QStringLiteral("9. a\n10. new\n11.\tb\n    - child"),
+       {}},
+      {QStringLiteral("[^n]: 9. a\n      9. b\n         - child\n\nref [^n]"),
+       1,
+       0,
+       QStringLiteral("      10. new\n"),
+       QStringLiteral("[^n]: 9. a\n      10. new\n      11. b\n          - child\n\nref [^n]"),
+       {}},
+      {QStringLiteral("- outer\n  > 9. a\n  > 9. b\n  >    - child"),
+       2,
+       0,
+       QStringLiteral("  > 10. new\n"),
+       QStringLiteral("- outer\n  > 9. a\n  > 10. new\n  > 11. b\n  >     - child"),
+       {}},
+      {QStringLiteral("9. a\n9. b\n   continuation\nlazy\n \t \n   ```cpp\n"
+                      "   9. not a list\n   int n = 9;\n   ```\n\n   - child"),
+       1,
+       0,
+       QStringLiteral("10. new\n"),
+       QStringLiteral("9. a\n10. new\n11. b\n    continuation\nlazy\n \t \n    ```cpp\n"
+                      "    9. not a list\n    int n = 9;\n    ```\n\n    - child"),
+       {}},
+      {QStringLiteral("9. a\n\n9. b\n\n   continuation"),
+       2,
+       0,
+       QStringLiteral("10. new\n\n"),
+       QStringLiteral("9. a\n\n10. new\n\n11. b\n\n    continuation"),
+       {}},
+      {QStringLiteral("0) a\n9) b"),
+       1,
+       0,
+       QStringLiteral("8) new\n"),
+       QStringLiteral("0) a\n1) new\n2) b"),
+       {}},
+      {QStringLiteral("999999998. a\n1. b"),
+       1,
+       1,
+       QStringLiteral("2"),
+       QStringLiteral("999999998. a\n999999999. b"),
+       {}},
+  };
+  for (const auto &item : cases) {
+    Fixture fixture(item.m_source, 0, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    replaceTableSource(*fixture.editor(), item.m_block, 0, item.m_length, item.m_insert);
+    const QString authored = fixture.text();
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), item.m_expected, 5000);
+    verifyListStructurePreserved(authored, fixture.text(), item.m_starts);
+    fixture.edit()->undo();
+    QCOMPARE(fixture.text(), item.m_source);
+  }
+  {
+    const QString source = QStringLiteral("9. 9. a\n   9. b\n      - child\n9. tail");
+    Fixture fixture(source, 0, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    auto doc = fixture.editor()->document();
+    QTextCursor cursor(doc);
+    cursor.beginEditBlock();
+    cursor.setPosition(tableSourcePosition(doc, 3, 0));
+    cursor.insertText(QStringLiteral("10. outer-new\n"));
+    cursor.setPosition(tableSourcePosition(doc, 1, 0));
+    cursor.insertText(QStringLiteral("   10. inner-new\n"));
+    cursor.endEditBlock();
+    const QString authored = fixture.text();
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(),
+                              QStringLiteral("9. 9. a\n   10. inner-new\n   11. b\n       - child\n"
+                                             "10. outer-new\n11. tail"),
+                              5000);
+    verifyListStructurePreserved(authored, fixture.text());
+  }
+  {
+    Fixture fixture(QStringLiteral("3. a\n8. b\n2. c\n4. d"), 0, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    QTextCursor cursor(fixture.editor()->document());
+    cursor.beginEditBlock();
+    cursor.setPosition(tableSourcePosition(fixture.editor()->document(), 2, 1));
+    cursor.setPosition(cursor.position() + 1, QTextCursor::KeepAnchor);
+    cursor.insertText(QStringLiteral(")"));
+    cursor.setPosition(tableSourcePosition(fixture.editor()->document(), 1, 1));
+    cursor.setPosition(cursor.position() + 1, QTextCursor::KeepAnchor);
+    cursor.insertText(QStringLiteral(")"));
+    cursor.endEditBlock();
+    const QString authored = fixture.text();
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("3. a\n1) b\n2) c\n1. d"), 5000);
+    verifyListStructurePreserved(authored, fixture.text(), {3, 1, 1});
+  }
+  {
+    Fixture fixture(QStringLiteral("5. keep\n2. odd\n\nplain\n\n"), 5, 0, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    QTextCursor cursor(fixture.editor()->document());
+    cursor.movePosition(QTextCursor::End);
+    cursor.insertText(QStringLiteral("> 000000000) a\n> 9) b"));
+    const QString authored = fixture.text();
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(),
+                              QStringLiteral("5. keep\n2. odd\n\nplain\n\n> 0) a\n> 1) b"), 5000);
+    verifyListStructurePreserved(authored, fixture.text());
+  }
+  {
+    // Overflow rejects its whole connected list, but not an independent valid one.
+    Fixture fixture(QStringLiteral("999999999. a\n1. b\n   - child\n\nbreak\n\n3. c\n9. d"), 0, -1,
+                    makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    auto doc = fixture.editor()->document();
+    QTextCursor cursor(doc);
+    cursor.beginEditBlock();
+    cursor.setPosition(tableSourcePosition(doc, 7, 0));
+    cursor.setPosition(cursor.position() + 1, QTextCursor::KeepAnchor);
+    cursor.insertText(QStringLiteral("8"));
+    cursor.setPosition(tableSourcePosition(doc, 1, 0));
+    cursor.setPosition(cursor.position() + 1, QTextCursor::KeepAnchor);
+    cursor.insertText(QStringLiteral("2"));
+    cursor.endEditBlock();
+    const QString authored = fixture.text();
+    const QString expected =
+        QStringLiteral("999999999. a\n2. b\n   - child\n\nbreak\n\n3. c\n4. d");
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), expected, 5000);
+    verifyListStructurePreserved(authored, fixture.text());
+    const int undoSteps = doc->availableUndoSteps();
+    QTest::qWait(800);
+    QCOMPARE(fixture.text(), expected);
+    QCOMPARE(doc->availableUndoSteps(), undoSteps);
+  }
+}
+
+void TestMarkdownEditor::testListAutoNumberConfigAndReplay() {
+  const QString source = QStringLiteral("1. a\n8. b\n9. c");
+  const QString edited = QStringLiteral("1. a\n7. b\n9. c");
+  const QString numbered = QStringLiteral("1. a\n2. b\n3. c");
+  for (int load = 0; load < 3; ++load) {
+    Fixture fixture(QStringLiteral("previous document"), 0, -1, makeListSourceConfig());
+    if (load == 0) {
+      fixture.editor()->setText(source);
+    } else if (load == 1) {
+      fixture.edit()->setPlainText(source);
+    } else {
+      fixture.editor()->document()->clear();
+      fixture.editor()->setText(source);
+    }
+    auto doc = fixture.editor()->document();
+    const bool modified = doc->isModified();
+    const int undoSteps = doc->availableUndoSteps();
+    const int redoSteps = doc->availableRedoSteps();
+    fixture.waitForFreshListAst();
+    QTest::qWait(800);
+    QCOMPARE(fixture.text(), source);
+    QCOMPARE(doc->isModified(), modified);
+    QCOMPARE(doc->availableUndoSteps(), undoSteps);
+    QCOMPARE(doc->availableRedoSteps(), redoSteps);
+  }
+  {
+    auto config = makeListSourceConfig(false);
+    Fixture fixture(source, 0, -1, config);
+    fixture.waitForFreshListAst();
+    fixture.pressReturn();
+    QTest::keyClicks(fixture.edit(), QStringLiteral("x"));
+    QTest::qWait(800);
+    QCOMPARE(fixture.text(), QStringLiteral("1. a\n2. x\n8. b\n9. c"));
+    // Automatic enablement never gates an explicit toolbar conversion.
+    fixture.editor()->setText(QStringLiteral("a\nb"));
+    fixture.selectAll();
+    MarkdownUtils::typeOrderedList(fixture.edit());
+    QCOMPARE(fixture.text(), QStringLiteral("1. a\n2. b"));
+
+    fixture.editor()->setText(source);
+    fixture.waitForFreshListAst();
+    auto doc = fixture.editor()->document();
+    const bool modified = doc->isModified();
+    config->m_autoNumberOrderedListsEnabled = true;
+    fixture.editor()->setConfig(config);
+    // Config application can itself add Qt format commands, independently of
+    // automatic source numbering. No later idle work may add another command.
+    const int undoSteps = doc->availableUndoSteps();
+    fixture.waitForFreshListAst();
+    QTest::qWait(800);
+    QCOMPARE(fixture.text(), source);
+    QCOMPARE(doc->isModified(), modified);
+    QCOMPARE(doc->availableUndoSteps(), undoSteps);
+
+    replaceTableSource(*fixture.editor(), 1, 0, 1, QStringLiteral("7"));
+    QTest::qWait(200);
+    config->m_autoNumberOrderedListsEnabled = false;
+    fixture.editor()->setConfig(config);
+    QTest::qWait(800);
+    QCOMPARE(fixture.text(), edited);
+    config->m_autoNumberOrderedListsEnabled = true;
+    fixture.editor()->setConfig(config);
+    fixture.waitForFreshListAst();
+    const int enabledUndoSteps = doc->availableUndoSteps();
+    QTest::qWait(800);
+    QCOMPARE(fixture.text(), edited);
+    QCOMPARE(doc->availableUndoSteps(), enabledUndoSteps);
+
+    replaceTableSource(*fixture.editor(), 2, 0, 1, QStringLiteral("6"));
+    QTest::qWait(200);
+    fixture.editor()->setConfig(config); // Same values must keep the pending edit.
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), numbered, 5000);
+    fixture.waitForFreshListAst();
+    const auto cursor = fixture.edit()->textCursor();
+    fixture.editor()->getHighlighter()->rehighlight();
+    fixture.editor()->setConfig(config);
+    const int settledUndoSteps = doc->availableUndoSteps();
+    const int settledRedoSteps = doc->availableRedoSteps();
+    QTest::qWait(800);
+    QCOMPARE(fixture.text(), numbered);
+    QCOMPARE(fixture.edit()->textCursor().position(), cursor.position());
+    QCOMPARE(fixture.edit()->textCursor().anchor(), cursor.anchor());
+    QCOMPARE(doc->availableUndoSteps(), settledUndoSteps);
+    QCOMPARE(doc->availableRedoSteps(), settledRedoSteps);
+  }
+  for (bool programmatic : {false, true}) {
+    Fixture fixture(source, 1, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    auto doc = fixture.editor()->document();
+    replaceTableSource(*fixture.editor(), 1, 0, 1, QStringLiteral("7"));
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), numbered, 5000);
+    if (programmatic) {
+      doc->undo();
+    } else {
+      fixture.edit()->undo();
+    }
+    QCOMPARE(fixture.text(), source);
+    QVERIFY(doc->isRedoAvailable());
+    const int redoSteps = doc->availableRedoSteps();
+    QTest::qWait(800);
+    QCOMPARE(fixture.text(), source);
+    QCOMPARE(doc->availableRedoSteps(), redoSteps);
+    if (programmatic) {
+      doc->redo();
+    } else {
+      fixture.edit()->redo();
+    }
+    QCOMPARE(fixture.text(), numbered);
+    const int undoSteps = doc->availableUndoSteps();
+    QTest::qWait(800);
+    QCOMPARE(fixture.text(), numbered);
+    QCOMPARE(doc->availableUndoSteps(), undoSteps);
+
+    fixture.editor()->setText(source);
+    fixture.waitForFreshListAst();
+    replaceTableSource(*fixture.editor(), 1, 0, 1, QStringLiteral("7"));
+    if (programmatic) {
+      doc->undo();
+    } else {
+      fixture.edit()->undo();
+    }
+    QCOMPARE(fixture.text(), source);
+    const int pendingRedoSteps = doc->availableRedoSteps();
+    QVERIFY(doc->isRedoAvailable());
+    QTest::qWait(800);
+    QCOMPARE(fixture.text(), source);
+    QCOMPARE(doc->availableRedoSteps(), pendingRedoSteps);
+    if (programmatic) {
+      doc->redo();
+    } else {
+      fixture.edit()->redo();
+    }
+    QCOMPARE(fixture.text(), edited); // Replay itself must not normalize.
+    QTest::qWait(800);
+    QCOMPARE(fixture.text(), edited);
+    replaceTableSource(*fixture.editor(), 2, 0, 1, QStringLiteral("6"));
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), numbered, 5000);
+    if (programmatic) {
+      doc->undo();
+    } else {
+      fixture.edit()->undo();
+    }
+    QCOMPARE(fixture.text(), edited);
+    replaceTableSource(*fixture.editor(), 1, 0, 1, QStringLiteral("4"));
+    QVERIFY(!doc->isRedoAvailable());
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), numbered, 5000);
+  }
+  {
+    Fixture fixture(source, 1, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    auto doc = fixture.editor()->document();
+    QTextCursor cursor(doc);
+    cursor.setPosition(tableSourcePosition(doc, 1, 0));
+    cursor.insertText(QStringLiteral("4. temporary\n"));
+    cursor.setPosition(tableSourcePosition(doc, 1, 0), QTextCursor::KeepAnchor);
+    cursor.removeSelectedText();
+    QCOMPARE(fixture.text(), source);
+    fixture.waitForFreshListAst();
+    const int undoSteps = doc->availableUndoSteps();
+    const int redoSteps = doc->availableRedoSteps();
+    QTest::qWait(800);
+    QCOMPARE(fixture.text(), source);
+    QCOMPARE(doc->availableUndoSteps(), undoSteps);
+    QCOMPARE(doc->availableRedoSteps(), redoSteps);
+  }
+  {
+    // A bare cursor edit may have its own formatting undo step, but none is lost.
+    Fixture fixture(source, 1, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    auto doc = fixture.editor()->document();
+    QTextCursor cursor(doc);
+    cursor.setPosition(tableSourcePosition(doc, 1, 0));
+    cursor.insertText(QStringLiteral("4. new\n"));
+    const QString authored = fixture.text();
+    const QString expected = QStringLiteral("1. a\n2. new\n3. b\n4. c");
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), expected, 5000);
+    doc->undo();
+    QVERIFY(fixture.text() == source || fixture.text() == authored);
+    if (fixture.text() == authored) {
+      doc->undo();
+    }
+    QCOMPARE(fixture.text(), source);
+    QTest::qWait(800);
+    QCOMPARE(fixture.text(), source);
+    doc->redo();
+    if (fixture.text() == authored) {
+      doc->redo();
+    }
+    QCOMPARE(fixture.text(), expected);
+  }
+  for (bool undoEnabled : {false, true}) {
+    Fixture fixture(source, 0, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    auto doc = fixture.editor()->document();
+    doc->setUndoRedoEnabled(undoEnabled);
+    doc->clear();
+    if (undoEnabled) {
+      QTest::qWait(800); // Also cover a clear with no paired insertion at all.
+      QCOMPARE(fixture.text(), QString());
+    }
+    QTextCursor cursor(doc);
+    cursor.insertText(QStringLiteral("0. a\n8. b"));
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("0. a\n1. b"), 5000);
+    QCOMPARE(doc->isUndoRedoEnabled(), undoEnabled);
+    if (!undoEnabled) {
+      QVERIFY(!doc->isUndoAvailable());
+      QVERIFY(!doc->isRedoAvailable());
+    }
+  }
+  {
+    Fixture fixture(QStringLiteral("replace all visible text\n"), 0, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    QTextCursor cursor(fixture.editor()->document());
+    cursor.select(QTextCursor::Document);
+    cursor.insertText(QStringLiteral("5. a\n1. b"));
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("5. a\n6. b"), 5000);
+  }
+}
+
+void TestMarkdownEditor::testListAutoNumberProtectedPositions() {
+  const QString source = QStringLiteral("9. a\n9. \u4E2De\u0301\U0001F600 tail\n   continuation");
+  const QString expected =
+      QStringLiteral("9. a\n10. new\n11. \u4E2De\u0301\U0001F600 tail\n    continuation");
+  struct PositionCase {
+    int m_anchorBlock;
+    int m_anchorColumn;
+    int m_positionBlock;
+    int m_positionColumn;
+    int m_mappedAnchor;
+    int m_mappedPosition;
+    QString m_selected;
+  };
+  const PositionCase positions[] = {
+      {2, 8, 2, 8, 9, 9, QString()}, // Caret after the surrogate pair.
+      {2, 4, 2, 8, 5, 9, QStringLiteral("e\u0301\U0001F600")},
+      {2, 8, 2, 4, 9, 5, QStringLiteral("e\u0301\U0001F600")},
+      {1, 7, 2, 8, 7, 9, QStringLiteral("\u202911. \u4E2De\u0301\U0001F600")},
+      {2, 8, 1, 7, 9, 7, QStringLiteral("\u202911. \u4E2De\u0301\U0001F600")},
+  };
+  for (const auto &item : positions) {
+    Fixture fixture(source, 0, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    replaceTableSource(*fixture.editor(), 1, 0, 0, QStringLiteral("10. new\n"));
+    selectTableSource(*fixture.editor(), item.m_anchorBlock, item.m_anchorColumn,
+                      item.m_positionBlock, item.m_positionColumn);
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), expected, 5000);
+    const auto cursor = fixture.edit()->textCursor();
+    auto doc = fixture.editor()->document();
+    QCOMPARE(cursor.anchor(), tableSourcePosition(doc, item.m_anchorBlock, item.m_mappedAnchor));
+    QCOMPARE(cursor.position(),
+             tableSourcePosition(doc, item.m_positionBlock, item.m_mappedPosition));
+    QCOMPARE(cursor.selectedText(), item.m_selected);
+  }
+  {
+    Fixture fixture(source, 0, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    replaceTableSource(*fixture.editor(), 1, 0, 0, QStringLiteral("10. new\n"));
+    auto doc = fixture.editor()->document();
+    selectTableSource(*fixture.editor(), 0, 4, 0, 4);
+    fixture.edit()->setOverriddenSelection(tableSourcePosition(doc, 2, 4),
+                                           tableSourcePosition(doc, 2, 8));
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), expected, 5000);
+    QCOMPARE(fixture.edit()->getSelection().start(), tableSourcePosition(doc, 2, 5));
+    QCOMPARE(fixture.edit()->getSelection().end(), tableSourcePosition(doc, 2, 9));
+    QCOMPARE(fixture.edit()->selectedText(), QStringLiteral("e\u0301\U0001F600"));
+    QCOMPARE(fixture.edit()->textCursor().position(), 4);
+    QVERIFY(!fixture.edit()->textCursor().hasSelection());
+  }
+  {
+    Fixture fixture(QStringLiteral("9. gone\n10. body\n    continuation"), 0, -1,
+                    makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    replaceTableSource(*fixture.editor(), 0, 0, 8, QString());
+    selectTableSource(*fixture.editor(), 0, 1, 0, 1);
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("9. body\n   continuation"), 5000);
+    QCOMPARE(fixture.edit()->textCursor().positionInBlock(), 1);
+  }
+  {
+    const QString suffix =
+        QStringLiteral("\n\n") + QStringLiteral("ordinary prose\n").repeated(200);
+    Fixture fixture(source + suffix, 1, 8, makeListSourceConfig());
+    fixture.editor()->resize(640, 480);
+    fixture.editor()->show();
+    fixture.editor()->activateWindow();
+    fixture.edit()->setFocus();
+    QTRY_VERIFY_WITH_TIMEOUT(fixture.edit()->hasFocus(), 5000);
+    fixture.waitForFreshListAst();
+    auto scroll = fixture.edit()->verticalScrollBar();
+    QTRY_VERIFY_WITH_TIMEOUT(scroll->maximum() > 20, 5000);
+    replaceTableSource(*fixture.editor(), 1, 0, 1, QStringLiteral("8"));
+    fixture.waitForFreshListAst();
+    QTest::qWait(100);
+    scroll->setValue(scroll->maximum() / 2);
+    const int savedScroll = scroll->value();
+    const QString numbered =
+        QStringLiteral("9. a\n10. \u4E2De\u0301\U0001F600 tail\n    continuation") + suffix;
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), numbered, 5000);
+    QCOMPARE(scroll->value(), savedScroll);
+    QCOMPARE(fixture.edit()->textCursor().positionInBlock(), 9);
+  }
+  {
+    Fixture fixture(QStringLiteral("1. a\n8. b\n9. c"), 1, -1, makeListSourceConfig());
+    fixture.editor()->resize(640, 480);
+    fixture.editor()->show();
+    fixture.editor()->activateWindow();
+    auto edit = fixture.edit();
+    edit->setFocus();
+    QTRY_VERIFY_WITH_TIMEOUT(edit->hasFocus(), 5000);
+    fixture.waitForFreshListAst();
+    replaceTableSource(*fixture.editor(), 1, 0, 1, QStringLiteral("7"));
+    fixture.moveTo(1);
+    QInputMethodEvent preedit(QStringLiteral("\u3042"), QList<QInputMethodEvent::Attribute>());
+    QCoreApplication::sendEvent(edit, &preedit);
+    const auto body = fixture.editor()->document()->findBlockByNumber(1);
+    QVERIFY(body.layout());
+    QCOMPARE(body.layout()->preeditAreaText(), QStringLiteral("\u3042"));
+    const int position = edit->textCursor().position();
+    QTest::qWait(800);
+    QCOMPARE(fixture.text(), QStringLiteral("1. a\n7. b\n9. c"));
+    QCOMPARE(body.layout()->preeditAreaText(), QStringLiteral("\u3042"));
+    QCOMPARE(edit->textCursor().position(), position);
+    QVERIFY(edit->hasFocus());
+
+    QInputMethodEvent commit;
+    commit.setCommitString(QStringLiteral("\u3042"));
+    QCoreApplication::sendEvent(edit, &commit);
+    QCOMPARE(fixture.text(), QStringLiteral("1. a\n7. b\u3042\n9. c"));
+    QTest::qWait(200);
+    QCOMPARE(fixture.text(), QStringLiteral("1. a\n7. b\u3042\n9. c"));
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("1. a\n2. b\u3042\n3. c"), 5000);
+    QCOMPARE(body.layout()->preeditAreaText(), QString());
+    QCOMPARE(edit->textCursor().positionInBlock(), 5);
+  }
+  {
+    Fixture fixture(QStringLiteral("1. a\n8. b"), 1, -1, makeListSourceConfig());
+    fixture.waitForFreshListAst();
+    replaceTableSource(*fixture.editor(), 1, 0, 1, QStringLiteral("7"));
+    fixture.edit()->setReadOnly(true);
+    QTest::qWait(800);
+    QCOMPARE(fixture.text(), QStringLiteral("1. a\n7. b"));
+    fixture.edit()->setReadOnly(false);
+    fixture.moveTo(0);
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("1. a\n2. b"), 5000);
+  }
+}
+
+void TestMarkdownEditor::testListAndTableSourceFormatting() {
+  const QString source = QStringLiteral("9. a\n9. b\n\n   | h1 | header2 |\n"
+                                        "   | --- | --- |\n   | a | b |\n");
+  const QString aligned = QStringLiteral("9. a\n10. new\n11. b\n\n    | h1  | header2 |\n"
+                                         "    | --- | ------- |\n    | z   | b       |\n");
+  for (int disabledMode : {0, 1, 2}) {
+    auto config = makeListSourceConfig(true, true);
+    Fixture fixture(source, 1, -1, config);
+    fixture.waitForFreshListAst();
+    auto doc = fixture.editor()->document();
+    QTextCursor cursor(doc);
+    cursor.beginEditBlock();
+    cursor.setPosition(tableSourcePosition(doc, 5, 5));
+    cursor.setPosition(cursor.position() + 1, QTextCursor::KeepAnchor);
+    cursor.insertText(QStringLiteral("z"));
+    cursor.setPosition(tableSourcePosition(doc, 1, 0));
+    cursor.insertText(QStringLiteral("10. new\n"));
+    cursor.endEditBlock();
+    const QString authored = fixture.text();
+    fixture.moveTo(1);
+    if (disabledMode != 0) {
+      QTest::qWait(200);
+      if (disabledMode == 1) {
+        config->m_autoFormatTableSourceEnabled = false;
+      } else {
+        config->m_autoNumberOrderedListsEnabled = false;
+      }
+      fixture.editor()->setConfig(config);
+    }
+    QString expected = aligned;
+    if (disabledMode == 1) {
+      expected = QStringLiteral("9. a\n10. new\n11. b\n\n    | h1 | header2 |\n"
+                                "    | --- | --- |\n    | z | b |\n");
+    } else if (disabledMode == 2) {
+      expected = QStringLiteral("9. a\n10. new\n9. b\n\n   | h1  | header2 |\n"
+                                "   | --- | ------- |\n   | z   | b       |\n");
+    }
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), expected, 5000);
+    fixture.waitForFreshListAst();
+    // Exact source, including the four-column container, keeps this a table
+    // inside b rather than accidentally turning it into a top-level/code block.
+    // Alignment intentionally rewrites delimiter-cell source in the XML tree.
+    verifyListStructurePreserved(authored, fixture.text(), {}, false);
+    const int undoSteps = doc->availableUndoSteps();
+    const int redoSteps = doc->availableRedoSteps();
+    const auto savedCursor = fixture.edit()->textCursor();
+    QTest::qWait(800);
+    QCOMPARE(fixture.text(), expected);
+    QCOMPARE(doc->availableUndoSteps(), undoSteps);
+    QCOMPARE(doc->availableRedoSteps(), redoSteps);
+    QCOMPARE(fixture.edit()->textCursor().position(), savedCursor.position());
+    QCOMPARE(fixture.edit()->textCursor().anchor(), savedCursor.anchor());
+  }
+  {
+    // Disjoint plans share one undo transaction rather than competing schedulers.
+    const QString prefix = QStringLiteral("1. a\n8. b\n\nseparate\n\n");
+    Fixture fixture(prefix + c_tableSource, 0, -1, makeListSourceConfig(true, true));
+    fixture.waitForFreshListAst();
+    auto doc = fixture.editor()->document();
+    QTextCursor cursor(doc);
+    cursor.beginEditBlock();
+    cursor.setPosition(tableSourcePosition(doc, 7, 2));
+    cursor.setPosition(cursor.position() + 1, QTextCursor::KeepAnchor);
+    cursor.insertText(QStringLiteral("z"));
+    cursor.setPosition(tableSourcePosition(doc, 1, 0));
+    cursor.setPosition(cursor.position() + 1, QTextCursor::KeepAnchor);
+    cursor.insertText(QStringLiteral("7"));
+    cursor.endEditBlock();
+    const QString expected = QStringLiteral("1. a\n2. b\n\nseparate\n\n") + c_tableSourceAligned;
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), expected, 5000);
+    fixture.edit()->undo();
+    QCOMPARE(fixture.text(), prefix + c_tableSource);
+    fixture.edit()->redo();
+    QCOMPARE(fixture.text(), expected);
+    QTest::qWait(800);
+    QCOMPARE(fixture.text(), expected);
+  }
+}
+
+void TestMarkdownEditor::testListAutoNumberStaleWorker() {
+  QString source;
+  for (int i = 0; i < 1500; ++i) {
+    source += QStringLiteral("1. item%1\n").arg(i);
+  }
+  source.chop(1);
+  const QString inserted = QStringLiteral("1. new\n");
+  QString withInsertion = QStringLiteral("1. item0\n2. new\n");
+  for (int i = 1; i < 1500; ++i) {
+    withInsertion += QStringLiteral("%1. item%2\n").arg(i + 2).arg(i);
+  }
+  withInsertion.chop(1);
+
+  // Schedule a competing consumer operation around the idle boundary. The
+  // contract is the final source, not whether a particular machine has already
+  // started/finished the worker when this event is delivered.
+  for (int action : {0, 1, 2}) {
+    auto config = makeListSourceConfig();
+    Fixture fixture(source, 0, -1, config);
+    fixture.waitForFreshListAst();
+    auto doc = fixture.editor()->document();
+    replaceTableSource(*fixture.editor(), 1, 0, 0, inserted);
+    bool delivered = false;
+    QString allowedAtDisable;
+    bool loadedUndoAvailable = false;
+    const QString replacement = QStringLiteral("7. replacement\n2. stays authored");
+    QTimer::singleShot(500, fixture.editor(), [&]() {
+      if (action == 0) {
+        replaceTableSource(*fixture.editor(), 1500, 0, doc->findBlockByNumber(1500).text().size(),
+                           QStringLiteral("7. item1499 changed"));
+      } else if (action == 1) {
+        fixture.editor()->setText(replacement);
+        loadedUndoAvailable = doc->isUndoAvailable();
+      } else {
+        config->m_autoNumberOrderedListsEnabled = false;
+        fixture.editor()->setConfig(config);
+        allowedAtDisable = fixture.text();
+      }
+      delivered = true;
+    });
+    QTRY_VERIFY_WITH_TIMEOUT(delivered, 5000);
+    if (action == 0) {
+      QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), withInsertion + QStringLiteral(" changed"), 5000);
+      // The final authored edit and any formatter step remain replayable.
+      const QString settled = fixture.text();
+      doc->undo();
+      const QString undone = fixture.text();
+      QVERIFY(undone != settled);
+      QVERIFY(doc->isRedoAvailable());
+      const int redoSteps = doc->availableRedoSteps();
+      QTest::qWait(800);
+      QCOMPARE(fixture.text(), undone);
+      QCOMPARE(doc->availableRedoSteps(), redoSteps);
+      doc->redo();
+      QCOMPARE(fixture.text(), settled);
+    } else if (action == 1) {
+      fixture.waitForFreshListAst();
+      QTest::qWait(800);
+      QCOMPARE(fixture.text(), replacement);
+      QVERIFY(!doc->isModified());
+      QCOMPARE(doc->isUndoAvailable(), loadedUndoAvailable);
+      QVERIFY(!doc->isRedoAvailable());
+      // The new epoch remains usable after an old completion has been discarded.
+      replaceTableSource(*fixture.editor(), 1, 0, 1, QStringLiteral("4"));
+      QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("7. replacement\n8. stays authored"),
+                                5000);
+      fixture.edit()->undo();
+      QCOMPARE(fixture.text(), replacement);
+    } else {
+      const int undoSteps = doc->availableUndoSteps();
+      QTest::qWait(800);
+      QCOMPARE(fixture.text(), allowedAtDisable);
+      QCOMPARE(doc->availableUndoSteps(), undoSteps);
+      // Config application may put Qt format commands above the source edit.
+      int undos = 0;
+      do {
+        QVERIFY(doc->isUndoAvailable());
+        doc->undo();
+        ++undos;
+      } while (fixture.text() == allowedAtDisable && undos < 8);
+      QVERIFY(fixture.text() != allowedAtDisable);
+      while (undos-- > 0) {
+        QVERIFY(doc->isRedoAvailable());
+        doc->redo();
+      }
+      QCOMPARE(fixture.text(), allowedAtDisable);
+    }
+  }
+  {
+    auto closing = std::make_unique<Fixture>(source, 0, -1, makeListSourceConfig());
+    closing->waitForFreshListAst();
+    replaceTableSource(*closing->editor(), 1, 0, 0, inserted);
+    bool closed = false;
+    QObject lifetime;
+    QTimer::singleShot(500, &lifetime, [&]() {
+      closing.reset();
+      closed = true;
+    });
+    QTRY_VERIFY_WITH_TIMEOUT(closed, 5000);
+    Fixture successor(QStringLiteral("4. a\n9. b"), 0, -1, makeListSourceConfig());
+    successor.waitForFreshListAst();
+    replaceTableSource(*successor.editor(), 1, 0, 1, QStringLiteral("7"));
+    QTRY_COMPARE_WITH_TIMEOUT(successor.text(), QStringLiteral("4. a\n5. b"), 5000);
+    successor.edit()->undo();
+    QCOMPARE(successor.text(), QStringLiteral("4. a\n9. b"));
+  }
+}
+
+namespace {
+const QColor c_listGuideColor(QStringLiteral("#ed00a8"));
+const QColor c_listActiveColor(QStringLiteral("#a4efd0"));
+const QColor c_listSelectionColor(QStringLiteral("#315cb7"));
+const QColor c_listCursorLineColor(QStringLiteral("#e7cc74"));
+const QColor c_listSyntaxColor(QStringLiteral("#efb572"));
+
+QSharedPointer<MarkdownEditorConfig>
+makeListDecorationConfig(const QColor &p_guide = c_listGuideColor,
+                         const QColor &p_active = c_listActiveColor,
+                         const QColor &p_cursorLine = QColor(), int p_fontSize = 12) {
+  QJsonObject styles;
+  styles.insert(
+      QStringLiteral("Text"),
+      QJsonObject{{QStringLiteral("font-family"), QStringLiteral("Arial")},
+                  {QStringLiteral("font-size"), p_fontSize},
+                  {QStringLiteral("text-color"), QStringLiteral("#202020")},
+                  {QStringLiteral("selected-text-color"), QStringLiteral("#ffffff")},
+                  {QStringLiteral("selected-background-color"), c_listSelectionColor.name()},
+                  {QStringLiteral("background-color"), QStringLiteral("#ffffff")}});
+  styles.insert(QStringLiteral("SelectedText"),
+                QJsonObject{{QStringLiteral("text-color"), QStringLiteral("#ffffff")},
+                            {QStringLiteral("background-color"), c_listSelectionColor.name()}});
+  if (p_cursorLine.isValid()) {
+    styles.insert(QStringLiteral("CursorLine"),
+                  QJsonObject{{QStringLiteral("background-color"), p_cursorLine.name()}});
+  }
+  QJsonObject markdownStyles;
+  if (p_guide.isValid()) {
+    markdownStyles.insert(QStringLiteral("ListItemGuide"),
+                          QJsonObject{{QStringLiteral("text-color"), p_guide.name()}});
+  }
+  if (p_active.isValid()) {
+    markdownStyles.insert(QStringLiteral("ActiveListItem"),
+                          QJsonObject{{QStringLiteral("background-color"), p_active.name()}});
+  }
+  const QJsonObject json{
+      {QStringLiteral("metadata"),
+       QJsonObject{{QStringLiteral("type"), QStringLiteral("vtextedit")}}},
+      {QStringLiteral("editor-styles"), styles},
+      {QStringLiteral("markdown-editor-styles"), markdownStyles},
+      {QStringLiteral("markdown-syntax-styles"),
+       QJsonObject{{QStringLiteral("CODE"),
+                    QJsonObject{{QStringLiteral("background-color"), c_listSyntaxColor.name()}}}}}};
+  auto textConfig = QSharedPointer<TextEditorConfig>::create();
+  textConfig->m_theme = Theme::createThemeFromContent(
+      QString::fromUtf8(QJsonDocument(json).toJson(QJsonDocument::Compact)));
+  Q_ASSERT(textConfig->m_theme);
+  textConfig->m_inputMode = InputMode::NormalMode;
+  textConfig->m_lineNumberType = VTextEditor::LineNumberType::None;
+  auto config = QSharedPointer<MarkdownEditorConfig>::create(textConfig);
+  config->m_inplacePreviewSources = MarkdownEditorConfig::NoInplacePreview;
+  config->m_autoFoldPreviewedBlocksEnabled = false;
+  config->m_autoNumberOrderedListsEnabled = false;
+  config->m_autoFormatTableSourceEnabled = false;
+  return config;
+}
+
+void showListDecorationFixture(Fixture &p_fixture, const QSize &p_size = QSize(640, 480)) {
+  p_fixture.editor()->setSpellCheckEnabled(false);
+  p_fixture.editor()->resize(p_size);
+  p_fixture.editor()->show();
+  QVERIFY(QTest::qWaitForWindowExposed(p_fixture.editor()));
+  p_fixture.editor()->activateWindow();
+  p_fixture.edit()->setFocus();
+  QTRY_VERIFY_WITH_TIMEOUT(p_fixture.edit()->hasFocus(), 5000);
+  p_fixture.waitForFreshListAst();
+  QTest::qWait(50);
+  QCoreApplication::processEvents();
+}
+
+// Coordinates remain document-local even when the image represents a clipped
+// viewport or has a different device pixel ratio. No internal layout access.
+struct ListDecorationRaster {
+  QImage m_image;
+  QRectF m_clip;
+  qreal m_dpr = 1;
+};
+
+ListDecorationRaster renderListDecorations(Fixture &p_fixture, qreal p_dpr = 1,
+                                           QRectF p_clip = QRectF(), bool p_selections = false) {
+  auto doc = p_fixture.editor()->document();
+  auto layout = doc->documentLayout();
+  if (p_clip.isNull()) {
+    const auto size = layout->documentSize();
+    p_clip = QRectF(0, 0, qMax(size.width(), doc->pageSize().width()), size.height() + 16);
+  }
+  ListDecorationRaster result;
+  result.m_clip = p_clip;
+  result.m_dpr = p_dpr;
+  result.m_image = QImage(qCeil(p_clip.width() * p_dpr), qCeil(p_clip.height() * p_dpr),
+                          QImage::Format_ARGB32_Premultiplied);
+  result.m_image.setDevicePixelRatio(p_dpr);
+  result.m_image.fill(Qt::white);
+  QPainter painter(&result.m_image);
+  painter.translate(-p_clip.topLeft());
+  painter.setClipRect(p_clip);
+  QAbstractTextDocumentLayout::PaintContext context;
+  context.clip = p_clip;
+  context.palette = p_fixture.edit()->palette();
+  // Most checks deliberately inspect the underlay without a selection. The
+  // precedence checks pass the editor's real extra selections and selection.
+  if (p_selections) {
+    for (const auto &extra : p_fixture.edit()->extraSelections()) {
+      QAbstractTextDocumentLayout::Selection selection;
+      selection.cursor = extra.cursor;
+      selection.format = extra.format;
+      context.selections.append(selection);
+    }
+    if (p_fixture.edit()->textCursor().hasSelection()) {
+      QAbstractTextDocumentLayout::Selection selection;
+      selection.cursor = p_fixture.edit()->textCursor();
+      selection.format.setForeground(context.palette.brush(QPalette::HighlightedText));
+      selection.format.setBackground(context.palette.brush(QPalette::Highlight));
+      context.selections.append(selection);
+    }
+  }
+  layout->draw(&painter, context);
+  return result;
+}
+
+QRect listDecorationPixels(const ListDecorationRaster &p_raster, QRectF p_rect = QRectF()) {
+  if (p_rect.isNull()) {
+    return p_raster.m_image.rect();
+  }
+  p_rect = p_rect.intersected(p_raster.m_clip);
+  if (p_rect.isEmpty()) {
+    return QRect();
+  }
+  p_rect.translate(-p_raster.m_clip.topLeft());
+  return QRect(QPoint(qCeil(p_rect.left() * p_raster.m_dpr), qCeil(p_rect.top() * p_raster.m_dpr)),
+               QPoint(qCeil(p_rect.right() * p_raster.m_dpr) - 1,
+                      qCeil(p_rect.bottom() * p_raster.m_dpr) - 1))
+      .intersected(p_raster.m_image.rect());
+}
+
+int listDecorationColorCount(const ListDecorationRaster &p_raster, const QColor &p_color,
+                             const QRectF &p_rect = QRectF()) {
+  const auto pixels = listDecorationPixels(p_raster, p_rect);
+  int count = 0;
+  for (int y = pixels.top(); !pixels.isEmpty() && y <= pixels.bottom(); ++y) {
+    for (int x = pixels.left(); x <= pixels.right(); ++x) {
+      count += p_raster.m_image.pixelColor(x, y) == p_color;
+    }
+  }
+  return count;
+}
+
+QRectF listDecorationColorBounds(const ListDecorationRaster &p_raster, const QColor &p_color) {
+  QRect bounds;
+  for (int y = 0; y < p_raster.m_image.height(); ++y) {
+    for (int x = 0; x < p_raster.m_image.width(); ++x) {
+      if (p_raster.m_image.pixelColor(x, y) == p_color) {
+        bounds |= QRect(x, y, 1, 1);
+      }
+    }
+  }
+  if (bounds.isEmpty()) {
+    return QRectF();
+  }
+  return QRectF(bounds.x() / p_raster.m_dpr, bounds.y() / p_raster.m_dpr,
+                bounds.width() / p_raster.m_dpr, bounds.height() / p_raster.m_dpr)
+      .translated(p_raster.m_clip.topLeft());
+}
+
+QRectF listDecorationLineBand(Fixture &p_fixture, int p_block, int p_line = 0) {
+  auto doc = p_fixture.editor()->document();
+  const auto block = doc->findBlockByNumber(p_block);
+  const auto line = block.layout()->lineAt(p_line);
+  return QRectF(0, doc->documentLayout()->blockBoundingRect(block).top() + line.y(),
+                qMax(doc->pageSize().width(), doc->documentLayout()->documentSize().width()),
+                line.height());
+}
+
+qreal listDecorationMarkerX(Fixture &p_fixture, int p_block, int p_start, int p_end) {
+  const auto block = p_fixture.editor()->document()->findBlockByNumber(p_block);
+  const auto line = block.layout()->lineForTextPosition(p_start);
+  return (line.cursorToX(p_start) + line.cursorToX(p_end)) / 2;
+}
+
+void verifyListGuideBand(const ListDecorationRaster &p_raster, qreal p_x, const QRectF &p_band,
+                         bool p_present, const QColor &p_color = c_listGuideColor) {
+  // Exactly one physical pixel of horizontal tolerance, independent of DPR.
+  const int center = qFloor((p_x - p_raster.m_clip.left()) * p_raster.m_dpr);
+  const auto band = listDecorationPixels(p_raster, p_band.adjusted(0, 1, 0, -1));
+  QVERIFY(!band.isEmpty());
+  for (int y : {band.top(), band.center().y(), band.bottom()}) {
+    int count = 0;
+    for (int x = qMax(0, center - 1); x <= qMin(center + 1, p_raster.m_image.width() - 1); ++x) {
+      count += p_raster.m_image.pixelColor(x, y) == p_color;
+    }
+    if (p_present) {
+      QVERIFY2(count == 1,
+               qPrintable(QStringLiteral("hairline count %1 at x=%2 y=%3 bandTop=%4 DPR=%5")
+                              .arg(count)
+                              .arg(p_x)
+                              .arg(y)
+                              .arg(p_band.top())
+                              .arg(p_raster.m_dpr)));
+    } else {
+      QCOMPARE(count, 0);
+    }
+  }
+}
+
+void verifyListActiveRow(Fixture &p_fixture, const ListDecorationRaster &p_raster, int p_block,
+                         bool p_present, const QColor &p_color = c_listActiveColor) {
+  const auto band = listDecorationLineBand(p_fixture, p_block);
+  // Well inside the content edge, away from this fixture's short source text.
+  const qreal x = band.width() - p_fixture.editor()->document()->documentMargin() - 24;
+  const int px = qFloor((x - p_raster.m_clip.left()) * p_raster.m_dpr);
+  const int py = qFloor((band.center().y() - p_raster.m_clip.top()) * p_raster.m_dpr);
+  QVERIFY(p_raster.m_image.rect().contains(px, py));
+  QCOMPARE(p_raster.m_image.pixelColor(px, py) == p_color, p_present);
+}
+
+void verifyListInkPreserved(const ListDecorationRaster &p_plain,
+                            const ListDecorationRaster &p_guided) {
+  QCOMPARE(p_plain.m_image.size(), p_guided.m_image.size());
+  QCOMPARE(p_plain.m_clip, p_guided.m_clip);
+  int ink = 0;
+  for (int y = 0; y < p_plain.m_image.height(); ++y) {
+    for (int x = 0; x < p_plain.m_image.width(); ++x) {
+      const auto pixel = p_plain.m_image.pixel(x, y);
+      if (pixel != qRgb(255, 255, 255)) {
+        ++ink;
+        QVERIFY2(pixel == p_guided.m_image.pixel(x, y),
+                 qPrintable(QStringLiteral("guide altered glyph pixel (%1, %2)").arg(x).arg(y)));
+      }
+    }
+  }
+  QVERIFY(ink > 0);
+}
+
+QVector<QRectF> listDecorationBlockRects(Fixture &p_fixture) {
+  QVector<QRectF> result;
+  auto doc = p_fixture.editor()->document();
+  for (auto block = doc->firstBlock(); block.isValid(); block = block.next()) {
+    result.append(doc->documentLayout()->blockBoundingRect(block));
+  }
+  return result;
+}
+
+QSharedPointer<PreviewItem> makeListDecorationPreview(QTextDocument *p_doc, int p_block,
+                                                      int p_height) {
+  const auto block = p_doc->findBlockByNumber(p_block);
+  auto item = QSharedPointer<PreviewItem>::create();
+  item->m_blockNumber = p_block;
+  item->m_blockPos = block.position();
+  item->m_startPos = block.position();
+  item->m_endPos = block.position() + qMax(1, block.length() - 1);
+  item->m_isBlockwise = true;
+  item->m_name = QStringLiteral("list_decoration_preview_%1_%2").arg(p_block).arg(p_height);
+  item->m_image = QPixmap(120, p_height);
+  item->m_image.fill(Qt::transparent);
+  // Transparent interior makes a misplaced guide observable even though image
+  // painting itself follows the guide pass. The border locates the reservation.
+  QPainter painter(&item->m_image);
+  painter.fillRect(0, 0, 120, 2, Qt::red);
+  painter.fillRect(0, p_height - 2, 120, 2, Qt::red);
+  painter.fillRect(0, 0, 2, p_height, Qt::red);
+  painter.fillRect(118, 0, 2, p_height, Qt::red);
+  return item;
+}
+} // namespace
+
+void TestMarkdownEditor::testListItemGuides() {
+  // This slot uses no active color and can run before active tint is implemented.
+  const QString source = QStringLiteral("1. parent\n   continuation\n   - child\n"
+                                        "     child text\n2. sibling\n\noutside");
+  Fixture fixture(source, 1, -1, makeListDecorationConfig(c_listGuideColor, QColor()));
+  showListDecorationFixture(fixture);
+  const qreal parentX = listDecorationMarkerX(fixture, 0, 0, 2);
+  const qreal childX = listDecorationMarkerX(fixture, 2, 3, 4);
+  for (qreal dpr : {1.0, 2.0}) {
+    const auto raster = renderListDecorations(fixture, dpr);
+    for (int block : {1, 2, 3}) {
+      verifyListGuideBand(raster, parentX, listDecorationLineBand(fixture, block), true);
+    }
+    verifyListGuideBand(raster, childX, listDecorationLineBand(fixture, 1), false);
+    verifyListGuideBand(raster, childX, listDecorationLineBand(fixture, 2), false);
+    verifyListGuideBand(raster, childX, listDecorationLineBand(fixture, 3), true);
+    for (int block : {4, 6}) {
+      QCOMPARE(listDecorationColorCount(raster, c_listGuideColor,
+                                        listDecorationLineBand(fixture, block)),
+               0);
+    }
+  }
+  QCOMPARE(fixture.text(), source);
+
+  {
+    Fixture single(QStringLiteral("- only"), 0, -1,
+                   makeListDecorationConfig(c_listGuideColor, QColor()));
+    showListDecorationFixture(single);
+    QCOMPARE(listDecorationColorCount(renderListDecorations(single), c_listGuideColor), 0);
+  }
+  {
+    Fixture markers(QStringLiteral("9) parent\n   continuation\n\n- [x] task\n"
+                                   "  continuation\n\noutside"),
+                    0, -1, makeListDecorationConfig(c_listGuideColor, QColor()));
+    showListDecorationFixture(markers);
+    const auto raster = renderListDecorations(markers, 2);
+    verifyListGuideBand(raster, listDecorationMarkerX(markers, 0, 0, 2),
+                        listDecorationLineBand(markers, 1), true);
+    verifyListGuideBand(raster, listDecorationMarkerX(markers, 3, 0, 1),
+                        listDecorationLineBand(markers, 4), true);
+    verifyListGuideBand(raster, listDecorationMarkerX(markers, 3, 2, 5),
+                        listDecorationLineBand(markers, 4), false);
+  }
+
+  // A quote marker is text, while the following tab is a real whitespace run.
+  // Surrogates and bidi text must retain exactly their undecorated glyph pixels.
+  const QString quote = QStringLiteral(
+      "> - \U0001F600 abc \u05d0\u05d1\n>\t continued abc\n>   - child\n>     tail\n\noutside");
+  const QString wrapped = QStringLiteral("- parent\n  ") + QString(220, QLatin1Char('W')) +
+                          QStringLiteral("\n\noutside");
+  for (const auto &text :
+       {quote, QStringLiteral("- parent\nlazy continuation\n\noutside"), wrapped}) {
+    Fixture occlusion(text, 1, -1, makeListDecorationConfig(QColor(), QColor()));
+    showListDecorationFixture(occlusion, QSize(260, 480));
+    const auto rects = listDecorationBlockRects(occlusion);
+    const auto plain1 = renderListDecorations(occlusion);
+    const auto plain2 = renderListDecorations(occlusion, 2);
+    occlusion.editor()->setConfig(makeListDecorationConfig(c_listGuideColor, QColor()));
+    occlusion.waitForFreshListAst();
+    QCOMPARE(listDecorationBlockRects(occlusion), rects);
+    const auto guided1 = renderListDecorations(occlusion);
+    const auto guided2 = renderListDecorations(occlusion, 2);
+    verifyListInkPreserved(plain1, guided1);
+    verifyListInkPreserved(plain2, guided2);
+    const qreal x =
+        listDecorationMarkerX(occlusion, 0, text == quote ? 2 : 0, text == quote ? 3 : 1);
+    if (text == quote) {
+      verifyListGuideBand(guided2, x, listDecorationLineBand(occlusion, 1), true);
+      verifyListGuideBand(guided2, x, listDecorationLineBand(occlusion, 3), true);
+    } else if (text == wrapped) {
+      const auto layout = occlusion.editor()->document()->findBlockByNumber(1).layout();
+      QVERIFY(layout->lineCount() > 2);
+      verifyListGuideBand(guided2, x, listDecorationLineBand(occlusion, 1), true);
+      for (int line = 1; line < layout->lineCount(); ++line) {
+        verifyListGuideBand(guided2, x, listDecorationLineBand(occlusion, 1, line), false);
+      }
+    } else {
+      verifyListGuideBand(guided1, x, listDecorationLineBand(occlusion, 1), false);
+      verifyListGuideBand(guided2, x, listDecorationLineBand(occlusion, 1), false);
+    }
+    QCOMPARE(occlusion.text(), text);
+  }
+
+  QString longItem = QStringLiteral("- parent\n");
+  for (int i = 0; i < 70; ++i) {
+    longItem += QStringLiteral("  continuation %1 with enough words to wrap on resize\n").arg(i);
+  }
+  longItem += QStringLiteral("\noutside");
+  Fixture scrolled(longItem, 22, -1, makeListDecorationConfig(c_listGuideColor, QColor()));
+  showListDecorationFixture(scrolled, QSize(460, 260));
+  for (int zoom : {0, 2, 0}) {
+    scrolled.editor()->resize(zoom == 2 ? 300 : 460, 260);
+    scrolled.editor()->zoom(zoom);
+    QCoreApplication::processEvents();
+    scrolled.moveTo(22);
+    TextEditUtils::scrollBlockInPage(scrolled.edit(), 20, TextEditUtils::PagePosition::Top);
+    QCoreApplication::processEvents();
+    const int first = TextEditUtils::firstVisibleBlock(scrolled.edit()).blockNumber();
+    QVERIFY(first > 0);
+    const QRectF clip(0, TextEditUtils::contentOffsetAtTop(scrolled.edit()),
+                      scrolled.edit()->viewport()->width(), scrolled.edit()->viewport()->height());
+    QVERIFY(listDecorationLineBand(scrolled, 0).bottom() < clip.top());
+    const qreal x = listDecorationMarkerX(scrolled, 0, 0, 1);
+    for (qreal dpr : {1.0, 2.0}) {
+      const auto raster = renderListDecorations(scrolled, dpr, clip);
+      verifyListGuideBand(raster, x, listDecorationLineBand(scrolled, first + 1), true);
+    }
+    auto doc = scrolled.editor()->document();
+    const auto block = doc->findBlockByNumber(first + 1);
+    const auto line = block.layout()->lineAt(0);
+    const QPointF point(line.cursorToX(5),
+                        listDecorationLineBand(scrolled, first + 1).center().y());
+    QCOMPARE(doc->documentLayout()->hitTest(point, Qt::FuzzyHit), block.position() + 5);
+    QCOMPARE(scrolled.text(), longItem);
+  }
+}
+
+void TestMarkdownEditor::testListItemActiveBackground() {
+  const QString source = QStringLiteral("1. parent\n   continuation\n   - child\n"
+                                        "     child text\n2. sibling\n\noutside");
+  Fixture fixture(source, 1, -1, makeListDecorationConfig());
+  showListDecorationFixture(fixture);
+  auto verifyScope = [&](const QList<int> &rows) {
+    const auto raster = renderListDecorations(fixture);
+    for (int block : {0, 1, 2, 3, 4, 6}) {
+      verifyListActiveRow(fixture, raster, block, rows.contains(block));
+    }
+  };
+  verifyScope({0, 1, 2, 3});
+  fixture.moveTo(3);
+  verifyScope({2, 3});
+  fixture.moveTo(4);
+  verifyScope({4});
+  fixture.moveTo(6);
+  verifyScope({});
+  fixture.select(1, 3, 3, 5);
+  verifyScope({2, 3});
+  fixture.select(3, 5, 1, 3);
+  verifyScope({0, 1, 2, 3});
+  fixture.edit()->setOverriddenSelection(
+      fixture.editor()->document()->findBlockByNumber(3).position(), fixture.blockEnd(3));
+  verifyScope({0, 1, 2, 3});
+  fixture.edit()->clearOverriddenSelection();
+  QCOMPARE(fixture.text(), source);
+
+  {
+    Fixture sameLine(QStringLiteral("- - child\n    child text\n\n  outer tail\n\noutside"), 0, 1,
+                     makeListDecorationConfig());
+    showListDecorationFixture(sameLine);
+    auto raster = renderListDecorations(sameLine);
+    for (int block : {0, 1, 2, 3}) {
+      verifyListActiveRow(sameLine, raster, block, true);
+    }
+    sameLine.select(0, 4, 0, 4);
+    raster = renderListDecorations(sameLine);
+    verifyListActiveRow(sameLine, raster, 0, true);
+    verifyListActiveRow(sameLine, raster, 1, true);
+    verifyListActiveRow(sameLine, raster, 3, false);
+    sameLine.select(0, 4, 0, 1);
+    verifyListActiveRow(sameLine, renderListDecorations(sameLine), 3, true);
+    sameLine.select(0, 1, 0, 4);
+    verifyListActiveRow(sameLine, renderListDecorations(sameLine), 3, false);
+  }
+  {
+    Fixture indented(QStringLiteral("  - parent\n    body\n\noutside"), 0, 0,
+                     makeListDecorationConfig());
+    showListDecorationFixture(indented);
+    QCOMPARE(listDecorationColorCount(renderListDecorations(indented), c_listActiveColor), 0);
+    indented.select(0, 2, 0, 2);
+    verifyListActiveRow(indented, renderListDecorations(indented), 1, true);
+  }
+  for (const auto &source : {QStringLiteral("- parent\nlazy continuation\n\noutside"),
+                             QStringLiteral("- parent\n\n  continuation\n\noutside")}) {
+    Fixture owned(source, 0, -1, makeListDecorationConfig());
+    showListDecorationFixture(owned);
+    const auto raster = renderListDecorations(owned, 2);
+    verifyListActiveRow(owned, raster, 1, true); // Lazy text or an ITEM-owned blank row.
+    verifyListActiveRow(owned, raster, owned.editor()->document()->blockCount() - 1, false);
+  }
+  {
+    Fixture wrapped(QStringLiteral("- parent\n  ") + QString(180, QLatin1Char('W')), 1, -1,
+                    makeListDecorationConfig());
+    showListDecorationFixture(wrapped, QSize(260, 480));
+    const auto layout = wrapped.editor()->document()->findBlockByNumber(1).layout();
+    QVERIFY(layout->lineCount() > 2);
+    const auto raster = renderListDecorations(wrapped, 2);
+    for (int line = 0; line < layout->lineCount(); ++line) {
+      QVERIFY(listDecorationColorCount(raster, c_listActiveColor,
+                                       listDecorationLineBand(wrapped, 1, line)) > 0);
+    }
+  }
+}
+
+void TestMarkdownEditor::testListItemDecorationsFreshness() {
+  {
+    Fixture typing(QStringLiteral("- parent\n  before\n  after\n- sibling\n"
+                                  "  typing\n  untouched\n\noutside"),
+                   4, -1, makeListDecorationConfig());
+    showListDecorationFixture(typing);
+    const qreal parentX = listDecorationMarkerX(typing, 0, 0, 1);
+    const qreal siblingX = listDecorationMarkerX(typing, 3, 0, 1);
+    // Render synchronously after each edit, before another full parse can run.
+    // Guides in the untouched item and the active item's untouched rows stay visible.
+    for (const auto character : QStringLiteral("xyz")) {
+      typing.edit()->insertPlainText(QString(character));
+      const auto raster = renderListDecorations(typing);
+      for (int block : {1, 2}) {
+        verifyListGuideBand(raster, parentX, listDecorationLineBand(typing, block), true);
+        verifyListActiveRow(typing, raster, block, false);
+      }
+      for (int block : {4, 5}) {
+        verifyListGuideBand(raster, siblingX, listDecorationLineBand(typing, block), true);
+      }
+      for (int block : {3, 4, 5}) {
+        verifyListActiveRow(typing, raster, block, true);
+      }
+      verifyListActiveRow(typing, raster, 7, false);
+    }
+    QCOMPARE(typing.blockText(4), QStringLiteral("  typingxyz"));
+  }
+
+  {
+    const QString source = QStringLiteral("intro\n\n1. parent\n   body\n   - - child\n"
+                                          "       tail\n\n     outer tail\n2. sibling\n"
+                                          "   end\n\noutside");
+    Fixture stable(source, 2, -1, makeListDecorationConfig());
+    showListDecorationFixture(stable);
+    const qreal parentX = listDecorationMarkerX(stable, 2, 0, 2);
+    const qreal outerX = listDecorationMarkerX(stable, 4, 3, 4);
+    const qreal innerX = listDecorationMarkerX(stable, 4, 5, 6);
+    const qreal siblingX = listDecorationMarkerX(stable, 8, 0, 2);
+    auto verifyStable = [&]() {
+      // Lookup must use the same block/column ordering as the cached anchors,
+      // including two markers on one line after an edit in a preceding block.
+      for (int column : {4, 6}) {
+        stable.select(4, column, 4, column);
+        for (qreal dpr : {1.0, 2.0}) {
+          const auto raster = renderListDecorations(stable, dpr);
+          verifyListGuideBand(raster, parentX, listDecorationLineBand(stable, 3), true);
+          for (qreal x : {parentX, outerX, innerX}) {
+            verifyListGuideBand(raster, x, listDecorationLineBand(stable, 5), true);
+          }
+          verifyListGuideBand(raster, siblingX, listDecorationLineBand(stable, 9), true);
+          verifyListActiveRow(stable, raster, 3, false);
+          verifyListActiveRow(stable, raster, 5, true);
+          verifyListActiveRow(stable, raster, 7, column == 4);
+          verifyListActiveRow(stable, raster, 9, false);
+        }
+      }
+    };
+    verifyStable();
+    auto doc = stable.editor()->document();
+    const QString added = QStringLiteral("xyz\U0001F680");
+    for (int block : {0, 2, 3, 7}) {
+      QTextCursor edit(doc->findBlockByNumber(block));
+      edit.movePosition(QTextCursor::EndOfBlock);
+      const int end = edit.position();
+      edit.insertText(added);
+      verifyStable(); // No event processing or parse between the edit and draw.
+      edit.setPosition(end, QTextCursor::KeepAnchor);
+      edit.removeSelectedText();
+      verifyStable();
+    }
+    QCOMPARE(stable.text(), source);
+    stable.waitForFreshListAst();
+    verifyStable();
+  }
+
+  const QString source = QStringLiteral("- parent\n  continuation\n\noutside");
+  Fixture fixture(source, 1, -1, makeListDecorationConfig());
+  showListDecorationFixture(fixture);
+  auto doc = fixture.editor()->document();
+  auto verifyAbsent = [&]() {
+    const auto raster = renderListDecorations(fixture);
+    QCOMPARE(listDecorationColorCount(raster, c_listGuideColor), 0);
+    QCOMPARE(listDecorationColorCount(raster, c_listActiveColor), 0);
+  };
+  auto verifyRestored = [&]() {
+    fixture.moveTo(1);
+    const auto raster = renderListDecorations(fixture);
+    verifyListGuideBand(raster, listDecorationMarkerX(fixture, 0, 0, 1),
+                        listDecorationLineBand(fixture, 1), true);
+    verifyListActiveRow(fixture, raster, 1, true);
+  };
+  verifyRestored();
+  QTextCursor edit(doc);
+  edit.setPosition(0);
+  edit.setPosition(2, QTextCursor::KeepAnchor);
+  edit.removeSelectedText();
+  // Structural edits may leave stale decoration until the full result replaces it.
+  verifyListActiveRow(fixture, renderListDecorations(fixture), 1, true);
+  fixture.waitForFreshListAst();
+  verifyAbsent();
+  doc->undo();
+  verifyAbsent();
+  fixture.waitForFreshListAst();
+  QCOMPARE(fixture.text(), source);
+  verifyRestored();
+  doc->redo();
+  verifyListActiveRow(fixture, renderListDecorations(fixture), 1, true);
+  fixture.waitForFreshListAst();
+  verifyAbsent();
+
+  edit.setPosition(0);
+  edit.insertText(QStringLiteral("- "));
+  verifyAbsent(); // The retained result has no list until a new full result arrives.
+  fixture.waitForFreshListAst();
+  verifyRestored();
+  fixture.waitForFreshListAst(); // Matched updateHighlight() re-publication remains visible.
+  verifyRestored();
+
+  const auto rects = listDecorationBlockRects(fixture);
+  const auto size = doc->documentLayout()->documentSize();
+  const int revision = doc->revision();
+  const int undoSteps = doc->availableUndoSteps();
+  const int redoSteps = doc->availableRedoSteps();
+  const bool modified = doc->isModified();
+  for (int block : {0, 1, 3, 1, 0, 3}) {
+    fixture.moveTo(block);
+    renderListDecorations(fixture);
+    renderListDecorations(fixture, 2);
+  }
+  QCoreApplication::processEvents();
+  QCOMPARE(fixture.text(), source);
+  QCOMPARE(doc->revision(), revision);
+  QCOMPARE(doc->availableUndoSteps(), undoSteps);
+  QCOMPARE(doc->availableRedoSteps(), redoSteps);
+  QCOMPARE(doc->isModified(), modified);
+  QCOMPARE(doc->documentLayout()->documentSize(), size);
+  QCOMPARE(listDecorationBlockRects(fixture), rects);
+
+  fixture.editor()->setText(QStringLiteral("1. parent\n   continuation\n2. sibling\n   tail"));
+  fixture.waitForFreshListAst();
+  edit = QTextCursor(doc);
+  edit.setPosition(doc->findBlockByNumber(2).position());
+  edit.insertText(QStringLiteral("\nabcjdkejj\n\n")); // testListAutoNumberSplit separator.
+  fixture.waitForFreshListAst();
+  fixture.moveTo(1);
+  auto raster = renderListDecorations(fixture);
+  verifyListActiveRow(fixture, raster, 1, true);
+  verifyListActiveRow(fixture, raster, 3, false);
+  QCOMPARE(listDecorationColorCount(raster, c_listGuideColor, listDecorationLineBand(fixture, 3)),
+           0);
+  fixture.moveTo(6);
+  raster = renderListDecorations(fixture);
+  verifyListActiveRow(fixture, raster, 0, false);
+  verifyListActiveRow(fixture, raster, 5, true);
+  verifyListActiveRow(fixture, raster, 6, true);
+  verifyListGuideBand(raster, listDecorationMarkerX(fixture, 5, 0, 2),
+                      listDecorationLineBand(fixture, 6), true);
+  QCOMPARE(fixture.text(), QStringLiteral("1. parent\n   continuation\n\nabcjdkejj\n\n"
+                                          "2. sibling\n   tail")); // Numbering is disabled.
+  doc->clear();
+  fixture.waitForFreshListAst();
+  verifyAbsent();
+  fixture.editor()->setText(source);
+  verifyAbsent();
+  fixture.waitForFreshListAst();
+  verifyRestored();
+}
+
+void TestMarkdownEditor::testListItemDecorationsGeometry() {
+  const QString source = QStringLiteral("1. parent \U0001F600 \u05d0\u05d1\n"
+                                        "   continuation\n   - child\n     child text\n\noutside");
+  Fixture fixture(source, 1, -1, makeListDecorationConfig(QColor(), QColor()));
+  showListDecorationFixture(fixture);
+  auto doc = fixture.editor()->document();
+  const auto rects = listDecorationBlockRects(fixture);
+  const auto size = doc->documentLayout()->documentSize();
+  const auto cursorRect = fixture.edit()->cursorRect();
+  const int cursorPosition = fixture.edit()->textCursor().position();
+  const auto body = doc->findBlockByNumber(1);
+  const auto line = body.layout()->lineAt(0);
+  const QPointF hitPoint(line.cursorToX(5), listDecorationLineBand(fixture, 1).center().y());
+  const int hit = doc->documentLayout()->hitTest(hitPoint, Qt::FuzzyHit);
+  QCOMPARE(hit, body.position() + 5);
+  const QColor otherGuide(QStringLiteral("#004ee8"));
+  const QColor otherActive(QStringLiteral("#f0c1e5"));
+  const QList<QPair<QColor, QColor>> colors{{c_listGuideColor, QColor()},
+                                            {QColor(), c_listActiveColor},
+                                            {c_listGuideColor, c_listActiveColor},
+                                            {otherGuide, otherActive},
+                                            {QColor(), QColor()}};
+  for (const auto &colorsForConfig : colors) {
+    // A complete new config/theme, not a mutation of TextEditorConfig::defaultTheme().
+    fixture.editor()->setConfig(
+        makeListDecorationConfig(colorsForConfig.first, colorsForConfig.second));
+    fixture.waitForFreshListAst();
+    QCoreApplication::processEvents();
+    QCOMPARE(listDecorationBlockRects(fixture), rects);
+    QCOMPARE(doc->documentLayout()->documentSize(), size);
+    QCOMPARE(fixture.edit()->cursorRect(), cursorRect);
+    QCOMPARE(fixture.edit()->textCursor().position(), cursorPosition);
+    QCOMPARE(doc->documentLayout()->hitTest(hitPoint, Qt::FuzzyHit), hit);
+    for (qreal dpr : {1.0, 2.0}) {
+      const auto raster = renderListDecorations(fixture, dpr);
+      if (colorsForConfig.first.isValid()) {
+        verifyListGuideBand(raster, listDecorationMarkerX(fixture, 0, 0, 2),
+                            listDecorationLineBand(fixture, 1), true, colorsForConfig.first);
+      }
+      if (colorsForConfig.second.isValid()) {
+        verifyListActiveRow(fixture, raster, 1, true, colorsForConfig.second);
+        verifyListActiveRow(fixture, raster, 3, true, colorsForConfig.second);
+      }
+      for (const auto &oldColor : {c_listGuideColor, otherGuide}) {
+        if (oldColor != colorsForConfig.first) {
+          QCOMPARE(listDecorationColorCount(raster, oldColor), 0);
+        }
+      }
+      for (const auto &oldColor : {c_listActiveColor, otherActive}) {
+        if (oldColor != colorsForConfig.second) {
+          QCOMPARE(listDecorationColorCount(raster, oldColor), 0);
+        }
+      }
+    }
+    QCOMPARE(fixture.text(), source);
+  }
+
+  {
+    Fixture precedence(
+        QStringLiteral("- parent\n  `code` body\n  tail\n\noutside"), 1, -1,
+        makeListDecorationConfig(c_listGuideColor, c_listActiveColor, c_listCursorLineColor));
+    showListDecorationFixture(precedence);
+    auto raster = renderListDecorations(precedence, 1, QRectF(), true);
+    verifyListActiveRow(precedence, raster, 1, true, c_listCursorLineColor);
+    verifyListActiveRow(precedence, raster, 2, true);
+    precedence.select(1, 9, 1, 13);
+    raster = renderListDecorations(precedence, 1, QRectF(), true);
+    const auto selectionBand = listDecorationLineBand(precedence, 1);
+    QVERIFY(listDecorationColorCount(raster, c_listSelectionColor, selectionBand) > 0);
+    // Syntax background survives the tint on a different, non-current source row.
+    precedence.moveTo(2);
+    raster = renderListDecorations(precedence, 2, QRectF(), true);
+    QVERIFY(listDecorationColorCount(raster, c_listSyntaxColor,
+                                     listDecorationLineBand(precedence, 1)) > 0);
+    verifyListActiveRow(precedence, raster, 1, true);
+  }
+
+  QString sourceRows = QStringLiteral("- parent\n");
+  for (int i = 0; i < 60; ++i) {
+    sourceRows += QStringLiteral("  row %1 with wrapping words and more wrapping words\n").arg(i);
+  }
+  sourceRows += QStringLiteral("\noutside");
+  Fixture scrolled(sourceRows, 25, -1, makeListDecorationConfig());
+  showListDecorationFixture(scrolled, QSize(340, 260));
+  for (int zoom : {2, 0}) {
+    scrolled.editor()->zoom(zoom);
+    scrolled.editor()->resize(zoom == 2 ? 280 : 340, 260);
+    QCoreApplication::processEvents();
+    scrolled.moveTo(25);
+    TextEditUtils::scrollBlockInPage(scrolled.edit(), 23, TextEditUtils::PagePosition::Top);
+    QCoreApplication::processEvents();
+    const int top = TextEditUtils::contentOffsetAtTop(scrolled.edit());
+    const int first = TextEditUtils::firstVisibleBlock(scrolled.edit()).blockNumber();
+    QVERIFY(first > 0);
+    const QRectF clip(0, top, scrolled.edit()->viewport()->width(),
+                      scrolled.edit()->viewport()->height());
+    const auto raster = renderListDecorations(scrolled, 2, clip);
+    const auto band = listDecorationLineBand(scrolled, first + 1);
+    verifyListGuideBand(raster, listDecorationMarkerX(scrolled, 0, 0, 1), band, true);
+    QVERIFY(listDecorationColorCount(raster, c_listActiveColor, band) > 0);
+    const auto enabledRects = listDecorationBlockRects(scrolled);
+    const auto enabledCursor = scrolled.edit()->cursorRect();
+    // setConfig() applies the theme's font independently of zoom. Keep the
+    // presented font identical so this comparison isolates decoration colors.
+    const int pointSize = scrolled.editor()->editorFontPointSize();
+    scrolled.editor()->setConfig(makeListDecorationConfig(QColor(), QColor(), QColor(), pointSize));
+    scrolled.waitForFreshListAst();
+    QCOMPARE(listDecorationBlockRects(scrolled), enabledRects);
+    QCOMPARE(scrolled.edit()->cursorRect(), enabledCursor);
+    QCOMPARE(TextEditUtils::contentOffsetAtTop(scrolled.edit()), top);
+    const auto disabled = renderListDecorations(scrolled, 2, clip);
+    QCOMPARE(listDecorationColorCount(disabled, c_listGuideColor), 0);
+    QCOMPARE(listDecorationColorCount(disabled, c_listActiveColor), 0);
+    scrolled.editor()->setConfig(
+        makeListDecorationConfig(c_listGuideColor, c_listActiveColor, QColor(), pointSize));
+    scrolled.waitForFreshListAst();
+    QCOMPARE(scrolled.text(), sourceRows);
+  }
+}
+
+void TestMarkdownEditor::testListItemDecorationsFoldingAndPreviews() {
+  {
+    const QString source = QStringLiteral("- parent\n  ```text\n  alpha\n  beta\n  ```\n"
+                                          "  after\n\noutside");
+    Fixture fixture(source, 2, -1, makeListDecorationConfig());
+    showListDecorationFixture(fixture);
+    auto doc = fixture.editor()->document();
+    const qreal expandedHeight = doc->documentLayout()->documentSize().height();
+    const auto expandedRects = listDecorationBlockRects(fixture);
+    QVERIFY(fixture.editor()->foldAtCursor());
+    QTRY_VERIFY_WITH_TIMEOUT(!doc->findBlockByNumber(2).isVisible(), 5000);
+    QVERIFY(!doc->findBlockByNumber(3).isVisible());
+    const qreal foldedHeight = doc->documentLayout()->documentSize().height();
+    QVERIFY(foldedHeight < expandedHeight);
+    QCOMPARE(doc->documentLayout()->blockBoundingRect(doc->findBlockByNumber(2)).height(), 0.0);
+    QCOMPARE(doc->documentLayout()->blockBoundingRect(doc->findBlockByNumber(3)).height(), 0.0);
+    auto raster = renderListDecorations(fixture);
+    verifyListGuideBand(raster, listDecorationMarkerX(fixture, 0, 0, 1),
+                        listDecorationLineBand(fixture, 5), true);
+    verifyListActiveRow(fixture, raster, 5, true);
+    QCOMPARE(doc->documentLayout()->documentSize().height(), foldedHeight);
+    QVERIFY(fixture.editor()->unfoldAtCursor());
+    QTRY_VERIFY_WITH_TIMEOUT(doc->findBlockByNumber(2).isVisible(), 5000);
+    QVERIFY(doc->findBlockByNumber(3).isVisible());
+    QCOMPARE(listDecorationBlockRects(fixture), expandedRects);
+    QCOMPARE(doc->documentLayout()->documentSize().height(), expandedHeight);
+    fixture.moveTo(2);
+    raster = renderListDecorations(fixture);
+    verifyListActiveRow(fixture, raster, 2, true);
+
+    auto mgr = fixture.editor()->getPreviewMgr();
+    mgr->setPreviewEnabled(PreviewData::CodeBlock, true);
+    qreal previousAfter = 0;
+    for (int height : {60, 130}) {
+      mgr->updateCodeBlocks({makeListDecorationPreview(doc, 2, height)});
+      QCoreApplication::processEvents();
+      raster = renderListDecorations(fixture, 2);
+      const auto imageRect = listDecorationColorBounds(raster, Qt::red);
+      QVERIFY(!imageRect.isEmpty());
+      QVERIFY2(qAbs(imageRect.height() - height) <= 1,
+               qPrintable(QStringLiteral("painted height %1, requested %2")
+                              .arg(imageRect.height())
+                              .arg(height)));
+      const qreal x = listDecorationMarkerX(fixture, 0, 0, 1);
+      QVERIFY(imageRect.left() <= x && x <= imageRect.right());
+      QCOMPARE(listDecorationColorCount(raster, c_listGuideColor, imageRect), 0);
+      verifyListGuideBand(raster, x, listDecorationLineBand(fixture, 5), true);
+      verifyListActiveRow(fixture, raster, 5, true);
+      const qreal after = listDecorationLineBand(fixture, 5).top();
+      if (previousAfter > 0) {
+        QVERIFY(qAbs(after - previousAfter - 70) <= 1);
+      }
+      previousAfter = after;
+      QCOMPARE(fixture.text(), source);
+    }
+  }
+  {
+    // The terminal preview bottom, not the last block's extra padding, ends both decorations.
+    Fixture ending(QStringLiteral("- parent\n  body"), 1, -1, makeListDecorationConfig());
+    showListDecorationFixture(ending);
+    auto doc = ending.editor()->document();
+    ending.editor()->getPreviewMgr()->setPreviewEnabled(PreviewData::CodeBlock, true);
+    ending.editor()->getPreviewMgr()->updateCodeBlocks({makeListDecorationPreview(doc, 1, 60)});
+    QCoreApplication::processEvents();
+    const auto raster = renderListDecorations(ending, 2);
+    const auto imageRect = listDecorationColorBounds(raster, Qt::red);
+    QVERIFY(!imageRect.isEmpty());
+    const QRectF below(0, imageRect.bottom() + 1, raster.m_clip.width(),
+                       raster.m_clip.bottom() - imageRect.bottom() - 1);
+    QCOMPARE(listDecorationColorCount(raster, c_listGuideColor, below), 0);
+    QCOMPARE(listDecorationColorCount(raster, c_listActiveColor, below), 0);
+  }
+  {
+    auto config = makeListDecorationConfig();
+    config->m_inplacePreviewSources = MarkdownEditorConfig::Table;
+    const QString source = QStringLiteral("- parent\n\n  | h1 | h2 |\n  | --- | --- |\n"
+                                          "  | a | b |\n\n  tail\n\noutside");
+    Fixture table(source, 6, -1, config);
+    showListDecorationFixture(table, QSize(680, 560));
+    auto widgets = [&]() {
+      return table.edit()->viewport()->findChildren<PreviewWidget *>(QString(),
+                                                                     Qt::FindDirectChildrenOnly);
+    };
+    QTRY_COMPARE_WITH_TIMEOUT(widgets().size(), 1, 5000);
+    auto widget = widgets().first();
+    QTRY_VERIFY_WITH_TIMEOUT(widget->isVisible(), 5000);
+    auto sheet = widget->findChild<QTextEdit *>();
+    QVERIFY(sheet);
+    table.moveTo(6);
+    const auto raster = renderListDecorations(table, 2);
+    const QRectF widgetRect = QRectF(widget->geometry())
+                                  .translated(table.edit()->horizontalScrollBar()->value(),
+                                              TextEditUtils::contentOffsetAtTop(table.edit()));
+    const qreal x = listDecorationMarkerX(table, 0, 0, 1);
+    QVERIFY(widgetRect.left() <= x && x <= widgetRect.right());
+    QCOMPARE(listDecorationColorCount(raster, c_listGuideColor, widgetRect), 0);
+    verifyListGuideBand(raster, x, listDecorationLineBand(table, 6), true);
+    verifyListActiveRow(table, raster, 0, true);
+    auto verifyChildSurface = [&]() {
+      // The source underlay must not recolor the embedded sheet itself.
+      ListDecorationRaster child;
+      child.m_image = widget->grab().toImage();
+      QVERIFY(!child.m_image.isNull());
+      QCOMPARE(listDecorationColorCount(child, c_listActiveColor), 0);
+      QCOMPARE(listDecorationColorCount(child, c_listGuideColor), 0);
+    };
+    verifyChildSurface();
+    sheet->setFocus();
+    QTRY_VERIFY_WITH_TIMEOUT(table.edit()->isViewportWidgetFocused(), 5000);
+    const auto focused = renderListDecorations(table, 2);
+    QCOMPARE(listDecorationColorCount(focused, c_listActiveColor), 0);
+    verifyListGuideBand(focused, x, listDecorationLineBand(table, 6), true);
+    verifyChildSurface();
+    table.edit()->setFocus();
+    QTRY_VERIFY_WITH_TIMEOUT(table.edit()->hasFocus(), 5000);
+    verifyListActiveRow(table, renderListDecorations(table, 2), 0, true);
+    QCOMPARE(table.text(), source);
+  }
+  {
+    const QString source =
+        QStringLiteral("- parent\n  continuation\n  - child\n    child text\n\noutside");
+    Fixture ime(source, 1, -1, makeListDecorationConfig());
+    showListDecorationFixture(ime);
+    auto doc = ime.editor()->document();
+    const QString composition = QStringLiteral("\u3042");
+    for (int block : {1, 0}) {
+      ime.moveTo(block);
+      const int cursor = ime.edit()->textCursor().position();
+      QInputMethodEvent preedit(composition, QList<QInputMethodEvent::Attribute>());
+      QCoreApplication::sendEvent(ime.edit(), &preedit);
+      QCOMPARE(doc->findBlockByNumber(block).layout()->preeditAreaText(), composition);
+      // Composition keeps cached ownership; paint omits only its preedit block.
+      const auto raster = renderListDecorations(ime, 2);
+      const auto band = listDecorationLineBand(ime, block);
+      QCOMPARE(listDecorationColorCount(raster, c_listGuideColor, band), 0);
+      QCOMPARE(listDecorationColorCount(raster, c_listActiveColor, band), 0);
+      const qreal parentX = listDecorationMarkerX(ime, 0, 0, 1);
+      if (block == 0) {
+        verifyListGuideBand(raster, parentX, listDecorationLineBand(ime, 1), false);
+      }
+      verifyListGuideBand(raster, listDecorationMarkerX(ime, 2, 2, 3),
+                          listDecorationLineBand(ime, 3), true);
+      verifyListActiveRow(ime, raster, 3, true);
+      QCOMPARE(ime.text(), source);
+      QCOMPARE(ime.edit()->textCursor().position(), cursor);
+      QCOMPARE(doc->findBlockByNumber(block).layout()->preeditAreaText(), composition);
+      QInputMethodEvent cancel;
+      QCoreApplication::sendEvent(ime.edit(), &cancel);
+      QCOMPARE(doc->findBlockByNumber(block).layout()->preeditAreaText(), QString());
+      const auto restored = renderListDecorations(ime, 2);
+      verifyListGuideBand(restored, listDecorationMarkerX(ime, 0, 0, 1),
+                          listDecorationLineBand(ime, 1), true);
+      verifyListActiveRow(ime, restored, block, true);
+    }
+    ime.moveTo(1);
+    QInputMethodEvent preedit(composition, QList<QInputMethodEvent::Attribute>());
+    QCoreApplication::sendEvent(ime.edit(), &preedit);
+    QInputMethodEvent commit;
+    commit.setCommitString(composition);
+    QCoreApplication::sendEvent(ime.edit(), &commit);
+    verifyListActiveRow(ime, renderListDecorations(ime), 1, true);
+    ime.waitForFreshListAst();
+    QCOMPARE(ime.blockText(1), QStringLiteral("  continuation\u3042"));
+    QCOMPARE(doc->findBlockByNumber(1).layout()->preeditAreaText(), QString());
+    verifyListActiveRow(ime, renderListDecorations(ime), 1, true);
+  }
 }
 
 QTEST_MAIN(tests::TestMarkdownEditor)

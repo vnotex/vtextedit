@@ -49,6 +49,8 @@ enum class PagePosition { Top, Center, Bottom };
 
 enum NewLineIndent { Indent, NoIndent };
 
+enum class NewLinePosition { Below, Above };
+
 Q_DECLARE_FLAGS(SearchOptions, SearchOption)
 Q_DECLARE_OPERATORS_FOR_FLAGS(SearchOptions)
 
@@ -189,7 +191,8 @@ public:
 
   virtual void backspace() = 0;
 
-  virtual void newLine(KateViI::NewLineIndent p_indent = KateViI::NewLineIndent::Indent) = 0;
+  virtual void newLine(KateViI::NewLineIndent p_indent = KateViI::NewLineIndent::Indent,
+                       KateViI::NewLinePosition p_position = KateViI::NewLinePosition::Below) = 0;
 
   virtual void abortCompletion() = 0;
 

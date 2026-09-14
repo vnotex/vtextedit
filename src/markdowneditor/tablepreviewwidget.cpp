@@ -1785,6 +1785,7 @@ TablePreviewDocument::cellInlineData(const QString &p_source) {
     if (!parsed.blocksHighlights.isEmpty()) {
       entry.m_units = std::move(parsed.blocksHighlights.first());
     }
+    entry.m_overlays = parsed.blockOverlays.take(0);
     entry.imageElements = std::move(parsed.imageElements);
     entry.mathElements = std::move(parsed.mathElements);
     it = m_cellHighlightCache.insert(p_source, std::move(entry));
@@ -1859,7 +1860,8 @@ bool TablePreviewDocument::refreshCellSyntaxFormats(int p_start, int p_end) {
       }
       applyCellFormat(r, c);
       if (cached != m_cellHighlightCache.end()) {
-        applyCellSyntaxFormats(r, c, md::resolveFormatRuns(cached->m_units, m_syntaxStyles));
+        applyCellSyntaxFormats(
+            r, c, md::resolveFormatRuns(cached->m_units, m_syntaxStyles, cached->m_overlays));
       }
     }
   }

@@ -676,6 +676,7 @@ private:
 
   struct CellHighlightCacheEntry {
     QVector<md::HLUnit> m_units;
+    QVector<md::HLUnitStyle> m_overlays;
     QVector<md::ImageElement> imageElements;
     QVector<md::MathElement> mathElements;
     bool m_used = false;

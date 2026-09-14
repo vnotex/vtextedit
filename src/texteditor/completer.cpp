@@ -252,7 +252,7 @@ void Completer::next(bool p_reversed) {
 
 void Completer::cleanUp() {
   auto doc = m_interface ? m_interface->document() : nullptr;
-  QTimer::singleShot(0, [this, doc]() {
+  QTimer::singleShot(0, this, [this, doc]() {
     setWidget(nullptr);
     if (doc) {
       disconnect(doc, 0, this, 0);

@@ -159,6 +159,30 @@ private slots:
   void testHeadingSourceLayoutDeferral();
   void testHeadingSourceGuaranteeReset();
   void testHeadingSourceTableCoexistence();
+  // AST-aware Enter and opt-in automatic ordered-list source numbering.
+  void testListAstContinuation();
+  void testListAstExitAndSelection();
+  void testListAstCodeAndStaleness();
+  void testListAutoNumberStructuralEdits();
+  void testListAutoNumberSplit();
+  void testListAutoNumberNestedWidths();
+  void testListAutoNumberConfigAndReplay();
+  void testListAutoNumberProtectedPositions();
+  void testListAndTableSourceFormatting();
+  void testListAutoNumberStaleWorker();
+
+  // AST-owned list-item decorations through public document-layout painting.
+  void testListItemGuides();
+  void testListItemActiveBackground();
+  void testListItemDecorationsFreshness();
+  void testListItemDecorationsGeometry();
+  void testListItemDecorationsFoldingAndPreviews();
+  // Vi open-line completion through the real normal/insert-mode key pipeline.
+  void testViListOpenLines();
+  void testViListOpenContext();
+  void testViListOpenNumbering();
+  void testViListOpenUndoAndReplay();
+  void testViListInsertReturn();
 };
 } // namespace tests
 

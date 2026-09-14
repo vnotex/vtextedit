@@ -26,6 +26,8 @@
 #include <katevi/katevi_export.h>
 #include <modes/modebase.h>
 
+#include <QTextCursor>
+
 class QKeyEvent;
 
 namespace KateVi {
@@ -75,9 +77,7 @@ public:
 
   void setCount(int count) { m_count = count; }
 
-  void setCountedRepeatsBeginOnNewLine(bool countedRepeatsBeginOnNewLine) {
-    m_countedRepeatsBeginOnNewLine = countedRepeatsBeginOnNewLine;
-  }
+  void setCountedRepeatsBeginOnNewLine(bool p_enabled);
 
 protected:
   void leaveInsertMode(bool force = false);
@@ -99,6 +99,10 @@ protected:
   unsigned int m_count = 1;
 
   bool m_countedRepeatsBeginOnNewLine = false;
+
+  // Captured after the open-line prefix; stays before the user's inserted text
+  // and rebases through document edits without depending on the mark backend.
+  QTextCursor m_countedInsertStart;
 
   bool m_isExecutingCompletion = false;
 

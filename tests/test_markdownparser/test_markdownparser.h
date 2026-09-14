@@ -18,11 +18,17 @@ private slots:
   void testFencedCodeBlocks();
   void testFencedCodeBlockIndentationFormat();
   void testHTMLNodesAreStyledLikeCode();
+  void testFontColorHighlighting_data();
+  void testFontColorHighlighting();
+  void testFontColorPreservesMarkdownAndUpdates();
+  void testFontColorUpdatesUneditedContinuation();
   void testIndentedCodeBlocks();
   void testHTMLBlocks();
   void testHtmlBlockClosingTagIsStyled();
   void testHtmlBlockKeepsContainerPrefixUnstyled();
   void testLists();
+  void testListStructureSourceSpans();
+  void testListNumberEditsPreserveStructure();
   void testFrontmatter();
   void testDisplayFormula();
   void testTables();

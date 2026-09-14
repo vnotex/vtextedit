@@ -22,7 +22,7 @@ class MarkdownHighlighterFastResult;
 class Theme;
 class MarkdownHighlightBlockData;
 class MathBlockHighlighter;
-class TableSourceFormatter;
+class MarkdownSourceFormatter;
 class HeadingSourceNumberer;
 
 class MarkdownHighlighterInterface {
@@ -47,7 +47,7 @@ struct ContentsChange {
 // Markdown syntax highlighter.
 class VTEXTEDIT_EXPORT MarkdownHighlighter : public VSyntaxHighlighter {
   Q_OBJECT
-  friend class TableSourceFormatter;
+  friend class MarkdownSourceFormatter;
   friend class HeadingSourceNumberer;
 
 public:
@@ -120,6 +120,10 @@ signals:
   // Emitted when folding regions have been computed from a new parsing result.
   void foldingRegionsUpdated(const QVector<md::FoldingRegion> &p_foldingRegions);
 
+  // Published only from matched full results. Consumers may retain the last
+  // ownership snapshot during edits until a new result replaces it.
+  void listItemRangesUpdated(TimeStamp p_timeStamp, const QVector<md::ListItemRange> &p_ranges);
+
   // Emitted when immutable typed preview snapshots have been produced from an
   // accepted parse result. @p_revision is the parse generation of the result.
   void previewElementsUpdated(quint64 p_revision,
@@ -143,9 +147,10 @@ private:
                                      int p_blockNum, const QString &p_text, bool p_forced);
 
   void highlightBlockOne(const QVector<QVector<md::HLUnit>> &p_highlights, int p_blockNum,
-                         QVector<md::HLUnit> &p_cache);
+                         QVector<md::HLUnit> &p_cache, const QVector<md::HLUnitStyle> &p_overlays);
 
-  void highlightBlockOne(const QVector<md::HLUnit> &p_units);
+  void highlightBlockOne(const QVector<md::HLUnit> &p_units,
+                         const QVector<md::HLUnitStyle> &p_overlays);
 
   bool isFastParseBlock(int p_blockNum) const;
 

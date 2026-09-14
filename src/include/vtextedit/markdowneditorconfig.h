@@ -54,6 +54,17 @@ public:
   // formatting undo step.
   bool m_autoFormatTableSourceEnabled = false;
 
+  // Normalize structurally changed ordered lists after 500 ms of source-edit
+  // inactivity, including programmatic cursor edits, keeping each list's start.
+  // When editing splits a list, later fragments restart at one unless their
+  // first number was explicitly changed or their first marker is newly authored.
+  // Blank lines alone do not restart a list that the Markdown AST keeps intact.
+  // Opt-in: load, enabling this option and undo/redo never normalize source.
+  // Joins the preceding edit block where Qt permits; a bare cursor insertion
+  // may retain a separate formatting undo step. Identical config reapplication
+  // preserves pending work; disabling cancels numbering, not table formatting.
+  bool m_autoNumberOrderedListsEnabled = false;
+
 private:
   void overrideTextStyle();
 };

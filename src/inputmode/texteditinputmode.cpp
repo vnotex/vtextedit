@@ -9,7 +9,6 @@
 #include <QTextCursor>
 
 #include <inputmode/abstractinputmode.h>
-#include <textedit/autoindenthelper.h>
 #include <vtextedit/texteditutils.h>
 #include <vtextedit/textutils.h>
 #include <vtextedit/vtextedit.h>
@@ -736,19 +735,14 @@ void TextEditInputMode::backspace() {
 
 void TextEditInputMode::abortCompletion() {}
 
-void TextEditInputMode::newLine(KateViI::NewLineIndent p_indent) {
-  Q_UNUSED(p_indent);
-
+void TextEditInputMode::newLine(KateViI::NewLineIndent p_indent,
+                                KateViI::NewLinePosition p_position) {
   editStart();
 
-  auto cursor = textCursor();
-  cursor.movePosition(QTextCursor::EndOfBlock);
-  cursor.insertBlock();
-  if (p_indent == KateViI::NewLineIndent::Indent) {
-    AutoIndentHelper::autoIndent(cursor, !m_textEdit->isTabExpanded(),
-                                 m_textEdit->getTabStopWidthInSpaces());
-  }
-  m_textEdit->setTextCursor(cursor);
+  const auto placement = p_position == KateViI::NewLinePosition::Above
+                             ? VTextEdit::BlockInsertion::Above
+                             : VTextEdit::BlockInsertion::Below;
+  m_textEdit->openLine(placement, p_indent == KateViI::NewLineIndent::Indent);
 
   editEnd();
 }

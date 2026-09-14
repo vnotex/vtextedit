@@ -4,6 +4,7 @@
 #include <QObject>
 
 #include <QAtomicInt>
+#include <QHash>
 #include <QSharedPointer>
 #include <QThread>
 #include <QVector>
@@ -62,6 +63,9 @@ struct MarkdownParseResult {
 
   QVector<QVector<HLUnit>> m_blocksHighlights;
 
+  // Foreground overlays, keyed only by global block numbers with overlays.
+  QHash<int, QVector<HLUnitStyle>> m_blockOverlays;
+
   // All image link regions.
   QVector<ElementRegion> m_imageRegions;
 
@@ -102,6 +106,7 @@ struct MarkdownParseResult {
   QVector<CodeElement> m_codeElements;
   QVector<MathElement> m_mathElements;
   QVector<TableElement> m_tableElements;
+  ListStructure m_listStructure;
 
   // Headings with their AST-derived title and anchor text.
   // Sorted by start position ascendingly.

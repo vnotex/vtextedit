@@ -24,6 +24,8 @@ class AbstractInputMode;
 class VTEXTEDIT_EXPORT VTextEdit : public QTextEdit {
   Q_OBJECT
 public:
+  enum class BlockInsertion { Split, Above, Below };
+
   class Selection {
   public:
     Selection() = default;
@@ -113,6 +115,11 @@ public:
 
   void removeSelectedText();
 
+  // Insert a block above or below the cursor block, preserving its text and
+  // ignoring any selection. Split is not accepted. Returns false if read-only.
+  // @p_autoIndent enables synchronous completion and fallback indentation.
+  bool openLine(BlockInsertion p_placement, bool p_autoIndent = true);
+
   void setOverriddenSelection(int p_start, int p_end);
 
   void clearOverriddenSelection();
@@ -191,6 +198,11 @@ signals:
   // @p_menu: the menu to show if handled.
   void contextMenuEventRequested(QContextMenuEvent *p_event, bool *p_handled,
                                  QScopedPointer<QMenu> *p_menu);
+
+  // Emitted before openLine() moves the cursor or mutates text, if auto-indent
+  // is enabled. Handlers must run synchronously and set @p_handled after owning
+  // the complete insertion and cursor placement, suppressing the fallback.
+  void openLineRequested(BlockInsertion p_placement, bool *p_handled);
 
   void preKeyReturn(int p_modifiers, bool *p_changed, bool *p_handled);
 

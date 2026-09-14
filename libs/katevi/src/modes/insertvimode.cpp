@@ -54,6 +54,15 @@ InsertViMode::InsertViMode(InputModeManager *viInputModeManager,
 
 InsertViMode::~InsertViMode() {}
 
+void InsertViMode::setCountedRepeatsBeginOnNewLine(bool p_enabled) {
+  m_countedRepeatsBeginOnNewLine = p_enabled;
+  m_countedInsertStart = p_enabled && m_count > 1 ? m_interface->textCursor() : QTextCursor();
+  if (!m_countedInsertStart.isNull()) {
+    m_countedInsertStart.clearSelection();
+    m_countedInsertStart.setKeepPositionOnInsert(true);
+  }
+}
+
 bool InsertViMode::commandInsertFromAbove() {
   KateViI::Cursor c(m_interface->cursorPosition());
   if (c.line() <= 0) {
@@ -502,10 +511,24 @@ void InsertViMode::leaveInsertMode(bool force) {
       m_blockInsert = None;
       */
     } else {
-      const QString added = m_interface->getText(KateViI::Range(
-          m_viInputModeManager->marks()->getStartEditYanked(), m_interface->cursorPosition()));
-
       if (m_count > 1) {
+        QString added;
+        if (m_countedRepeatsBeginOnNewLine) {
+          const auto end = m_interface->textCursor();
+          if (!m_countedInsertStart.isNull() && m_countedInsertStart.document() == end.document() &&
+              m_countedInsertStart.position() <= end.position()) {
+            auto inserted = m_countedInsertStart;
+            // KeepPositionOnInsert pins position, while Qt may advance anchor.
+            // Start the captured range at the pinned endpoint, not that anchor.
+            inserted.clearSelection();
+            inserted.setPosition(end.position(), QTextCursor::KeepAnchor);
+            added = inserted.selectedText();
+            added.replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
+          }
+        } else {
+          added = m_interface->getText(KateViI::Range(
+              m_viInputModeManager->marks()->getStartEditYanked(), m_interface->cursorPosition()));
+        }
         for (unsigned int i = 0; i < m_count - 1; i++) {
           if (m_countedRepeatsBeginOnNewLine) {
             m_interface->newLine();
@@ -516,7 +539,7 @@ void InsertViMode::leaveInsertMode(bool force) {
     }
   }
 
-  m_countedRepeatsBeginOnNewLine = false;
+  setCountedRepeatsBeginOnNewLine(false);
   startNormalMode();
 }
 

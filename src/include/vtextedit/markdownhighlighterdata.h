@@ -47,6 +47,17 @@ struct VTEXTEDIT_EXPORT BlockContext {
   int m_quoteDepth = 0;
 };
 
+// Inclusive AST ITEM block extent; marker bounds are half-open UTF-16 columns
+// within m_startBlock, independent of edits in preceding blocks.
+// Parent indexes refer to the nearest included ITEM in the same source-ordered vector.
+struct ListItemRange {
+  int m_startBlock = -1;
+  int m_endBlock = -1;
+  int m_markerStart = -1;
+  int m_markerEnd = -1;
+  int m_parent = -1;
+};
+
 // One continuous region for a certain markdown highlight style
 // within a QTextBlock.
 struct HLUnit {

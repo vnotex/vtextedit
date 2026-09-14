@@ -131,41 +131,54 @@ void MarkdownHighlighter::highlightBlock(const QString &p_text) {
     }
   }
 
+  const bool useFastResult = !result->matched(m_timeStamp) && isFastParseBlock(blockNum);
+  const auto &blockOverlays =
+      useFastResult ? m_fastResult->m_blockOverlays : result->m_blockOverlays;
+  const auto overlayIt = blockOverlays.constFind(blockNum);
+  static const QVector<md::HLUnitStyle> emptyOverlays;
+  const auto &overlays = overlayIt == blockOverlays.cend() ? emptyOverlays : overlayIt.value();
+
   bool cacheValid = true;
   if (result->matched(m_timeStamp)) {
-    if (preHighlightSingleFormatBlock(result->m_blocksHighlights, blockNum, p_text, isCodeBlock)) {
+    if (overlays.isEmpty() &&
+        preHighlightSingleFormatBlock(result->m_blocksHighlights, blockNum, p_text, isCodeBlock)) {
       cacheValid = false;
     } else if (highlightData->getHighlightTimeStamp() == m_timeStamp) {
       // Use the cache to highlight.
-      highlightBlockOne(highlightData->getHighlight());
+      highlightBlockOne(highlightData->getHighlight(), overlays);
     } else {
-      highlightBlockOne(result->m_blocksHighlights, blockNum, highlightData->getHighlight());
+      highlightBlockOne(result->m_blocksHighlights, blockNum, highlightData->getHighlight(),
+                        overlays);
     }
   } else {
     // If fast result covers this block, we do not need to use the outdated one.
-    if (isFastParseBlock(blockNum)) {
-      if (!preHighlightSingleFormatBlock(m_fastResult->m_blocksHighlights, blockNum, p_text,
-                                         isCodeBlock)) {
+    if (useFastResult) {
+      if (!overlays.isEmpty() || !preHighlightSingleFormatBlock(m_fastResult->m_blocksHighlights,
+                                                                blockNum, p_text, isCodeBlock)) {
         if (m_fastResult->m_blocksHighlights.size() > blockNum) {
-          highlightBlockOne(m_fastResult->m_blocksHighlights[blockNum]);
+          highlightBlockOne(m_fastResult->m_blocksHighlights[blockNum], overlays);
+        } else if (!overlays.isEmpty()) {
+          highlightBlockOne({}, overlays);
         }
       }
 
       cacheValid = false;
     } else {
-      if (preHighlightSingleFormatBlock(result->m_blocksHighlights, blockNum, p_text,
-                                        isCodeBlock)) {
+      if (overlays.isEmpty() && preHighlightSingleFormatBlock(result->m_blocksHighlights, blockNum,
+                                                              p_text, isCodeBlock)) {
         cacheValid = false;
       } else if (result->matched(highlightData->getHighlightTimeStamp())) {
         // Use the cache to highlight.
-        highlightBlockOne(highlightData->getHighlight());
+        highlightBlockOne(highlightData->getHighlight(), overlays);
       } else {
-        highlightBlockOne(result->m_blocksHighlights, blockNum, highlightData->getHighlight());
+        highlightBlockOne(result->m_blocksHighlights, blockNum, highlightData->getHighlight(),
+                          overlays);
       }
     }
   }
 
   if (cacheValid) {
+    highlightData->setHighlightOverlays(overlays);
     highlightData->setHighlightTimeStamp(result->m_timeStamp);
   } else {
     highlightData->clearHighlight();
@@ -238,7 +251,8 @@ bool MarkdownHighlighter::preHighlightSingleFormatBlock(
   const auto &units = p_highlights[p_blockNum];
   if (units.size() == 1) {
     const auto &unit = units[0];
-    if (unit.start == 0 && (int)unit.length < sz && (p_forced || containSpecialChar(p_text))) {
+    if (unit.styleIndex < static_cast<unsigned int>(m_styles.size()) && unit.start == 0 &&
+        (int)unit.length < sz && (p_forced || containSpecialChar(p_text))) {
       setFormat(0, sz, m_styles[unit.styleIndex]);
       return true;
     }
@@ -248,22 +262,22 @@ bool MarkdownHighlighter::preHighlightSingleFormatBlock(
 }
 
 void MarkdownHighlighter::highlightBlockOne(const QVector<QVector<md::HLUnit>> &p_highlights,
-                                            int p_blockNum, QVector<md::HLUnit> &p_cache) {
-  p_cache.clear();
+                                            int p_blockNum, QVector<md::HLUnit> &p_cache,
+                                            const QVector<md::HLUnitStyle> &p_overlays) {
   if (p_highlights.size() > p_blockNum) {
-    // units are sorted by start position and length.
-    const auto &units = p_highlights[p_blockNum];
-    if (!units.isEmpty()) {
-      p_cache.append(units);
-      highlightBlockOne(units);
-    }
+    // Units are sorted by start position and length.
+    p_cache = p_highlights[p_blockNum];
+  } else {
+    p_cache.clear();
   }
+  highlightBlockOne(p_cache, p_overlays);
 }
 
-void MarkdownHighlighter::highlightBlockOne(const QVector<md::HLUnit> &p_units) {
-  // Runs come back one per unit, possibly overlapping, in input order; applying
-  // them in order reproduces the original sequential setFormat() behavior.
-  const auto runs = md::resolveFormatRuns(p_units, m_styles);
+void MarkdownHighlighter::highlightBlockOne(const QVector<md::HLUnit> &p_units,
+                                            const QVector<md::HLUnitStyle> &p_overlays) {
+  // Apply ordinary style runs first, then foreground-only pieces that retain
+  // the resolved ordinary formatting without extending beyond their bounds.
+  const auto runs = md::resolveFormatRuns(p_units, m_styles, p_overlays);
   for (const auto &run : runs) {
     setFormat(run.m_start, run.m_length, run.m_format);
   }
@@ -360,6 +374,7 @@ void MarkdownHighlighter::startFastParse(int p_position, int p_charsRemoved, int
 
   QSharedPointer<md::MarkdownParseResult> parseRes(new md::MarkdownParseResult(config));
   parseRes->m_blocksHighlights = std::move(walkResult.blocksHighlights);
+  parseRes->m_blockOverlays = std::move(walkResult.blockOverlays);
 
   processFastParseResult(parseRes);
 }
@@ -735,7 +750,11 @@ bool MarkdownHighlighter::rehighlightBlockRange(int p_first, int p_last) {
       needHL = true;
       // Try to find cache.
       if (blockNum < hls.size()) {
-        if (highlightData->isBlockHighlightMatched(hls[blockNum])) {
+        const auto overlayIt = m_result->m_blockOverlays.constFind(blockNum);
+        static const QVector<md::HLUnitStyle> emptyOverlays;
+        const auto &overlays =
+            overlayIt == m_result->m_blockOverlays.cend() ? emptyOverlays : overlayIt.value();
+        if (highlightData->isBlockHighlightMatched(hls[blockNum], overlays)) {
           needHL = false;
           updateTS = true;
         }
@@ -824,6 +843,9 @@ void MarkdownHighlighter::completeHighlight(QSharedPointer<MarkdownHighlighterRe
   emit headersUpdated(p_result->m_headerRegions);
   emit headingsUpdated(p_result->m_headingElements);
   emit foldingRegionsUpdated(p_result->m_foldingRegions);
+  if (p_result->matched(m_timeStamp)) {
+    emit listItemRangesUpdated(m_timeStamp, p_result->m_listItemRanges);
+  }
 
   // Snapshots are built here rather than when the result is constructed, so a
   // runtime change of the enabled element types takes effect on the next

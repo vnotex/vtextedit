@@ -105,6 +105,8 @@ public:
     SearchUnderCursor,
     Preview,
     ContentMargin,
+    ListItemGuide,
+    ActiveListItem,
     MaxEditorStyle
   };
   Q_ENUM(EditorStyle)
