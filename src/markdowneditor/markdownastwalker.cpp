@@ -867,7 +867,8 @@ static void extractTypedElement(cmark_node *p_node, cmark_node_type p_type, int 
     math.m_endPos = p_absEnd;
     const char *literal = cmark_node_get_literal(p_node);
     math.m_expression = literal ? QString::fromUtf8(literal) : QString();
-    math.m_display = (p_type == CMARK_NODE_FORMULA_BLOCK);
+    math.m_display = cmark_node_get_formula_display(p_node);
+    math.m_block = (p_type == CMARK_NODE_FORMULA_BLOCK);
     p_result.mathElements.append(math);
     break;
   }
@@ -991,11 +992,11 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
       continue;
     }
 
-    // The formula delimiters are not part of cmark's reported span; widening by
-    // one on each side is node-type policy, so it stays at the call site.
+    // cmark reports inline formula contents without the $ or $$ delimiters.
     if (type == CMARK_NODE_FORMULA_INLINE) {
-      docStart -= 1;
-      docEnd += 1;
+      const int delimiterWidth = cmark_node_get_formula_display(node) ? 2 : 1;
+      docStart -= delimiterWidth;
+      docEnd += delimiterWidth;
     }
 
 #ifdef VTE_DEBUG_HIGHLIGHT

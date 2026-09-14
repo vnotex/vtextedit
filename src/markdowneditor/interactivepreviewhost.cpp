@@ -3814,8 +3814,10 @@ static QSharedPointer<const Preview> rebaseCode(const QSharedPointer<const Previ
 static QSharedPointer<const Preview> rebaseMath(const QSharedPointer<const Preview> &p_original,
                                                 int p_startPos, const QString &p_text,
                                                 const md::MathElement &p_element) {
-  return PreviewBuilder::createMath(p_original->revision(), p_startPos, p_startPos + p_text.size(),
-                                    p_text, p_element.m_expression, p_element.m_display);
+  return PreviewBuilder::createMath(
+      p_original->revision(), p_startPos, p_startPos + p_text.size(), p_text,
+      p_element.m_block ? PreviewPlacement::BlockAfterSource : PreviewPlacement::InlineAboveLine,
+      p_element.m_expression, p_element.m_display);
 }
 
 static QSharedPointer<const Preview> rebaseTable(const QSharedPointer<const Preview> &p_original,

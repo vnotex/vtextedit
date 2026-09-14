@@ -44,6 +44,9 @@ struct CodeElement : public TypedPreviewElement {
 struct MathElement : public TypedPreviewElement {
   QString m_expression;
   bool m_display = true;
+
+  // Source structure, independent of display-style typesetting.
+  bool m_block = false;
 };
 
 // Split raw source without decoding escapes. Optional borders contain the leading

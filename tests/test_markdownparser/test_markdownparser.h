@@ -42,6 +42,9 @@ private slots:
   void testMark();
   void testFootnotes();
   void testInlineEquation();
+  void testInlineDisplayEquation_data();
+  void testInlineDisplayEquation();
+  void testInlineDisplayEquationDoesNotCrossLines();
 
   // T7: Edge case tests
   void testSurrogatePairs();

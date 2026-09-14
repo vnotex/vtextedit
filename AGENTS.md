@@ -70,6 +70,20 @@ Note: actual ordering varies slightly between files. Follow the pattern in the f
 * Defined as `Q_DECL_EXPORT` when building (`VTEXTEDIT_LIB` defined), `Q_DECL_IMPORT` when consuming
 * Tests compile with `VTEXTEDIT_STATIC_DEFINE` (empty macro) to link sources directly
 
+## Single-Line Display Math
+
+Single-line `$$...$$` is inline source syntax throughout the document, including pipe-table
+cells, paragraphs and lists. It uses display-style math typesetting but inline preview
+placement. Multiline `$$` blocks retain block placement; formulas never span table cells or
+source lines through the inline parser.
+
+cmark represents both `$...$` and single-line `$$...$$` as `CMARK_NODE_FORMULA_INLINE`;
+`cmark_node_get_formula_display()` distinguishes the typesetting mode. Its source positions
+exclude one or two delimiter characters respectively, which the AST walker restores.
+`MathElement::m_block` records source structure independently of `m_display`, and
+`PreviewBuilder::createMath()` takes explicit placement. Whole-document and cell-local
+parsing must agree on source ranges so preview decorations never leak into saved Markdown.
+
 ## Inline Markers Over a Multi-Line Selection
 
 `MarkdownUtils::typeMarker` (bold, italic, strikethrough, mark, inline code, inline math) applies
