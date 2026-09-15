@@ -34,6 +34,7 @@
 #include <QScopedValueRollback>
 #include <QScrollBar>
 #include <QStringList>
+#include <QTextBoundaryFinder>
 #include <QTextLayout>
 #include <QThread>
 #include <QTimer>
@@ -1979,6 +1980,11 @@ void VMarkdownEditor::setupSyntaxHighlighter() {
                               codeBlockHighlighter, highlighterConfig, m_mathBlockHighlighter);
   connect(getHighlighter(), &MarkdownHighlighter::listItemRangesUpdated, documentLayout(),
           &TextDocumentLayout::setListItemRanges);
+  connect(getHighlighter(), &MarkdownHighlighter::concealRangesUpdated, this,
+          [this](TimeStamp p_timeStamp, const QVector<md::ConcealRange> &p_ranges) {
+            Q_UNUSED(p_timeStamp);
+            applyConcealRanges(p_ranges);
+          });
   updateSpellCheck();
   connect(getHighlighter(), &MarkdownHighlighter::highlightCompleted, this, [this]() {
     m_textEdit->updateCursorWidth();
@@ -2010,6 +2016,19 @@ void VMarkdownEditor::setupDocumentLayout() {
   connect(m_textEdit, &VTextEdit::cursorPositionChanged, this, refreshListItemCursor);
   connect(qApp, &QApplication::focusChanged, this, refreshListItemCursor);
   refreshListItemCursor();
+
+  const auto refreshConcealCursor = [this]() {
+    documentLayout()->setConcealCursorPosition(m_textEdit->textCursor().position());
+  };
+  connect(m_textEdit, &VTextEdit::cursorPositionChanged, this, refreshConcealCursor);
+  connect(docLayout, &TextDocumentLayout::concealmentChanged, this, [this]() {
+    m_textEdit->updateCursorWidth();
+    if (!m_textEdit->isViewportWidgetFocused()) {
+      m_textEdit->ensureCursorVisible();
+      m_textEdit->checkCenterCursor();
+    }
+  });
+  refreshConcealCursor();
 
   connect(m_textEdit, &VTextEdit::cursorWidthChanged, this,
           [this]() { documentLayout()->setCursorWidth(m_textEdit->cursorWidth()); });
@@ -2222,6 +2241,8 @@ void VMarkdownEditor::updateFromConfig() {
   documentLayout()->setListItemDecorationColors(
       theme()->editorStyle(Theme::ListItemGuide).textColor(),
       theme()->editorStyle(Theme::ActiveListItem).backgroundColor());
+  documentLayout()->setConcealFormat(theme()->editorStyle(Theme::ConcealedText).toTextCharFormat());
+  applyConcealRanges(getHighlighter()->getConcealRanges());
 
   updateInplacePreviewSources();
 
@@ -2246,6 +2267,62 @@ void VMarkdownEditor::updateFromConfig() {
   applyLineSpacing();
 
   updateSpaceWidth();
+}
+
+void VMarkdownEditor::applyConcealRanges(const QVector<md::ConcealRange> &p_ranges) {
+  auto *layout = documentLayout();
+  if (!m_config->m_concealElements || p_ranges.isEmpty()) {
+    layout->setConcealedRanges({});
+    return;
+  }
+
+  auto *doc = document();
+  const int documentEnd = doc->characterCount() - 1;
+  const int minimumLength = qMax(9, m_config->m_concealLengthThreshold);
+  QVector<TextDocumentLayout::ConcealSpec> specs;
+  specs.reserve(p_ranges.size());
+  QTextBlock previousBlock;
+  QTextBoundaryFinder finder;
+  for (const auto &range : p_ranges) {
+    if (range.m_element == MarkdownConcealElement::None ||
+        !m_config->m_concealElements.testFlag(range.m_element) || range.m_startPos < 0 ||
+        range.m_endPos <= range.m_startPos || range.m_endPos > documentEnd) {
+      continue;
+    }
+    const auto block = doc->findBlock(range.m_startPos);
+    if (!block.isValid() || range.m_endPos - block.position() > block.length() - 1) {
+      continue;
+    }
+    // Candidates are source ordered; build grapheme attributes only once per block.
+    if (block != previousBlock) {
+      finder = QTextBoundaryFinder(QTextBoundaryFinder::Grapheme, block.text());
+      previousBlock = block;
+    }
+    const int start = range.m_startPos - block.position();
+    const int end = range.m_endPos - block.position();
+    finder.setPosition(end);
+    if (!finder.isAtBoundary()) {
+      continue;
+    }
+    finder.setPosition(start);
+    if (!finder.isAtBoundary()) {
+      continue;
+    }
+    int length = 0;
+    while (finder.position() < end && length <= minimumLength) {
+      if (finder.toNextBoundary() < 0) {
+        break;
+      }
+      ++length;
+    }
+    if (length > minimumLength) {
+      specs.append({block, start, end});
+    }
+  }
+  if (!layout->setConcealedRanges(specs)) {
+    // Never leave an old snapshot attached to a newly rejected parse result.
+    layout->setConcealedRanges({});
+  }
 }
 
 void VMarkdownEditor::applyPreviewFolding() {

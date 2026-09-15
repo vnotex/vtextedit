@@ -1247,6 +1247,240 @@ void TestMarkdownParser::testReferences() {
   QCOMPARE(countElements(result, HLT_LINK), 1);
 }
 
+struct ConcealExpectation {
+  int start;
+  QString payload;
+  vte::MarkdownConcealElement element;
+};
+
+static void checkConcealRanges(const QString &p_source,
+                               const QVector<ConcealExpectation> &p_expected, int p_offset = 0,
+                               int p_startBlock = 0) {
+  const QByteArray utf8 = p_source.toUtf8();
+  const int numBlocks = countBlocks(utf8) + p_startBlock;
+  const auto result = vte::md::walkAndConvert(utf8, numBlocks, p_offset, p_startBlock, false, true);
+  QVERIFY2(result.concealRanges.size() == p_expected.size(), qPrintable(p_source));
+  for (int i = 0; i < p_expected.size(); ++i) {
+    const auto &range = result.concealRanges.at(i);
+    const auto &expected = p_expected.at(i);
+    QCOMPARE(range.m_element, expected.element);
+    QCOMPARE(range.m_startPos, p_offset + expected.start);
+    QCOMPARE(range.m_endPos, p_offset + expected.start + int(expected.payload.size()));
+    QCOMPARE(p_source.mid(range.m_startPos - p_offset, range.m_endPos - range.m_startPos),
+             expected.payload);
+  }
+
+  const auto fast = vte::md::walkAndConvert(utf8, numBlocks, p_offset, p_startBlock, true, true);
+  QVERIFY2(fast.concealRanges.isEmpty(), qPrintable(p_source));
+}
+
+void TestMarkdownParser::testConcealUrlSpans() {
+  using Element = vte::MarkdownConcealElement;
+  struct Case {
+    const char *prefix;
+    const char *payload;
+    const char *suffix;
+    Element element;
+  };
+  const QVector<Case> cases{
+      {"[x](", "abcdefghijklmnopqrstuvwxyz", ")\n", Element::LinkUrl},
+      {"![x](", "abcdefghijklmnopqrstuvwxyz", " \"title\" =500x300)\n", Element::ImageUrl},
+      {"[x](<", "a b&amp;c", "> \"title\")\n", Element::LinkUrl},
+      {"![x](<", "a b.png", "> =64x64)\n", Element::ImageUrl},
+      {"[x](", "a\\(b\\)&amp;c", ")\n", Element::LinkUrl},
+      {"![x](", "a\\_b&amp;c.png", " =500x)\n", Element::ImageUrl},
+      {"\xf0\x9f\x92\x8e \xc3\xa9 [x](", "path/\xf0\x9f\x92\x8e", ")\n", Element::LinkUrl},
+      // The same text in a label/title must not attract the destination span.
+      {"[abcdefghijklmnopqrstuvwxyz](", "abcdefghijklmnopqrstuvwxyz",
+       " \"abcdefghijklmnopqrstuvwxyz\")\n", Element::LinkUrl},
+      {"[multi\nline](\n", "abcdefghijklmnopqrstuvwxyz", ")\n", Element::LinkUrl},
+      {"> ![x](\n> ", "abcdefghijklmnopqrstuvwxyz", ")\n", Element::ImageUrl},
+      {"<", "https://example.test/abcdefghijklmnopqrstuvwxyz", ">\n", Element::LinkUrl},
+      {"<", "abcdefghijklmnopqrstuvwxyz@example.test", ">\n", Element::LinkUrl},
+      // Autolink coordinates must account for stripped and lazy container lines.
+      {"> lead\n> <", "https://example.test/abcdefghijklmnopqrstuvwxyz", ">\n", Element::LinkUrl},
+      {"- lead\n  <", "abcdefghijklmnopqrstuvwxyz@example.test", ">\n", Element::LinkUrl},
+      {"> lead\n<", "https://example.test/abcdefghijklmnopqrstuvwxyz", ">\n", Element::LinkUrl},
+      {"- lead\n<", "abcdefghijklmnopqrstuvwxyz@example.test", ">\n", Element::LinkUrl},
+      {"> a `co\n> de` <", "https://example.test/abcdefghijklmnopqrstuvwxyz", ">\n",
+       Element::LinkUrl},
+      // Attribute values are raw, quote-free, and exclude titles and dimensions.
+      {"<img src=\"", "a b&amp;c.png", "\" title=\"title\" width=500 height=300>\n",
+       Element::ImageUrl},
+      {"text <img src='", "abcdefghijklmnopqrstuvwxyz", "' alt='alt'> tail\n", Element::ImageUrl},
+      {"<img src=", "a&amp;b.png", " width=500>\n", Element::ImageUrl},
+      {"<IMG SRC=\"", "abcdefghijklmnopqrstuvwxyz", "\">\n", Element::ImageUrl},
+      {"<img src=\"", "first.png", "\" src=\"ignored.png\">\n", Element::ImageUrl},
+      {"> <div>\n> <img src=\"", "abcdefghijklmnopqrstuvwxyz", "\">\n> </div>\n",
+       Element::ImageUrl},
+      {"- lead\n<img src=\"", "abcdefghijklmnopqrstuvwxyz", "\">\n", Element::ImageUrl},
+      {"a `co\nde` <img src=\"", "abcdefghijklmnopqrstuvwxyz", "\">\n", Element::ImageUrl},
+      {"para <script>'<img src=\"ignored.png\">'</script><img src=\"", "abcdefghijklmnopqrstuvwxyz",
+       "\">\n", Element::ImageUrl},
+  };
+  for (const auto &c : cases) {
+    const QString prefix = QString::fromUtf8(c.prefix);
+    const QString payload = QString::fromUtf8(c.payload);
+    const QString source = prefix + payload + QString::fromUtf8(c.suffix);
+    checkConcealRanges(source, {{int(prefix.size()), payload, c.element}});
+    // A sliced parse must not confuse UTF-8 columns, UTF-16 offsets and block numbers.
+    checkConcealRanges(source, {{int(prefix.size()), payload, c.element}}, 37, 3);
+  }
+
+  // Nested image traversal sees the outer URL first, but consumers need source order.
+  // Identical payloads at different positions must remain separate candidates.
+  const QString mixed = QStringLiteral("![outer ![inner](same.png)](outer.png) [x](same.png)\n"
+                                       "<img src='same.png'><img src='same.png'>\n");
+  checkConcealRanges(mixed,
+                     {{17, QStringLiteral("same.png"), Element::ImageUrl},
+                      {28, QStringLiteral("outer.png"), Element::ImageUrl},
+                      {43, QStringLiteral("same.png"), Element::LinkUrl},
+                      {63, QStringLiteral("same.png"), Element::ImageUrl},
+                      {83, QStringLiteral("same.png"), Element::ImageUrl}},
+                     19, 2);
+
+  const QVector<const char *> excluded{
+      "```markdown\n[x](abcdefghijklmnopqrstuvwxyz)\n![x](abcdefghijklmnopqrstuvwxyz)\n"
+      "<img "
+      "src='abcdefghijklmnopqrstuvwxyz'>\n<https://example.test/abcdefghijklmnopqrstuvwxyz>\n```\n",
+      "    [x](abcdefghijklmnopqrstuvwxyz)\n    ![x](abcdefghijklmnopqrstuvwxyz)\n"
+      "    <img src='abcdefghijklmnopqrstuvwxyz'>\n",
+      "`[x](abcdefghijklmnopqrstuvwxyz) ![x](abcdefghijklmnopqrstuvwxyz) "
+      "<https://example.test/abcdefghijklmnopqrstuvwxyz> <img src='abcdefghijklmnopqrstuvwxyz'>`\n",
+      "<!-- [x](abcdefghijklmnopqrstuvwxyz) <img src='abcdefghijklmnopqrstuvwxyz'> -->\n",
+      "<script>\n[x](abcdefghijklmnopqrstuvwxyz)\n<img "
+      "src='abcdefghijklmnopqrstuvwxyz'>\n</script>\n",
+      "<style>\n<img src='abcdefghijklmnopqrstuvwxyz'>\n</style>\n",
+      "<textarea>\n<img src='abcdefghijklmnopqrstuvwxyz'>\n</textarea>\n",
+      "<title>\n<img src='abcdefghijklmnopqrstuvwxyz'>\n</title>\n",
+      "> lead <script>\n'<img src='abcdefghijklmnopqrstuvwxyz'>'\n</script>\n",
+      "<span title=\"<img src='abcdefghijklmnopqrstuvwxyz'>\">x</span>\n",
+      "[x]() ![x](<>) <img src=''>\n",
+      "[x](unterminated\n",
+      "[x](<abcdefghijklm\nnopqrstuvwxyz>)\n",
+      "![x](abcdefghijklm\nnopqrstuvwxyz)\n",
+      "<img src='abcdefghijklm\nnopqrstuvwxyz'>\n",
+      "https://example.test/abcdefghijklmnopqrstuvwxyz abcdefghijklmnopqrstuvwxyz@example.test\n",
+      "<a href='abcdefghijklmnopqrstuvwxyz'>label</a>\n",
+  };
+  for (const char *source : excluded) {
+    checkConcealRanges(QString::fromUtf8(source), {});
+  }
+}
+
+void TestMarkdownParser::testConcealReferenceDestinations() {
+  using Element = vte::MarkdownConcealElement;
+  struct Case {
+    const char *prefix;
+    const char *payload;
+    const char *suffix;
+  };
+  const QVector<Case> cases{
+      // Unused definitions are still authored destinations.
+      {"[r]: ", "abcdefghijklmnopqrstuvwxyz", " \"title\"\n"},
+      {"[r]: ", "abcdefghijklmnopqrstuvwxyz",
+       " \"title\"\n\n[x][r] ![x][r] [r][] ![r][] [r] ![r]\n"},
+      {"[r]:\n  ", "abcdefghijklmnopqrstuvwxyz", "\n  \"title\"\n\n[r]\n"},
+      {"> [r]: ", "abcdefghijklmnopqrstuvwxyz", "\n>\n> [r]\n"},
+      {"- [r]: ", "abcdefghijklmnopqrstuvwxyz", "\n\n  [r]\n"},
+      {"> - [r]: ", "abcdefghijklmnopqrstuvwxyz", "\n"},
+      {"> [r]:\n>   ", "abcdefghijklmnopqrstuvwxyz", "\n"},
+      {"- [r]:\n  ", "abcdefghijklmnopqrstuvwxyz", "\n"},
+      {"[r]:\t", "abcdefghijklmnopqrstuvwxyz", "\n"},
+      {"   [r]: ", "abcdefghijklmnopqrstuvwxyz", "\n"},
+      // Container stripping can consume only part of a tab and synthesize spaces.
+      {">\t[r]:\n>\t", "abcdefghijklmnopqrstuvwxyz", "\n"},
+      {"- item\n\n\t[r]: ", "abcdefghijklmnopqrstuvwxyz", "\n"},
+      {"[abcdefghijklmnopqrstuvwxyz]: ", "abcdefghijklmnopqrstuvwxyz",
+       " \"abcdefghijklmnopqrstuvwxyz\"\n\n[abcdefghijklmnopqrstuvwxyz]\n"},
+      {"[r]: <", "a b&amp;c", "> \"title\"\n"},
+      {"[r]: ", "a\\(b\\)&amp;c", "\n"},
+      {"\xf0\x9f\x92\x8e \xc3\xa9\n\n[r]: ", "path/\xf0\x9f\x92\x8e", "\n"},
+      {"[r]: ", "abcdefghijklmnopqrstuvwxyz", "\nParagraph with [r].\n"},
+      {"[r]: ", "abcdefghijklmnopqrstuvwxyz", "\nHeading\n---\n"},
+      {"[r]:\r\n  ", "abcdefghijklmnopqrstuvwxyz", "\r\n\r\n[r]\r\n"},
+      {"[r]: ", "abcdefghijklmnopqrstuvwxyz", ""},
+  };
+  for (const auto &c : cases) {
+    const QString prefix = QString::fromUtf8(c.prefix);
+    const QString payload = QString::fromUtf8(c.payload);
+    const QString source = prefix + payload + QString::fromUtf8(c.suffix);
+    const QVector<ConcealExpectation> expected{
+        {int(prefix.size()), payload, Element::ReferenceUrl}};
+    checkConcealRanges(source, expected);
+    checkConcealRanges(source, expected, 53, 4);
+  }
+
+  // Definitions can disappear during parsing, while inline candidates arrive later.
+  // Keep every authored duplicate, without inventing ranges at reference usages.
+  QString mixed;
+  QVector<ConcealExpectation> expected;
+  auto append = [&](const QString &p_prefix, const QString &p_payload, const QString &p_suffix,
+                    Element p_element) {
+    mixed += p_prefix;
+    expected.append({int(mixed.size()), p_payload, p_element});
+    mixed += p_payload + p_suffix;
+  };
+  append(QStringLiteral("[inline]("), QStringLiteral("inline-url"), QStringLiteral(")\n\n"),
+         Element::LinkUrl);
+  append(QStringLiteral("[r]: "), QStringLiteral("first-url"), QStringLiteral(" \"title\"\n"),
+         Element::ReferenceUrl);
+  append(QStringLiteral("[r]: "), QStringLiteral("second-url"), QStringLiteral("\n"),
+         Element::ReferenceUrl);
+  append(QStringLiteral("[s]:\n  <"), QStringLiteral("first-url"), QStringLiteral(">\n"),
+         Element::ReferenceUrl);
+  append(QStringLiteral("[r]: "), QStringLiteral("first-url"),
+         QStringLiteral("\nHeading\n---\n\n[r] [s] ![x][r]\n\n"), Element::ReferenceUrl);
+  append(QStringLiteral("<img src='"), QStringLiteral("image-url"), QStringLiteral("'>\n"),
+         Element::ImageUrl);
+  checkConcealRanges(mixed, expected, 71, 5);
+
+  // Dropping a definition must not leave the surviving paragraph/heading's
+  // inline destinations on the definition's original source line.
+  struct RetainedCase {
+    const char *definitionPrefix;
+    const char *between;
+    const char *suffix;
+  };
+  const QVector<RetainedCase> retainedCases{
+      {"[r]: ", "\nParagraph [x](", ")\n"},
+      {"[r]: ", "\nHeading [x](", ")\n---\n"},
+      {"> [r]: ", "\n[x](", ")\n"},
+      {"> [r]: ", "\n> Paragraph\n[x](", ")\n"},
+  };
+  for (const auto &c : retainedCases) {
+    const QString definitionPrefix = QString::fromUtf8(c.definitionPrefix);
+    const QString referencePayload = QStringLiteral("reference-destination");
+    const QString inlinePrefix = definitionPrefix + referencePayload + QString::fromUtf8(c.between);
+    const QString inlinePayload = QStringLiteral("inline-destination");
+    const QString source = inlinePrefix + inlinePayload + QString::fromUtf8(c.suffix);
+    const QVector<ConcealExpectation> retainedExpected{
+        {int(definitionPrefix.size()), referencePayload, Element::ReferenceUrl},
+        {int(inlinePrefix.size()), inlinePayload, Element::LinkUrl}};
+    checkConcealRanges(source, retainedExpected);
+    checkConcealRanges(source, retainedExpected, 83, 6);
+  }
+
+  const QVector<const char *> excluded{
+      "```markdown\n[r]: abcdefghijklmnopqrstuvwxyz\n```\n\n[r]\n",
+      "    [r]: abcdefghijklmnopqrstuvwxyz\n\n[r]\n",
+      "`[r]: abcdefghijklmnopqrstuvwxyz`\n\n[r]\n",
+      "<!--\n[r]: abcdefghijklmnopqrstuvwxyz\n-->\n\n[r]\n",
+      "<script>\n[r]: abcdefghijklmnopqrstuvwxyz\n</script>\n\n[r]\n",
+      "[r] abcdefghijklmnopqrstuvwxyz\n",
+      "[r]: abcdefghijklmnopqrstuvwxyz trailing garbage\n",
+      "[r]: abcdefghijklmnopqrstuvwxyz \"unclosed title\n",
+      "[r]:\n\n[r]\n",
+      "[r]: <>\n\n[r] ![r]\n",
+      "[r]: <abcdefghijklm\nnopqrstuvwxyz>\n\n[r]\n",
+      "> [r]: <abcdefghijklm\n> nopqrstuvwxyz>\n",
+      "[missing] [x][missing] ![x][missing]\n",
+  };
+  for (const char *source : excluded) {
+    checkConcealRanges(QString::fromUtf8(source), {});
+  }
+}
+
 void TestMarkdownParser::testStrikethrough() {
   const QString input = QStringLiteral("~~strike~~\n");
   auto result = parse(input);

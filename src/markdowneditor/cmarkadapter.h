@@ -107,9 +107,10 @@ int mapCmarkNodeToStyle(cmark_node_type p_type, cmark_node *p_node);
 bool cmarkNodeSpan(cmark_node *p_node, const LineOffsetTable &p_offsets, int &p_startQChar,
                    int &p_endQChar);
 
-// As cmarkNodeSpan(), but for the *raw* destination of an inline link or image
-// -- the bytes as spelled in the source, so angle brackets, backslash escapes
-// and entities are all still present. Returns false for reference-style links
+// As cmarkNodeSpan(), but for the *raw* destination of an inline link, image
+// or autolink -- the bytes as spelled in the source, so backslash escapes and
+// entities are still present. Inline angle destinations retain their brackets;
+// autolink spans exclude them. Returns false for reference-style links
 // and for an empty destination, neither of which spans any source bytes.
 //
 // This is what makes a destination rewritable without searching the text for

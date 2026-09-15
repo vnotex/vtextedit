@@ -146,6 +146,469 @@ private:
 };
 } // namespace
 
+namespace {
+static QSharedPointer<MarkdownEditorConfig> makeConcealConfig(bool p_vi = false) {
+  auto textConfig = QSharedPointer<TextEditorConfig>::create();
+  textConfig->m_theme = QSharedPointer<Theme>::create(*TextEditorConfig::defaultTheme());
+  textConfig->m_inputMode = p_vi ? InputMode::ViMode : InputMode::NormalMode;
+  textConfig->m_lineNumberType = VTextEditor::LineNumberType::None;
+  auto config = QSharedPointer<MarkdownEditorConfig>::create(textConfig);
+  // The default theme is shared by unrelated fixtures. Never mutate that instance.
+  auto &textStyle = textConfig->m_theme->editorStyle(Theme::Text);
+  textStyle.m_fontFamily = QStringLiteral("Arial");
+  textStyle.m_fontPointSize = 14;
+  config->m_inplacePreviewSources = MarkdownEditorConfig::NoInplacePreview;
+  config->m_autoFoldPreviewedBlocksEnabled = false;
+  config->m_autoNumberOrderedListsEnabled = false;
+  config->m_autoFormatTableSourceEnabled = false;
+  return config;
+}
+
+static void waitForConcealPublication(Fixture &p_fixture) {
+  auto highlighter = p_fixture.editor()->getHighlighter();
+  QObject receiver;
+  int publications = 0;
+  // A fast BlockContext is insufficient. This signal is emitted only for a
+  // full result matching the current source, including an empty range vector.
+  QObject::connect(
+      highlighter, &MarkdownHighlighter::concealRangesUpdated, &receiver,
+      [&publications](TimeStamp, const QVector<md::ConcealRange> &) { ++publications; });
+  highlighter->updateHighlight();
+  QTRY_VERIFY_WITH_TIMEOUT(publications > 0, 5000);
+  // Full publication precedes the queued rehighlight/idle layout passes.
+  QTest::qWait(100);
+}
+
+static void setConcealCursor(Fixture &p_fixture, int p_position) {
+  QTextCursor cursor(p_fixture.editor()->document());
+  cursor.setPosition(p_position);
+  p_fixture.edit()->setTextCursor(cursor);
+  // Deliberately synchronous: editing tests inspect invalidation before a parse.
+}
+
+static QImage renderConcealEditor(Fixture &p_fixture) {
+  auto editor = p_fixture.editor();
+  auto edit = p_fixture.edit();
+  editor->setSpellCheckEnabled(false);
+  if (!editor->isVisible()) {
+    editor->resize(900, 480);
+    editor->show();
+    if (!QTest::qWaitForWindowExposed(editor)) {
+      return QImage();
+    }
+  }
+  // Preserve subsequent explicit sizes for wrapping and scrolling scenarios.
+  editor->activateWindow();
+  edit->setFocus();
+  QTest::qWait(20);
+  auto viewport = edit->viewport();
+  const qreal dpr = viewport->devicePixelRatioF();
+  QImage image(qCeil(viewport->width() * dpr), qCeil(viewport->height() * dpr),
+               QImage::Format_ARGB32_Premultiplied);
+  image.setDevicePixelRatio(dpr);
+  image.fill(Qt::transparent);
+  viewport->render(&image);
+  return image;
+}
+
+static qreal concealConfigRangeWidth(Fixture &p_fixture, int p_start, int p_end) {
+  auto doc = p_fixture.editor()->document();
+  const auto block = doc->findBlock(p_start);
+  doc->documentLayout()->blockBoundingRect(block);
+  const auto line = block.layout()->lineForTextPosition(p_start - block.position());
+  if (!line.isValid() || line.textStart() + line.textLength() < p_end - block.position()) {
+    return -1;
+  }
+  return line.cursorToX(p_end - block.position()) - line.cursorToX(p_start - block.position());
+}
+
+static qreal concealConfigExpectedWidth(Fixture &p_fixture, int p_start, int p_end,
+                                        const QString &p_display) {
+  auto doc = p_fixture.editor()->document();
+  const auto block = doc->findBlock(p_start);
+  const int start = p_start - block.position();
+  const int end = p_end - block.position();
+  // Surrounding script context affects font fallback, particularly emoji and neutral dots.
+  const auto text = block.text().left(start) + p_display + block.text().mid(end);
+  QTextLayout expected(text, doc->defaultFont(), doc->documentLayout()->paintDevice());
+  expected.beginLayout();
+  auto line = expected.createLine();
+  line.setLineWidth(10000);
+  expected.endLayout();
+  return line.cursorToX(start + p_display.size()) - line.cursorToX(start);
+}
+
+static void concealConfigVerifyWidth(Fixture &p_fixture, int p_start, int p_end,
+                                     const QString &p_display) {
+  const qreal actual = concealConfigRangeWidth(p_fixture, p_start, p_end);
+  const qreal expected = concealConfigExpectedWidth(p_fixture, p_start, p_end, p_display);
+  QVERIFY2(qAbs(actual - expected) < 1.0,
+           qPrintable(QStringLiteral("source [%1,%2): width %3, expected %4 for %5")
+                          .arg(p_start)
+                          .arg(p_end)
+                          .arg(actual)
+                          .arg(expected)
+                          .arg(p_display)));
+}
+
+static QRectF concealConfigViewportRange(Fixture &p_fixture, int p_start, int p_end) {
+  QTextCursor cursor(p_fixture.editor()->document());
+  cursor.setPosition(p_start);
+  const auto start = p_fixture.edit()->cursorRect(cursor);
+  cursor.setPosition(p_end);
+  const auto end = p_fixture.edit()->cursorRect(cursor);
+  return QRectF(start.left(), start.top(), end.left() - start.left(), start.height());
+}
+
+static int concealConfigColorCount(const QImage &p_image, const QRectF &p_rect,
+                                   const QColor &p_color) {
+  const qreal dpr = p_image.devicePixelRatio();
+  const auto pixels =
+      QRect(QPoint(qCeil(p_rect.left() * dpr), qCeil(p_rect.top() * dpr)),
+            QPoint(qCeil(p_rect.right() * dpr) - 1, qCeil(p_rect.bottom() * dpr) - 1))
+          .intersected(p_image.rect());
+  int count = 0;
+  for (int y = pixels.top(); !pixels.isEmpty() && y <= pixels.bottom(); ++y) {
+    for (int x = pixels.left(); x <= pixels.right(); ++x) {
+      count += p_image.pixelColor(x, y) == p_color;
+    }
+  }
+  return count;
+}
+
+static QSharedPointer<Theme> concealConfigTheme(const QColor &p_foreground = QColor(),
+                                                const QColor &p_background = QColor()) {
+  const QJsonObject text{{QStringLiteral("font-family"), QStringLiteral("Arial")},
+                         {QStringLiteral("font-size"), 14},
+                         {QStringLiteral("text-color"), QStringLiteral("#202020")},
+                         {QStringLiteral("background-color"), QStringLiteral("#ffffff")}};
+  QJsonObject editorStyles{{QStringLiteral("Text"), text}};
+  if (p_foreground.isValid() || p_background.isValid()) {
+    QJsonObject concealed;
+    if (p_foreground.isValid()) {
+      concealed.insert(QStringLiteral("text-color"), p_foreground.name());
+    }
+    if (p_background.isValid()) {
+      concealed.insert(QStringLiteral("background-color"), p_background.name());
+    }
+    editorStyles.insert(QStringLiteral("ConcealedText"), concealed);
+  }
+  const QJsonObject json{
+      {QStringLiteral("metadata"),
+       QJsonObject{{QStringLiteral("type"), QStringLiteral("vtextedit")}}},
+      {QStringLiteral("editor-styles"), editorStyles},
+      {QStringLiteral("markdown-syntax-styles"),
+       QJsonObject{{QStringLiteral("LINK"),
+                    QJsonObject{{QStringLiteral("text-color"), QStringLiteral("#174db5")}}},
+                   {QStringLiteral("IMAGE"),
+                    QJsonObject{{QStringLiteral("text-color"), QStringLiteral("#773388")}}},
+                   {QStringLiteral("REFERENCE"),
+                    QJsonObject{{QStringLiteral("text-color"), QStringLiteral("#946000")}}}}}};
+  return Theme::createThemeFromContent(
+      QString::fromUtf8(QJsonDocument(json).toJson(QJsonDocument::Compact)));
+}
+
+static void concealConfigSaveImage(const QImage &p_image, const QString &p_name) {
+  const auto path = qEnvironmentVariable("VTE_CONCEAL_TEST_IMAGE_DIR");
+  if (path.isEmpty()) {
+    return;
+  }
+  QVERIFY(QDir().mkpath(path));
+  QVERIFY(p_image.save(QDir(path).filePath(p_name), "PNG"));
+}
+} // namespace
+
+void TestMarkdownEditor::testConcealMarkdownConfig() {
+  const auto compact = QStringLiteral("abc\u00b7\u00b7\u00b7xyz");
+  const auto alphabet = QStringLiteral("abcdefghijklmnopqrstuvwxyz");
+  struct ThresholdCase {
+    QString m_payload;
+    QString m_display;
+    int m_threshold;
+  };
+  const auto combining = QStringLiteral("e\u0301");
+  const auto supplementary = QStringLiteral("\U0001f600");
+  const auto dots = QStringLiteral("\u00b7\u00b7\u00b7");
+  const ThresholdCase cases[] = {
+      {alphabet.left(20), alphabet.left(20), 20},
+      {alphabet.left(21), QStringLiteral("abc") + dots + QStringLiteral("stu"), 20},
+      // UTF-16 length and code-point length must not substitute for graphemes.
+      {combining.repeated(20), combining.repeated(20), 20},
+      {combining.repeated(21), combining.repeated(3) + dots + combining.repeated(3), 20},
+      {supplementary.repeated(20), supplementary.repeated(20), 20},
+      {supplementary.repeated(21), supplementary.repeated(3) + dots + supplementary.repeated(3),
+       20},
+      {alphabet.left(8), alphabet.left(8), 0},
+      {alphabet.left(9), alphabet.left(9), 0},
+      {alphabet.left(10), QStringLiteral("abc") + dots + QStringLiteral("hij"), 0},
+      {combining.repeated(9), combining.repeated(9), -7},
+      {combining.repeated(10), combining.repeated(3) + dots + combining.repeated(3), -7}};
+  for (const auto &item : cases) {
+    auto config = makeConcealConfig();
+    if (item.m_threshold != 20) {
+      config->m_concealLengthThreshold = item.m_threshold;
+    }
+    const auto source = QStringLiteral("[x](") + item.m_payload + QStringLiteral(") tail\noutside");
+    Fixture fixture(source, 1, 0, config);
+    QVERIFY(!renderConcealEditor(fixture).isNull());
+    waitForConcealPublication(fixture);
+    concealConfigVerifyWidth(fixture, 4, 4 + item.m_payload.size(), item.m_display);
+    QCOMPARE(fixture.text(), source);
+    QVERIFY(!fixture.editor()->document()->isUndoAvailable());
+    QVERIFY(!fixture.editor()->document()->isRedoAvailable());
+  }
+
+  auto config = makeConcealConfig();
+  const auto source = QStringLiteral("[link](") + alphabet + QStringLiteral(") tail\n\n![image](") +
+                      alphabet + QStringLiteral(") tail\n\n[ref]: ") + alphabet +
+                      QStringLiteral(" \"title\"\n\n[use][ref]\n\noutside");
+  Fixture fixture(source, -1, -1, config);
+  QVERIFY(!renderConcealEditor(fixture).isNull());
+  auto doc = fixture.editor()->document();
+  // Preserve real undo AND redo history through all loaded-document reconfiguration.
+  auto cursor = fixture.edit()->textCursor();
+  cursor.beginEditBlock();
+  cursor.insertText(QStringLiteral(" retained"));
+  cursor.endEditBlock();
+  cursor.beginEditBlock();
+  cursor.insertText(QStringLiteral(" undone"));
+  cursor.endEditBlock();
+  fixture.edit()->undo();
+  setConcealCursor(fixture, doc->characterCount() - 1);
+  waitForConcealPublication(fixture);
+  QVERIFY(doc->isUndoAvailable());
+  QVERIFY(doc->isRedoAvailable());
+  const auto preservedSource = fixture.text();
+  const int characterCount = doc->characterCount();
+  const int undoSteps = doc->availableUndoSteps();
+  const int redoSteps = doc->availableRedoSteps();
+  const bool modified = doc->isModified();
+  QVector<int> sourceRevisions;
+  for (auto block = doc->begin(); block.isValid(); block = block.next()) {
+    sourceRevisions.append(block.revision());
+  }
+  auto verifySourceUnchanged = [&]() {
+    QCOMPARE(fixture.text(), preservedSource);
+    QCOMPARE(doc->characterCount(), characterCount);
+    QCOMPARE(doc->availableUndoSteps(), undoSteps);
+    QCOMPARE(doc->availableRedoSteps(), redoSteps);
+    QCOMPARE(doc->isModified(), modified);
+    QVector<int> current;
+    for (auto block = doc->begin(); block.isValid(); block = block.next()) {
+      current.append(block.revision());
+    }
+    // QTextDocument::revision also counts explicit syntax rehighlighting.
+    QCOMPARE(current, sourceRevisions);
+  };
+  struct KindCase {
+    MarkdownConcealElement m_kind;
+    int m_start;
+  };
+  const KindCase kinds[] = {
+      {MarkdownConcealElement::LinkUrl, static_cast<int>(source.indexOf(alphabet))},
+      {MarkdownConcealElement::ImageUrl,
+       static_cast<int>(source.indexOf(alphabet, source.indexOf(alphabet) + 1))},
+      {MarkdownConcealElement::ReferenceUrl, static_cast<int>(source.lastIndexOf(alphabet))}};
+  const MarkdownConcealElements all = MarkdownConcealElement::ImageUrl |
+                                      MarkdownConcealElement::LinkUrl |
+                                      MarkdownConcealElement::ReferenceUrl;
+  // Actual default behavior: each authored destination is shortened, not labels/titles.
+  for (const auto &item : kinds) {
+    concealConfigVerifyWidth(fixture, item.m_start, item.m_start + alphabet.size(), compact);
+  }
+  for (const auto &disabled : kinds) {
+    config->m_concealElements = all & ~MarkdownConcealElements(disabled.m_kind);
+    fixture.editor()->setConfig(config);
+    waitForConcealPublication(fixture);
+    for (const auto &item : kinds) {
+      concealConfigVerifyWidth(fixture, item.m_start, item.m_start + alphabet.size(),
+                               item.m_kind == disabled.m_kind ? alphabet : compact);
+    }
+    verifySourceUnchanged();
+  }
+  config->m_concealElements = MarkdownConcealElements();
+  fixture.editor()->setConfig(config);
+  // Clearing is synchronous; no parse or source edit is needed to disable it.
+  for (const auto &item : kinds) {
+    concealConfigVerifyWidth(fixture, item.m_start, item.m_start + alphabet.size(), alphabet);
+  }
+  waitForConcealPublication(fixture);
+  verifySourceUnchanged();
+  config->m_concealElements = all;
+  for (int threshold : {26, 25}) {
+    config->m_concealLengthThreshold = threshold;
+    fixture.editor()->setConfig(config);
+    waitForConcealPublication(fixture);
+    for (const auto &item : kinds) {
+      concealConfigVerifyWidth(fixture, item.m_start, item.m_start + alphabet.size(),
+                               threshold == 26 ? alphabet : compact);
+    }
+    verifySourceUnchanged();
+  }
+
+  const QColor firstForeground(QStringLiteral("#ce1464"));
+  const QColor firstBackground(QStringLiteral("#e0fbd5"));
+  const QColor secondForeground(QStringLiteral("#147a42"));
+  const QColor secondBackground(QStringLiteral("#fbd5ed"));
+  const int start = kinds[0].m_start;
+  const int end = start + alphabet.size();
+  const QPair<QColor, QColor> styles[] = {{firstForeground, firstBackground},
+                                          {secondForeground, secondBackground}};
+  for (const auto &style : styles) {
+    config->m_textEditorConfig->m_theme = concealConfigTheme(style.first, style.second);
+    QVERIFY(config->m_textEditorConfig->m_theme);
+    fixture.editor()->setConfig(config);
+    waitForConcealPublication(fixture);
+    const auto image = renderConcealEditor(fixture);
+    QVERIFY(!image.isNull());
+    concealConfigVerifyWidth(fixture, start, end, compact);
+    // Inspect each retained end AND the dots, not merely a colored overlay elsewhere.
+    for (const auto &part :
+         {qMakePair(start, start + 3), qMakePair(start + 3, end - 3), qMakePair(end - 3, end)}) {
+      const auto rect = concealConfigViewportRange(fixture, part.first, part.second);
+      QVERIFY(rect.width() > 0);
+      QVERIFY(concealConfigColorCount(image, rect, style.first) > 0);
+      QVERIFY(concealConfigColorCount(image, rect, style.second) > 0);
+      if (style.first == secondForeground) {
+        QCOMPARE(concealConfigColorCount(image, rect, firstForeground), 0);
+        QCOMPARE(concealConfigColorCount(image, rect, firstBackground), 0);
+      }
+    }
+    verifySourceUnchanged();
+  }
+  concealConfigSaveImage(renderConcealEditor(fixture), QStringLiteral("conceal-config-styled.png"));
+  setConcealCursor(fixture, start);
+  auto revealed = renderConcealEditor(fixture);
+  concealConfigVerifyWidth(fixture, start, end, alphabet);
+  const QColor sourceForeground(QStringLiteral("#174db5"));
+  auto rect = concealConfigViewportRange(fixture, start, end);
+  QVERIFY(concealConfigColorCount(revealed, rect, sourceForeground) > 0);
+  QCOMPARE(concealConfigColorCount(revealed, rect, secondBackground), 0);
+  setConcealCursor(fixture, doc->characterCount() - 1);
+
+  // A real custom theme omitting ConcealedText inherits source syntax color;
+  // neither a previous theme's overlay nor a conceal-specific background survives.
+  config->m_textEditorConfig->m_theme = concealConfigTheme();
+  QVERIFY(config->m_textEditorConfig->m_theme);
+  fixture.editor()->setConfig(config);
+  waitForConcealPublication(fixture);
+  const auto omitted = renderConcealEditor(fixture);
+  QVERIFY(!omitted.isNull());
+  concealConfigVerifyWidth(fixture, start, end, compact);
+  for (const auto &part :
+       {qMakePair(start, start + 3), qMakePair(start + 3, end - 3), qMakePair(end - 3, end)}) {
+    rect = concealConfigViewportRange(fixture, part.first, part.second);
+    QVERIFY(concealConfigColorCount(omitted, rect, sourceForeground) > 0);
+    QVERIFY(concealConfigColorCount(omitted, rect, QColor(Qt::white)) > 0);
+    QCOMPARE(concealConfigColorCount(omitted, rect, secondForeground), 0);
+    QCOMPARE(concealConfigColorCount(omitted, rect, secondBackground), 0);
+  }
+  verifySourceUnchanged();
+  // History still performs the authored edits, not any display transformation.
+  fixture.edit()->redo();
+  QCOMPARE(fixture.text(), preservedSource + QStringLiteral(" undone"));
+  fixture.edit()->undo();
+  QCOMPARE(fixture.text(), preservedSource);
+  fixture.edit()->undo();
+  QCOMPARE(fixture.text(), source);
+}
+
+void TestMarkdownEditor::testConcealCaretAndViMotion() {
+  const auto alphabet = QStringLiteral("abcdefghijklmnopqrstuvwxyz");
+  const auto compact = QStringLiteral("abc\u00b7\u00b7\u00b7xyz");
+  const auto source = QStringLiteral("[x](") + alphabet + QStringLiteral(") tail\nother block");
+  const int start = source.indexOf(alphabet);
+  const int end = start + alphabet.size();
+  Fixture fixture(source, 0, start - 1, makeConcealConfig(true));
+  QVERIFY(!renderConcealEditor(fixture).isNull());
+  QTRY_VERIFY_WITH_TIMEOUT(fixture.edit()->hasFocus(), 5000);
+  waitForConcealPublication(fixture);
+  auto edit = fixture.edit();
+  QTest::keyClick(edit, Qt::Key_Escape);
+  setConcealCursor(fixture, start - 1);
+  QCOMPARE(source.at(edit->textCursor().position()), QLatin1Char('('));
+  concealConfigVerifyWidth(fixture, start, end, compact);
+  concealConfigSaveImage(renderConcealEditor(fixture), QStringLiteral("conceal-vi-compact.png"));
+  QTest::keyClicks(edit, QStringLiteral("5l"));
+  QCOMPARE(edit->textCursor().position(), start + 4);
+  concealConfigVerifyWidth(fixture, start, end, alphabet);
+  QCOMPARE(fixture.text(), source);
+  concealConfigSaveImage(renderConcealEditor(fixture), QStringLiteral("conceal-vi-revealed.png"));
+  setConcealCursor(fixture, start);
+  QTest::keyClicks(edit, QStringLiteral("5l"));
+  QCOMPARE(edit->textCursor().position(), start + 5);
+  concealConfigVerifyWidth(fixture, start, end, alphabet);
+
+  // Crossing either retained endpoint by keyboard reveals the entire URL.
+  setConcealCursor(fixture, start - 1);
+  QTest::keyClicks(edit, QStringLiteral("l"));
+  QCOMPARE(edit->textCursor().position(), start);
+  concealConfigVerifyWidth(fixture, start, end, alphabet);
+  QTest::keyClicks(edit, QStringLiteral("h"));
+  QCOMPARE(edit->textCursor().position(), start - 1);
+  concealConfigVerifyWidth(fixture, start, end, compact);
+  setConcealCursor(fixture, end);
+  QTest::keyClicks(edit, QStringLiteral("h"));
+  QCOMPARE(edit->textCursor().position(), end - 1);
+  concealConfigVerifyWidth(fixture, start, end, alphabet);
+  QTest::keyClicks(edit, QStringLiteral("l"));
+  QCOMPARE(edit->textCursor().position(), end);
+  concealConfigVerifyWidth(fixture, start, end, compact);
+
+  for (int endpoint : {start, end - 1}) {
+    setConcealCursor(fixture, endpoint);
+    QCOMPARE(edit->textCursor().position(), endpoint);
+    concealConfigVerifyWidth(fixture, start, end, alphabet);
+    setConcealCursor(fixture, fixture.blockEnd(1));
+    concealConfigVerifyWidth(fixture, start, end, compact);
+  }
+  for (int endpoint : {start, end - 1}) {
+    setConcealCursor(fixture, fixture.blockEnd(1));
+    QVERIFY(!renderConcealEditor(fixture).isNull());
+    const auto glyph = concealConfigViewportRange(fixture, endpoint, endpoint + 1);
+    const QPoint point(qRound(glyph.left() + glyph.width() / 4), qRound(glyph.center().y()));
+    QCOMPARE(edit->cursorForPosition(point).position(), endpoint);
+    QTest::mouseClick(edit->viewport(), Qt::LeftButton, Qt::NoModifier, point);
+    QCOMPARE(edit->textCursor().position(), endpoint);
+    concealConfigVerifyWidth(fixture, start, end, alphabet);
+    QTest::keyClicks(edit, QStringLiteral("$"));
+    QCOMPARE(edit->textCursor().position(), fixture.blockEnd(0) - 1);
+    concealConfigVerifyWidth(fixture, start, end, compact);
+  }
+  setConcealCursor(fixture, start + 4);
+  QTest::keyClicks(edit, QStringLiteral("j"));
+  QCOMPARE(edit->textCursor().blockNumber(), 1);
+  concealConfigVerifyWidth(fixture, start, end, compact);
+  setConcealCursor(fixture, start - 1);
+  QTest::keyClicks(edit, QStringLiteral("999l"));
+  QCOMPARE(edit->textCursor().position(), fixture.blockEnd(0) - 1);
+  QTest::keyClicks(edit, QStringLiteral("5l"));
+  QCOMPARE(edit->textCursor().position(), fixture.blockEnd(0) - 1);
+  concealConfigVerifyWidth(fixture, start, end, compact);
+  QCOMPARE(fixture.text(), source);
+  QVERIFY(!fixture.editor()->document()->isUndoAvailable());
+
+  // Inclusive Vi selection crosses both delimiters. Its moving source caret is
+  // outside the URL, so selecting the middle does not itself reveal the range.
+  setConcealCursor(fixture, start - 1);
+  QTest::keyClicks(edit, QStringLiteral("v27l"));
+  QCOMPARE(edit->textCursor().position(), end);
+  QCOMPARE(edit->selectedText(), QStringLiteral("(") + alphabet + QLatin1Char(')'));
+  concealConfigVerifyWidth(fixture, start, end, compact);
+  QTest::keyClicks(edit, QStringLiteral("d"));
+  const auto deleted = QStringLiteral("[x] tail\nother block");
+  QCOMPARE(fixture.text(), deleted);
+  QTest::keyClicks(edit, QStringLiteral("u"));
+  QCOMPARE(fixture.text(), source);
+  QTest::keyClick(edit, Qt::Key_R, Qt::ControlModifier);
+  QCOMPARE(fixture.text(), deleted);
+  QTest::keyClicks(edit, QStringLiteral("u"));
+  QCOMPARE(fixture.text(), source);
+  setConcealCursor(fixture, fixture.blockEnd(1));
+  waitForConcealPublication(fixture);
+  concealConfigVerifyWidth(fixture, start, end, compact);
+}
+
 void TestMarkdownEditor::testIsQuote() {
   struct Case {
     const char *m_text;
@@ -4283,6 +4746,414 @@ void TestMarkdownEditor::testListItemDecorationsFoldingAndPreviews() {
     QCOMPARE(ime.blockText(1), QStringLiteral("  continuation\u3042"));
     QCOMPARE(doc->findBlockByNumber(1).layout()->preeditAreaText(), QString());
     verifyListActiveRow(ime, renderListDecorations(ime), 1, true);
+  }
+}
+
+namespace {
+QSharedPointer<MarkdownEditorConfig>
+concealEditConfig(bool p_enabled = true,
+                  const QColor &p_background = QColor(QStringLiteral("#d7e6ff"))) {
+  auto config = makeConcealConfig();
+  config->m_textEditorConfig->m_lineNumberType = VTextEditor::LineNumberType::None;
+  config->m_textEditorConfig->m_textFoldingEnabled = false;
+  const QJsonObject json{
+      {QStringLiteral("metadata"),
+       QJsonObject{{QStringLiteral("type"), QStringLiteral("vtextedit")}}},
+      {QStringLiteral("editor-styles"),
+       QJsonObject{{QStringLiteral("Text"),
+                    QJsonObject{{QStringLiteral("font-family"), QStringLiteral("Courier New")},
+                                {QStringLiteral("font-size"), 14},
+                                {QStringLiteral("text-color"), QStringLiteral("#252525")},
+                                {QStringLiteral("background-color"), QStringLiteral("#ffffff")}}},
+                   {QStringLiteral("ConcealedText"),
+                    QJsonObject{{QStringLiteral("text-color"), QStringLiteral("#124aab")},
+                                {QStringLiteral("background-color"), p_background.name()}}}}},
+      {QStringLiteral("markdown-syntax-styles"),
+       QJsonObject{
+           {QStringLiteral("LINK"),
+            QJsonObject{{QStringLiteral("text-color"), QStringLiteral("#94134a")},
+                        {QStringLiteral("background-color"), QStringLiteral("#f5d8c5")}}},
+           {QStringLiteral("CODE"),
+            QJsonObject{{QStringLiteral("text-color"), QStringLiteral("#175522")},
+                        {QStringLiteral("background-color"), QStringLiteral("#ccf0d0")}}}}}};
+  config->m_textEditorConfig->m_theme = Theme::createThemeFromContent(
+      QString::fromUtf8(QJsonDocument(json).toJson(QJsonDocument::Compact)));
+  Q_ASSERT(config->m_textEditorConfig->m_theme);
+  if (!p_enabled) {
+    config->m_concealElements = MarkdownConcealElements();
+  }
+  return config;
+}
+
+QRect concealEditCursorRect(Fixture &p_fixture, int p_position) {
+  QTextCursor cursor(p_fixture.editor()->document());
+  cursor.setPosition(p_position);
+  return p_fixture.edit()->cursorRect(cursor);
+}
+
+void concealEditCompareRect(const QRect &p_actual, const QRect &p_expected) {
+  QVERIFY(qAbs(p_actual.left() - p_expected.left()) <= 1);
+  QVERIFY(qAbs(p_actual.top() - p_expected.top()) <= 1);
+  QVERIFY(qAbs(p_actual.right() - p_expected.right()) <= 1);
+  QVERIFY(qAbs(p_actual.bottom() - p_expected.bottom()) <= 1);
+}
+
+// Interior to the leading quarter of a glyph, never an exact/fuzzy boundary.
+QPoint concealEditGlyphPoint(Fixture &p_fixture, int p_position) {
+  const auto left = concealEditCursorRect(p_fixture, p_position);
+  const auto right = concealEditCursorRect(p_fixture, p_position + 1);
+  return QPoint(left.left() + qMax(1, (right.left() - left.left()) / 4), left.center().y());
+}
+
+QImage concealEditCrop(const QImage &p_image, const QRect &p_rect) {
+  const qreal dpr = p_image.devicePixelRatio();
+  return p_image.copy(QRect(qRound(p_rect.x() * dpr), qRound(p_rect.y() * dpr),
+                            qRound(p_rect.width() * dpr), qRound(p_rect.height() * dpr)));
+}
+
+QRect concealEditColorBounds(const QImage &p_image, const QColor &p_color) {
+  QRect bounds;
+  for (int y = 0; y < p_image.height(); ++y) {
+    for (int x = 0; x < p_image.width(); ++x) {
+      if (p_image.pixelColor(x, y).rgb() == p_color.rgb()) {
+        bounds = bounds.united(QRect(x, y, 1, 1));
+      }
+    }
+  }
+  return bounds;
+}
+
+void concealEditSaveImage(const QImage &p_image, const QString &p_name) {
+  const QString directory = qEnvironmentVariable("VTE_CONCEAL_TEST_IMAGE_DIR");
+  if (!directory.isEmpty()) {
+    QVERIFY(QDir().mkpath(directory));
+    QVERIFY(p_image.save(QDir(directory).filePath(p_name)));
+  }
+}
+} // namespace
+
+void TestMarkdownEditor::testConcealEditingAndGeometry() {
+  const QString url = QStringLiteral("abcdefghijklmnopqrstuvwxyz");
+  const QString compactUrl = QStringLiteral("abc\u00b7\u00b7\u00b7xyz");
+  const QString source = QStringLiteral("[x](") + url + QStringLiteral(") tail\noutside");
+  const QString compact = QStringLiteral("[x](") + compactUrl + QStringLiteral(") tail\noutside");
+  const int start = source.indexOf(url);
+  const int hidden = start + 3;
+
+  {
+    Fixture reference(compact, -1, -1, concealEditConfig(false));
+    waitForConcealPublication(reference);
+    renderConcealEditor(reference);
+    const auto markerPoint = concealEditGlyphPoint(reference, hidden + 1);
+    const auto compactTail =
+        concealEditCursorRect(reference, compact.indexOf(QStringLiteral("tail")));
+    Fixture revealed(source, -1, -1, concealEditConfig(false));
+    waitForConcealPublication(revealed);
+    renderConcealEditor(revealed);
+    const auto fullTail = concealEditCursorRect(revealed, source.indexOf(QStringLiteral("tail")));
+    Fixture fixture(source, -1, -1, concealEditConfig());
+    waitForConcealPublication(fixture);
+    const auto compactImage = renderConcealEditor(fixture);
+    concealEditSaveImage(compactImage, QStringLiteral("conceal-edit-compact.png"));
+    auto doc = fixture.editor()->document();
+    doc->clearUndoRedoStacks();
+    concealEditCompareRect(concealEditCursorRect(fixture, source.indexOf(QStringLiteral("tail"))),
+                           compactTail);
+    QTest::mouseClick(fixture.edit()->viewport(), Qt::LeftButton, Qt::NoModifier, markerPoint);
+    QCOMPARE(fixture.edit()->textCursor().position(), hidden);
+    QCOMPARE(fixture.text(), source);
+    concealEditCompareRect(concealEditCursorRect(fixture, source.indexOf(QStringLiteral("tail"))),
+                           fullTail);
+    concealEditSaveImage(renderConcealEditor(fixture), QStringLiteral("conceal-edit-revealed.png"));
+
+    QTest::keyClicks(fixture.edit(), QStringLiteral("UV"), Qt::NoModifier, 0);
+    QString inserted = source;
+    inserted.insert(hidden, QStringLiteral("UV"));
+    QCOMPARE(fixture.text(), inserted);
+    QCOMPARE(fixture.edit()->textCursor().position(), hidden + 2);
+    QTest::keyClick(fixture.edit(), Qt::Key_Backspace, Qt::NoModifier, 0);
+    QString erased = source;
+    erased.insert(hidden, QStringLiteral("U"));
+    QCOMPARE(fixture.text(), erased);
+    QCOMPARE(fixture.edit()->textCursor().position(), hidden + 1);
+
+    // Deletion and the preceding contiguous typing are separate source edits;
+    // revealing, parsing and reconcealing must not create intervening commands.
+    waitForConcealPublication(fixture);
+    QTest::keyClick(fixture.edit(), Qt::Key_Z, Qt::ControlModifier);
+    QCOMPARE(fixture.text(), inserted);
+    QTest::keyClick(fixture.edit(), Qt::Key_Z, Qt::ControlModifier);
+    QCOMPARE(fixture.text(), source);
+    QVERIFY(!doc->isUndoAvailable());
+    const int redoSteps = doc->availableRedoSteps();
+    setConcealCursor(fixture, source.size());
+    waitForConcealPublication(fixture);
+    QCOMPARE(doc->availableRedoSteps(), redoSteps);
+    concealEditCompareRect(concealEditCursorRect(fixture, source.indexOf(QStringLiteral("tail"))),
+                           compactTail);
+    fixture.edit()->redo();
+    QCOMPARE(fixture.text(), inserted);
+    fixture.edit()->redo();
+    QCOMPARE(fixture.text(), erased);
+    QVERIFY(!doc->isRedoAvailable());
+    const int undoSteps = doc->availableUndoSteps();
+    setConcealCursor(fixture, erased.size());
+    waitForConcealPublication(fixture);
+    QCOMPARE(doc->availableUndoSteps(), undoSteps);
+    concealEditCompareRect(concealEditCursorRect(fixture, erased.indexOf(QStringLiteral("tail"))),
+                           compactTail);
+  }
+
+  // Prepare both references before the edit. The first geometry assertion is
+  // synchronous: no event processing or fresh full parse can repair stale spans.
+  for (int editPosition : {0, start + 7}) {
+    QString edited = source;
+    edited.insert(editPosition, QStringLiteral("Z"));
+    QString editedUrl = url;
+    if (editPosition >= start) {
+      editedUrl.insert(editPosition - start, QStringLiteral("Z"));
+    }
+    QString editedCompact = edited;
+    editedCompact.replace(edited.indexOf(editedUrl), editedUrl.size(), compactUrl);
+    Fixture fullReference(edited, -1, -1, concealEditConfig(false));
+    waitForConcealPublication(fullReference);
+    renderConcealEditor(fullReference);
+    const auto fullTail =
+        concealEditCursorRect(fullReference, edited.indexOf(QStringLiteral("tail")));
+    Fixture compactReference(editedCompact, -1, -1, concealEditConfig(false));
+    waitForConcealPublication(compactReference);
+    renderConcealEditor(compactReference);
+    const auto compactTail =
+        concealEditCursorRect(compactReference, editedCompact.indexOf(QStringLiteral("tail")));
+    Fixture fixture(source, -1, -1, concealEditConfig());
+    waitForConcealPublication(fixture);
+    renderConcealEditor(fixture);
+    auto doc = fixture.editor()->document();
+    const int beforeRevision = doc->firstBlock().revision();
+    const int outsideRevision = doc->lastBlock().revision();
+    setConcealCursor(fixture, editPosition);
+    QTest::keyClicks(fixture.edit(), QStringLiteral("Z"), Qt::NoModifier, 0);
+    setConcealCursor(fixture, edited.size());
+    QCOMPARE(fixture.text(), edited);
+    QVERIFY(doc->firstBlock().revision() != beforeRevision);
+    QCOMPARE(doc->lastBlock().revision(), outsideRevision);
+    concealEditCompareRect(concealEditCursorRect(fixture, edited.indexOf(QStringLiteral("tail"))),
+                           fullTail);
+    const int editedRevision = doc->firstBlock().revision();
+    const int undoSteps = doc->availableUndoSteps();
+    waitForConcealPublication(fixture);
+    concealEditCompareRect(concealEditCursorRect(fixture, edited.indexOf(QStringLiteral("tail"))),
+                           compactTail);
+    QCOMPARE(fixture.text(), edited);
+    QCOMPARE(doc->firstBlock().revision(), editedRevision);
+    QCOMPARE(doc->availableUndoSteps(), undoSteps);
+  }
+
+  {
+    const QString styledSource =
+        QStringLiteral("[x](") + url + QStringLiteral(") `syntax` tail\noutside");
+    Fixture fixture(styledSource, -1, -1, concealEditConfig());
+    waitForConcealPublication(fixture);
+    const auto image = renderConcealEditor(fixture);
+    const auto line = concealEditCursorRect(fixture, 0);
+    const QRect band(0, line.top(), fixture.edit()->viewport()->width(), line.height());
+    const auto baseline = concealEditCrop(image, band);
+    const QColor original(QStringLiteral("#d7e6ff"));
+    const QColor replacement(QStringLiteral("#f1d1f7"));
+    const QColor syntax(QStringLiteral("#f5d8c5"));
+    const QColor code(QStringLiteral("#ccf0d0"));
+    QVERIFY(!concealEditColorBounds(baseline, original).isEmpty());
+    QVERIFY(!concealEditColorBounds(baseline, syntax).isEmpty());
+    QVERIFY(!concealEditColorBounds(baseline, code).isEmpty());
+    auto doc = fixture.editor()->document();
+    const int sourceRevision = doc->firstBlock().revision();
+    const int outsideRevision = doc->lastBlock().revision();
+    const int undoSteps = doc->availableUndoSteps();
+    const int redoSteps = doc->availableRedoSteps();
+    const auto tail = concealEditCursorRect(fixture, styledSource.indexOf(QStringLiteral("tail")));
+    for (const QColor &background : {replacement, original, replacement, original}) {
+      fixture.editor()->getHighlighter()->rehighlight();
+      waitForConcealPublication(fixture);
+      fixture.editor()->setConfig(concealEditConfig(true, background));
+      waitForConcealPublication(fixture);
+      const auto rendered = concealEditCrop(renderConcealEditor(fixture), band);
+      concealEditCompareRect(
+          concealEditCursorRect(fixture, styledSource.indexOf(QStringLiteral("tail"))), tail);
+      QVERIFY(!concealEditColorBounds(rendered, background).isEmpty());
+      QVERIFY(concealEditColorBounds(rendered, background == original ? replacement : original)
+                  .isEmpty());
+      QCOMPARE(concealEditColorBounds(rendered, syntax), concealEditColorBounds(baseline, syntax));
+      QCOMPARE(concealEditColorBounds(rendered, code), concealEditColorBounds(baseline, code));
+      if (background == original) {
+        QCOMPARE(rendered, baseline);
+      }
+      QCOMPARE(fixture.text(), styledSource);
+      QCOMPARE(doc->firstBlock().revision(), sourceRevision);
+      QCOMPARE(doc->lastBlock().revision(), outsideRevision);
+      QCOMPARE(doc->availableUndoSteps(), undoSteps);
+      QCOMPARE(doc->availableRedoSteps(), redoSteps);
+    }
+    // The URL's original syntax format, not the last conceal overlay, returns.
+    Fixture reference(styledSource, -1, -1, concealEditConfig(false));
+    waitForConcealPublication(reference);
+    renderConcealEditor(reference);
+    setConcealCursor(fixture, start);
+    const auto revealed = concealEditCrop(renderConcealEditor(fixture), band);
+    const auto sourceSyntax = concealEditCrop(renderConcealEditor(reference), band);
+    QVERIFY(concealEditColorBounds(revealed, original).isEmpty());
+    QCOMPARE(concealEditColorBounds(revealed, syntax),
+             concealEditColorBounds(sourceSyntax, syntax));
+    QCOMPARE(concealEditColorBounds(revealed, code), concealEditColorBounds(sourceSyntax, code));
+  }
+
+  {
+    const QString secondUrl = url.toUpper();
+    QString geometrySource = QStringLiteral("[x](") + url + QStringLiteral(") [y](") + secondUrl +
+                             QStringLiteral(") tailWWWW wrapping words and more trailing words "
+                                            "to cross several visual lines\n");
+    for (int row = 0; row < 24; ++row) {
+      geometrySource +=
+          QStringLiteral("row%1 WWWW wrapping text\n").arg(row, 2, 10, QLatin1Char('0'));
+    }
+    geometrySource += QStringLiteral("last WWWW");
+    QString geometryCompact = geometrySource;
+    geometryCompact.replace(url, compactUrl);
+    geometryCompact.replace(secondUrl, compactUrl.toUpper());
+    const int removed = geometrySource.size() - geometryCompact.size();
+    const int tail = geometrySource.indexOf(QStringLiteral("tailWWWW"));
+    const int referenceTail = geometryCompact.indexOf(QStringLiteral("tailWWWW"));
+    Fixture reference(geometryCompact, 0, referenceTail, concealEditConfig(false));
+    waitForConcealPublication(reference);
+    renderConcealEditor(reference);
+    Fixture fixture(geometrySource, 0, tail, concealEditConfig());
+    waitForConcealPublication(fixture);
+    renderConcealEditor(fixture);
+    auto verifyTrailingGlyphs = [&](int p_sourcePosition, int p_referencePosition) {
+      concealEditCompareRect(concealEditCursorRect(fixture, p_sourcePosition),
+                             concealEditCursorRect(reference, p_referencePosition));
+      const auto point = concealEditGlyphPoint(reference, p_referencePosition);
+      QVERIFY(fixture.edit()->viewport()->rect().contains(point));
+      QCOMPARE(reference.edit()->cursorForPosition(point).position(), p_referencePosition);
+      QCOMPARE(fixture.edit()->cursorForPosition(point).position(), p_sourcePosition);
+      const auto left = concealEditCursorRect(reference, p_referencePosition);
+      const auto right = concealEditCursorRect(reference, p_referencePosition + 3);
+      const QRect glyphBand(left.left(), left.top(), right.left() - left.left(), left.height());
+      const auto referenceImage = concealEditCrop(renderConcealEditor(reference), glyphBand);
+      const auto actualImage = concealEditCrop(renderConcealEditor(fixture), glyphBand);
+      const auto expectedInk =
+          concealEditColorBounds(referenceImage, QColor(QStringLiteral("#252525")));
+      const auto actualInk = concealEditColorBounds(actualImage, QColor(QStringLiteral("#252525")));
+      QVERIFY(!expectedInk.isEmpty());
+      QVERIFY(!actualInk.isEmpty());
+      concealEditCompareRect(actualInk, expectedInk);
+    };
+    verifyTrailingGlyphs(tail + 4, referenceTail + 4);
+    concealEditCompareRect(fixture.edit()->cursorRect(), reference.edit()->cursorRect());
+
+    // Twenty monospace cells put each three-dot marker away from a wrap edge.
+    // The ordinary short-source reference may then use Qt's normal wrapping.
+    const int cellWidth = concealEditCursorRect(reference, referenceTail + 5).left() -
+                          concealEditCursorRect(reference, referenceTail + 4).left();
+    for (auto item : {&fixture, &reference}) {
+      item->editor()->resize(320, 220);
+      item->edit()->setWordWrapMode(QTextOption::WrapAnywhere);
+      item->edit()->setLineWrapMode(QTextEdit::FixedPixelWidth);
+      item->edit()->setLineWrapColumnOrWidth(20 * cellWidth);
+    }
+    QCoreApplication::processEvents();
+    setConcealCursor(fixture, tail + 4);
+    setConcealCursor(reference, referenceTail + 4);
+    fixture.edit()->ensureCursorVisible();
+    reference.edit()->ensureCursorVisible();
+    QVERIFY(fixture.editor()->document()->firstBlock().layout()->lineCount() >= 3);
+    QCOMPARE(fixture.editor()->document()->firstBlock().layout()->lineCount(),
+             reference.editor()->document()->firstBlock().layout()->lineCount());
+    concealEditCompareRect(fixture.edit()->cursorRect(), reference.edit()->cursorRect());
+    for (auto key : {Qt::Key_Down, Qt::Key_Up}) {
+      QTest::keyClick(fixture.edit(), key);
+      QTest::keyClick(reference.edit(), key);
+      QCOMPARE(fixture.edit()->textCursor().position(),
+               reference.edit()->textCursor().position() + removed);
+      concealEditCompareRect(fixture.edit()->cursorRect(), reference.edit()->cursorRect());
+    }
+    QCOMPARE(fixture.edit()->textCursor().position(), tail + 4);
+    QTest::keyClick(fixture.edit(), Qt::Key_End, Qt::ControlModifier);
+    QTest::keyClick(reference.edit(), Qt::Key_End, Qt::ControlModifier);
+    QCoreApplication::processEvents();
+    QCOMPARE(fixture.edit()->textCursor().position(), geometrySource.size());
+    QVERIFY(fixture.edit()->verticalScrollBar()->value() > 0);
+    concealEditCompareRect(fixture.edit()->cursorRect(), reference.edit()->cursorRect());
+    verifyTrailingGlyphs(geometrySource.lastIndexOf(QStringLiteral("WWWW")),
+                         geometryCompact.lastIndexOf(QStringLiteral("WWWW")));
+    concealEditSaveImage(renderConcealEditor(fixture), QStringLiteral("conceal-edit-scrolled.png"));
+    QCOMPARE(fixture.text(), geometrySource);
+  }
+
+  {
+    const QString composition = QStringLiteral("e\u0301");
+    const int insertion = source.indexOf(QStringLiteral("tail")) + 2;
+    QString committed = source;
+    committed.insert(insertion, composition);
+    QString committedCompact = committed;
+    committedCompact.replace(url, compactUrl);
+    Fixture compactReference(committedCompact, -1, -1, concealEditConfig(false));
+    waitForConcealPublication(compactReference);
+    renderConcealEditor(compactReference);
+    const auto committedEnd = concealEditCursorRect(compactReference, compactReference.blockEnd(0));
+    Fixture reference(source, 0, insertion, concealEditConfig(false));
+    waitForConcealPublication(reference);
+    renderConcealEditor(reference);
+    Fixture fixture(source, 0, insertion, concealEditConfig());
+    waitForConcealPublication(fixture);
+    renderConcealEditor(fixture);
+    auto doc = fixture.editor()->document();
+    doc->clearUndoRedoStacks();
+    const int sourceRevision = doc->firstBlock().revision();
+    const int count = doc->characterCount();
+    const auto compactEnd = concealEditCursorRect(fixture, fixture.blockEnd(0));
+    for (auto item : {&fixture, &reference}) {
+      QInputMethodEvent preedit(composition, QList<QInputMethodEvent::Attribute>());
+      QCoreApplication::sendEvent(item->edit(), &preedit);
+    }
+    // Even with the source caret after the URL, preedit reveals its whole block.
+    concealEditCompareRect(concealEditCursorRect(fixture, fixture.blockEnd(0)),
+                           concealEditCursorRect(reference, reference.blockEnd(0)));
+    concealEditCompareRect(fixture.edit()->cursorRect(), reference.edit()->cursorRect());
+    QCOMPARE(fixture.text(), source);
+    QCOMPARE(doc->characterCount(), count);
+    QCOMPARE(doc->firstBlock().revision(), sourceRevision);
+    QCOMPARE(fixture.edit()->textCursor().position(), insertion);
+    QVERIFY(!doc->isUndoAvailable());
+    concealEditSaveImage(renderConcealEditor(fixture), QStringLiteral("conceal-edit-preedit.png"));
+    for (auto item : {&fixture, &reference}) {
+      QInputMethodEvent cancel;
+      QCoreApplication::sendEvent(item->edit(), &cancel);
+    }
+    concealEditCompareRect(concealEditCursorRect(fixture, fixture.blockEnd(0)), compactEnd);
+    QCOMPARE(fixture.text(), source);
+    QCOMPARE(doc->firstBlock().revision(), sourceRevision);
+    QVERIFY(!doc->isUndoAvailable());
+    for (auto item : {&fixture, &reference}) {
+      QInputMethodEvent preedit(composition, QList<QInputMethodEvent::Attribute>());
+      QCoreApplication::sendEvent(item->edit(), &preedit);
+      QInputMethodEvent commit;
+      commit.setCommitString(composition);
+      QCoreApplication::sendEvent(item->edit(), &commit);
+    }
+    QCOMPARE(fixture.text(), committed);
+    QCOMPARE(fixture.edit()->textCursor().position(), insertion + composition.size());
+    QCOMPARE(doc->characterCount(), count + composition.size());
+    concealEditCompareRect(concealEditCursorRect(fixture, fixture.blockEnd(0)),
+                           concealEditCursorRect(reference, reference.blockEnd(0)));
+    waitForConcealPublication(fixture);
+    concealEditCompareRect(concealEditCursorRect(fixture, fixture.blockEnd(0)), committedEnd);
+    QCOMPARE(fixture.text(), committed);
+    fixture.edit()->undo();
+    QCOMPARE(fixture.text(), source);
+    QVERIFY(!doc->isUndoAvailable());
+    fixture.edit()->redo();
+    QCOMPARE(fixture.text(), committed);
+    QVERIFY(!doc->isRedoAvailable());
   }
 }
 

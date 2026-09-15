@@ -233,6 +233,7 @@ struct ASTWalkResult {
   QVector<ElementRegion> tableHeaderRegions;
   QVector<ElementRegion> tableBorderRegions;
   QVector<FoldingRegion> foldingRegions;
+  QVector<ConcealRange> concealRanges; // full parse only; raw URL payloads
 
   // Typed element data for interactive previews.
   QVector<ImageElement> imageElements;

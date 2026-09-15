@@ -34,6 +34,14 @@ public:
 
   InplacePreviewSources m_inplacePreviewSources;
 
+  // Empty disables automatic concealment; source text is never changed.
+  MarkdownConcealElements m_concealElements = MarkdownConcealElement::ImageUrl |
+                                              MarkdownConcealElement::LinkUrl |
+                                              MarkdownConcealElement::ReferenceUrl;
+
+  // Conceal only destinations longer than this many grapheme clusters.
+  int m_concealLengthThreshold = 20;
+
   // Whether use WebCodeBlockHighlighter or KSyntaxCodeBlockHighlighter for code
   // block syntax highlight.
   bool m_webCodeBlockHighlighterEnabled = true;

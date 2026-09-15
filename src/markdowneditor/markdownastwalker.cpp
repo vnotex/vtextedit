@@ -91,8 +91,8 @@ bool scanListMarker(const QString &p_line, int p_start, ListItemInfo &p_marker) 
 
 // Reverse only a verified boundary through the existing byte-to-QChar table.
 // No re-encoding of the source prefix, including a non-ASCII footnote label.
-static int listByteColumn(const LineOffsetTable &p_offsets, int p_line, int p_length,
-                          int p_position) {
+static int sourceByteColumn(const LineOffsetTable &p_offsets, int p_line, int p_length,
+                            int p_position) {
   int lo = 0;
   int hi = p_length;
   while (lo < hi) {
@@ -147,7 +147,7 @@ public:
       return m_marker;
     }
     const int contentByte =
-        listByteColumn(m_offsets, line, length, lineStart + marker.m_contentStart);
+        sourceByteColumn(m_offsets, line, length, lineStart + marker.m_contentStart);
     if (contentByte < column - 1 + width) {
       return m_marker;
     }
@@ -1823,6 +1823,106 @@ static int lineIndexOfDocPos(const LineOffsetTable &p_offsets, int p_pos) {
   return lo;
 }
 
+// Append only source-local, one-line payloads, adding the document offset once.
+static void appendConcealRange(QVector<ConcealRange> &p_ranges, const LineOffsetTable &p_offsets,
+                               int p_start, int p_end, MarkdownConcealElement p_element,
+                               int p_offset) {
+  if (p_start < 0 || p_end <= p_start || p_offset < 0 ||
+      p_end > std::numeric_limits<int>::max() - p_offset) {
+    return;
+  }
+  const int line = lineIndexOfDocPos(p_offsets, p_start);
+  if (line < 0 || p_end > p_offsets.lineEndQCharOffset(line)) {
+    return;
+  }
+  ConcealRange range;
+  range.m_startPos = p_offset + p_start;
+  range.m_endPos = p_offset + p_end;
+  range.m_element = p_element;
+  p_ranges.append(range);
+}
+
+static void extractInlineConcealRange(cmark_node *p_node, const QByteArray &p_source,
+                                      const LineOffsetTable &p_offsets,
+                                      QVector<ConcealRange> &p_ranges,
+                                      MarkdownConcealElement p_element, int p_offset) {
+  const int line = cmark_node_get_url_start_line(p_node);
+  int lineStart = 0;
+  int lineLength = 0;
+  int start = 0;
+  int end = 0;
+  if (line <= 0 || line != cmark_node_get_url_end_line(p_node) ||
+      !p_offsets.lineByteRange(line - 1, lineStart, lineLength) ||
+      lineLength == std::numeric_limits<int>::max() ||
+      !cmarkNodeUrlSpan(p_node, p_offsets, start, end) ||
+      start < p_offsets.lineStartQCharOffset(line - 1) || end <= start ||
+      end > p_offsets.lineEndQCharOffset(line - 1)) {
+    return;
+  }
+
+  // Inspect only the raw boundary bytes; decoding the whole document is unnecessary.
+  const int startByte = sourceByteColumn(p_offsets, line, lineLength, start);
+  const int endByte = sourceByteColumn(p_offsets, line, lineLength, end);
+  if (startByte < 0 || endByte <= startByte || endByte > lineLength) {
+    return;
+  }
+  if (p_source.at(lineStart + startByte) == '<' && p_source.at(lineStart + endByte - 1) == '>') {
+    ++start;
+    --end;
+  }
+  appendConcealRange(p_ranges, p_offsets, start, end, p_element, p_offset);
+}
+
+struct ReferenceConcealContext {
+  const QByteArray &m_source;
+  const LineOffsetTable &m_offsets;
+  QVector<ConcealRange> &m_ranges;
+  int m_offset;
+};
+
+static void collectReferenceDestination(void *p_userData, int p_lineNumber, const char *p_lineText,
+                                        int p_lineLength, int p_urlStart, int p_urlEnd) {
+  const auto &context = *static_cast<ReferenceConcealContext *>(p_userData);
+  int rawStart = 0;
+  int rawLength = 0;
+  if (!p_lineText || p_lineNumber <= 0 || p_urlStart < 0 || p_urlEnd <= p_urlStart ||
+      p_urlEnd > p_lineLength ||
+      !context.m_offsets.lineByteRange(p_lineNumber - 1, rawStart, rawLength) ||
+      rawLength == std::numeric_limits<int>::max()) {
+    return;
+  }
+
+  // Container stripping can synthesize partial-tab spaces. Remove only leading
+  // indentation, then require the entire remaining callback line to be the raw
+  // source line's suffix. Never search for a URL also present in a label/title.
+  int indent = 0;
+  while (indent < p_lineLength && (p_lineText[indent] == ' ' || p_lineText[indent] == '\t')) {
+    ++indent;
+  }
+  const int suffixLength = p_lineLength - indent;
+  if (p_urlStart < indent || suffixLength > rawLength) {
+    return;
+  }
+  const int rawColumn = rawLength - suffixLength;
+  if (std::memcmp(context.m_source.constData() + rawStart + rawColumn, p_lineText + indent,
+                  suffixLength) != 0) {
+    return;
+  }
+  if (p_lineText[p_urlStart] == '<' && p_lineText[p_urlEnd - 1] == '>') {
+    ++p_urlStart;
+    --p_urlEnd;
+  }
+  if (p_urlEnd <= p_urlStart) {
+    return;
+  }
+  const int start =
+      context.m_offsets.toDocPosition(p_lineNumber, rawColumn + (p_urlStart - indent) + 1);
+  const int end =
+      context.m_offsets.toDocPosition(p_lineNumber, rawColumn + (p_urlEnd - indent) + 1);
+  appendConcealRange(context.m_ranges, context.m_offsets, start, end,
+                     MarkdownConcealElement::ReferenceUrl, context.m_offset);
+}
+
 // Capture every HTML `<img …>` of one already-resolved slice as an
 // ImageElement, so the live editor previews and menus treat it exactly like a
 // Markdown image link.
@@ -1832,6 +1932,10 @@ static void extractHtmlImages(const QString &p_slice, int p_sliceStart, const QS
   Q_UNUSED(p_text);
   const auto tags = scanHtmlImgTags(p_slice, p_sliceStart, &p_rawText);
   for (const auto &tag : tags) {
+    if (const auto *src = tag.attr("src")) {
+      appendConcealRange(p_result.concealRanges, p_offsets, src->m_valueStart, src->m_valueEnd,
+                         MarkdownConcealElement::ImageUrl, p_offset);
+    }
     ImageElement image;
     image.m_startPos = p_offset + tag.m_tagStart;
     image.m_endPos = p_offset + tag.m_tagEnd;
@@ -2461,13 +2565,23 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
     return result;
   }
 
-  cmark_node *doc =
-      cmark_parse_document(p_utf8Text.constData(), p_utf8Text.size(), CMARK_OPT_DEFAULT);
-  if (!doc) {
+  LineOffsetTable offsets(p_utf8Text);
+  ReferenceConcealContext referenceContext{p_utf8Text, offsets, result.concealRanges, p_offset};
+  cmark_parser *parser = cmark_parser_new(CMARK_OPT_DEFAULT);
+  if (!parser) {
     return result;
   }
-
-  LineOffsetTable offsets(p_utf8Text);
+  if (!p_fast) {
+    cmark_parser_set_reference_destination_callback(parser, collectReferenceDestination,
+                                                    &referenceContext);
+  }
+  cmark_parser_feed(parser, p_utf8Text.constData(), p_utf8Text.size());
+  cmark_node *doc = cmark_parser_finish(parser);
+  cmark_parser_free(parser);
+  if (!doc) {
+    result.concealRanges.clear();
+    return result;
+  }
 
   ListMarkerReader listMarkers(p_utf8Text, offsets);
   ListCollector lists(result.listStructure, p_utf8Text, offsets, listMarkers, p_offset,
@@ -2484,6 +2598,7 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
   cmark_iter *iter = cmark_iter_new(doc);
   if (!iter) {
     cmark_node_free(doc);
+    result.concealRanges.clear();
     return result;
   }
   cmark_event_type ev;
@@ -2525,6 +2640,14 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
       }
       extractHtmlNode(node, text, p_utf8Text, offsets, result, p_offset, p_startBlock, rawText,
                       fontColors, p_fast);
+    }
+
+    if (!p_fast && rawText.m_element.isEmpty() &&
+        (type == CMARK_NODE_LINK || type == CMARK_NODE_IMAGE)) {
+      extractInlineConcealRange(node, p_utf8Text, offsets, result.concealRanges,
+                                type == CMARK_NODE_IMAGE ? MarkdownConcealElement::ImageUrl
+                                                         : MarkdownConcealElement::LinkUrl,
+                                p_offset);
     }
 
     int style = mapCmarkNodeToStyle(type, node);
@@ -2635,6 +2758,23 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
 
   // Sort region vectors that need sorting.
   if (!p_fast) {
+    std::sort(result.concealRanges.begin(), result.concealRanges.end(),
+              [](const ConcealRange &a, const ConcealRange &b) {
+                if (a.m_startPos != b.m_startPos) {
+                  return a.m_startPos < b.m_startPos;
+                }
+                if (a.m_endPos != b.m_endPos) {
+                  return a.m_endPos < b.m_endPos;
+                }
+                return static_cast<int>(a.m_element) < static_cast<int>(b.m_element);
+              });
+    result.concealRanges.erase(std::unique(result.concealRanges.begin(), result.concealRanges.end(),
+                                           [](const ConcealRange &a, const ConcealRange &b) {
+                                             return a.m_startPos == b.m_startPos &&
+                                                    a.m_endPos == b.m_endPos &&
+                                                    a.m_element == b.m_element;
+                                           }),
+                               result.concealRanges.end());
     std::sort(result.headerRegions.begin(), result.headerRegions.end());
     std::sort(result.displayFormulaRegions.begin(), result.displayFormulaRegions.end());
     std::sort(result.tableRegions.begin(), result.tableRegions.end());

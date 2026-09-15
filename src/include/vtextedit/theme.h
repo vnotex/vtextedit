@@ -107,6 +107,7 @@ public:
     ContentMargin,
     ListItemGuide,
     ActiveListItem,
+    ConcealedText,
     MaxEditorStyle
   };
   Q_ENUM(EditorStyle)

@@ -44,6 +44,8 @@ private slots:
   void testHTMLEntities();
   void testComments();
   void testReferences();
+  void testConcealUrlSpans();
+  void testConcealReferenceDestinations();
   void testStrikethrough();
   void testMark();
   void testFootnotes();

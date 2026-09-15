@@ -71,6 +71,9 @@ public:
   // carrying each link's region, resolved destination and declared `=WxH` size.
   const QVector<md::ImageLinkInfo> &getImageLinks() const;
 
+  // Empty unless the complete parse result matches the current document.
+  const QVector<md::ConcealRange> &getConcealRanges() const;
+
   const QVector<md::FencedCodeBlock> &getCodeBlocks() const;
 
   void updateStylesFontSize(int p_delta);
@@ -121,6 +124,9 @@ signals:
   // Published only from matched full results. Consumers may retain the last
   // ownership snapshot during edits until a new result replaces it.
   void listItemRangesUpdated(TimeStamp p_timeStamp, const QVector<md::ListItemRange> &p_ranges);
+
+  // Includes empty snapshots so a fresh parse clears old concealment.
+  void concealRangesUpdated(TimeStamp p_timeStamp, const QVector<md::ConcealRange> &p_ranges);
 
   // Emitted when immutable typed preview snapshots have been produced from an
   // accepted parse result. @p_revision is the parse generation of the result.

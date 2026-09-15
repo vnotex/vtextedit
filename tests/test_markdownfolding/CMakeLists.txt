@@ -4,6 +4,12 @@ set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
 set(QT_DEFAULT_MAJOR_VERSION 6 CACHE STRING "Qt version to use (5 or 6), defaults to 6")
 find_package(Qt${QT_DEFAULT_MAJOR_VERSION} REQUIRED COMPONENTS Core Gui Widgets Test)
+if(QT_DEFAULT_MAJOR_VERSION GREATER 5 AND NOT TARGET Qt6::GuiPrivate)
+    find_package(Qt6GuiPrivate QUIET)
+endif()
+if(NOT TARGET Qt${QT_DEFAULT_MAJOR_VERSION}::GuiPrivate)
+    message(FATAL_ERROR "The layout tests require matching Qt Gui private development headers.")
+endif()
 
 set(SRC_FOLDER ../../src)
 set(EDITOR_FOLDER ${SRC_FOLDER}/texteditor)
@@ -42,6 +48,7 @@ target_compile_definitions(test_markdownfolding PRIVATE
 target_link_libraries(test_markdownfolding PRIVATE
     Qt::Core
     Qt::Gui
+    Qt${QT_DEFAULT_MAJOR_VERSION}::GuiPrivate
     Qt::Test
     Qt::Widgets
     VSyntaxHighlighting

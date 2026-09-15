@@ -1,11 +1,15 @@
 #include "test_markdownfolding.h"
 
+#include <QDir>
+#include <QFontDatabase>
 #include <QImage>
 #include <QPainter>
 #include <QSignalSpy>
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
+
+#include <limits>
 
 #include <vtextedit/markdownhighlighterdata.h>
 #include <vtextedit/previewdata.h>
@@ -1519,6 +1523,803 @@ void TestMarkdownFolding::testSourceTextRectSharesWidgetCoordinates() {
   // The width the widget is measured at is the width it is assigned.
   QVERIFY(realNear(layout->inlinePlacementWidth(block.position() + 6, block.position() + 10),
                    widgetRect.width()));
+}
+
+static TextDocumentLayout *makeConcealLayout(QTextDocument &p_doc,
+                                             DocumentResourceMgr &p_resourceMgr, QImage &p_device) {
+  QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+  font.setPixelSize(24);
+  font.setKerning(false);
+  // Exact foreground/background pixel assertions must not depend on rasterizer coverage.
+  font.setStyleStrategy(QFont::NoAntialias);
+  p_doc.setDefaultFont(font);
+  p_doc.setTextWidth(1000);
+  auto *layout = new TextDocumentLayout(&p_doc, &p_resourceMgr);
+  p_doc.setDocumentLayout(layout);
+  layout->setPaintDevice(&p_device);
+  layout->relayout();
+  return layout;
+}
+
+static QImage renderConcealLayout(TextDocumentLayout *p_layout, const QImage &p_device,
+                                  QAbstractTextDocumentLayout::PaintContext p_context = {}) {
+  QImage image = p_device.copy();
+  image.fill(Qt::white);
+  p_context.clip = image.rect();
+  p_context.palette.setColor(QPalette::Text, Qt::black);
+  QPainter painter(&image);
+  p_layout->draw(&painter, p_context);
+  painter.end();
+  return image;
+}
+
+static bool saveConcealImage(const QImage &p_image, const QString &p_name) {
+  const QString directory = QString::fromLocal8Bit(qgetenv("VTE_CONCEAL_TEST_IMAGE_DIR"));
+  return directory.isEmpty() || p_image.save(QDir(directory).filePath(p_name));
+}
+
+static int countConcealColor(const QImage &p_image, const QRectF &p_rect, const QColor &p_color) {
+  const QRect rect = p_rect.toAlignedRect().intersected(p_image.rect());
+  int count = 0;
+  for (int y = rect.top(); y <= rect.bottom(); ++y) {
+    for (int x = rect.left(); x <= rect.right(); ++x) {
+      count += p_image.pixelColor(x, y) == p_color;
+    }
+  }
+  return count;
+}
+
+static QPointF concealCursorPoint(TextDocumentLayout *p_layout, const QTextBlock &p_block,
+                                  int p_position) {
+  const QTextLine line = p_block.layout()->lineForTextPosition(p_position);
+  return QPointF(line.cursorToX(p_position),
+                 p_layout->blockBoundingRect(p_block).top() + line.y() + line.height() / 2);
+}
+
+static QVector<int> concealCursorStops(QTextDocument &p_doc, QTextCursor::MoveOperation p_move,
+                                       bool p_backwards = false) {
+  QTextCursor cursor(&p_doc);
+  cursor.setPosition(p_backwards ? p_doc.characterCount() - 1 : 0);
+  QVector<int> positions{cursor.position()};
+  while (cursor.movePosition(p_move)) {
+    positions.append(cursor.position());
+  }
+  return positions;
+}
+
+void TestMarkdownFolding::testConcealLayout() {
+  const QString alphabet = QStringLiteral("abcdefghijklmnopqrstuvwxyz");
+  const QString source = QStringLiteral("before ") + alphabet + QStringLiteral(" after");
+  const QString compact = QStringLiteral("before abc\u00b7\u00b7\u00b7xyz after");
+  const int start = source.indexOf(alphabet);
+  const int end = start + alphabet.size();
+  const int hiddenStart = start + 3;
+  const int hiddenEnd = end - 3;
+  QImage device(1200, 900, QImage::Format_ARGB32_Premultiplied);
+  device.fill(Qt::white);
+  DocumentResourceMgr resources;
+  QTextDocument doc(source);
+  QTextDocument reference(compact);
+  auto *layout = makeConcealLayout(doc, resources, device);
+  auto *referenceLayout = makeConcealLayout(reference, resources, device);
+  QTextCharFormat syntax;
+  syntax.setForeground(QColor(20, 110, 30));
+  doc.firstBlock().layout()->setFormats({{start, end - start, syntax}});
+  layout->relayout();
+  const QRectF sourceTail = layout->sourceTextRect(end + 1, end + 6);
+  const QImage sourceImage = renderConcealLayout(layout, device);
+  const int revision = doc.revision();
+  const int blockRevision = doc.firstBlock().revision();
+  const int characterCount = doc.characterCount();
+  const bool undoAvailable = doc.isUndoAvailable();
+  const bool redoAvailable = doc.isRedoAvailable();
+
+  QTextCharFormat format;
+  const QColor foreground(25, 45, 220);
+  const QColor background(225, 235, 250);
+  format.setForeground(foreground);
+  format.setBackground(background);
+  layout->setConcealFormat(format);
+  layout->setConcealCursorPosition(-1);
+  reference.firstBlock().layout()->setFormats({{start, 9, format}});
+  referenceLayout->relayout();
+  const QRectF expectedTail = referenceLayout->sourceTextRect(start + 10, start + 15);
+  QSignalSpy changed(layout, &TextDocumentLayout::concealmentChanged);
+  bool emittedWhileBusy = false;
+  QRectF notifiedTail;
+  connect(layout, &TextDocumentLayout::concealmentChanged, this, [&]() {
+    emittedWhileBusy |= layout->isBusy();
+    notifiedTail = layout->sourceTextRect(end + 1, end + 6);
+  });
+
+  QVERIFY(layout->conceal(doc.firstBlock(), start, end));
+  QCOMPARE(changed.count(), 1);
+  QVERIFY(!emittedWhileBusy);
+  QCOMPARE(notifiedTail, expectedTail);
+  QCOMPARE(layout->sourceTextRect(end + 1, end + 6), expectedTail);
+  QVERIFY(expectedTail.left() < sourceTail.left());
+  QCOMPARE(concealCursorPoint(layout, doc.firstBlock(), end + 1),
+           concealCursorPoint(referenceLayout, reference.firstBlock(), start + 10));
+  QCOMPARE(doc.toPlainText(), source);
+  QCOMPARE(doc.characterCount(), characterCount);
+  QCOMPARE(doc.revision(), revision);
+  QCOMPARE(doc.firstBlock().revision(), blockRevision);
+  QCOMPARE(doc.isUndoAvailable(), undoAvailable);
+  QCOMPARE(doc.isRedoAvailable(), redoAvailable);
+
+  const QImage compactImage = renderConcealLayout(layout, device);
+  QCOMPARE(compactImage, renderConcealLayout(referenceLayout, device));
+  for (const QRectF &rect :
+       {layout->sourceTextRect(start, hiddenStart), layout->sourceTextRect(hiddenStart, hiddenEnd),
+        layout->sourceTextRect(hiddenEnd, end)}) {
+    QVERIFY(countConcealColor(compactImage, rect, foreground) > 0);
+    QVERIFY(countConcealColor(compactImage, rect, background) > 0);
+  }
+  QVERIFY(saveConcealImage(compactImage, QStringLiteral("conceal-compact.png")));
+
+  // Changing the conceal style invalidates marker and retained-end geometry,
+  // without baking the replacement font or brushes into the source formats.
+  QTextCharFormat replacement = format;
+  QFont replacementFont = doc.defaultFont();
+  replacementFont.setPixelSize(30);
+  replacement.setFont(replacementFont);
+  replacement.setForeground(QColor(180, 45, 20));
+  replacement.setBackground(QColor(225, 250, 225));
+  layout->setConcealFormat(replacement);
+  reference.firstBlock().layout()->setFormats({{start, 9, replacement}});
+  referenceLayout->relayout();
+  QCOMPARE(layout->sourceTextRect(end + 1, end + 6),
+           referenceLayout->sourceTextRect(start + 10, start + 15));
+  QVERIFY(layout->sourceTextRect(end + 1, end + 6) != expectedTail);
+  QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
+  layout->setConcealFormat(format);
+  reference.firstBlock().layout()->setFormats({{start, 9, format}});
+  referenceLayout->relayout();
+  QCOMPARE(renderConcealLayout(layout, device), compactImage);
+
+  // The retained ends reveal too; the half-open end is deliberately outside.
+  for (int position : {start, hiddenStart + 4, end - 1}) {
+    layout->setConcealCursorPosition(position);
+    QCOMPARE(layout->sourceTextRect(end + 1, end + 6), sourceTail);
+    QCOMPARE(renderConcealLayout(layout, device), sourceImage);
+    layout->setConcealCursorPosition(end);
+    QCOMPARE(layout->sourceTextRect(end + 1, end + 6), expectedTail);
+  }
+  layout->setConcealCursorPosition(start);
+  QVERIFY(saveConcealImage(renderConcealLayout(layout, device),
+                           QStringLiteral("conceal-revealed.png")));
+  layout->setConcealCursorPosition(-1);
+  const QRectF marker = layout->sourceTextRect(hiddenStart, hiddenEnd);
+  for (Qt::HitTestAccuracy accuracy : {Qt::ExactHit, Qt::FuzzyHit}) {
+    QCOMPARE(layout->hitTest(marker.center(), accuracy), hiddenStart);
+    QPointF tailPoint = concealCursorPoint(layout, doc.firstBlock(), end + 2);
+    const QPointF nextTailPoint = concealCursorPoint(layout, doc.firstBlock(), end + 3);
+    // ExactHit chooses a glyph, FuzzyHit a cursor edge; use the leading
+    // quarter of the glyph rather than their ambiguous shared boundary.
+    tailPoint.rx() += (nextTailPoint.x() - tailPoint.x()) / 4;
+    QCOMPARE(layout->hitTest(tailPoint, accuracy), end + 2);
+  }
+  layout->setConcealCursorPosition(layout->hitTest(marker.center(), Qt::ExactHit));
+  QCOMPARE(layout->sourceTextRect(end + 1, end + 6), sourceTail);
+  QVERIFY(layout->setConcealedRanges({}));
+  layout->setConcealCursorPosition(-1);
+  QCOMPARE(layout->sourceTextRect(end + 1, end + 6), sourceTail);
+  QCOMPARE(renderConcealLayout(layout, device), sourceImage);
+  QCOMPARE(doc.toPlainText(), source);
+  QCOMPARE(doc.revision(), revision);
+  QCOMPARE(doc.characterCount(), characterCount);
+  QCOMPARE(doc.isUndoAvailable(), undoAvailable);
+  QCOMPARE(doc.isRedoAvailable(), redoAvailable);
+}
+
+void TestMarkdownFolding::testConcealBoundaries() {
+  const QString alphabet = QStringLiteral("abcdefghijklmnopqrstuvwxyz");
+  const QString source =
+      alphabet + QStringLiteral(" | ") + alphabet.toUpper() + QStringLiteral(" tail");
+  const QString dots = QStringLiteral("\u00b7\u00b7\u00b7");
+  const QString firstCompact = QStringLiteral("abc") + dots + QStringLiteral("xyz");
+  const QString secondCompact = firstCompact.toUpper();
+  const int secondStart = 29;
+  const int tailStart = source.indexOf(QStringLiteral("tail"));
+  QImage device(1200, 900, QImage::Format_ARGB32_Premultiplied);
+  device.fill(Qt::white);
+  DocumentResourceMgr resources;
+  QTextDocument doc(source);
+  QTextDocument reference(firstCompact + QStringLiteral(" | ") + secondCompact +
+                          QStringLiteral(" tail"));
+  QTextDocument foreign(alphabet);
+  auto *layout = makeConcealLayout(doc, resources, device);
+  auto *referenceLayout = makeConcealLayout(reference, resources, device);
+  const QTextBlock block = doc.firstBlock();
+  const TextDocumentLayout::ConcealSpec first{block, 0, 26};
+  const TextDocumentLayout::ConcealSpec second{block, secondStart, secondStart + 26};
+  const auto expectedTail = [&]() {
+    const int pos = reference.toPlainText().indexOf(QStringLiteral("tail"));
+    return referenceLayout->sourceTextRect(pos, pos + 4);
+  };
+  const auto actualTail = [&]() { return layout->sourceTextRect(tailStart, tailStart + 4); };
+  const auto expectedSeparator = [&]() {
+    const int pos = reference.toPlainText().indexOf(QLatin1Char('|'));
+    return referenceLayout->sourceTextRect(pos, pos + 1);
+  };
+  layout->setConcealCursorPosition(-1);
+  QVERIFY(layout->setConcealedRanges({second, first, second}));
+  QCOMPARE(actualTail(), expectedTail());
+  const QRectF bothCompactTail = actualTail();
+  QSignalSpy changed(layout, &TextDocumentLayout::concealmentChanged);
+  QSignalSpy updated(layout, &TextDocumentLayout::update);
+
+  // Reordering or duplicating a snapshot must not cause a paint/geometry pass.
+  QVERIFY(layout->setConcealedRanges({first, second, first}));
+  QVERIFY(layout->conceal(block, 0, 26));
+  QCOMPARE(changed.count(), 0);
+  QCOMPARE(updated.count(), 0);
+  QCOMPARE(actualTail(), bothCompactTail);
+  const QVector<TextDocumentLayout::ConcealSpec> invalidRanges{
+      {QTextBlock(), 0, 26}, {foreign.firstBlock(), 0, 26},
+      {block, -1, 26},       {block, 0, std::numeric_limits<int>::max()},
+      {block, 26, 0},        {block, 0, 0},
+      {block, 0, 9},         {block, 1, 20}};
+  const int revision = doc.revision();
+  for (const auto &invalid : invalidRanges) {
+    QVERIFY(!layout->conceal(invalid.m_block, invalid.m_start, invalid.m_end));
+    // A valid prefix of the batch is not permission to publish half a snapshot.
+    QVERIFY(!layout->setConcealedRanges({first, invalid}));
+    QCOMPARE(actualTail(), bothCompactTail);
+    QCOMPARE(changed.count(), 0);
+    QCOMPARE(updated.count(), 0);
+    QCOMPARE(doc.revision(), revision);
+  }
+
+  layout->setConcealCursorPosition(0);
+  reference.setPlainText(alphabet + QStringLiteral(" | ") + secondCompact +
+                         QStringLiteral(" tail"));
+  QCOMPARE(actualTail(), expectedTail());
+  QCOMPARE(layout->sourceTextRect(27, 28), expectedSeparator());
+  const QRectF firstRevealedTail = actualTail();
+  changed.clear();
+  updated.clear();
+  layout->setConcealCursorPosition(15);
+  QCOMPARE(actualTail(), firstRevealedTail);
+  QCOMPARE(changed.count(), 0);
+  QCOMPARE(updated.count(), 0);
+  layout->setConcealCursorPosition(secondStart + 25);
+  reference.setPlainText(firstCompact + QStringLiteral(" | ") + alphabet.toUpper() +
+                         QStringLiteral(" tail"));
+  QCOMPARE(actualTail(), expectedTail());
+  QCOMPARE(layout->sourceTextRect(27, 28), expectedSeparator());
+  layout->setConcealCursorPosition(secondStart + 26);
+  QCOMPARE(actualTail(), bothCompactTail);
+  QVERIFY(layout->setConcealedRanges({first}));
+  QCOMPARE(actualTail(), expectedTail());
+  QVERIFY(layout->setConcealedRanges({}));
+  reference.setPlainText(source);
+  QCOMPARE(actualTail(), expectedTail());
+
+  // The primitive's only length threshold is nine graphemes, not Markdown's 20.
+  QVERIFY(layout->setConcealedRanges({{block, 0, 10}}));
+  reference.setPlainText(QStringLiteral("abc") + dots + source.mid(7));
+  QCOMPARE(actualTail(), expectedTail());
+  QVERIFY(layout->setConcealedRanges({{block, 0, 13}, {block, 13, 26}}));
+  reference.setPlainText(QStringLiteral("abc") + dots + QStringLiteral("klmnop") + dots +
+                         QStringLiteral("xyz") + source.mid(26));
+  QCOMPARE(actualTail(), expectedTail());
+
+  // Endpoints inside either a combining sequence or a surrogate pair are invalid.
+  const QString unicode = QStringLiteral("a\u0301\U0001f642bcdefghijklmnopqrstuvwxyz");
+  QTextDocument unicodeDoc(unicode);
+  auto *unicodeLayout = makeConcealLayout(unicodeDoc, resources, device);
+  const QTextBlock unicodeBlock = unicodeDoc.firstBlock();
+  const int unicodeEnd = unicode.size();
+  const qreal unicodeWidth = unicodeBlock.layout()->lineAt(0).naturalTextWidth();
+  QVERIFY(!unicodeLayout->conceal(unicodeBlock, 1, unicodeEnd));
+  QVERIFY(!unicodeLayout->conceal(unicodeBlock, 3, unicodeEnd));
+  QCOMPARE(unicodeBlock.layout()->lineAt(0).naturalTextWidth(), unicodeWidth);
+  QVERIFY(unicodeLayout->conceal(unicodeBlock, 0, unicodeEnd));
+  QVERIFY(!unicodeLayout->setConcealedRanges({{unicodeBlock, 1, unicodeEnd}}));
+  reference.setPlainText(QStringLiteral("a\u0301\U0001f642b") + dots + QStringLiteral("xyz"));
+  QCOMPARE(unicodeBlock.layout()->lineAt(0).naturalTextWidth(),
+           reference.firstBlock().layout()->lineAt(0).naturalTextWidth());
+
+  // Live block handles retain local ranges after an earlier block is inserted,
+  // but a changed block must immediately stop using its old source coordinates.
+  QTextDocument shifted(QStringLiteral("heading\n") + alphabet + QLatin1Char('\n') + alphabet);
+  auto *shiftedLayout = makeConcealLayout(shifted, resources, device);
+  const QTextBlock edited = shifted.findBlockByNumber(1);
+  const QTextBlock untouched = shifted.findBlockByNumber(2);
+  QVERIFY(shiftedLayout->setConcealedRanges({{edited, 0, 26}, {untouched, 0, 26}}));
+  const qreal compactWidth = edited.layout()->lineAt(0).naturalTextWidth();
+  const int untouchedRevision = untouched.revision();
+  QTextCursor cursor(&shifted);
+  cursor.insertText(QStringLiteral("inserted\n"));
+  QCOMPARE(untouched.revision(), untouchedRevision);
+  QCOMPARE(edited.layout()->lineAt(0).naturalTextWidth(), compactWidth);
+  QCOMPARE(untouched.layout()->lineAt(0).naturalTextWidth(), compactWidth);
+  cursor.setPosition(edited.position() + 10);
+  cursor.insertText(QStringLiteral("inserted"));
+  reference.setPlainText(edited.text());
+  QCOMPARE(edited.layout()->lineAt(0).naturalTextWidth(),
+           reference.firstBlock().layout()->lineAt(0).naturalTextWidth());
+  QCOMPARE(untouched.layout()->lineAt(0).naturalTextWidth(), compactWidth);
+  QVERIFY(
+      shiftedLayout->setConcealedRanges({{edited, 0, edited.length() - 1}, {untouched, 0, 26}}));
+  QCOMPARE(edited.layout()->lineAt(0).naturalTextWidth(), compactWidth);
+  cursor.setPosition(edited.position());
+  cursor.setPosition(untouched.position(), QTextCursor::KeepAnchor);
+  cursor.removeSelectedText();
+  QVERIFY(shiftedLayout->setConcealedRanges({}));
+  reference.setPlainText(shifted.toPlainText());
+  QCOMPARE(renderConcealLayout(shiftedLayout, device),
+           renderConcealLayout(referenceLayout, device));
+}
+
+void TestMarkdownFolding::testConcealWrappingAndSelection() {
+  const QString dots = QStringLiteral("\u00b7\u00b7\u00b7");
+  QImage device(1200, 900, QImage::Format_ARGB32_Premultiplied);
+  device.fill(Qt::white);
+  DocumentResourceMgr resources;
+  QTextCharFormat concealedFormat;
+  concealedFormat.setForeground(QColor(25, 45, 220));
+  concealedFormat.setBackground(QColor(225, 235, 250));
+  {
+    const QString prefix = QStringLiteral("a\u0301\U0001f642b");
+    const QString suffix = QStringLiteral("x\U0001f642z\u0301");
+    const QString middle = QStringLiteral(" hidden\twords soft\u00adhyphen and more ");
+    const QString range = prefix + middle + suffix;
+    const QString source = QStringLiteral("pre ") + range + QStringLiteral(" tail\nfollowing");
+    const QString compact =
+        QStringLiteral("pre ") + prefix + dots + suffix + QStringLiteral(" tail\nfollowing");
+    const int start = 4;
+    const int end = start + range.size();
+    const int hiddenStart = start + prefix.size();
+    const int hiddenEnd = end - suffix.size();
+    const int compactEnd = hiddenStart + 3 + suffix.size();
+    const int removed = hiddenEnd - hiddenStart - 3;
+    QTextDocument doc(source);
+    QTextDocument reference(compact);
+    auto *layout = makeConcealLayout(doc, resources, device);
+    auto *referenceLayout = makeConcealLayout(reference, resources, device);
+    QTextOption option = doc.defaultTextOption();
+    option.setWrapMode(QTextOption::WrapAnywhere);
+    doc.setDefaultTextOption(option);
+    reference.setDefaultTextOption(option);
+    QTextCharFormat firstSyntax;
+    firstSyntax.setForeground(QColor(200, 35, 10));
+    QTextCharFormat secondSyntax;
+    secondSyntax.setForeground(QColor(20, 120, 40));
+    QVector<QTextLayout::FormatRange> syntax{{hiddenStart, 7, firstSyntax},
+                                             {hiddenStart + 7, 9, secondSyntax}};
+    const QTextBlock block = doc.firstBlock();
+    block.layout()->setFormats(syntax);
+    layout->relayout();
+    reference.firstBlock().layout()->setFormats({{start, compactEnd - start, concealedFormat}});
+    referenceLayout->relayout();
+    const QVector<int> nextCharacters = concealCursorStops(doc, QTextCursor::NextCharacter);
+    const QVector<int> previousCharacters =
+        concealCursorStops(doc, QTextCursor::PreviousCharacter, true);
+    const QVector<int> nextWords = concealCursorStops(doc, QTextCursor::NextWord);
+    const QVector<int> previousWords = concealCursorStops(doc, QTextCursor::PreviousWord, true);
+    QVERIFY(!nextCharacters.contains(start + 1));
+    QVERIFY(!nextCharacters.contains(start + 3));
+    QVERIFY(!layout->conceal(block, start, end - 1));
+    QVERIFY(!layout->conceal(block, start, end - 3));
+    layout->setConcealFormat(concealedFormat);
+    QVERIFY(layout->conceal(block, start, end));
+
+    // Enough room for all three dots; suffix/following text still wraps. The
+    // source contains tabs, spaces, soft hyphen and independent syntax runs.
+    QTextLine referenceLine = reference.firstBlock().layout()->lineAt(0);
+    const qreal outsideWidth = reference.textWidth() - referenceLine.width();
+    const qreal narrowWidth =
+        outsideWidth + referenceLine.cursorToX(compactEnd + 3) - referenceLine.x();
+    doc.setTextWidth(narrowWidth);
+    reference.setTextWidth(narrowWidth);
+    QVERIFY(block.layout()->lineCount() >= 2);
+    QCOMPARE(block.layout()->lineCount(), reference.firstBlock().layout()->lineCount());
+    const QTextLine markerLine = block.layout()->lineForTextPosition(hiddenStart);
+    QCOMPARE(markerLine.lineNumber(),
+             block.layout()->lineForTextPosition(hiddenEnd - 1).lineNumber());
+    for (int position = hiddenEnd; position <= block.length() - 1; ++position) {
+      if (block.layout()->isValidCursorPosition(position)) {
+        QCOMPARE(concealCursorPoint(layout, block, position),
+                 concealCursorPoint(referenceLayout, reference.firstBlock(), position - removed));
+      }
+    }
+    QCOMPARE(layout->blockBoundingRect(doc.lastBlock()),
+             referenceLayout->blockBoundingRect(reference.lastBlock()));
+    QCOMPARE(layout->documentSize(), referenceLayout->documentSize());
+    QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
+    QVERIFY(saveConcealImage(renderConcealLayout(layout, device),
+                             QStringLiteral("conceal-wrapped.png")));
+
+    // Restored source attributes remain available to character and word motions.
+    QCOMPARE(concealCursorStops(doc, QTextCursor::NextCharacter), nextCharacters);
+    QCOMPARE(concealCursorStops(doc, QTextCursor::PreviousCharacter, true), previousCharacters);
+    QCOMPARE(concealCursorStops(doc, QTextCursor::NextWord), nextWords);
+    QCOMPARE(concealCursorStops(doc, QTextCursor::PreviousWord, true), previousWords);
+    for (int pass = 0; pass < 3; ++pass) {
+      block.layout()->clearLayout();
+      layout->relayout();
+      QCOMPARE(layout->sourceTextRect(end + 1, end + 5),
+               referenceLayout->sourceTextRect(compactEnd + 1, compactEnd + 5));
+      QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
+    }
+    doc.setTextWidth(1000);
+    reference.setTextWidth(1000);
+    QFont enlarged = doc.defaultFont();
+    enlarged.setPixelSize(30);
+    doc.setDefaultFont(enlarged);
+    reference.setDefaultFont(enlarged);
+    layout->relayout();
+    referenceLayout->relayout();
+    referenceLine = reference.firstBlock().layout()->lineAt(0);
+    const qreal enlargedWidth =
+        outsideWidth + referenceLine.cursorToX(compactEnd + 3) - referenceLine.x();
+    doc.setTextWidth(enlargedWidth);
+    reference.setTextWidth(enlargedWidth);
+    QCOMPARE(layout->sourceTextRect(end + 1, end + 5),
+             referenceLayout->sourceTextRect(compactEnd + 1, compactEnd + 5));
+    QCOMPARE(layout->blockBoundingRect(doc.lastBlock()),
+             referenceLayout->blockBoundingRect(reference.lastBlock()));
+    QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
+
+    // With room for only part of the dots, move the entire marker to the next
+    // visual line even under WrapAnywhere; never split it at an internal run.
+    doc.setTextWidth(1000);
+    reference.setTextWidth(1000);
+    referenceLine = reference.firstBlock().layout()->lineAt(0);
+    const QRectF expectedMarker = referenceLayout->sourceTextRect(hiddenStart, hiddenStart + 3);
+    const qreal forcedWidth = outsideWidth + referenceLine.cursorToX(hiddenStart) -
+                              referenceLine.x() + expectedMarker.width() / 2;
+    doc.setTextWidth(forcedWidth);
+    const QTextLine forcedLine = block.layout()->lineForTextPosition(hiddenStart);
+    QVERIFY(forcedLine.lineNumber() > 0);
+    QCOMPARE(forcedLine.lineNumber(),
+             block.layout()->lineForTextPosition(hiddenEnd - 1).lineNumber());
+    const QRectF forcedMarker = layout->sourceTextRect(hiddenStart, hiddenEnd);
+    QCOMPARE(forcedMarker.width(), expectedMarker.width());
+    QCOMPARE(layout->hitTest(forcedMarker.center(), Qt::ExactHit), hiddenStart);
+    QCOMPARE(layout->blockBoundingRect(doc.lastBlock()).top(),
+             layout->blockBoundingRect(block).bottom());
+
+    // A rehighlight replaces the additional formats while compact, then all
+    // newly supplied syntax formats must be visible again after revealing.
+    doc.setTextWidth(1000);
+    syntax[0].format.setForeground(QColor(170, 20, 150));
+    block.layout()->setFormats(syntax);
+    layout->relayout();
+    QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
+    layout->setConcealCursorPosition(start);
+    reference.setPlainText(source);
+    reference.firstBlock().layout()->setFormats(syntax);
+    referenceLayout->relayout();
+    QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
+    QVERIFY(countConcealColor(renderConcealLayout(layout, device),
+                              layout->sourceTextRect(hiddenStart, hiddenStart + 7),
+                              syntax[0].format.foreground().color()) > 0);
+
+    // Preedit offsets are not document offsets; suppress concealment for the
+    // entire composing block without throwing away its submitted ranges.
+    layout->setConcealCursorPosition(-1);
+    block.layout()->setPreeditArea(end, QStringLiteral("IME"));
+    reference.firstBlock().layout()->setPreeditArea(end, QStringLiteral("IME"));
+    layout->relayout();
+    referenceLayout->relayout();
+    QCOMPARE(block.layout()->lineAt(0).naturalTextWidth(),
+             reference.firstBlock().layout()->lineAt(0).naturalTextWidth());
+    QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
+    QCOMPARE(doc.toPlainText(), source);
+    block.layout()->setPreeditArea(-1, QString());
+    layout->relayout();
+    reference.setPlainText(compact);
+    reference.firstBlock().layout()->setFormats({{start, compactEnd - start, concealedFormat}});
+    referenceLayout->relayout();
+    QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
+    QVERIFY(layout->setConcealedRanges({}));
+    reference.setPlainText(source);
+    reference.firstBlock().layout()->setFormats(syntax);
+    referenceLayout->relayout();
+    layout->relayout();
+    QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
+    QCOMPARE(concealCursorStops(doc, QTextCursor::NextWord), nextWords);
+  }
+
+  // Qt has a separate literal-soft-hyphen path. Exercise each edge of the
+  // synthetic source span, not just an interior character-attribute boundary.
+  for (const QString &middle :
+       {QStringLiteral("\u00adone two three"), QStringLiteral("one\u00adtwo three"),
+        QStringLiteral("one two three\u00ad")}) {
+    const QString source =
+        QStringLiteral("pre abc") + middle + QStringLiteral("xyz tail\nfollowing");
+    const QString compact =
+        QStringLiteral("pre abc") + dots + QStringLiteral("xyz tail\nfollowing");
+    const int start = 4;
+    const int hiddenStart = start + 3;
+    const int hiddenEnd = hiddenStart + middle.size();
+    const int end = hiddenEnd + 3;
+    QTextDocument doc(source);
+    QTextDocument reference(compact);
+    auto *layout = makeConcealLayout(doc, resources, device);
+    auto *referenceLayout = makeConcealLayout(reference, resources, device);
+    QTextOption option = doc.defaultTextOption();
+    option.setWrapMode(QTextOption::WrapAnywhere);
+    doc.setDefaultTextOption(option);
+    reference.setDefaultTextOption(option);
+    referenceLayout->relayout();
+    const QTextLine referenceLine = reference.firstBlock().layout()->lineAt(0);
+    const qreal outsideWidth = reference.textWidth() - referenceLine.width();
+    const QRectF expectedMarker = referenceLayout->sourceTextRect(hiddenStart, hiddenStart + 3);
+    const qreal halfSuffixCharacter =
+        (referenceLine.cursorToX(hiddenStart + 4) - referenceLine.cursorToX(hiddenStart + 3)) / 2;
+    const qreal narrowWidth =
+        outsideWidth + expectedMarker.right() - referenceLine.x() + halfSuffixCharacter;
+    const qreal forcedWidth =
+        outsideWidth + expectedMarker.left() - referenceLine.x() + expectedMarker.width() / 2;
+    QVERIFY(layout->conceal(doc.firstBlock(), start, end));
+    doc.setTextWidth(narrowWidth);
+    reference.setTextWidth(narrowWidth);
+    const QTextBlock block = doc.firstBlock();
+    QCOMPARE(block.layout()->lineCount(), reference.firstBlock().layout()->lineCount());
+    for (int i = 0; i < block.layout()->lineCount(); ++i) {
+      QCOMPARE(block.layout()->lineAt(i).naturalTextWidth(),
+               reference.firstBlock().layout()->lineAt(i).naturalTextWidth());
+    }
+    QCOMPARE(layout->sourceTextRect(hiddenStart, hiddenEnd),
+             referenceLayout->sourceTextRect(hiddenStart, hiddenStart + 3));
+    QCOMPARE(layout->sourceTextRect(hiddenEnd, end),
+             referenceLayout->sourceTextRect(hiddenStart + 3, hiddenStart + 6));
+    QCOMPARE(layout->blockBoundingRect(doc.lastBlock()),
+             referenceLayout->blockBoundingRect(reference.lastBlock()));
+    QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
+
+    doc.setTextWidth(forcedWidth);
+    const QTextLine markerLine = block.layout()->lineForTextPosition(hiddenStart);
+    QVERIFY(markerLine.lineNumber() > 0);
+    QCOMPARE(markerLine.lineNumber(),
+             block.layout()->lineForTextPosition(hiddenEnd - 1).lineNumber());
+    QCOMPARE(layout->sourceTextRect(hiddenStart, hiddenEnd).width(), expectedMarker.width());
+    QCOMPARE(doc.toPlainText(), source);
+  }
+
+  {
+    const QString alphabet = QStringLiteral("abcdefghijklmnopqrstuvwxyz");
+    const QString source = QStringLiteral("before ") + alphabet + QStringLiteral(" after");
+    const QString compact = QStringLiteral("before abc") + dots + QStringLiteral("xyz after");
+    const int start = 7;
+    const int end = start + 26;
+    const int hiddenStart = start + 3;
+    const int hiddenEnd = end - 3;
+    const int removed = hiddenEnd - hiddenStart - 3;
+    QTextDocument doc(source);
+    QTextDocument reference(compact);
+    auto *layout = makeConcealLayout(doc, resources, device);
+    auto *referenceLayout = makeConcealLayout(reference, resources, device);
+    layout->setConcealFormat(concealedFormat);
+    QVERIFY(layout->conceal(doc.firstBlock(), start, end));
+    reference.firstBlock().layout()->setFormats({{start, 9, concealedFormat}});
+    referenceLayout->relayout();
+    const QRectF marker = layout->sourceTextRect(hiddenStart, hiddenEnd);
+    const QRectF compactTail = layout->sourceTextRect(end + 1, end + 6);
+    const QImage unselected = renderConcealLayout(layout, device);
+    const QVector<QPair<int, int>> selections{{hiddenStart + 2, hiddenStart + 6},
+                                              {hiddenStart + 6, hiddenStart + 2},
+                                              {start + 1, hiddenStart + 2},
+                                              {end - 1, hiddenEnd - 2}};
+    for (const auto &ends : selections) {
+      QAbstractTextDocumentLayout::Selection selection;
+      selection.cursor = QTextCursor(&doc);
+      selection.cursor.setPosition(ends.first);
+      selection.cursor.setPosition(ends.second, QTextCursor::KeepAnchor);
+      selection.format.setBackground(QColor(160, 25, 95));
+      selection.format.setForeground(Qt::white);
+      const int selectionStart = selection.cursor.selectionStart();
+      const int selectionEnd = selection.cursor.selectionEnd();
+      QCOMPARE(selection.cursor.selectedText(),
+               source.mid(selectionStart, selectionEnd - selectionStart));
+      QAbstractTextDocumentLayout::Selection expectedSelection = selection;
+      expectedSelection.cursor = QTextCursor(&reference);
+      const int mappedStart = selectionStart < hiddenStart ? selectionStart : hiddenStart;
+      const int mappedEnd = selectionEnd > hiddenEnd ? selectionEnd - removed : hiddenStart + 3;
+      expectedSelection.cursor.setPosition(mappedStart);
+      expectedSelection.cursor.setPosition(mappedEnd, QTextCursor::KeepAnchor);
+      QAbstractTextDocumentLayout::PaintContext context;
+      context.selections.append(selection);
+      QAbstractTextDocumentLayout::PaintContext expectedContext;
+      expectedContext.selections.append(expectedSelection);
+      const QImage selectedImage = renderConcealLayout(layout, device, context);
+      QCOMPARE(selectedImage, renderConcealLayout(referenceLayout, device, expectedContext));
+      QVERIFY(countConcealColor(selectedImage, marker, selection.format.background().color()) > 0);
+      QVERIFY(countConcealColor(selectedImage, marker, Qt::white) > 0);
+      QCOMPARE(countConcealColor(selectedImage, marker.adjusted(1, 1, -1, -1),
+                                 concealedFormat.background().color()),
+               0);
+      QCOMPARE(layout->sourceTextRect(end + 1, end + 6), compactTail);
+      QVERIFY(saveConcealImage(selectedImage, QStringLiteral("conceal-selected.png")));
+    }
+
+    // A selection confined to a retained end does not select the dots.
+    QAbstractTextDocumentLayout::Selection retainedSelection;
+    retainedSelection.cursor = QTextCursor(&doc);
+    retainedSelection.cursor.setPosition(start);
+    retainedSelection.cursor.setPosition(start + 2, QTextCursor::KeepAnchor);
+    retainedSelection.format.setBackground(Qt::yellow);
+    QAbstractTextDocumentLayout::PaintContext context;
+    context.selections.append(retainedSelection);
+    QCOMPARE(renderConcealLayout(layout, device, context).copy(marker.toAlignedRect()),
+             unselected.copy(marker.toAlignedRect()));
+
+    // Search and selection are the same ordered PaintContext overlay contract.
+    // The later, partly intersecting overlay wins on the entire marker.
+    QAbstractTextDocumentLayout::Selection search = retainedSelection;
+    search.cursor.setPosition(hiddenStart);
+    search.cursor.setPosition(hiddenEnd, QTextCursor::KeepAnchor);
+    search.format.setForeground(Qt::black);
+    QAbstractTextDocumentLayout::Selection selection = search;
+    selection.cursor.setPosition(hiddenStart + 2);
+    selection.cursor.setPosition(hiddenStart + 4, QTextCursor::KeepAnchor);
+    selection.format.setForeground(Qt::white);
+    selection.format.setBackground(QColor(20, 95, 55));
+    context.selections = {search, selection};
+    const QImage orderedImage = renderConcealLayout(layout, device, context);
+    QVERIFY(countConcealColor(orderedImage, marker, selection.format.background().color()) > 0);
+    QCOMPARE(countConcealColor(orderedImage, marker.adjusted(1, 1, -1, -1), Qt::yellow), 0);
+    context.selections = {selection, search};
+    const QImage reversedImage = renderConcealLayout(layout, device, context);
+    QVERIFY(countConcealColor(reversedImage, marker, Qt::yellow) > 0);
+    QCOMPARE(countConcealColor(reversedImage, marker.adjusted(1, 1, -1, -1),
+                               selection.format.background().color()),
+             0);
+    QCOMPARE(doc.toPlainText(), source);
+  }
+
+  {
+    const QString range = QStringLiteral("\u05d0\u05d1\u05d2\u05d3\u05d4\u05d5\u05d6\u05d7"
+                                         "\u05d8\u05d9\u05db\u05dc\u05de\u05e0\u05e1\u05e2"
+                                         "\u05e4\u05e6\u05e7\u05e8\u05e9\u05ea");
+    const QString before = QStringLiteral("\u05e8\u05d0\u05e9 ");
+    const QString after = QStringLiteral(" \u05e1\u05d5\u05e3");
+    const int start = before.size();
+    const int end = start + range.size();
+    const QString compact = before + range.left(3) + dots + range.right(3) + after;
+    QTextDocument doc(before + range + after);
+    QTextDocument reference(compact);
+    auto *layout = makeConcealLayout(doc, resources, device);
+    auto *referenceLayout = makeConcealLayout(reference, resources, device);
+    QCOMPARE(doc.firstBlock().textDirection(), Qt::RightToLeft);
+    layout->setConcealFormat(concealedFormat);
+    QVERIFY(layout->conceal(doc.firstBlock(), start, end));
+    reference.firstBlock().layout()->setFormats({{start, 9, concealedFormat}});
+    referenceLayout->relayout();
+    const QRectF marker = layout->sourceTextRect(start + 3, end - 3);
+    QCOMPARE(marker, referenceLayout->sourceTextRect(start + 3, start + 6));
+    QCOMPARE(layout->sourceTextRect(end + 1, end + 4),
+             referenceLayout->sourceTextRect(start + 10, start + 13));
+    const QImage rtlImage = renderConcealLayout(layout, device);
+    QCOMPARE(rtlImage, renderConcealLayout(referenceLayout, device));
+    QVERIFY(saveConcealImage(rtlImage, QStringLiteral("conceal-rtl.png")));
+    for (Qt::HitTestAccuracy accuracy : {Qt::ExactHit, Qt::FuzzyHit}) {
+      QCOMPARE(layout->hitTest(marker.center(), accuracy), start + 3);
+      for (int position : {start + 1, end - 1, end + 2}) {
+        const QPointF point = concealCursorPoint(layout, doc.firstBlock(), position);
+        QCOMPARE(layout->hitTest(point, accuracy), position);
+      }
+    }
+    layout->setConcealCursorPosition(end - 1);
+    reference.setPlainText(doc.toPlainText());
+    QCOMPARE(layout->sourceTextRect(end + 1, end + 4),
+             referenceLayout->sourceTextRect(end + 1, end + 4));
+    QCOMPARE(doc.toPlainText(), before + range + after);
+  }
+
+  {
+    const QString alphabet = QStringLiteral("abcdefghijklmnopqrstuvwxyz");
+    const QString source =
+        QStringLiteral("heading\nbefore ") + alphabet + QStringLiteral(" after\nfollowing\ntail");
+    const QString compact =
+        QStringLiteral("heading\nbefore abc") + dots + QStringLiteral("xyz after\nfollowing\ntail");
+    QTextDocument doc(source);
+    QTextDocument reference(compact);
+    auto *layout = makeConcealLayout(doc, resources, device);
+    auto *referenceLayout = makeConcealLayout(reference, resources, device);
+    doc.setTextWidth(250);
+    reference.setTextWidth(250);
+    const QTextBlock block = doc.findBlockByNumber(1);
+    const int start = 7;
+    const int end = start + 26;
+    const int absoluteStart = block.position() + start;
+    const int bandStart = block.position() + end + 1;
+    const int compactBandStart = reference.findBlockByNumber(1).position() + start + 10;
+    layout->setPreviewEnabled(true);
+    referenceLayout->setPreviewEnabled(true);
+    QVERIFY(layout->conceal(block, start, end));
+    auto spec = makeSpec(71, bandStart, bandStart + 5, 80, 24, PreviewPlacement::InlineAboveLine);
+    auto referenceSpec = makeSpec(71, compactBandStart, compactBandStart + 5, 80, 24,
+                                  PreviewPlacement::InlineAboveLine);
+    layout->setWidgetPreviews({spec});
+    referenceLayout->setWidgetPreviews({referenceSpec});
+    const QRectF compactBand = layout->widgetPreviewRect(71);
+    QVERIFY(!compactBand.isNull());
+    QCOMPARE(compactBand, referenceLayout->widgetPreviewRect(71));
+    QCOMPARE(layout->inlinePlacementWidth(bandStart, bandStart + 5), compactBand.width());
+    QCOMPARE(layout->sourceTextRect(bandStart, bandStart + 5),
+             referenceLayout->sourceTextRect(compactBandStart, compactBandStart + 5));
+    QCOMPARE(layout->blockBoundingRect(doc.findBlockByNumber(2)),
+             referenceLayout->blockBoundingRect(reference.findBlockByNumber(2)));
+
+    // Widget geometry is emitted inside a layout pass. A caret transition from
+    // that callback must defer and notify only after complete, idle geometry.
+    QSignalSpy changed(layout, &TextDocumentLayout::concealmentChanged);
+    bool requested = false;
+    bool requestWasBusy = false;
+    bool notifiedInsideRequest = false;
+    bool notifiedWhileBusy = false;
+    QRectF notifiedBand;
+    connect(layout, &TextDocumentLayout::concealmentChanged, this, [&]() {
+      notifiedWhileBusy |= layout->isBusy();
+      notifiedBand = layout->widgetPreviewRect(71);
+    });
+    const auto connection =
+        connect(layout, &TextDocumentLayout::widgetPreviewGeometryChanged, this, [&]() {
+          if (!requested) {
+            requested = true;
+            requestWasBusy = layout->isBusy();
+            layout->setConcealCursorPosition(absoluteStart);
+            // Repeated requests during the same pass coalesce to the final state.
+            layout->setConcealCursorPosition(absoluteStart + 5);
+            notifiedInsideRequest = changed.count() != 0;
+          }
+        });
+    spec.m_height += 11;
+    layout->setWidgetPreviews({spec});
+    QTRY_COMPARE(changed.count(), 1);
+    disconnect(connection);
+    QVERIFY(requested);
+    QVERIFY(requestWasBusy);
+    QVERIFY(!notifiedInsideRequest);
+    QVERIFY(!notifiedWhileBusy);
+    reference.setPlainText(source);
+    referenceSpec = spec;
+    referenceLayout->setWidgetPreviews({referenceSpec});
+    QCOMPARE(layout->widgetPreviewRect(71), referenceLayout->widgetPreviewRect(71));
+    QCOMPARE(notifiedBand, referenceLayout->widgetPreviewRect(71));
+    QCOMPARE(layout->sourceTextRect(bandStart, bandStart + 5),
+             referenceLayout->sourceTextRect(bandStart, bandStart + 5));
+    QCOMPARE(layout->blockBoundingRect(doc.findBlockByNumber(2)),
+             referenceLayout->blockBoundingRect(reference.findBlockByNumber(2)));
+
+    layout->setConcealCursorPosition(-1);
+    reference.setPlainText(compact);
+    referenceSpec.m_startPos = compactBandStart;
+    referenceSpec.m_endPos = compactBandStart + 5;
+    referenceLayout->setWidgetPreviews({referenceSpec});
+    QCOMPARE(layout->widgetPreviewRect(71), referenceLayout->widgetPreviewRect(71));
+    QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
+    TextFolding folding(&doc);
+    TextFolding referenceFolding(&reference);
+    const auto foldId = folding.newFoldingRange(
+        TextBlockRange(doc.firstBlock(), doc.findBlockByNumber(2)), TextFolding::Persistent);
+    const auto referenceFoldId = referenceFolding.newFoldingRange(
+        TextBlockRange(reference.firstBlock(), reference.findBlockByNumber(2)),
+        TextFolding::Persistent);
+    QVERIFY(foldId != TextFolding::InvalidRangeId);
+    QVERIFY(referenceFoldId != TextFolding::InvalidRangeId);
+    QVERIFY(folding.toggleRange(foldId));
+    QVERIFY(referenceFolding.toggleRange(referenceFoldId));
+    QVERIFY(!block.isVisible());
+    QCOMPARE(layout->blockBoundingRect(block).height(), 0.0);
+    QVERIFY(layout->sourceTextRect(absoluteStart, block.position() + end).isNull());
+    QVERIFY(layout->widgetPreviewRect(71).isNull());
+    layout->setConcealCursorPosition(absoluteStart);
+    layout->relayout();
+    QCOMPARE(layout->blockBoundingRect(block).height(), 0.0);
+    QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
+    QVERIFY(folding.toggleRange(foldId));
+    QVERIFY(referenceFolding.toggleRange(referenceFoldId));
+    layout->setConcealCursorPosition(-1);
+    QCOMPARE(layout->widgetPreviewRect(71), referenceLayout->widgetPreviewRect(71));
+    QCOMPARE(layout->documentSize(), referenceLayout->documentSize());
+    QCOMPARE(doc.toPlainText(), source);
+  }
 }
 
 // An element whose source is rewritten in one go - what the preview write-back

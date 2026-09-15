@@ -9,6 +9,10 @@ namespace tests {
 class TestMarkdownEditor : public QObject {
   Q_OBJECT
 private slots:
+  // Source-preserving Markdown concealment through the real editor and Vi input.
+  void testConcealMarkdownConfig();
+  void testConcealCaretAndViMotion();
+
   // MarkdownUtils helpers.
   void testIsQuote();
 
@@ -57,6 +61,9 @@ private slots:
   void testRepeatedReturnDoesNotLeakContext();
 
   void testUndoIsASingleStep();
+
+  // Source editing and canonical Qt geometry through inline concealment.
+  void testConcealEditingAndGeometry();
 
   // Image previews and the `=WxH` size extension.
   void testImageLinksArePublished();

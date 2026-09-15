@@ -6,6 +6,7 @@
 #include <QRectF>
 #include <QSharedPointer>
 #include <QString>
+#include <QTextLayout>
 
 #include <vtextedit/textblockdata.h>
 
@@ -42,6 +43,26 @@ struct WidgetPaintData {
   QRectF m_rect;
 };
 
+// Validated source coordinates, independent of cached layout geometry.
+struct ConcealedRange {
+  bool operator==(const ConcealedRange &p_other) const {
+    return m_start == p_other.m_start && m_end == p_other.m_end;
+  }
+
+  int m_start = 0;
+  int m_end = 0;
+  int m_hiddenStart = 0;
+  int m_hiddenEnd = 0;
+};
+
+struct ConcealPaintData {
+  int m_hiddenStart = 0;
+  int m_hiddenEnd = 0;
+  // Block-relative, just like the source QTextLine positions.
+  QRectF m_rect;
+  QSharedPointer<QTextLayout> m_layout;
+};
+
 // Data about a block layout.
 struct BlockLayoutData {
   void reset() {
@@ -50,6 +71,7 @@ struct BlockLayoutData {
     m_markers.clear();
     m_images.clear();
     m_widgets.clear();
+    m_concealMarkers.clear();
   }
 
   bool isNull() const { return m_rect.isNull(); }
@@ -75,6 +97,15 @@ struct BlockLayoutData {
     }
     return data;
   }
+
+  // Submissions survive reset(); only a source revision change invalidates them.
+  QVector<ConcealedRange> m_concealedRanges;
+  int m_concealRevision = -1;
+  QVector<ConcealPaintData> m_concealMarkers;
+
+  // Remember the ordinary cache policy while synthetic glyphs require caching.
+  bool m_concealOwnsCache = false;
+  bool m_sourceCacheEnabled = false;
 
   // Y offset of this block.
   // -1 for invalid.

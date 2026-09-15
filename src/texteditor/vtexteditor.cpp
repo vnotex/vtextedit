@@ -412,6 +412,17 @@ void VTextEditor::applyLineSpacing() {
   }
 
   auto textDocument = document();
+  auto block = textDocument->begin();
+  for (; block.isValid(); block = block.next()) {
+    const auto current = block.blockFormat();
+    if (current.lineHeight() != format.lineHeight() ||
+        current.lineHeightType() != format.lineHeightType()) {
+      break;
+    }
+  }
+  if (!block.isValid()) {
+    return;
+  }
   bool modified = textDocument->isModified();
 
   QTextCursor cursor(textDocument);

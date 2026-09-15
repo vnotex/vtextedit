@@ -145,6 +145,11 @@ struct ElementRegion {
   int m_endPos = 0;
 };
 
+// Raw URL payload, in absolute half-open UTF-16 document positions.
+struct ConcealRange : ElementRegion {
+  MarkdownConcealElement m_element = MarkdownConcealElement::None;
+};
+
 // One image link found by the parse that produced the current highlighting,
 // carrying exactly what the two consumers of the highlighter's image channel
 // need: PreviewMgr, to fetch and scale the preview, and VNote's context menu,

@@ -122,6 +122,7 @@ MarkdownHighlighterResult::MarkdownHighlighterResult(
   m_blockOverlays = p_result->m_blockOverlays;
 
   // Implicit sharing.
+  m_concealRanges = p_result->m_concealRanges;
   m_headerRegions = p_result->m_headerRegions;
   m_foldingRegions = p_result->m_foldingRegions;
 

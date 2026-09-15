@@ -6,6 +6,8 @@
 #include <QMap>
 #include <QPair>
 #include <QSize>
+#include <QTextBlock>
+#include <QTextCharFormat>
 #include <QVector>
 
 #include <vtextedit/markdownhighlighterdata.h>
@@ -130,7 +132,19 @@ public:
     PreviewElementType m_type = PreviewElementType::Image;
   };
 
+  // Source-indexed, half-open offsets within a single block.
+  struct ConcealSpec {
+    QTextBlock m_block;
+    int m_start = 0;
+    int m_end = 0;
+  };
+
   TextDocumentLayout(QTextDocument *p_doc, DocumentResourceMgr *p_resourceMgr);
+
+  bool conceal(const QTextBlock &p_block, int p_start, int p_end);
+  bool setConcealedRanges(const QVector<ConcealSpec> &p_ranges);
+  void setConcealFormat(const QTextCharFormat &p_format);
+  void setConcealCursorPosition(int p_position);
 
   void draw(QPainter *p_painter, const PaintContext &p_context) Q_DECL_OVERRIDE;
 
@@ -220,6 +234,9 @@ public:
   void requestIdleNotification() { m_idleNotificationOwed = true; }
 
 signals:
+  // Conceal geometry is complete and the outermost layout pass is idle.
+  void concealmentChanged();
+
   // Emitted whenever the geometry assigned to any interactive preview widget
   // changed, even when the overall document size did not.
   void widgetPreviewGeometryChanged();
@@ -412,6 +429,19 @@ private:
   void drawListItemGuides(QPainter *p_painter, const QTextBlock &p_block,
                           const BlockLayoutData &p_data, const QVector<ActiveListGuide> &p_active,
                           const QRectF &p_clip) const;
+
+  void queueConcealRelayout(const QTextBlock &p_block);
+  void flushConcealRelayout();
+  void invalidateConcealRanges(const QTextBlock &p_block);
+
+  // Live handles survive shifts caused by edits in preceding blocks. Pending
+  // handles likewise must not be stored as block numbers across a busy pass.
+  QVector<QTextBlock> m_concealBlocks;
+  QVector<QTextBlock> m_pendingConcealBlocks;
+  QTextCharFormat m_concealFormat;
+  int m_concealCursor = -1;
+  bool m_concealTimerPending = false;
+  bool m_concealGeometryChanged = false;
 
   QVector<md::ListItemRange> m_listItemRanges;
   TimeStamp m_listItemTimeStamp = 0;

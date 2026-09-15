@@ -1771,6 +1771,10 @@ void TestTablePreview::testHeightForWidthComesFromTheDocumentLayout() {
   QVERIFY(widget.setPreview(makeWrappingTable()));
   auto sheet = sheetOf(widget);
   QVERIFY(sheet);
+  // Exercise wrapping with a defined font size, not the platform plugin's default metrics.
+  QFont font(QStringLiteral("Arial"));
+  font.setPixelSize(20);
+  sheet->setFont(font);
 
   showOffScreen(widget, 600);
   settle();

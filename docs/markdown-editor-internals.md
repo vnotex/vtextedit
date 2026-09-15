@@ -38,13 +38,15 @@ The Markdown-specific configuration is in `MarkdownEditorConfig`:
 | Field or method | Effect |
 |-----------------|--------|
 | `m_inplacePreviewSources` | Enables the `ImageLink`, `CodeBlock`, `Math` and/or `Table` preview sources. The first three are enabled by default; `Table` is opt-in, because its sheet writes back to the document. |
+| `m_concealElements` | Eligible `ImageUrl`, `LinkUrl`, `ReferenceUrl` flags; all enabled by default. An empty mask disables automatic concealment. |
+| `m_concealLengthThreshold` | Common grapheme threshold, default 20; destinations must exceed it and the nine-grapheme compact display. |
 | `m_constrainInplacePreviewWidthEnabled` | Allows block preview images to shrink to the text layout width. |
 | `m_webCodeBlockHighlighterEnabled` | Selects the web or KSyntax fenced-code source highlighter during construction. |
 | `m_autoFoldPreviewedBlocksEnabled` | Folds a foldable region as soon as it first gets a valid in-place preview. Default on. See [Preview driven folding](#preview-driven-folding). |
 | `VMarkdownEditor::setInplacePreviewEnabled()` | Temporarily enables or disables configured preview sources. |
 
 `VMarkdownEditor::setConfig()` reapplies the base editor configuration, Markdown theme,
-preview width setting, enabled preview sources, line spacing, and space width. It does not
+preview width setting, enabled preview sources, concealment settings/style, line spacing, and space width. It does not
 replace the code-highlighting backend, so changing `m_webCodeBlockHighlighterEnabled` after
 construction does not switch an existing editor between web and KSyntax implementations.
 
@@ -147,8 +149,9 @@ MarkdownHighlighter::imageLinksUpdated             |
 `TextBlockData` is owned by `QTextDocument` through `QTextBlockUserData`. It holds shared
 `BlockPreviewData` and `BlockLayoutData` objects alongside highlighting, folding, and spell-check
 state. `BlockPreviewData` owns its `PreviewData` pointers, and each `PreviewData` owns one
-`PreviewImageData`. `BlockLayoutData` is a derived geometry cache; it stores the block rectangle,
-document Y offset, image paint rectangles, resource names, backgrounds, and marker lines.
+`PreviewImageData`. `BlockLayoutData` stores derived geometry: the block rectangle, document Y
+offset, image paint rectangles, resource names, backgrounds, and marker lines. Its submitted
+block-local conceal ranges and source revision are persistent state, separate from that cache.
 
 `DocumentResourceMgr` is only a `QHash<QString, QPixmap>`. Preview timestamps live in
 `PreviewData` and `PreviewMgr::PreviewSourceData`, where they identify the latest update and
@@ -278,6 +281,43 @@ the maximum cached block width.
 Folding marks interior `QTextBlock`s invisible. An invisible block receives an empty text layout,
 line count zero, and a non-null rectangle with zero height. The non-null width preserves
 `BlockLayoutData` sentinel semantics while letting following blocks share its Y position.
+
+### Source-preserving inline concealment
+
+`MarkdownHighlighter::concealRangesUpdated()` publishes only timestamp-matched full-parse
+`md::ConcealRange` snapshots. `getConcealRanges()` is empty while the complete result is stale.
+Candidates are absolute, half-open UTF-16 spans of raw destinations: inline links/images,
+URL/email autolinks, reference definitions (including unused/duplicate definitions), and the
+existing HTML image scanner's effective `src` value. Labels, titles, quotes and angle delimiters
+remain visible. Definitions are observed at cmark's authoritative consumption point; no second
+Markdown or HTML parser is used. Code, comments, raw-text HTML and multiline payloads are excluded.
+
+The editor filters kinds and counts grapheme clusters. A destination must be strictly longer
+than both `max(0, m_concealLengthThreshold)` and nine graphemes. The display retains three
+graphemes at each end with three U+00B7 middle dots between them. The moving caret reveals
+the full submitted `[start, end)` range, including either retained end; a caret at `end` is
+outside. Selection alone does not reveal it. An IME preedit reveals its whole block temporarily.
+
+The internal layout exposes `conceal(block, start, end)`, atomic `setConcealedRanges()`,
+`setConcealFormat()` and `setConcealCursorPosition()`. Invalid batches leave the old snapshot
+unchanged; duplicates are idempotent. Submissions survive ordinary cache resets, but a changed
+block revision invalidates its local ranges. Targeted relayout preserves preview bands and the
+document offset chain; busy passes defer transitions, and `concealmentChanged()` fires only
+after the resulting geometry is complete and the outer pass is idle.
+
+The canonical document-attached `QTextLayout` remains the sole geometry source. An isolated
+Qt-private adapter changes cached glyph advances and clusters, never document text or source
+indexes. The marker is a single visual cluster, with temporary break suppression restored
+after line creation. Its advancing script item uses two blank glyphs in one cluster (zero
+advance first) to avoid Qt's literal soft-hyphen width branch. Ordinary script inheritance
+preserves font fallback; Qt's synthetic emoji classification does not apply to the dots.
+
+`Theme::ConcealedText` styles the whole compact range. Omitted custom-theme properties inherit
+source formatting; selection/search retain their normal precedence. Reveal restores syntax
+formats. Copy, cut, search, undo and Vi counts use original source. Configuration reapplication
+does not rewrite text; unchanged line spacing also avoids an otherwise redundant formatting
+undo command. Builds require the matching `Qt5::GuiPrivate` or `Qt6::GuiPrivate` development
+headers and runtime kit. The private dependency is not exposed through public headers.
 
 ### Inline previews
 

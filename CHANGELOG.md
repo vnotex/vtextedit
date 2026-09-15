@@ -1,5 +1,23 @@
 # Changelog
 
+## 8.0.0 (unreleased)
+
+### Breaking changes
+
+- `MarkdownEditorConfig` and `Theme` grow for inline concealment. Rebuild all consumers;
+  the library SOVERSION is now 8. Matching Qt Gui private development headers are required,
+  and the runtime must use the Qt build against which the library was compiled.
+
+### Behavior changes
+
+- Long Markdown image/link/reference destinations and HTML image `src` values display
+  three graphemes at each end around three middle dots, without changing source. The default
+  threshold is 20 graphemes; `m_concealElements` selects eligible URL kinds and an empty mask
+  disables the feature. `Theme::ConcealedText` controls compact foreground/background.
+- Entering any part of a concealed range reveals it. Source cursor positions, counted Vi
+  motions, selection, copy/cut, search and undo remain unchanged. IME preedit reveals its block.
+- Reapplying unchanged line spacing no longer adds redundant formatting undo commands.
+
 ## 2.0.0 (unreleased)
 
 ### Breaking changes

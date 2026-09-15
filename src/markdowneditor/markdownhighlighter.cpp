@@ -845,6 +845,7 @@ void MarkdownHighlighter::completeHighlight(QSharedPointer<MarkdownHighlighterRe
   emit foldingRegionsUpdated(p_result->m_foldingRegions);
   if (p_result->matched(m_timeStamp)) {
     emit listItemRangesUpdated(m_timeStamp, p_result->m_listItemRanges);
+    emit concealRangesUpdated(m_timeStamp, p_result->m_concealRanges);
   }
 
   // Snapshots are built here rather than when the result is constructed, so a
@@ -1004,6 +1005,11 @@ const QVector<md::ElementRegion> &MarkdownHighlighter::getHeaderRegions() const 
 
 const QVector<md::ImageLinkInfo> &MarkdownHighlighter::getImageLinks() const {
   return m_result->m_imageLinks;
+}
+
+const QVector<md::ConcealRange> &MarkdownHighlighter::getConcealRanges() const {
+  static const QVector<md::ConcealRange> empty;
+  return m_result && m_result->matched(m_timeStamp) ? m_result->m_concealRanges : empty;
 }
 
 const QVector<md::FencedCodeBlock> &MarkdownHighlighter::getCodeBlocks() const {

@@ -69,6 +69,8 @@ struct MarkdownParseResult {
   // All image link regions.
   QVector<ElementRegion> m_imageRegions;
 
+  QVector<ConcealRange> m_concealRanges;
+
   // All header regions.
   // Sorted by start position.
   QVector<ElementRegion> m_headerRegions;

@@ -3,13 +3,21 @@ cmake_minimum_required(VERSION 3.16)
 # — not the root CMakeLists.txt — is what the SOVERSION at the bottom of this file
 # actually reads. The two declarations MUST be bumped together; bumping only the
 # root leaves the installed library carrying the previous soname.
-project(VTextEdit VERSION 7.0.0 LANGUAGES C CXX)
+project(VTextEdit VERSION 8.0.0 LANGUAGES C CXX)
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
 set(QT_DEFAULT_MAJOR_VERSION 6 CACHE STRING "Qt version to use (5 or 6), defaults to 6")
 find_package(Qt${QT_DEFAULT_MAJOR_VERSION} REQUIRED COMPONENTS Core Gui Network Svg Widgets LinguistTools)
 find_package(Qt${QT_DEFAULT_MAJOR_VERSION} OPTIONAL_COMPONENTS Core5Compat)
+
+# The source-indexed concealment adapter requires version-matched private headers.
+if(QT_DEFAULT_MAJOR_VERSION GREATER 5 AND NOT TARGET Qt6::GuiPrivate)
+    find_package(Qt6GuiPrivate QUIET)
+endif()
+if(NOT TARGET Qt${QT_DEFAULT_MAJOR_VERSION}::GuiPrivate)
+    message(FATAL_ERROR "VTextEdit requires matching Qt Gui private development headers for inline concealment.")
+endif()
 
 if ((QT_DEFAULT_MAJOR_VERSION GREATER 5))
     qt_standard_project_setup()
@@ -193,6 +201,7 @@ target_link_libraries(VTextEdit PUBLIC
     sonnet-hunspell
     Hunspell
 )
+target_link_libraries(VTextEdit PRIVATE Qt${QT_DEFAULT_MAJOR_VERSION}::GuiPrivate)
 
 if((QT_DEFAULT_MAJOR_VERSION GREATER 5))
     target_link_libraries(VTextEdit PUBLIC
@@ -226,6 +235,9 @@ endif()
 # 7.0: ListItemGuide and ActiveListItem enlarge Theme::m_editorStyles,
 # shifting subsequent members of the exported Theme object. Consumers must
 # rebuild against the new layout.
+#
+# 8.0: concealment settings enlarge MarkdownEditorConfig and ConcealedText
+# enlarges Theme::m_editorStyles. All consumers must rebuild.
 set_target_properties(VTextEdit PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION ${PROJECT_VERSION_MAJOR}

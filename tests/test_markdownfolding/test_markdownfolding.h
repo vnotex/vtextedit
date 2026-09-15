@@ -108,6 +108,12 @@ private slots:
 
   void testSourceTextRectSharesWidgetCoordinates();
 
+  void testConcealLayout();
+
+  void testConcealBoundaries();
+
+  void testConcealWrappingAndSelection();
+
   void testInPlaceRewriteKeepsFoldRange();
 
   void testLiveRangeIsNotRecreated();

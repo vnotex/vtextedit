@@ -7,9 +7,14 @@
 #include <QPainter>
 #include <QPointF>
 #include <QTextBlock>
+#include <QTextBoundaryFinder>
 #include <QTextDocument>
 #include <QTextFrame>
 #include <QTextLayout>
+#include <QTimer>
+
+#include <private/qfontengine_p.h>
+#include <private/qtextengine_p.h>
 
 #include <algorithm>
 #include <cmath>
@@ -37,6 +42,341 @@ Q_LOGGING_CATEGORY(layoutRepairLog, "vte.layout.repair", QtWarningMsg)
 //
 //   QT_LOGGING_RULES="vte.layout.geometry=true"
 Q_LOGGING_CATEGORY(layoutGeometryLog, "vte.layout.geometry", QtWarningMsg)
+
+// This property belongs only to this adapter, never to syntax highlighting.
+constexpr int c_concealFormatProperty = QTextFormat::UserProperty + 0x5654;
+
+bool validateConcealedRange(const QTextBlock &p_block, const QTextDocument *p_document, int p_start,
+                            int p_end, ConcealedRange &p_range) {
+  if (!p_block.isValid() || p_block.document() != p_document || p_start < 0 || p_end <= p_start ||
+      p_end > p_block.length() - 1) {
+    return false;
+  }
+  const QString text = p_block.text();
+  QTextBoundaryFinder finder(QTextBoundaryFinder::Grapheme, text);
+  finder.setPosition(p_end);
+  if (!finder.isAtBoundary()) {
+    return false;
+  }
+  finder.setPosition(p_start);
+  if (!finder.isAtBoundary()) {
+    return false;
+  }
+  // Ten clusters suffice to prove that the nine-cluster display is shorter.
+  int prefixEnd = p_start;
+  for (int i = 0; i < 10; ++i) {
+    const int next = finder.toNextBoundary();
+    if (next < 0 || next > p_end) {
+      return false;
+    }
+    if (i == 2) {
+      prefixEnd = next;
+    }
+  }
+  finder.setPosition(p_end);
+  for (int i = 0; i < 3; ++i) {
+    finder.toPreviousBoundary();
+  }
+  p_range = {p_start, p_end, prefixEnd, static_cast<int>(finder.position())};
+  return true;
+}
+
+bool concealedAtCursor(const QTextBlock &p_block, const ConcealedRange &p_range, int p_cursor) {
+  const int column = p_cursor < 0 ? -1 : p_cursor - p_block.position();
+  return column < p_range.m_start || column >= p_range.m_end;
+}
+
+QVector<QTextLayout::FormatRange> sourceFormats(QTextLayout *p_layout) {
+  auto formats = p_layout->formats();
+  formats.erase(std::remove_if(formats.begin(), formats.end(),
+                               [](const QTextLayout::FormatRange &p_range) {
+                                 return p_range.format.hasProperty(c_concealFormatProperty);
+                               }),
+                formats.end());
+  return formats;
+}
+
+void setConcealCachePolicy(QTextLayout *p_layout, BlockLayoutData &p_data, bool p_enabled) {
+  if (p_enabled) {
+    if (!p_data.m_concealOwnsCache) {
+      p_data.m_sourceCacheEnabled = p_layout->cacheEnabled();
+      p_data.m_concealOwnsCache = true;
+    }
+    p_layout->setCacheEnabled(true);
+  } else if (p_data.m_concealOwnsCache) {
+    p_layout->setCacheEnabled(p_data.m_sourceCacheEnabled);
+    p_data.m_concealOwnsCache = false;
+  }
+}
+
+// Only cached glyphs and temporary line-breaking attributes change. The engine's
+// document block, source string, bidi analysis and UTF-16 coordinates stay intact.
+class ConcealGlyphAdapter {
+public:
+  ConcealGlyphAdapter(QTextLayout *p_layout, QVector<ConcealedRange> p_ranges,
+                      const QTextCharFormat &p_format, QPaintDevice *p_device,
+                      BlockLayoutData &p_data)
+      : m_engine(p_layout->engine()) {
+    const auto formats = sourceFormats(p_layout);
+    // A failed preflight removes just that range and rebuilds source itemization
+    // without its overlays. No glyph storage is changed until all survivors are
+    // ready; the retry strictly decreases the candidate set.
+    for (;;) {
+      auto combined = formats;
+      for (const auto &range : p_ranges) {
+        QTextLayout::FormatRange overlay;
+        overlay.start = range.m_start;
+        overlay.length = range.m_end - range.m_start;
+        overlay.format = p_format;
+        overlay.format.setProperty(c_concealFormatProperty, 1);
+        combined.append(overlay);
+        overlay.start = range.m_hiddenStart;
+        overlay.length = range.m_hiddenEnd - range.m_hiddenStart;
+        overlay.format.setProperty(c_concealFormatProperty, 2);
+        combined.append(overlay);
+      }
+      // QTextLayout::setFormats() would notify QTextDocument recursively here.
+      if (combined != p_layout->formats()) {
+        m_engine->setFormats(combined);
+      }
+      p_layout->beginLayout();
+      if (p_ranges.isEmpty()) {
+        setConcealCachePolicy(p_layout, p_data, false);
+        return;
+      }
+      const bool haveAttributes = m_engine->attributes() != nullptr;
+      QVector<ConcealedRange> accepted;
+      int glyphCount = 0;
+      for (const auto &range : p_ranges) {
+        Patch patch;
+        if (!haveAttributes || !prepare(range, p_device, patch)) {
+          continue;
+        }
+        glyphCount += patch.m_blankGlyphs.size() + 1;
+        accepted.append(range);
+        m_patches.append(std::move(patch));
+      }
+      if (accepted.size() != p_ranges.size() || !m_engine->ensureSpace(glyphCount)) {
+        if (accepted.size() == p_ranges.size()) {
+          accepted.clear(); // Allocation failed: keep the source revealed.
+        }
+        m_patches.clear();
+        p_layout->endLayout();
+        p_ranges = std::move(accepted);
+        continue;
+      }
+      setConcealCachePolicy(p_layout, p_data, true);
+      for (auto &patch : m_patches) {
+        const auto &range = patch.m_range;
+        const auto *attributes = m_engine->attributes();
+        patch.m_sourceAttributes.reserve(range.m_hiddenEnd - range.m_hiddenStart);
+        for (int pos = range.m_hiddenStart; pos < range.m_hiddenEnd; ++pos) {
+          patch.m_sourceAttributes.append(attributes[pos]);
+        }
+        for (int item = patch.m_firstItem; item <= patch.m_lastItem; ++item) {
+          auto &si = m_engine->layoutData->items[item];
+          const bool first = item == patch.m_firstItem;
+          si.glyph_data_offset = m_engine->layoutData->used;
+          si.num_glyphs = first ? 2 : 1;
+          m_engine->layoutData->used += si.num_glyphs;
+          si.analysis.flags = QScriptAnalysis::None;
+          const auto markerLine = patch.m_paint.m_layout->lineAt(0);
+          si.width = first ? QFixed::fromReal(markerLine.horizontalAdvance()) : QFixed();
+          si.ascent = first ? QFixed::fromReal(markerLine.ascent()) : QFixed();
+          si.descent = first ? QFixed::fromReal(markerLine.descent()) : QFixed();
+          si.leading = first ? QFixed::fromReal(qMax<qreal>(0, markerLine.leading())) : QFixed();
+          auto glyphs = m_engine->shapedGlyphs(&si);
+          glyphs.clear();
+          glyphs.glyphs[0] = patch.m_blankGlyphs.at(item - patch.m_firstItem);
+          glyphs.attributes[0].clusterStart = true;
+          if (first) {
+            // One cluster, two blanks. Qt's line breaker tests the literal
+            // source SoftHyphen even when its break attribute is suppressed;
+            // it reads advances[logClusters[position]] as the discretionary
+            // hyphen width. Keep that leading advance zero and reserve the
+            // marker width on a continuation glyph of the very same cluster.
+            glyphs.glyphs[1] = glyphs.glyphs[0];
+            glyphs.advances[1] = si.width;
+          }
+          // dontPrint must stay false: it would also suppress the advance.
+          auto *clusters = m_engine->logClusters(&si);
+          std::fill(clusters, clusters + m_engine->length(item), 0);
+        }
+      }
+      suppressBreaks();
+      return;
+    }
+  }
+
+  ~ConcealGlyphAdapter() { restoreAttributes(); }
+
+  void restoreAttributes() {
+    if (m_restored || m_patches.isEmpty()) {
+      return;
+    }
+    // Shaping ordinary items can have reallocated the engine buffer.
+    auto *attributes = const_cast<QCharAttributes *>(m_engine->attributes());
+    for (const auto &patch : m_patches) {
+      std::copy(patch.m_sourceAttributes.cbegin(), patch.m_sourceAttributes.cend(),
+                attributes + patch.m_range.m_hiddenStart);
+    }
+    m_restored = true;
+  }
+
+  QVector<ConcealPaintData> paintData(QTextLayout *p_layout) {
+    QVector<ConcealPaintData> result;
+    result.reserve(m_patches.size());
+    for (auto &patch : m_patches) {
+      const auto line = p_layout->lineForTextPosition(patch.m_range.m_hiddenStart);
+      if (!line.isValid()) {
+        continue;
+      }
+      // Reproduce the engine's visual item walk, not cursorToX() at a bidi
+      // boundary (which deliberately prefers the paragraph-direction neighbor).
+      const auto &sl = m_engine->lines.at(line.lineNumber());
+      m_engine->shapeLine(sl);
+      const int first = m_engine->findItem(sl.from);
+      const int end = sl.from + sl.length + sl.trailingSpaces;
+      const int last = m_engine->findItem(end - 1, first);
+      QVector<int> order(last - first + 1);
+      QVector<quint8> levels(order.size());
+      for (int i = 0; i < order.size(); ++i) {
+        levels[i] = m_engine->layoutData->items.at(first + i).analysis.bidiLevel;
+      }
+      QTextEngine::bidiReorder(order.size(), levels.constData(), order.data());
+      QFixed x = sl.x + m_engine->alignLine(sl);
+      for (int visual : order) {
+        const int item = first + visual;
+        const auto &si = m_engine->layoutData->items.at(item);
+        if (item == patch.m_firstItem) {
+          patch.m_paint.m_rect = QRectF(x.toReal(), line.y(), si.width.toReal(), line.height());
+          // Give marker selections the whole reserved line-height rectangle.
+          // The dot glyphs retain their own font and share the source baseline.
+          auto *markerEngine = patch.m_paint.m_layout->engine();
+          markerEngine->lines[0].ascent = sl.ascent;
+          markerEngine->lines[0].descent = sl.descent;
+          markerEngine->lines[0].leading = sl.leading;
+          result.append(std::move(patch.m_paint));
+          break;
+        }
+        if (si.analysis.flags >= QScriptAnalysis::TabOrObject) {
+          x += si.width;
+          continue;
+        }
+        const int length = m_engine->length(item);
+        const int from = qMax(sl.from, si.position) - si.position;
+        const int to = qMin(end - si.position, length);
+        const auto *clusters = m_engine->logClusters(&si);
+        const auto glyphs = m_engine->shapedGlyphs(&si);
+        const int glyphEnd = to == length ? si.num_glyphs : clusters[to];
+        for (int glyph = clusters[from]; glyph < glyphEnd; ++glyph) {
+          x += glyphs.effectiveAdvance(glyph);
+        }
+      }
+    }
+    return result;
+  }
+
+private:
+  struct Patch {
+    ConcealedRange m_range;
+    ConcealPaintData m_paint;
+    int m_firstItem = -1;
+    int m_lastItem = -1;
+    QVector<glyph_t> m_blankGlyphs;
+    QVector<QCharAttributes> m_sourceAttributes;
+  };
+
+  bool prepare(const ConcealedRange &p_range, QPaintDevice *p_device, Patch &p_patch) {
+    p_patch.m_range = p_range;
+    p_patch.m_firstItem = m_engine->findItem(p_range.m_hiddenStart);
+    p_patch.m_lastItem = m_engine->findItem(p_range.m_hiddenEnd - 1, p_patch.m_firstItem);
+    if (p_patch.m_firstItem < 0 || p_patch.m_lastItem < p_patch.m_firstItem ||
+        m_engine->layoutData->items.at(p_patch.m_firstItem).position != p_range.m_hiddenStart ||
+        m_engine->layoutData->items.at(p_patch.m_lastItem).position +
+                m_engine->length(p_patch.m_lastItem) !=
+            p_range.m_hiddenEnd) {
+      return false;
+    }
+    const auto &first = m_engine->layoutData->items.at(p_patch.m_firstItem);
+    const QFont font = m_engine->font(first);
+    QTextCharFormat format = m_engine->format(&first);
+    format.clearProperty(c_concealFormatProperty);
+    format.setFont(font);
+    format.setVerticalAlignment(QTextCharFormat::AlignNormal);
+    auto marker = QSharedPointer<QTextLayout>::create(QString(3, QChar(0x00b7)), font, p_device);
+    QTextOption option;
+    option.setWrapMode(QTextOption::NoWrap);
+    option.setTextDirection(first.analysis.bidiLevel % 2 ? Qt::RightToLeft : Qt::LeftToRight);
+    marker->setTextOption(option);
+    marker->setFormats({{0, 3, format}});
+    marker->setCacheEnabled(true);
+    marker->beginLayout();
+    // Neutral dots alone are itemized as Common; in the source they inherit
+    // the surrounding script, which also chooses the script-specific font fallback.
+    // Qt also has synthetic scripts (such as Emoji) beyond QChar::ScriptCount;
+    // those classifications belong to the hidden source, not to neutral dots.
+    if (first.analysis.script < QChar::ScriptCount) {
+      for (auto &item : marker->engine()->layoutData->items) {
+        item.analysis.script = first.analysis.script;
+      }
+    }
+    auto line = marker->createLine();
+    if (line.isValid()) {
+      line.setNumColumns(3);
+    }
+    marker->endLayout();
+    if (!line.isValid() || !qIsFinite(line.horizontalAdvance()) || line.horizontalAdvance() <= 0 ||
+        line.horizontalAdvance() >= INT_MAX / 128 || !qIsFinite(line.height()) ||
+        line.height() <= 0 || line.height() >= INT_MAX / 128) {
+      return false;
+    }
+    auto *markerEngine = marker->engine();
+    for (const auto &item : markerEngine->layoutData->items) {
+      if (!markerEngine->fontEngine(item)->glyphIndex(0x00b7)) {
+        return false;
+      }
+    }
+    for (int item = p_patch.m_firstItem; item <= p_patch.m_lastItem; ++item) {
+      auto &si = m_engine->layoutData->items[item];
+      // Use the engine which will paint the synthetic item, not a SmallCaps
+      // scaled engine or the source tab/object branch. Keep bidi levels intact.
+      const auto flags = si.analysis.flags;
+      si.analysis.flags = QScriptAnalysis::None;
+      const auto glyph = m_engine->fontEngine(si)->glyphIndex(0x20);
+      si.analysis.flags = flags;
+      if (!glyph) {
+        return false;
+      }
+      p_patch.m_blankGlyphs.append(glyph);
+    }
+    p_patch.m_paint.m_hiddenStart = p_range.m_hiddenStart;
+    p_patch.m_paint.m_hiddenEnd = p_range.m_hiddenEnd;
+    p_patch.m_paint.m_layout = std::move(marker);
+    return true;
+  }
+
+  void suppressBreaks() {
+    auto *attributes = const_cast<QCharAttributes *>(m_engine->attributes());
+    for (const auto &patch : m_patches) {
+      const auto &range = patch.m_range;
+      for (int pos = range.m_hiddenStart; pos < range.m_hiddenEnd; ++pos) {
+        // A space at the first hidden position also belongs to the marker,
+        // not to Qt's separately accumulated/trimmable whitespace run.
+        attributes[pos].whiteSpace = false;
+        if (pos > range.m_hiddenStart) {
+          attributes[pos].graphemeBoundary = false;
+          attributes[pos].lineBreak = false;
+          attributes[pos].mandatoryBreak = false;
+        }
+      }
+    }
+  }
+
+  QTextEngine *m_engine = nullptr;
+  QVector<Patch> m_patches;
+  bool m_restored = false;
+};
 } // namespace
 
 const int TextDocumentLayout::c_markerThickness = 2;
@@ -58,18 +398,241 @@ TextDocumentLayout::PassGuard::~PassGuard() {
     return;
   }
 
-  if (!m_layout->m_idleNotificationOwed) {
-    return;
+  if (m_layout->m_idleNotificationOwed) {
+    m_layout->m_idleNotificationOwed = false;
+    // Only arms timers on the other side; see becameIdle()'s contract.
+    emit m_layout->becameIdle();
   }
-
-  m_layout->m_idleNotificationOwed = false;
-  // Only arms timers on the other side; see becameIdle()'s contract.
-  emit m_layout->becameIdle();
+  if (m_layout->m_concealGeometryChanged && m_layout->m_pendingConcealBlocks.isEmpty()) {
+    m_layout->m_concealGeometryChanged = false;
+    emit m_layout->concealmentChanged();
+  }
 }
 
 TextDocumentLayout::TextDocumentLayout(QTextDocument *p_doc, DocumentResourceMgr *p_resourceMgr)
     : QAbstractTextDocumentLayout(p_doc), m_margin(p_doc->documentMargin()),
-      m_resourceMgr(p_resourceMgr) {}
+      m_resourceMgr(p_resourceMgr) {
+  connect(this, &TextDocumentLayout::becameIdle, this, [this]() {
+    if (m_pendingConcealBlocks.isEmpty() || m_concealTimerPending) {
+      return;
+    }
+    m_concealTimerPending = true;
+    QTimer::singleShot(0, this, [this]() {
+      m_concealTimerPending = false;
+      flushConcealRelayout();
+    });
+  });
+}
+
+bool TextDocumentLayout::conceal(const QTextBlock &p_block, int p_start, int p_end) {
+  ConcealedRange range;
+  if (!validateConcealedRange(p_block, document(), p_start, p_end, range)) {
+    return false;
+  }
+  auto data = BlockLayoutData::get(p_block);
+  // Do not retain any previous coordinates after an edit to their block.
+  const bool current = data->m_concealRevision == p_block.revision();
+  if (current) {
+    const auto next = std::lower_bound(
+        data->m_concealedRanges.cbegin(), data->m_concealedRanges.cend(), p_start,
+        [](const ConcealedRange &p_range, int p_position) { return p_range.m_start < p_position; });
+    if (next != data->m_concealedRanges.cend() && *next == range) {
+      return true;
+    }
+    if ((next != data->m_concealedRanges.cend() && next->m_start < p_end) ||
+        (next != data->m_concealedRanges.cbegin() && (next - 1)->m_end > p_start)) {
+      return false;
+    }
+    const int index = static_cast<int>(next - data->m_concealedRanges.cbegin());
+    data->m_concealedRanges.insert(index, range);
+  } else {
+    data->m_concealedRanges = {range};
+  }
+  data->m_concealRevision = p_block.revision();
+  if (!m_concealBlocks.contains(p_block)) {
+    m_concealBlocks.append(p_block);
+  }
+  queueConcealRelayout(p_block);
+  flushConcealRelayout();
+  return true;
+}
+
+bool TextDocumentLayout::setConcealedRanges(const QVector<ConcealSpec> &p_ranges) {
+  auto specs = p_ranges;
+  // Validate every block before using its position in the ordering.
+  for (const auto &spec : specs) {
+    if (!spec.m_block.isValid() || spec.m_block.document() != document()) {
+      return false;
+    }
+  }
+  std::sort(specs.begin(), specs.end(), [](const ConcealSpec &p_a, const ConcealSpec &p_b) {
+    if (p_a.m_block.position() != p_b.m_block.position()) {
+      return p_a.m_block.position() < p_b.m_block.position();
+    }
+    return p_a.m_start != p_b.m_start ? p_a.m_start < p_b.m_start : p_a.m_end < p_b.m_end;
+  });
+  struct Submission {
+    QTextBlock m_block;
+    QVector<ConcealedRange> m_ranges;
+  };
+  QVector<Submission> submissions;
+  for (const auto &spec : specs) {
+    if (!submissions.isEmpty() && submissions.constLast().m_block == spec.m_block &&
+        !submissions.constLast().m_ranges.isEmpty()) {
+      const auto &last = submissions.constLast().m_ranges.constLast();
+      if (last.m_start == spec.m_start && last.m_end == spec.m_end) {
+        continue;
+      }
+      if (spec.m_start < last.m_end) {
+        return false;
+      }
+    }
+    ConcealedRange range;
+    if (!validateConcealedRange(spec.m_block, document(), spec.m_start, spec.m_end, range)) {
+      return false;
+    }
+    if (submissions.isEmpty() || submissions.constLast().m_block != spec.m_block) {
+      submissions.append({spec.m_block, {}});
+    }
+    submissions.last().m_ranges.append(range);
+  }
+
+  // Validation is complete. Merge the old/new participating blocks, not the
+  // whole document. Live handles retain their order when preceding blocks move.
+  m_concealBlocks.erase(
+      std::remove_if(m_concealBlocks.begin(), m_concealBlocks.end(),
+                     [](const QTextBlock &p_block) { return !p_block.isValid(); }),
+      m_concealBlocks.end());
+  std::sort(
+      m_concealBlocks.begin(), m_concealBlocks.end(),
+      [](const QTextBlock &p_a, const QTextBlock &p_b) { return p_a.position() < p_b.position(); });
+  int oldIndex = 0;
+  QVector<QTextBlock> blocks;
+  blocks.reserve(submissions.size());
+  for (auto &submission : submissions) {
+    while (oldIndex < m_concealBlocks.size() &&
+           m_concealBlocks.at(oldIndex).position() < submission.m_block.position()) {
+      const auto block = m_concealBlocks.at(oldIndex++);
+      auto data = BlockLayoutData::get(block);
+      data->m_concealedRanges.clear();
+      data->m_concealRevision = -1;
+      queueConcealRelayout(block);
+    }
+    if (oldIndex < m_concealBlocks.size() && m_concealBlocks.at(oldIndex) == submission.m_block) {
+      ++oldIndex;
+    }
+    auto data = BlockLayoutData::get(submission.m_block);
+    if (data->m_concealRevision != submission.m_block.revision() ||
+        data->m_concealedRanges != submission.m_ranges) {
+      data->m_concealedRanges = std::move(submission.m_ranges);
+      data->m_concealRevision = submission.m_block.revision();
+      queueConcealRelayout(submission.m_block);
+    }
+    blocks.append(submission.m_block);
+  }
+  while (oldIndex < m_concealBlocks.size()) {
+    const auto block = m_concealBlocks.at(oldIndex++);
+    auto data = BlockLayoutData::get(block);
+    data->m_concealedRanges.clear();
+    data->m_concealRevision = -1;
+    queueConcealRelayout(block);
+  }
+  m_concealBlocks = std::move(blocks);
+  flushConcealRelayout();
+  return true;
+}
+
+void TextDocumentLayout::setConcealFormat(const QTextCharFormat &p_format) {
+  if (m_concealFormat == p_format) {
+    return;
+  }
+  m_concealFormat = p_format;
+  for (const auto &block : m_concealBlocks) {
+    if (!block.isValid() || !block.isVisible() || !block.layout()->preeditAreaText().isEmpty()) {
+      continue;
+    }
+    const auto data = BlockLayoutData::get(block);
+    if (data->m_concealRevision != block.revision()) {
+      continue;
+    }
+    for (const auto &range : data->m_concealedRanges) {
+      if (concealedAtCursor(block, range, m_concealCursor)) {
+        queueConcealRelayout(block);
+        break;
+      }
+    }
+  }
+  flushConcealRelayout();
+}
+
+void TextDocumentLayout::setConcealCursorPosition(int p_position) {
+  if (m_concealCursor == p_position) {
+    return;
+  }
+  const int oldPosition = m_concealCursor;
+  m_concealCursor = p_position;
+  const auto oldBlock = oldPosition < 0 ? QTextBlock() : document()->findBlock(oldPosition);
+  const auto newBlock = p_position < 0 ? QTextBlock() : document()->findBlock(p_position);
+  for (const auto &block : {oldBlock, newBlock}) {
+    if (!block.isValid() || !block.isVisible() || !block.layout()->preeditAreaText().isEmpty()) {
+      continue;
+    }
+    const auto data = BlockLayoutData::get(block);
+    if (data->m_concealRevision != block.revision()) {
+      continue;
+    }
+    for (const auto &range : data->m_concealedRanges) {
+      if (concealedAtCursor(block, range, oldPosition) !=
+          concealedAtCursor(block, range, p_position)) {
+        queueConcealRelayout(block);
+        break;
+      }
+    }
+    if (oldBlock == newBlock) {
+      break;
+    }
+  }
+  flushConcealRelayout();
+}
+
+void TextDocumentLayout::queueConcealRelayout(const QTextBlock &p_block) {
+  if (!m_pendingConcealBlocks.contains(p_block)) {
+    m_pendingConcealBlocks.append(p_block);
+  }
+  if (isBusy()) {
+    requestIdleNotification();
+  }
+}
+
+void TextDocumentLayout::flushConcealRelayout() {
+  if (m_pendingConcealBlocks.isEmpty()) {
+    return;
+  }
+  if (isBusy()) {
+    requestIdleNotification();
+    return;
+  }
+  PassGuard pass(this);
+  OrderedIntSet blocks;
+  for (const auto &block : m_pendingConcealBlocks) {
+    if (block.isValid()) {
+      blocks.insert(block.blockNumber(), QMapDummyValue());
+    }
+  }
+  m_pendingConcealBlocks.clear();
+  if (!blocks.isEmpty()) {
+    relayout(blocks);
+  }
+}
+
+void TextDocumentLayout::invalidateConcealRanges(const QTextBlock &p_block) {
+  auto data = BlockLayoutData::get(p_block);
+  if (!data->m_concealedRanges.isEmpty() && data->m_concealRevision != p_block.revision()) {
+    data->m_concealedRanges.clear();
+    data->m_concealRevision = -1;
+    m_concealBlocks.removeAll(p_block);
+  }
+}
 
 void TextDocumentLayout::setListItemRanges(TimeStamp p_timeStamp,
                                            const QVector<md::ListItemRange> &p_ranges) {
@@ -628,6 +1191,21 @@ void TextDocumentLayout::draw(QPainter *p_painter, const PaintContext &p_context
     layout->draw(p_painter, offset, selections,
                  p_context.clip.isValid() ? p_context.clip : QRectF());
 
+    for (const auto &marker : info->m_concealMarkers) {
+      QVector<QTextLayout::FormatRange> markerSelections;
+      for (const auto &selection : selections) {
+        // Any nonempty intersection selects the complete visual unit. Let
+        // QTextLayout apply its ordinary background/foreground precedence in
+        // the original selection order, including search/extra selections.
+        if (selection.length > 0 && selection.start < marker.m_hiddenEnd &&
+            qint64(selection.start) + selection.length > marker.m_hiddenStart) {
+          markerSelections.append({0, 3, selection.format});
+        }
+      }
+      marker.m_layout->draw(p_painter, offset + marker.m_rect.topLeft(), markerSelections,
+                            p_context.clip.isValid() ? p_context.clip : QRectF());
+    }
+
     drawPreview(p_painter, block, offset);
 
     drawPreviewMarker(p_painter, block, offset);
@@ -713,14 +1291,27 @@ int TextDocumentLayout::hitTest(const QPointF &p_point, Qt::HitTestAccuracy p_ac
   Q_ASSERT(block.isValid());
   QTextLayout *layout = block.layout();
   int off = 0;
-  QPointF pos = p_point - QPointF(0, BlockLayoutData::get(block)->top());
+  const auto data = BlockLayoutData::get(block);
+  QPointF pos = p_point - QPointF(0, data->top());
+  const auto markerHit = [&](int p_line) {
+    for (const auto &marker : data->m_concealMarkers) {
+      if (marker.m_rect.contains(pos) &&
+          layout->lineForTextPosition(marker.m_hiddenStart).lineNumber() == p_line) {
+        return block.position() + marker.m_hiddenStart;
+      }
+    }
+    return -1;
+  };
   if (p_accuracy == Qt::ExactHit) {
     for (int i = 0; i < layout->lineCount(); ++i) {
       QTextLine line = layout->lineAt(i);
       const QRectF lr = line.naturalTextRect();
       if (pos.x() > lr.left() && pos.x() < lr.right() && pos.y() > lr.top() &&
           pos.y() < lr.bottom()) {
-        return block.position() + line.xToCursor(pos.x(), QTextLine::CursorOnCharacter);
+        const int concealed = markerHit(i);
+        return concealed >= 0
+                   ? concealed
+                   : block.position() + line.xToCursor(pos.x(), QTextLine::CursorOnCharacter);
       }
     }
 
@@ -766,6 +1357,10 @@ int TextDocumentLayout::hitTest(const QPointF &p_point, Qt::HitTestAccuracy p_ac
   }
 
   if (targetLine != -1) {
+    const int concealed = markerHit(targetLine);
+    if (concealed >= 0) {
+      return concealed;
+    }
     off = layout->lineAt(targetLine).xToCursor(pos.x(), QTextLine::CursorBetweenCharacters);
   } else if (lineCount > 0) {
     // Below every line of the block, such as the preview image area. Keep the
@@ -791,6 +1386,7 @@ QRectF TextDocumentLayout::blockBoundingRect(const QTextBlock &p_block) const {
   if (!p_block.isValid()) {
     return QRectF();
   }
+  PassGuard pass(const_cast<TextDocumentLayout *>(this));
 
   auto info = BlockLayoutData::get(p_block);
   if (!info->hasOffset()) {
@@ -823,6 +1419,10 @@ void TextDocumentLayout::documentChanged(int p_from, int p_charsRemoved, int p_c
 
   QTextDocument *doc = document();
   int newBlockCount = doc->blockCount();
+  m_concealBlocks.erase(
+      std::remove_if(m_concealBlocks.begin(), m_concealBlocks.end(),
+                     [](const QTextBlock &p_block) { return !p_block.isValid(); }),
+      m_concealBlocks.end());
 
   // Update the margin.
   m_margin = doc->documentMargin();
@@ -896,6 +1496,7 @@ void TextDocumentLayout::documentChanged(int p_from, int p_charsRemoved, int p_c
 void TextDocumentLayout::clearBlockLayout(QTextBlock &p_block) {
   p_block.clearLayout();
   auto info = BlockLayoutData::get(p_block);
+  m_concealGeometryChanged |= !info->m_concealMarkers.isEmpty();
   info->reset();
 }
 
@@ -919,11 +1520,17 @@ static Qt::Alignment visualAlignment(Qt::LayoutDirection p_direction, Qt::Alignm
 void TextDocumentLayout::layoutBlock(const QTextBlock &p_block) {
   QTextDocument *doc = document();
   Q_ASSERT(m_margin == doc->documentMargin());
+  invalidateConcealRanges(p_block);
 
   if (!p_block.isVisible()) {
     // Invisible (folded) blocks get zero height but non-null rect to preserve
     // BlockLayoutData sentinel semantics (isNull() checks width AND height).
     QTextLayout *tl = p_block.layout();
+    const auto formats = sourceFormats(tl);
+    if (formats != tl->formats()) {
+      tl->engine()->setFormats(formats);
+    }
+    setConcealCachePolicy(tl, *BlockLayoutData::get(p_block), false);
     tl->beginLayout();
     tl->endLayout();
     const_cast<QTextBlock &>(p_block).setLineCount(0);
@@ -1079,7 +1686,17 @@ qreal TextDocumentLayout::layoutLines(const QTextBlock &p_block, QTextLayout *p_
 
   const int blockPos = p_block.position();
 
-  p_tl->beginLayout();
+  auto info = BlockLayoutData::get(p_block);
+  QVector<ConcealedRange> concealed;
+  if (p_tl->preeditAreaText().isEmpty()) {
+    for (const auto &range : info->m_concealedRanges) {
+      if (concealedAtCursor(p_block, range, m_concealCursor)) {
+        concealed.append(range);
+      }
+    }
+  }
+  ConcealGlyphAdapter concealment(p_tl, std::move(concealed), m_concealFormat, paintDevice(),
+                                  *info);
 
   int imgIdx = 0;
   while (true) {
@@ -1167,7 +1784,10 @@ qreal TextDocumentLayout::layoutLines(const QTextBlock &p_block, QTextLayout *p_
     p_height += line.height();
   }
 
+  concealment.restoreAttributes();
   p_tl->endLayout();
+  info->m_concealMarkers = concealment.paintData(p_tl);
+  m_concealGeometryChanged |= !info->m_concealMarkers.isEmpty();
 
   return p_height;
 }
@@ -1209,7 +1829,9 @@ void TextDocumentLayout::finishBlockLayout(const QTextBlock &p_block,
   QVector<WidgetPaintData> blockWidgets;
   auto info = BlockLayoutData::get(p_block);
   Q_ASSERT(info->isNull());
+  auto concealMarkers = std::move(info->m_concealMarkers);
   info->reset();
+  info->m_concealMarkers = std::move(concealMarkers);
   info->m_rect = blockRectFromTextLayout(p_block, &ipd, &blockWidgets);
   Q_ASSERT(!info->m_rect.isNull());
 
