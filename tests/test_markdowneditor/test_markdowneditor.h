@@ -11,6 +11,7 @@ class TestMarkdownEditor : public QObject {
 private slots:
   // Source-preserving Markdown concealment through the real editor and Vi input.
   void testConcealMarkdownConfig();
+  void testConcealHoverToolTip();
   void testConcealCaretAndViMotion();
 
   // MarkdownUtils helpers.

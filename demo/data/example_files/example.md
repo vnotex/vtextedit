@@ -4,7 +4,8 @@
 ## Inline destination concealment
 
 Destinations longer than 20 graphemes keep three at each end around three middle dots.
-Move the caret into either visible end or click the dots to reveal the full source.
+Hover over the dots or either visible end to see the full source in a tooltip.
+Move the caret into either visible end or click the dots to reveal the full source inline.
 Leave the destination to conceal it again; copying always uses the original text.
 
 [Alphabet](abcdefghijklmnopqrstuvwxyz) followed by ordinary text.

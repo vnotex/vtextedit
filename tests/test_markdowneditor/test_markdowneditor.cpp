@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QGuiApplication>
+#include <QHelpEvent>
 #include <QImage>
 #include <QInputMethodEvent>
 #include <QJsonDocument>
@@ -23,6 +24,7 @@
 #include <QTextEdit>
 #include <QTextLayout>
 #include <QTimer>
+#include <QToolTip>
 
 #include <QtMath>
 #include <cmark.h>
@@ -325,6 +327,60 @@ static void concealConfigSaveImage(const QImage &p_image, const QString &p_name)
   QVERIFY(p_image.save(QDir(path).filePath(p_name), "PNG"));
 }
 } // namespace
+
+void TestMarkdownEditor::testConcealHoverToolTip() {
+  // HTML src can contain literal markup and repeated spaces: neither may be interpreted
+  // or collapsed by the tooltip's rich-text renderer.
+  const auto destination = QStringLiteral("abc  defghijklmnopqrstuvwxyz<b>&amp;");
+  const auto source = QStringLiteral("prefix <img src=\"%1\" alt=\"offline\">\n\ncursor elsewhere")
+                          .arg(destination);
+  Fixture f(source, -1, -1, makeConcealConfig());
+  f.editor()->setSpellCheckEnabled(false);
+  f.editor()->resize(900, 480);
+  f.editor()->show();
+  QVERIFY(QTest::qWaitForWindowExposed(f.editor()));
+  waitForConcealPublication(f);
+
+  struct ToolTipCleanup {
+    ~ToolTipCleanup() { QToolTip::hideText(); }
+  } cleanup;
+
+  auto cursor = f.edit()->textCursor();
+  cursor.movePosition(QTextCursor::PreviousWord, QTextCursor::KeepAnchor);
+  f.edit()->setTextCursor(cursor);
+  const int start = source.indexOf(destination);
+  const int end = start + destination.size();
+  const int revision = f.editor()->document()->revision();
+  const auto compactRect = concealConfigViewportRange(f, start, end);
+  auto viewport = f.edit()->viewport();
+  const auto hover = [viewport](const QPoint &p_point) {
+    QHelpEvent event(QEvent::ToolTip, p_point, viewport->mapToGlobal(p_point));
+    QApplication::sendEvent(viewport, &event);
+  };
+  for (const auto &point : {concealConfigViewportRange(f, start, start + 3).center(),
+                            concealConfigViewportRange(f, start + 3, end - 3).center(),
+                            concealConfigViewportRange(f, end - 3, end).center()}) {
+    QToolTip::hideText();
+    QTRY_VERIFY(!QToolTip::isVisible());
+    hover(point.toPoint());
+    QTRY_VERIFY(QToolTip::isVisible());
+    QTextDocument tooltip;
+    tooltip.setHtml(QToolTip::text());
+    QCOMPARE(tooltip.toPlainText(), destination);
+    QCOMPARE(f.text(), source);
+    QCOMPARE(f.editor()->document()->revision(), revision);
+    QCOMPARE(f.edit()->textCursor().position(), cursor.position());
+    QCOMPARE(f.edit()->textCursor().anchor(), cursor.anchor());
+    QCOMPARE(concealConfigViewportRange(f, start, end), compactRect);
+  }
+
+  hover(QPoint(viewport->width() - 5, qRound(compactRect.center().y())));
+  QTRY_VERIFY(!QToolTip::isVisible());
+
+  setConcealCursor(f, start + 5);
+  hover(concealConfigViewportRange(f, start + 5, start + 6).center().toPoint());
+  QTRY_VERIFY(!QToolTip::isVisible());
+}
 
 void TestMarkdownEditor::testConcealMarkdownConfig() {
   const auto compact = QStringLiteral("abc\u00b7\u00b7\u00b7xyz");
