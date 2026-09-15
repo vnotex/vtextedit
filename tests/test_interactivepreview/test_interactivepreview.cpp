@@ -5280,6 +5280,9 @@ void TestInteractivePreview::testNoDocumentSizeIsPublishedForTheOpenSource() {
   QVERIFY2(contentChanges > 0,
            "the document emitted no non-empty change - the probe proves nothing");
   QVERIFY2(openContentChanges == 0, "a contentsChange observer saw the rewritten source expanded");
+  // layoutUpdates/contentChanges above are the positive probes: the edit was
+  // observed. Equal geometry may emit no size signal; any emitted size must
+  // still describe the folded document.
   QVERIFY2(openPublications == 0,
            "a document size was published while the rewritten source was expanded");
 

@@ -224,18 +224,26 @@ static qreal concealConfigRangeWidth(Fixture &p_fixture, int p_start, int p_end)
 
 static qreal concealConfigExpectedWidth(Fixture &p_fixture, int p_start, int p_end,
                                         const QString &p_display) {
-  auto doc = p_fixture.editor()->document();
-  const auto block = doc->findBlock(p_start);
-  const int start = p_start - block.position();
-  const int end = p_end - block.position();
-  // Surrounding script context affects font fallback, particularly emoji and neutral dots.
-  const auto text = block.text().left(start) + p_display + block.text().mid(end);
-  QTextLayout expected(text, doc->defaultFont(), doc->documentLayout()->paintDevice());
-  expected.beginLayout();
-  auto line = expected.createLine();
-  line.setLineWidth(10000);
-  expected.endLayout();
-  return line.cursorToX(start + p_display.size()) - line.cursorToX(start);
+  auto config = makeConcealConfig();
+  *config->m_textEditorConfig = p_fixture.editor()->getConfig();
+  config->m_textEditorConfig->m_theme =
+      QSharedPointer<Theme>::create(*config->m_textEditorConfig->m_theme);
+  config->m_textEditorConfig->m_inputMode = InputMode::NormalMode;
+  config->m_concealElements = {};
+  const auto source = p_fixture.text();
+  const auto displayed = source.left(p_start) + p_display + source.mid(p_end);
+  qreal expected;
+  {
+    // Keep Markdown syntax fonts, font fallback and source context identical;
+    // only the source spelling and automatic concealment differ.
+    Fixture reference(displayed, -1, -1, config);
+    renderConcealEditor(reference);
+    waitForConcealPublication(reference);
+    expected = concealConfigRangeWidth(reference, p_start, p_start + p_display.size());
+  }
+  p_fixture.editor()->activateWindow();
+  p_fixture.edit()->setFocus();
+  return expected;
 }
 
 static void concealConfigVerifyWidth(Fixture &p_fixture, int p_start, int p_end,
