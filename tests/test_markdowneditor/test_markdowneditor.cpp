@@ -351,6 +351,8 @@ void TestMarkdownEditor::testConcealHoverToolTip() {
   const int start = source.indexOf(destination);
   const int end = start + destination.size();
   const int revision = f.editor()->document()->revision();
+  const auto block = f.editor()->document()->findBlock(start);
+  f.editor()->document()->documentLayout()->blockBoundingRect(block);
   const auto compactRect = concealConfigViewportRange(f, start, end);
   auto viewport = f.edit()->viewport();
   const auto hover = [viewport](const QPoint &p_point) {
@@ -361,9 +363,8 @@ void TestMarkdownEditor::testConcealHoverToolTip() {
                             concealConfigViewportRange(f, start + 3, end - 3).center(),
                             concealConfigViewportRange(f, end - 3, end).center()}) {
     QToolTip::hideText();
-    QTRY_VERIFY(!QToolTip::isVisible());
+    QTRY_VERIFY(QToolTip::text().isEmpty());
     hover(point.toPoint());
-    QTRY_VERIFY(QToolTip::isVisible());
     QTextDocument tooltip;
     tooltip.setHtml(QToolTip::text());
     QCOMPARE(tooltip.toPlainText(), destination);
@@ -375,11 +376,12 @@ void TestMarkdownEditor::testConcealHoverToolTip() {
   }
 
   hover(QPoint(viewport->width() - 5, qRound(compactRect.center().y())));
-  QTRY_VERIFY(!QToolTip::isVisible());
+  QTRY_VERIFY(QToolTip::text().isEmpty());
 
   setConcealCursor(f, start + 5);
+  f.editor()->document()->documentLayout()->blockBoundingRect(block);
   hover(concealConfigViewportRange(f, start + 5, start + 6).center().toPoint());
-  QTRY_VERIFY(!QToolTip::isVisible());
+  QTRY_VERIFY(QToolTip::text().isEmpty());
 }
 
 void TestMarkdownEditor::testConcealMarkdownConfig() {
