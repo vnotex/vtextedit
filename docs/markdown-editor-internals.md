@@ -298,6 +298,12 @@ graphemes at each end with three U+00B7 middle dots between them. The moving car
 the full submitted `[start, end)` range, including either retained end; a caret at `end` is
 outside. Selection alone does not reveal it. An IME preedit reveals its whole block temporarily.
 
+Hovering the dots or either retained end shows the complete raw destination in a tooltip,
+without changing the caret, selection or layout. The viewport tooltip handler uses exact
+layout hit testing and requires a current painted conceal marker; revealed or invalidated
+ranges and nearby whitespace do not qualify. Tooltip contents are escaped as literal text,
+with source whitespace preserved.
+
 The internal layout exposes `conceal(block, start, end)`, atomic `setConcealedRanges()`,
 `setConcealFormat()` and `setConcealCursorPosition()`. Invalid batches leave the old snapshot
 unchanged; duplicates are idempotent. Submissions survive ordinary cache resets, but a changed

@@ -14,6 +14,8 @@
   three graphemes at each end around three middle dots, without changing source. The default
   threshold is 20 graphemes; `m_concealElements` selects eligible URL kinds and an empty mask
   disables the feature. `Theme::ConcealedText` controls compact foreground/background.
+- Hovering a concealed destination shows its full source text in a tooltip without moving
+  the caret or expanding the line.
 - Entering any part of a concealed range reveals it. Source cursor positions, counted Vi
   motions, selection, copy/cut, search and undo remain unchanged. IME preedit reveals its block.
 - Reapplying unchanged line spacing no longer adds redundant formatting undo commands.

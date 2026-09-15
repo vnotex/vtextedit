@@ -31,13 +31,16 @@
 #include <QApplication>
 #include <QDebug>
 #include <QFontMetricsF>
+#include <QHelpEvent>
 #include <QScopedValueRollback>
 #include <QScrollBar>
 #include <QStringList>
 #include <QTextBoundaryFinder>
+#include <QTextDocument>
 #include <QTextLayout>
 #include <QThread>
 #include <QTimer>
+#include <QToolTip>
 
 #include <algorithm>
 #include <utility>
@@ -1919,8 +1922,7 @@ VMarkdownEditor::VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_c
     }
   });
 
-  // Unnecessary for now.
-  // m_textEdit->installEventFilter(this);
+  m_textEdit->viewport()->installEventFilter(this);
 
   // Hook keys.
   connect(m_textEdit, &VTextEdit::preKeyReturn, this, &VMarkdownEditor::preKeyReturn);
@@ -2518,6 +2520,54 @@ void VMarkdownEditor::updateInplacePreviewSources() {
 }
 
 bool VMarkdownEditor::eventFilter(QObject *p_obj, QEvent *p_event) {
+  if (p_obj == m_textEdit->viewport() && p_event->type() == QEvent::ToolTip) {
+    const auto helpEvent = static_cast<QHelpEvent *>(p_event);
+    auto viewport = m_textEdit->viewport();
+    const auto horizontalBar = m_textEdit->horizontalScrollBar();
+    const QPoint scroll(m_textEdit->isRightToLeft()
+                            ? horizontalBar->maximum() - horizontalBar->value()
+                            : horizontalBar->value(),
+                        m_textEdit->verticalScrollBar()->value());
+    const int position = documentLayout()->hitTest(helpEvent->pos() + scroll, Qt::ExactHit);
+    const auto block = position < 0 ? QTextBlock() : document()->findBlock(position);
+    if (block.isValid() && block.isVisible()) {
+      const auto data = BlockLayoutData::get(block);
+      if (data->m_concealRevision == block.revision()) {
+        const int column = position - block.position();
+        for (const auto &range : data->m_concealedRanges) {
+          if (column < range.m_start || column >= range.m_end) {
+            continue;
+          }
+          // A submitted range may be revealed by the caret or IME, or rejected by shaping.
+          const auto marker =
+              std::find_if(data->m_concealMarkers.cbegin(), data->m_concealMarkers.cend(),
+                           [&range](const ConcealPaintData &p_marker) {
+                             return p_marker.m_hiddenStart == range.m_hiddenStart &&
+                                    p_marker.m_hiddenEnd == range.m_hiddenEnd;
+                           });
+          if (marker == data->m_concealMarkers.cend()) {
+            break;
+          }
+          const auto line = block.layout()->lineForTextPosition(column);
+          const qreal start = line.cursorToX(qMax(range.m_start, line.textStart()));
+          const qreal end = line.cursorToX(qMin(range.m_end, line.textStart() + line.textLength()));
+          QRectF rect(qMin(start, end), line.y(), qAbs(end - start), line.height());
+          if (line.lineNumber() ==
+              block.layout()->lineForTextPosition(marker->m_hiddenStart).lineNumber()) {
+            rect = rect.united(marker->m_rect);
+          }
+          rect.translate(-scroll.x(), data->top() - scroll.y());
+          const auto text = block.text().mid(range.m_start, range.m_end - range.m_start);
+          QToolTip::showText(helpEvent->globalPos(), Qt::convertFromPlainText(text), viewport,
+                             rect.toAlignedRect());
+          return true;
+        }
+      }
+    }
+    QToolTip::hideText();
+    p_event->ignore();
+    return true;
+  }
   if (p_obj == m_textEdit) {
     switch (p_event->type()) {
     case QEvent::KeyPress:
