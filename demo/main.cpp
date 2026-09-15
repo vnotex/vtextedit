@@ -54,6 +54,10 @@ static VMarkdownEditor *setupMarkdownEditor(QWidget *p_parent) {
   markdownEditorConfig->m_inplacePreviewSources |= MarkdownEditorConfig::Table;
   markdownEditorConfig->m_autoFormatTableSourceEnabled = true;
   markdownEditorConfig->m_autoNumberOrderedListsEnabled = true;
+  markdownEditorConfig->m_concealElements = MarkdownConcealElement::ImageUrl |
+                                            MarkdownConcealElement::LinkUrl |
+                                            MarkdownConcealElement::ReferenceUrl;
+  markdownEditorConfig->m_concealLengthThreshold = 20;
   auto editorParas = QSharedPointer<TextEditorParameters>::create();
   editorParas->m_spellCheckEnabled = false;
 

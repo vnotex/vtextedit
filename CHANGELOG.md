@@ -17,6 +17,8 @@
 - Entering any part of a concealed range reveals it. Source cursor positions, counted Vi
   motions, selection, copy/cut, search and undo remain unchanged. IME preedit reveals its block.
 - Reapplying unchanged line spacing no longer adds redundant formatting undo commands.
+- The demo explicitly enables destination concealment and includes threshold, link, autolink,
+  reference and offline image examples, including a base64-encoded PNG image reference.
 
 ## 2.0.0 (unreleased)
 
