@@ -78,3 +78,9 @@ target_link_libraries(test_tablepreview PRIVATE
     KateVi
 )
 add_test(NAME test_tablepreview COMMAND test_tablepreview)
+if(WIN32)
+    # Verify MIME payloads without contention from the native desktop clipboard.
+    set_tests_properties(test_tablepreview PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_FONTDIR=$ENV{WINDIR}/Fonts"
+    )
+endif()

@@ -58,16 +58,38 @@ QSharedPointer<MarkdownEditorConfig> makeConfig() {
   return config;
 }
 
-// Drive one parse generation to completion and let the host's zero timers
-// drain. Same shape as test_interactivepreview's helper of the same name; the
-// wait is what makes a scenario's measurement window closed.
+// The host is an internal QObject child, reachable only by its object name.
+QObject *previewHost(VMarkdownEditor &p_editor) {
+  return p_editor.findChild<QObject *>(QStringLiteral("vte_interactive_preview_host"));
+}
+
+qint64 counter(QObject *p_host, const char *p_name) {
+  return p_host ? p_host->property(p_name).toLongLong() : -1;
+}
+
+// highlightCompleted() does not close the host's measurement window: folding,
+// realization and publication can each owe another zero-timer delivery. A long
+// callback can consume the whole wait while leaving that follow-up queued.
+// Require a wait with no host drain, rather than merely spending 50 ms once.
+void settlePreviewWork(VMarkdownEditor &p_editor) {
+  auto host = previewHost(p_editor);
+  QVERIFY(host);
+  const auto quiescent = [host]() {
+    const qint64 drains = counter(host, "vte_preview_owed_work_drains");
+    QTest::qWait(50);
+    QCoreApplication::processEvents();
+    return counter(host, "vte_preview_owed_work_drains") == drains;
+  };
+  QTRY_VERIFY_WITH_TIMEOUT(quiescent(), 60000);
+}
+
+// Drive one parse generation to completion, then drain its preview work.
 void settle(VMarkdownEditor &p_editor) {
   auto highlighter = p_editor.getHighlighter();
   QSignalSpy completed(highlighter, &MarkdownHighlighter::highlightCompleted);
   highlighter->updateHighlight();
   QTRY_VERIFY_WITH_TIMEOUT(completed.count() > 0, 60000);
-  QTest::qWait(50);
-  QCoreApplication::processEvents();
+  settlePreviewWork(p_editor);
 }
 
 // Wait for the parse an applied document edit owes. The parse debounce is
@@ -76,13 +98,7 @@ void settleAfterEdit(VMarkdownEditor &p_editor) {
   auto highlighter = p_editor.getHighlighter();
   QSignalSpy completed(highlighter, &MarkdownHighlighter::highlightCompleted);
   QTRY_VERIFY_WITH_TIMEOUT(completed.count() > 0, 60000);
-  QTest::qWait(50);
-  QCoreApplication::processEvents();
-}
-
-// The host is an internal QObject child, reachable only by its object name.
-QObject *previewHost(VMarkdownEditor &p_editor) {
-  return p_editor.findChild<QObject *>(QStringLiteral("vte_interactive_preview_host"));
+  settlePreviewWork(p_editor);
 }
 
 // Zero every performance counter. Callers settle first: anything already armed
@@ -91,10 +107,6 @@ void resetCounters(QObject *p_host) {
   if (p_host) {
     p_host->setProperty("vte_preview_counters_reset", true);
   }
-}
-
-qint64 counter(QObject *p_host, const char *p_name) {
-  return p_host ? p_host->property(p_name).toLongLong() : -1;
 }
 
 int previewWidgetCount(VMarkdownEditor &p_editor) {
@@ -363,6 +375,8 @@ void TestPreviewBenchmark::benchmarkUnchangedFullParse() {
 
   auto host = previewHost(editor);
   QVERIFY(host);
+  QVERIFY(previewWidgetCount(editor) > 0);
+  QVERIFY(counter(host, "vte_preview_snippet_parses") > 0);
   const QString before = editor.document()->toPlainText();
   resetCounters(host);
 
@@ -385,6 +399,9 @@ void TestPreviewBenchmark::benchmarkUnchangedFullParse() {
   const qint64 elapsed = timer.elapsed();
 
   QCOMPARE(editor.document()->toPlainText(), before);
+  QCOMPARE(counter(host, "vte_preview_widgets_realized"), qint64(0));
+  QCOMPARE(counter(host, "vte_preview_widgets_destroyed"), qint64(0));
+  QCOMPARE(counter(host, "vte_preview_table_cells_built"), qint64(0));
 
   // Unchanged live texts retain cached units; unrealized tables never parse
   // snippets at all. Source parsing and cell parsing are independent.

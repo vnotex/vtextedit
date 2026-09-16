@@ -5101,6 +5101,19 @@ QRect concealEditColorBounds(const QImage &p_image, const QColor &p_color) {
   return bounds;
 }
 
+QRect concealEditInkBounds(const QImage &p_image) {
+  QRect bounds;
+  for (int y = 0; y < p_image.height(); ++y) {
+    for (int x = 0; x < p_image.width(); ++x) {
+      // The fixture canvas is white; antialiased text need not contain solid ink pixels.
+      if (p_image.pixelColor(x, y).rgb() != qRgb(255, 255, 255)) {
+        bounds = bounds.united(QRect(x, y, 1, 1));
+      }
+    }
+  }
+  return bounds;
+}
+
 void concealEditSaveImage(const QImage &p_image, const QString &p_name) {
   const QString directory = qEnvironmentVariable("VTE_CONCEAL_TEST_IMAGE_DIR");
   if (!directory.isEmpty()) {
@@ -5313,14 +5326,14 @@ void TestMarkdownEditor::testConcealEditingAndGeometry() {
       QVERIFY(fixture.edit()->viewport()->rect().contains(point));
       QCOMPARE(reference.edit()->cursorForPosition(point).position(), p_referencePosition);
       QCOMPARE(fixture.edit()->cursorForPosition(point).position(), p_sourcePosition);
-      const auto left = concealEditCursorRect(reference, p_referencePosition);
+      // Start after the caret's column so blinking cannot masquerade as glyph ink.
+      const auto left = concealEditCursorRect(reference, p_referencePosition + 1);
       const auto right = concealEditCursorRect(reference, p_referencePosition + 3);
       const QRect glyphBand(left.left(), left.top(), right.left() - left.left(), left.height());
       const auto referenceImage = concealEditCrop(renderConcealEditor(reference), glyphBand);
       const auto actualImage = concealEditCrop(renderConcealEditor(fixture), glyphBand);
-      const auto expectedInk =
-          concealEditColorBounds(referenceImage, QColor(QStringLiteral("#252525")));
-      const auto actualInk = concealEditColorBounds(actualImage, QColor(QStringLiteral("#252525")));
+      const auto expectedInk = concealEditInkBounds(referenceImage);
+      const auto actualInk = concealEditInkBounds(actualImage);
       QVERIFY(!expectedInk.isEmpty());
       QVERIFY(!actualInk.isEmpty());
       concealEditCompareRect(actualInk, expectedInk);

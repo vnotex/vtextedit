@@ -36,3 +36,9 @@ if(WIN32)
     )
 endif()
 add_test(NAME test_interactivepreview COMMAND test_interactivepreview)
+if(WIN32)
+    # Verify MIME payloads without contention from the native desktop clipboard.
+    set_tests_properties(test_interactivepreview PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_FONTDIR=$ENV{WINDIR}/Fonts"
+    )
+endif()

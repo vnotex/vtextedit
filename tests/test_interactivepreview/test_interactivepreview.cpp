@@ -3913,7 +3913,24 @@ void TestInteractivePreview::testTableSheetHeightMatchesItsRows() {
 
   // Given room, the same table stops wrapping and the band shrinks with it.
   const int tallBand = widget->height();
-  editor.resize(1100, 600);
+  // Offscreen platforms may use a wide fallback font. Give every column its
+  // measured unwrapped text width rather than assuming 1100 pixels always fits.
+  const auto table = sheetTable(sheet);
+  const auto widths = columnWidths(sheet);
+  const auto metrics = sheet->fontMetrics();
+  int naturalWidth = 0;
+  qreal currentCellWidth = 0;
+  for (int column = 0; column < table->columns(); ++column) {
+    int longest = 0;
+    for (int row = 0; row < table->rows(); ++row) {
+      const auto block = table->cellAt(row, column).firstCursorPosition().block();
+      longest = qMax(longest, metrics.horizontalAdvance(block.text()));
+    }
+    naturalWidth += longest + 1;
+    currentCellWidth += widths.at(column);
+  }
+  const int chromeWidth = editor.width() - qFloor(currentCellWidth);
+  editor.resize(qMax(1100, naturalWidth + chromeWidth), 600);
   settle(editor);
   QTest::qWait(50);
   QCoreApplication::processEvents();
