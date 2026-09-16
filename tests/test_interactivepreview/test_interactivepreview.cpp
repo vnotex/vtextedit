@@ -1952,6 +1952,46 @@ void TestInteractivePreview::testImagePreviewPublications() {
   QCOMPARE(editor.document()->toPlainText(), source);
 }
 
+void TestInteractivePreview::testInlineDisplayMathPlacement() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  auto factory = new RecordingPreviewFactory({PreviewElementType::Math});
+  factory->m_hint = QSize(32, 24);
+  QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
+  const QString source = QStringLiteral("$$x$$ and $y$ after\nnext\n\n$$\nz\n$$\nlast\n");
+  setTextAndSettle(editor, source);
+  auto widgets = factory->m_widgets;
+  QCOMPARE(widgets.size(), 3);
+  std::sort(widgets.begin(), widgets.end(),
+            [](const RecordingPreviewWidget *p_left, const RecordingPreviewWidget *p_right) {
+              return p_left->m_preview->startPos() < p_right->m_preview->startPos();
+            });
+  const QVector<QString> formulas{QStringLiteral("$$x$$"), QStringLiteral("$y$"),
+                                  QStringLiteral("$$\nz\n$$")};
+  const QVector<QString> expressions{QStringLiteral("x"), QStringLiteral("y"), QStringLiteral("z")};
+  for (int i = 0; i < widgets.size(); ++i) {
+    const auto widget = widgets.at(i);
+    const auto math = widget->m_preview.staticCast<const MathPreview>();
+    QCOMPARE(math->sourceMarkdown(), formulas.at(i));
+    QCOMPARE(math->startPos(), source.indexOf(formulas.at(i)));
+    QCOMPARE(math->endPos(), math->startPos() + formulas.at(i).size());
+    QCOMPARE(math->expression().trimmed(), expressions.at(i));
+    QCOMPARE(math->isDisplayMath(), i != 1);
+    QCOMPARE(math->placement(),
+             i == 2 ? PreviewPlacement::BlockAfterSource : PreviewPlacement::InlineAboveLine);
+    QVERIFY(widget->isVisible());
+    QTextCursor cursor(editor.document());
+    cursor.setPosition(i == 2 ? math->endPos() - 1 : math->startPos());
+    // Exercise the host's actual placement, not just the snapshot enum: an
+    // inline display belongs above its text, not in a band below the paragraph.
+    if (i == 2) {
+      QTRY_VERIFY(widget->geometry().top() >= editor.getTextEdit()->cursorRect(cursor).bottom());
+    } else {
+      QTRY_VERIFY(widget->geometry().bottom() <= editor.getTextEdit()->cursorRect(cursor).top());
+    }
+  }
+  QCOMPARE(editor.document()->toPlainText(), source);
+}
+
 void TestInteractivePreview::testMathPreviewPublications() {
   VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
   const QString source = QStringLiteral("Before $a$ after.\nSecond $b$ end.\n");
@@ -7394,6 +7434,122 @@ void TestInteractivePreview::testHtmlTableSourceIsFoldedToItsOwnExtent() {
   QVERIFY2(visible(7), "the blank line after the table must stay visible");
   QVERIFY2(visible(8), "text after the table must stay visible");
   QVERIFY2(visible(0), "the heading must stay visible");
+}
+
+void TestInteractivePreview::testTableInlineDisplayMathEditRoundTrip() {
+  auto config = makeConfig();
+  config->m_autoFormatTableSourceEnabled = false;
+  VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+  QVector<md::MathBlock> formulas;
+  QObject observer;
+  connect(editor.getHighlighter(), &MarkdownHighlighter::mathBlocksUpdated, &observer,
+          [&](const QVector<md::MathBlock> &p_formulas) { formulas = p_formulas; });
+  const QString firstCell = QString::fromUtf8("\xF0\x9F\x9A\x80 $$x$$ then $$x$$");
+  const QString secondCell = QStringLiteral("$$x$$");
+  const QString source =
+      QStringLiteral("| head | other |\n| --- | --- |\n| %1 | %2 |\n").arg(firstCell, secondCell);
+  setTextAndSettle(editor, source);
+  auto sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+
+  // Stand in only for the application renderer. Locations come from the real
+  // highlighter generation, never an indexOf-based scan of the table source.
+  const QVector<QRgb> colors{qRgb(200, 40, 20), qRgb(30, 180, 40), qRgb(30, 50, 210)};
+  auto renderFormulas = [&]() {
+    QVector<QSharedPointer<PreviewItem>> items;
+    for (int i = 0; i < formulas.size(); ++i) {
+      const auto &formula = formulas.at(i);
+      const auto block = editor.document()->findBlockByNumber(formula.m_blockNumber);
+      auto item = mathPreviewItem(block, formula.m_text,
+                                  QStringLiteral("display-cell-%1-%2").arg(i).arg(formula.m_text));
+      item->m_startPos = block.position() + formula.m_index;
+      item->m_endPos = item->m_startPos + formula.m_length;
+      item->m_isBlockwise = formula.m_previewedAsBlock;
+      item->m_image.fill(colors.at(i));
+      items.append(item);
+    }
+    editor.getPreviewMgr()->updateMathBlocks(items);
+    return items;
+  };
+  QCOMPARE(formulas.size(), 3);
+  const auto originalItems = renderFormulas();
+  QTRY_COMPARE(sheetInlineObjectCount(sheet), 3);
+  auto first = sheetInlineCell(sheet, 1, 0);
+  auto second = sheetInlineCell(sheet, 1, 1);
+  QCOMPARE(first.m_source, firstCell);
+  QCOMPARE(second.m_source, secondCell);
+  QCOMPARE(first.m_objects.size(), 2);
+  QCOMPARE(second.m_objects.size(), 1);
+  QCOMPARE(first.m_objects.at(0).m_sourceOffset, firstCell.indexOf(QStringLiteral("$$x$$")) + 5);
+  QCOMPARE(first.m_objects.at(1).m_sourceOffset, firstCell.size());
+  QCOMPARE(second.m_objects.first().m_sourceOffset, secondCell.size());
+  QCOMPARE(first.m_objects.at(0).m_image.toImage().pixel(0, 0), colors.at(0));
+  QCOMPARE(first.m_objects.at(1).m_image.toImage().pixel(0, 0), colors.at(1));
+  QCOMPARE(second.m_objects.first().m_image.toImage().pixel(0, 0), colors.at(2));
+  selectCellContents(sheet, 1, 0);
+  sheet->copy();
+  QCOMPARE(QApplication::clipboard()->text(), firstCell);
+  QCOMPARE(editor.document()->toPlainText(), source);
+
+  // Change only the delimiter mode of the first occurrence. Its decoration
+  // must retire while the identical formulas later in this row stay bound.
+  sheet->setFocus();
+  auto cursor = sheetTable(sheet)->cellAt(1, 0).firstCursorPosition();
+  const int offset = firstCell.indexOf(QStringLiteral("$$x$$"));
+  cursor.setPosition(cursor.position() + offset);
+  cursor.setPosition(cursor.position() + 5, QTextCursor::KeepAnchor);
+  cursor.insertText(QStringLiteral("$x$"));
+  QString changedCell = firstCell;
+  changedCell.replace(offset, 5, QStringLiteral("$x$"));
+  QCOMPARE(sheetInlineCell(sheet, 1, 0).m_source, changedCell);
+  QCOMPARE(sheetInlineCell(sheet, 1, 0).m_objects.size(), 1);
+  QCOMPARE(sheetInlineCell(sheet, 1, 0).m_objects.first().m_sourceOffset, changedCell.size());
+  QCOMPARE(sheetInlineCell(sheet, 1, 1).m_objects.size(), 1);
+  editor.getPreviewMgr()->updateMathBlocks(originalItems);
+  QTest::qWait(60);
+  QCOMPARE(sheetInlineCell(sheet, 1, 0).m_objects.size(), 1);
+  QCOMPARE(sheetInlineCell(sheet, 1, 0).m_objects.first().m_image.toImage().pixel(0, 0),
+           colors.at(1));
+  QCOMPARE(editor.document()->toPlainText(), source);
+
+  flushSheet(sheet);
+  settle(editor);
+  sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  const QString committed = editor.document()->toPlainText();
+  QVERIFY(committed.contains(changedCell));
+  QVERIFY(!committed.contains(QChar::ObjectReplacementCharacter));
+  QCOMPARE(formulas.size(), 3);
+  QCOMPARE(formulas.first().m_text, QStringLiteral("$x$"));
+  renderFormulas();
+  QTRY_COMPARE(sheetInlineObjectCount(sheet), 3);
+  first = sheetInlineCell(sheet, 1, 0);
+  QCOMPARE(first.m_source, changedCell);
+  QCOMPARE(first.m_objects.size(), 2);
+  QCOMPARE(first.m_objects.first().m_sourceOffset, offset + 3);
+  QCOMPARE(first.m_objects.last().m_sourceOffset, changedCell.size());
+
+  editor.document()->undo();
+  settle(editor);
+  QCOMPARE(editor.document()->toPlainText(), source);
+  sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  QCOMPARE(formulas.size(), 3);
+  QCOMPARE(formulas.first().m_text, QStringLiteral("$$x$$"));
+  renderFormulas();
+  QTRY_COMPARE(sheetInlineObjectCount(sheet), 3);
+  first = sheetInlineCell(sheet, 1, 0);
+  second = sheetInlineCell(sheet, 1, 1);
+  QCOMPARE(first.m_source, firstCell);
+  QCOMPARE(second.m_source, secondCell);
+  QCOMPARE(first.m_objects.size(), 2);
+  QCOMPARE(first.m_objects.first().m_sourceOffset, offset + 5);
+  QCOMPARE(first.m_objects.last().m_sourceOffset, firstCell.size());
+  QCOMPARE(second.m_objects.size(), 1);
+  QCOMPARE(second.m_objects.first().m_sourceOffset, secondCell.size());
+  selectCellContents(sheet, 1, 0);
+  sheet->copy();
+  QCOMPARE(QApplication::clipboard()->text(), firstCell);
 }
 
 void TestInteractivePreview::testTableInlinePreviewObjectsAndGeometry() {

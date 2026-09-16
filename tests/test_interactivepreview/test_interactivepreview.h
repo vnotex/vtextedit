@@ -224,10 +224,12 @@ private slots:
   void testNoWidgetForImageCodeMathByDefault();
   void testImagePreviewPublications();
   void testMathPreviewPublications();
+  void testInlineDisplayMathPlacement();
   void testPreviewPublicationClearing_data();
   void testPreviewPublicationClearing();
   void testObsoletePreviewPublication();
   void testTableInlinePreviewObjectsAndGeometry();
+  void testTableInlineDisplayMathEditRoundTrip();
   void testTableInlinePreviewSourceRoundTrip();
   void testTableInlinePreviewPresentationHasNoFeedback();
   void testTableInlinePreviewKeepsEmptyUndoHistory();

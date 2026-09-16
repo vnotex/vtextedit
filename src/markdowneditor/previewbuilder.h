@@ -95,6 +95,7 @@ public:
 
   static QSharedPointer<const Preview> createMath(quint64 p_revision, int p_startPos, int p_endPos,
                                                   const QString &p_source,
+                                                  PreviewPlacement p_placement,
                                                   const QString &p_expression, bool p_displayMath);
 
   // The MARKDOWN-only convenience overload: it derives the 1x1 logical grid

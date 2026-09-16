@@ -215,6 +215,8 @@ MarkdownHighlighterResult::buildPreviews(const QTextDocument *p_doc, int p_typeM
         continue;
       }
       previews.append(PreviewBuilder::createMath(revision, math.m_startPos, math.m_endPos, source,
+                                                 math.m_block ? PreviewPlacement::BlockAfterSource
+                                                              : PreviewPlacement::InlineAboveLine,
                                                  math.m_expression, math.m_display));
     }
   }

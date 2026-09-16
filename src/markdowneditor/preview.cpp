@@ -401,16 +401,15 @@ QSharedPointer<const Preview> PreviewBuilder::createCode(quint64 p_revision, int
 
 QSharedPointer<const Preview> PreviewBuilder::createMath(quint64 p_revision, int p_startPos,
                                                          int p_endPos, const QString &p_source,
+                                                         PreviewPlacement p_placement,
                                                          const QString &p_expression,
                                                          bool p_displayMath) {
   auto mathData = new MathPreviewPrivate();
   mathData->m_expression = p_expression;
   mathData->m_displayMath = p_displayMath;
 
-  auto d = newCommon(PreviewElementType::Math,
-                     p_displayMath ? PreviewPlacement::BlockAfterSource
-                                   : PreviewPlacement::InlineAboveLine,
-                     p_revision, p_startPos, p_endPos, p_source);
+  auto d =
+      newCommon(PreviewElementType::Math, p_placement, p_revision, p_startPos, p_endPos, p_source);
   return QSharedPointer<const MathPreview>(new MathPreview(d, mathData));
 }
 

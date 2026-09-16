@@ -1087,7 +1087,15 @@ void TestMarkdownParser::testDisplayFormula() {
 
   QCOMPARE(result.displayFormulaRegions.size(), 1);
   QCOMPARE(result.displayFormulaRegions[0].m_startPos, 0);
-  QVERIFY(result.displayFormulaRegions[0].m_endPos > 0);
+  QCOMPARE(result.displayFormulaRegions[0].m_endPos, input.size() - 1);
+  QCOMPARE(result.mathElements.size(), 1);
+  const auto &math = result.mathElements.first();
+  QVERIFY(math.m_display);
+  QVERIFY(math.m_block);
+  QCOMPARE(math.m_startPos, 0);
+  QCOMPARE(math.m_endPos, input.size() - 1);
+  QCOMPARE(math.m_expression.trimmed(), QStringLiteral("E = mc^2"));
+  QVERIFY(result.inlineEquationRegions.isEmpty());
 }
 
 void TestMarkdownParser::testTables() {
@@ -1528,6 +1536,81 @@ void TestMarkdownParser::testInlineEquation() {
   // cmark adapter adjusts FORMULA_INLINE to re-include $ delimiters.
   QCOMPARE(result.inlineEquationRegions[0].m_startPos, 0);
   QCOMPARE(result.inlineEquationRegions[0].m_endPos, 8);
+}
+
+void TestMarkdownParser::testInlineDisplayEquation_data() {
+  QTest::addColumn<QString>("prefix");
+  QTest::addColumn<QString>("suffix");
+  QTest::newRow("paragraph") << QStringLiteral("before ") << QStringLiteral(" after\nnext $z$\n");
+  QTest::newRow("list") << QStringLiteral("- before ") << QStringLiteral(" after\n- next $z$\n");
+  QTest::newRow("table") << QStringLiteral("| head | other |\n| --- | --- |\n| ")
+                         << QStringLiteral(" | $z$ |\nfollowing\n");
+}
+
+void TestMarkdownParser::testInlineDisplayEquation() {
+  QFETCH(QString, prefix);
+  QFETCH(QString, suffix);
+  const QString cell = QString::fromUtf8("\xF0\x9F\x9A\x80 $$x$$ and $$x$$ plus $y$");
+  const QString input = prefix + cell + suffix;
+  const auto result = parse(input);
+  const QVector<QString> sources{QStringLiteral("$$x$$"), QStringLiteral("$$x$$"),
+                                 QStringLiteral("$y$"), QStringLiteral("$z$")};
+  const QVector<QString> expressions{QStringLiteral("x"), QStringLiteral("x"), QStringLiteral("y"),
+                                     QStringLiteral("z")};
+  QCOMPARE(result.mathElements.size(), sources.size());
+  QCOMPARE(result.inlineEquationRegions.size(), sources.size());
+  QVERIFY(result.displayFormulaRegions.isEmpty());
+  QVector<QPair<unsigned long, unsigned long>> spans;
+  int offset = 0;
+  for (int i = 0; i < sources.size(); ++i) {
+    const int start = input.indexOf(sources.at(i), offset);
+    QVERIFY(start >= 0);
+    const int end = start + sources.at(i).size();
+    const auto &math = result.mathElements.at(i);
+    QCOMPARE(math.m_startPos, start);
+    QCOMPARE(math.m_endPos, end);
+    QCOMPARE(input.mid(math.m_startPos, math.m_endPos - math.m_startPos), sources.at(i));
+    QCOMPARE(math.m_expression, expressions.at(i));
+    QCOMPARE(math.m_display, i < 2);
+    QVERIFY(!math.m_block);
+    QCOMPARE(result.inlineEquationRegions.at(i).m_startPos, start);
+    QCOMPARE(result.inlineEquationRegions.at(i).m_endPos, end);
+    spans.append(qMakePair(static_cast<unsigned long>(start), static_cast<unsigned long>(end)));
+    offset = end;
+  }
+  // Display typesetting must not turn a same-line construct into block source geometry.
+  QCOMPARE(findElements(result, HLT_INLINEEQUATION, input), spans);
+  QCOMPARE(countElements(result, HLT_DISPLAYFORMULA), 0);
+
+  // Cell-local parsing must use the same delimiter widths and UTF-16 offsets as
+  // the document parser, including the second occurrence of an identical formula.
+  const auto local = parse(cell);
+  QCOMPARE(local.mathElements.size(), 3);
+  for (int i = 0; i < local.mathElements.size(); ++i) {
+    const auto &math = local.mathElements.at(i);
+    const auto &whole = result.mathElements.at(i);
+    QCOMPARE(math.m_startPos + prefix.size(), whole.m_startPos);
+    QCOMPARE(math.m_endPos + prefix.size(), whole.m_endPos);
+    QCOMPARE(math.m_expression, whole.m_expression);
+    QCOMPARE(math.m_display, whole.m_display);
+    QVERIFY(!math.m_block);
+  }
+}
+
+void TestMarkdownParser::testInlineDisplayEquationDoesNotCrossLines() {
+  const QVector<QString> inputs{QStringLiteral("before $$x\n+y$$ after $z$\n"),
+                                QStringLiteral("| head |\n| --- |\n| $$x |\n| y$$ |\n| $z$ |\n")};
+  for (const auto &input : inputs) {
+    const auto result = parse(input);
+    QCOMPARE(result.mathElements.size(), 1);
+    const auto &math = result.mathElements.first();
+    QCOMPARE(math.m_expression, QStringLiteral("z"));
+    QCOMPARE(math.m_startPos, input.indexOf(QStringLiteral("$z$")));
+    QCOMPARE(math.m_endPos, math.m_startPos + 3);
+    QVERIFY(!math.m_display);
+    QVERIFY(!math.m_block);
+    QVERIFY(result.displayFormulaRegions.isEmpty());
+  }
 }
 
 // ============================================================
