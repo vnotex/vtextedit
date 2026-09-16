@@ -3913,24 +3913,7 @@ void TestInteractivePreview::testTableSheetHeightMatchesItsRows() {
 
   // Given room, the same table stops wrapping and the band shrinks with it.
   const int tallBand = widget->height();
-  // Offscreen platforms may use a wide fallback font. Give every column its
-  // measured unwrapped text width rather than assuming 1100 pixels always fits.
-  const auto table = sheetTable(sheet);
-  const auto widths = columnWidths(sheet);
-  const auto metrics = sheet->fontMetrics();
-  int naturalWidth = 0;
-  qreal currentCellWidth = 0;
-  for (int column = 0; column < table->columns(); ++column) {
-    int longest = 0;
-    for (int row = 0; row < table->rows(); ++row) {
-      const auto block = table->cellAt(row, column).firstCursorPosition().block();
-      longest = qMax(longest, metrics.horizontalAdvance(block.text()));
-    }
-    naturalWidth += longest + 1;
-    currentCellWidth += widths.at(column);
-  }
-  const int chromeWidth = editor.width() - qFloor(currentCellWidth);
-  editor.resize(qMax(1100, naturalWidth + chromeWidth), 600);
+  editor.resize(1100, 600);
   settle(editor);
   QTest::qWait(50);
   QCoreApplication::processEvents();
@@ -7671,8 +7654,13 @@ void TestInteractivePreview::testTableInlinePreviewSourceRoundTrip() {
   QTRY_COMPARE(sheetInlineObjectCount(sheet), 2);
   QCOMPARE(sheetInlineCell(sheet, 1, 0).m_source, cellSource);
   selectCellContents(sheet, 1, 0);
-  sheet->copy();
-  QCOMPARE(QApplication::clipboard()->text(), cellSource);
+  // Native clipboard ownership can be transiently busy. Retry the real, read-only
+  // copy operation; a persistent failure must still fail the exact payload assertion.
+  const auto copyText = [sheet]() {
+    sheet->copy();
+    return QApplication::clipboard()->text();
+  };
+  QTRY_COMPARE(copyText(), cellSource);
   QVERIFY(!QApplication::clipboard()->mimeData()->hasImage());
   QVERIFY(!QApplication::clipboard()->mimeData()->hasHtml());
 
@@ -7682,9 +7670,7 @@ void TestInteractivePreview::testTableInlinePreviewSourceRoundTrip() {
                         QTextCursor::KeepAnchor);
   sheet->setTextCursor(selection);
   QVERIFY(sheet->textCursor().hasComplexSelection());
-  sheet->copy();
-  QCOMPARE(QApplication::clipboard()->text(),
-           QStringLiteral("head\tother\n%1\ttail").arg(cellSource));
+  QTRY_COMPARE(copyText(), QStringLiteral("head\tother\n%1\ttail").arg(cellSource));
   QVERIFY(triggerTableAction(sheet, 1, 0, "CopyAsMarkdown"));
   const QString markdown = QApplication::clipboard()->text();
   QVERIFY(markdown.contains(cellSource));
