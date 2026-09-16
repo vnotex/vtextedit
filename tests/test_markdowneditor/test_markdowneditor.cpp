@@ -678,6 +678,189 @@ void TestMarkdownEditor::testConcealCaretAndViMotion() {
   concealConfigVerifyWidth(fixture, start, end, compact);
 }
 
+void TestMarkdownEditor::testMultilineReplaceAllUndoRedo() {
+  const auto source = QStringLiteral("A\n\n\nB\n\n\n\nC");
+  Fixture fixture(source, 0, 0);
+  const auto result = fixture.editor()->replaceAll(
+      QStringLiteral("\\n{3,}"), FindFlag::RegularExpression, QStringLiteral("\\n\\n"));
+  QCOMPARE(result.m_totalMatches, 2);
+  QCOMPARE(fixture.text(), QStringLiteral("A\n\nB\n\nC"));
+  fixture.edit()->undo();
+  QCOMPARE(fixture.text(), source);
+  fixture.edit()->redo();
+  QCOMPARE(fixture.text(), QStringLiteral("A\n\nB\n\nC"));
+
+  Fixture adjacent(QStringLiteral("ab"), 0, 0);
+  QCOMPARE(adjacent.editor()
+               ->replaceAll(QStringLiteral("."), FindFlag::RegularExpression, QStringLiteral("XX"))
+               .m_totalMatches,
+           2);
+  QCOMPARE(adjacent.text(), QStringLiteral("XXXX"));
+  QCOMPARE(adjacent.edit()->textCursor().position(), 4);
+}
+
+void TestMarkdownEditor::testMultilineReplacementCaptures() {
+  const auto source = QStringLiteral("left\nabc\nright");
+  const auto pattern = QStringLiteral("(?<=left\\n)(abc)(?=\\nright)");
+  const auto flags = FindFlag::RegularExpression;
+  for (const bool all : {false, true}) {
+    Fixture fixture(source, 0, 0);
+    const auto result =
+        all ? fixture.editor()->replaceAll(pattern, flags, QStringLiteral("\\1\\n\\1"))
+            : fixture.editor()->replaceText(pattern, flags, QStringLiteral("\\1\\n\\1"));
+    QCOMPARE(result.m_totalMatches, 1);
+    QCOMPARE(fixture.text(), QStringLiteral("left\nabc\nabc\nright"));
+
+    Fixture reset(source, 0, 0);
+    const auto resetPattern = QStringLiteral("left\\n\\K(abc)");
+    const auto resetResult =
+        all ? reset.editor()->replaceAll(resetPattern, flags, QStringLiteral("\\1!"))
+            : reset.editor()->replaceText(resetPattern, flags, QStringLiteral("\\1!"));
+    QCOMPARE(resetResult.m_totalMatches, 1);
+    QCOMPARE(reset.text(), QStringLiteral("left\nabc!\nright"));
+  }
+  Fixture captured(QStringLiteral("\\n"), 0, 0);
+  QCOMPARE(captured.editor()
+               ->replaceAll(QStringLiteral("(.*)"), flags, QStringLiteral("\\1"))
+               .m_totalMatches,
+           2);
+  QCOMPARE(captured.text(), QStringLiteral("\\n"));
+
+  Fixture ordered(QStringLiteral("a1 b2"), 0, 0);
+  QCOMPARE(ordered.editor()
+               ->replaceAll(QStringLiteral("([a-z])(\\d)"), flags, QStringLiteral("\\2\\1"))
+               .m_totalMatches,
+           2);
+  QCOMPARE(ordered.text(), QStringLiteral("1a 2b"));
+}
+
+void TestMarkdownEditor::testRegexReplacementEscapes() {
+  struct Case {
+    const char *m_source;
+    const char *m_pattern;
+    const char *m_replacement;
+    const char *m_expected;
+    FindFlags m_flags;
+  };
+  const auto regex = FindFlag::RegularExpression;
+  const Case cases[] = {
+      {"x", "x", R"(\n\t\\)", "\n\t\\", regex},
+      {"x", "x", R"(\n)", R"(\n)", FindFlag::None},
+      {"x", "x", R"(\\n)", R"(\n)", regex},
+      {"x", "(x)", R"(\\1)", R"(\1)", regex},
+      {"x", "x", "\\q\\r\\0\\", "\\q\\r\\0\\", regex},
+      {"b", "(a)?b", R"([\1])", "[]", regex},
+      {"abcdefghij", "(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)", R"(\10\1\100)", "jaj0", regex},
+      {"a", "(a)", R"(\12)", "a2", regex},
+      {"a", "(a)", R"(\9\99)", R"(\9\99)", regex},
+  };
+  for (const auto &c : cases) {
+    Fixture fixture(QString::fromUtf8(c.m_source), 0, 0);
+    const auto result = fixture.editor()->replaceAll(QString::fromUtf8(c.m_pattern), c.m_flags,
+                                                     QString::fromUtf8(c.m_replacement));
+    QCOMPARE(result.m_totalMatches, 1);
+    QCOMPARE(fixture.text(), QString::fromUtf8(c.m_expected));
+  }
+  Fixture boundaries(QStringLiteral("a\nb"), 0, 0);
+  QCOMPARE(boundaries.editor()
+               ->replaceAll(QStringLiteral("^|$"), regex, QStringLiteral("|"))
+               .m_totalMatches,
+           4);
+  QCOMPARE(boundaries.text(), QStringLiteral("|a|\n|b|"));
+  QCOMPARE(boundaries.edit()->textCursor().position(), 7);
+  boundaries.edit()->undo();
+  QCOMPARE(boundaries.text(), QStringLiteral("a\nb"));
+}
+
+void TestMarkdownEditor::testMultilineReplaceAndFind() {
+  Fixture fixture(QStringLiteral("a\nb--a\nb"), 0, 0);
+  const auto pattern = QStringLiteral("a\\nb");
+  const auto flags = FindFlag::RegularExpression;
+  auto found = fixture.editor()->findText({pattern}, flags);
+  QCOMPARE(found.m_totalMatches, 2);
+  QCOMPARE(found.m_currentMatchIndex, 1);
+  QVERIFY(!found.m_wrapped);
+  QCOMPARE(fixture.edit()->textCursor().position(), 5);
+  found = fixture.editor()->findText({pattern}, flags);
+  QCOMPARE(found.m_currentMatchIndex, 0);
+  QVERIFY(found.m_wrapped);
+  found = fixture.editor()->findText({pattern}, flags | FindFlag::FindBackward);
+  QCOMPARE(found.m_currentMatchIndex, 1);
+  QVERIFY(found.m_wrapped);
+  found = fixture.editor()->findText({pattern}, flags | FindFlag::FindBackward);
+  QCOMPARE(found.m_currentMatchIndex, 0);
+  QVERIFY(!found.m_wrapped);
+
+  QCOMPARE(fixture.editor()->replaceText(pattern, flags, QStringLiteral("X")).m_totalMatches, 1);
+  QCOMPARE(fixture.text(), QStringLiteral("X--a\nb"));
+  found = fixture.editor()->findText({pattern}, flags);
+  QCOMPARE(found.m_totalMatches, 1);
+  QCOMPARE(found.m_currentMatchIndex, 0);
+  QCOMPARE(fixture.edit()->textCursor().position(), 3);
+  found = fixture.editor()->findText({pattern}, flags);
+  QVERIFY(found.m_wrapped);
+
+  auto hasSpan = [&](int p_start, int p_end) {
+    for (const auto &selection : fixture.edit()->extraSelections()) {
+      if (selection.cursor.selectionStart() == p_start &&
+          selection.cursor.selectionEnd() == p_end) {
+        return true;
+      }
+    }
+    return false;
+  };
+  fixture.editor()->findText({}, flags);
+  auto cursor = fixture.edit()->textCursor();
+  cursor.setPosition(0);
+  fixture.edit()->setTextCursor(cursor);
+  fixture.editor()->peekText(pattern, flags);
+  QTRY_VERIFY(hasSpan(3, 6));
+  fixture.editor()->peekText(QStringLiteral("^"), flags);
+  QTRY_VERIFY(hasSpan(0, 0));
+  cursor.setPosition(6);
+  fixture.edit()->setTextCursor(cursor);
+  fixture.editor()->peekText(QStringLiteral("\\z"), flags);
+  QTRY_VERIFY(hasSpan(6, 6));
+  QCOMPARE(fixture.text(), QStringLiteral("X--a\nb"));
+}
+
+void TestMarkdownEditor::testReadOnlyReplacementIsRejected() {
+  const auto source = QStringLiteral("a\nb");
+  Fixture fixture(source, 0, 0);
+  fixture.editor()->setReadOnly(true);
+  const auto flags = FindFlag::RegularExpression;
+  const auto pattern = QStringLiteral("a\\nb");
+  const int revision = fixture.editor()->document()->revision();
+  const int undoSteps = fixture.editor()->document()->availableUndoSteps();
+  QCOMPARE(fixture.editor()->replaceText(pattern, flags, QStringLiteral("X")).m_totalMatches, 0);
+  QCOMPARE(fixture.editor()->replaceAll(pattern, flags, QStringLiteral("X")).m_totalMatches, 0);
+  QCOMPARE(fixture.editor()->findText({pattern}, flags).m_totalMatches, 1);
+  QCOMPARE(fixture.text(), source);
+  QCOMPARE(fixture.editor()->document()->revision(), revision);
+  QCOMPARE(fixture.editor()->document()->availableUndoSteps(), undoSteps);
+  fixture.editor()->setReadOnly(false);
+  for (const auto &query : {QString(), QStringLiteral("["), QStringLiteral("missing")}) {
+    QCOMPARE(fixture.editor()->replaceText(query, flags, QStringLiteral("X")).m_totalMatches, 0);
+    QCOMPARE(fixture.editor()->replaceAll(query, flags, QStringLiteral("X")).m_totalMatches, 0);
+    QCOMPARE(fixture.text(), source);
+    QCOMPARE(fixture.editor()->document()->availableUndoSteps(), undoSteps);
+  }
+}
+
+void TestMarkdownEditor::testMultilineReplacementKeepsLineEndings() {
+  auto config = QSharedPointer<TextEditorConfig>::create();
+  config->m_lineEndingPolicy = LineEndingPolicy::File;
+  VTextEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+  editor.setText(QStringLiteral("A\r\n\r\n\r\nB"));
+  QCOMPARE(editor
+               .replaceAll(QStringLiteral("\\n{3,}"), FindFlag::RegularExpression,
+                           QStringLiteral("\\n\\n"))
+               .m_totalMatches,
+           1);
+  QCOMPARE(editor.getText(), QStringLiteral("A\r\n\r\nB"));
+  QCOMPARE(editor.document()->toPlainText(), QStringLiteral("A\n\nB"));
+}
+
 void TestMarkdownEditor::testIsQuote() {
   struct Case {
     const char *m_text;

@@ -45,6 +45,130 @@ bool isBoldAt(QTextDocument *p_doc, int p_position) {
 }
 } // namespace
 
+void TestRichTextEditor::testSearchAcrossParagraphs() {
+  VRichTextEditor editor;
+  editor.setHtml(QStringLiteral("<p><b>alpha</b></p><p>beta</p><p>gamma</p>"));
+  auto edit = editor.getTextEdit();
+  const auto html = editor.document()->toHtml();
+  const int revision = editor.document()->revision();
+  const auto regex = edit->findAllText(QStringLiteral("alpha\\nbeta"), FindFlag::RegularExpression);
+  QCOMPARE(regex.size(), 1);
+  QCOMPARE(regex[0].selectionStart(), 0);
+  QCOMPARE(regex[0].selectionEnd(), 10);
+  for (const auto &query : {QStringLiteral("alpha\nbeta"), QStringLiteral("alpha\r\nbeta"),
+                            QStringLiteral("alpha\rbeta")}) {
+    const auto literal = edit->findAllText(query, FindFlag::None);
+    QCOMPARE(literal.size(), 1);
+    QCOMPARE(literal[0].selectionStart(), 0);
+    QCOMPARE(literal[0].selectionEnd(), 10);
+  }
+  QVERIFY(edit->findAllText(QStringLiteral("alpha\\nbeta"), FindFlag::None).isEmpty());
+  QCOMPARE(editor.document()->toHtml(), html);
+  QCOMPARE(editor.document()->revision(), revision);
+
+  VTextEdit source;
+  const auto nbsp = QStringLiteral("a\u00a0b");
+  source.setPlainText(nbsp);
+  const auto matches = source.findAllText(nbsp, FindFlag::None);
+  QCOMPARE(matches.size(), 1);
+  QCOMPARE(matches[0].selectedText(), nbsp);
+  QVERIFY(source.findAllText(QStringLiteral("a b"), FindFlag::None).isEmpty());
+  source.setPlainText(QStringLiteral("a\u2028b"));
+  QCOMPARE(source.findAllText(QStringLiteral("a\nb"), FindFlag::None).size(), 1);
+}
+
+void TestRichTextEditor::testSearchRegexOptions() {
+  VTextEdit edit;
+  edit.setPlainText(QStringLiteral("alpha\nbeta"));
+  const auto flags = FindFlag::RegularExpression;
+  const auto anchor = edit.findAllText(QStringLiteral("^beta$"), flags);
+  QCOMPARE(anchor.size(), 1);
+  QCOMPARE(anchor[0].selectionStart(), 6);
+  QCOMPARE(anchor[0].selectionEnd(), 10);
+  QVERIFY(edit.findAllText(QStringLiteral("alpha.*beta"), flags).isEmpty());
+  const auto dotAll = edit.findAllText(QStringLiteral("(?s)alpha.*beta"), flags);
+  QCOMPARE(dotAll.size(), 1);
+  QCOMPARE(dotAll[0].selectionStart(), 0);
+  QCOMPARE(dotAll[0].selectionEnd(), 10);
+  QCOMPARE(edit.findAllText(QStringLiteral("ALPHA"), flags).size(), 1);
+  QVERIFY(edit.findAllText(QStringLiteral("ALPHA"), flags | FindFlag::CaseSensitive).isEmpty());
+  QVERIFY(edit.findAllText(QStringLiteral("(?-i)ALPHA"), flags).isEmpty());
+  QVERIFY(edit.findAllText(QStringLiteral("["), flags).isEmpty());
+  edit.setPlainText(QStringLiteral("xcaty (cat) _cat_"));
+  const auto words = edit.findAllText(QStringLiteral("cat"), flags | FindFlag::WholeWordOnly);
+  QCOMPARE(words.size(), 2);
+  QCOMPARE(words[0].selectionStart(), 7);
+  QCOMPARE(words[1].selectionStart(), 13);
+}
+
+void TestRichTextEditor::testSearchRangesAndZeroLengthMatches() {
+  VTextEdit edit;
+  edit.setPlainText(QStringLiteral("A\nB\nC"));
+  const auto flags = FindFlag::RegularExpression;
+  QCOMPARE(edit.findAllText(QStringLiteral("A\\nB"), flags, 0, 3).size(), 1);
+  QVERIFY(edit.findAllText(QStringLiteral("A\\nB"), flags, 0, 2).isEmpty());
+  QList<QRegularExpressionMatch> captures;
+  const auto behind =
+      edit.findAllText(QStringLiteral("(?<=A\\n)(B)(?=\\nC)"), flags, 2, 3, &captures);
+  QCOMPARE(behind.size(), 1);
+  QCOMPARE(behind[0].selectionStart(), 2);
+  QCOMPARE(behind[0].selectionEnd(), 3);
+  QCOMPARE(captures.size(), 1);
+  QCOMPARE(captures[0].captured(1), QStringLiteral("B"));
+  const auto eof = edit.findAllText(QStringLiteral("\\z"), flags);
+  QCOMPARE(eof.size(), 1);
+  QVERIFY(!eof[0].isNull());
+  QCOMPARE(eof[0].selectionStart(), 5);
+  QCOMPARE(eof[0].selectionEnd(), 5);
+  QVERIFY(edit.findAllText(QStringLiteral("\\z"), flags, 0, 5).isEmpty());
+  QCOMPARE(edit.findAllText(QStringLiteral("C"), flags, 0, 99).size(), 1);
+  for (const auto &range : {QPair<int, int>(-1, -1), {6, -1}, {0, -2}, {3, 3}, {3, 2}}) {
+    QVERIFY(edit.findAllText(QStringLiteral("."), flags, range.first, range.second, &captures)
+                .isEmpty());
+    QVERIFY(captures.isEmpty());
+  }
+  edit.findAllText(QStringLiteral("(.)"), flags, 0, -1, &captures);
+  edit.findAllText(QStringLiteral("A"), FindFlag::None, 0, -1, &captures);
+  QVERIFY(captures.isEmpty());
+  edit.findAllText(QStringLiteral("(.)"), flags, 0, -1, &captures);
+  QVERIFY(edit.findAllText(QStringLiteral("["), flags, 0, -1, &captures).isEmpty());
+  QVERIFY(captures.isEmpty());
+  edit.clear();
+  const auto empty = edit.findAllText(QStringLiteral("^"), flags);
+  QCOMPARE(empty.size(), 1);
+  QVERIFY(!empty[0].isNull());
+  QCOMPARE(empty[0].position(), 0);
+  QVERIFY(edit.findAllText(QString(), flags).isEmpty());
+  edit.setPlainText(QString::fromUtf8("\xf0\x9f\x98\x80x"));
+  const auto unicode = edit.findAllText(QStringLiteral("^|."), flags);
+  QCOMPARE(unicode.size(), 2);
+  QCOMPARE(unicode[0].selectionStart(), 0);
+  QCOMPARE(unicode[0].selectionEnd(), 0);
+  QCOMPARE(unicode[1].selectionStart(), 2);
+  QCOMPARE(unicode[1].selectionEnd(), 3);
+}
+
+void TestRichTextEditor::testSearchForwardBackwardWrap() {
+  VTextEdit edit;
+  edit.setPlainText(QStringLiteral("A\nB\nA\nB"));
+  const auto flags = FindFlag::RegularExpression;
+  const auto pattern = QStringLiteral("A\\nB");
+  const auto matches = edit.findAllText(pattern, flags | FindFlag::FindBackward);
+  QCOMPARE(matches.size(), 2);
+  QCOMPARE(matches[0].selectionStart(), 0);
+  QCOMPARE(matches[1].selectionStart(), 4);
+  QCOMPARE(edit.findText(pattern, flags, 1).selectionStart(), 4);
+  QCOMPARE(edit.findText(pattern, flags, 7).selectionStart(), 0);
+  QCOMPARE(edit.findText(pattern, flags | FindFlag::FindBackward, 4).selectionStart(), 0);
+  QCOMPARE(edit.findText(pattern, flags | FindFlag::FindBackward, 0).selectionStart(), 4);
+  QVERIFY(edit.findText(pattern, flags, -1).isNull());
+  QVERIFY(edit.findText(pattern, flags, 8).isNull());
+  const auto eof = edit.findText(QStringLiteral("\\z"), flags | FindFlag::FindBackward, 0);
+  QVERIFY(!eof.isNull());
+  QCOMPARE(eof.position(), 7);
+  QCOMPARE(edit.findText(QStringLiteral("\\z"), flags, 7).position(), 7);
+}
+
 void TestRichTextEditor::testFoldKeysFallThroughWithoutFolding() {
   VRichTextEditor editor(configWithMode(InputMode::ViMode));
   editor.setHtml(QString::fromUtf8(c_html));

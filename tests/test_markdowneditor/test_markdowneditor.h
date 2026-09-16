@@ -13,6 +13,13 @@ private slots:
   void testConcealHoverToolTip();
   void testConcealCaretAndViMotion();
 
+  void testMultilineReplaceAllUndoRedo();
+  void testMultilineReplacementCaptures();
+  void testRegexReplacementEscapes();
+  void testMultilineReplaceAndFind();
+  void testReadOnlyReplacementIsRejected();
+  void testMultilineReplacementKeepsLineEndings();
+
   // MarkdownUtils helpers.
   void testIsQuote();
 

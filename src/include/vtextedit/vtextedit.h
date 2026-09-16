@@ -4,6 +4,7 @@
 #include "vtextedit_export.h"
 
 #include <QElapsedTimer>
+#include <QRegularExpression>
 #include <QScopedPointer>
 #include <QTextCursor>
 #include <QTextEdit>
@@ -90,7 +91,8 @@ public:
 
   // @p_end, -1 indicates the end of doc.
   QList<QTextCursor> findAllText(const QString &p_text, FindFlags p_flags, int p_start = 0,
-                                 int p_end = -1);
+                                 int p_end = -1,
+                                 QList<QRegularExpressionMatch> *p_regExpMatches = nullptr);
 
   // Will search and wrap.
   QTextCursor findText(const QString &p_text, FindFlags p_flags, int p_start = 0);
@@ -247,13 +249,6 @@ private:
     Qt::KeyboardModifiers m_modifiers = Qt::NoModifier;
   };
 
-  template <typename T>
-  QList<QTextCursor> findAllTextInDocument(const T &p_text, QTextDocument::FindFlags p_flags,
-                                           int p_start, int p_end);
-
-  template <typename T>
-  QTextCursor findTextInDocument(const T &p_text, QTextDocument::FindFlags p_flags, int p_start);
-
   QString getSelectedText(const Selection &p_selection) const;
 
   // Return true if the event is handled.
@@ -341,80 +336,5 @@ private:
   static bool s_forceInputMethodDisabled;
 };
 
-template <typename T>
-QList<QTextCursor> VTextEdit::findAllTextInDocument(const T &p_text,
-                                                    QTextDocument::FindFlags p_flags, int p_start,
-                                                    int p_end) {
-  QList<QTextCursor> results;
-  auto doc = document();
-  int start = p_start;
-  int end = p_end == -1 ? doc->characterCount() + 1 : p_end;
-
-  // BUG: QTextDocument::find() does not work with FindFlag::FindBackward.
-  p_flags &= ~QTextDocument::FindFlag::FindBackward;
-  while (start < end) {
-    QTextCursor cursor = doc->find(p_text, start, p_flags);
-    if (cursor.isNull()) {
-      break;
-    } else {
-      start = cursor.selectionEnd();
-      if (start <= end) {
-        results.append(cursor);
-      }
-
-      if (cursor.selectionStart() == cursor.selectionEnd()) {
-        // Zero-length match, such as ^ and $.
-        ++start;
-      }
-    }
-  }
-
-  return results;
-}
-
-template <typename T>
-QTextCursor VTextEdit::findTextInDocument(const T &p_text, QTextDocument::FindFlags p_flags,
-                                          int p_start) {
-  // BUG: QTextDocument::find() does not work with FindFlag::FindBackward.
-  if (p_flags & QTextDocument::FindFlag::FindBackward) {
-    p_flags &= ~QTextDocument::FindFlag::FindBackward;
-    // Find the last match that locates before @p_start.
-    QTextCursor lastMatch;
-    auto doc = document();
-    int start = 0;
-    bool wrapped = false;
-    while (true) {
-      // find() will only search from start to the end.
-      auto cursor = doc->find(p_text, start, p_flags);
-      if (cursor.isNull()) {
-        break;
-      }
-
-      if (cursor.selectionStart() < p_start) {
-        lastMatch = cursor;
-      } else {
-        if (wrapped) {
-          // Search till the end and get the last one.
-          lastMatch = cursor;
-        } else {
-          if (lastMatch.isNull()) {
-            wrapped = true;
-          } else {
-            break;
-          }
-        }
-      }
-      start = cursor.selectionEnd();
-    }
-    return lastMatch;
-  } else {
-    auto cursor = document()->find(p_text, p_start, p_flags);
-    if (p_start > 0 && cursor.isNull()) {
-      // Wrap.
-      cursor = document()->find(p_text, 0, p_flags);
-    }
-    return cursor;
-  }
-}
 } // namespace vte
 #endif
