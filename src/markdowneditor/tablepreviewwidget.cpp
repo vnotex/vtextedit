@@ -926,6 +926,22 @@ void TablePreviewDocument::build() {
   noteStructuralChange();
   refreshCellSyntaxFormats();
   cursor.endEditBlock();
+
+  if (previewTableLog().isDebugEnabled()) {
+    int imageObjects = 0;
+    for (auto block = m_doc->begin(); block.isValid(); block = block.next()) {
+      for (auto it = block.begin(); !it.atEnd(); ++it) {
+        const auto fragment = it.fragment();
+        if (fragment.isValid() && fragment.charFormat().isImageFormat()) {
+          imageObjects += fragment.length();
+        }
+      }
+    }
+    qCDebug(previewTableLog) << "sheet document built" << "document" << m_doc.data() << "rows"
+                             << m_rowCount << "columns" << m_columnCount << "syntax"
+                             << static_cast<int>(m_syntax) << "markdownBacked" << m_markdownBacked
+                             << "imageObjects" << imageObjects;
+  }
 }
 
 // Visit contiguous physical source runs without allocating a parallel character map.
@@ -1056,7 +1072,8 @@ bool TablePreviewDocument::hasInlineElement(const QString &p_source, int p_start
 }
 
 bool TablePreviewDocument::validInlinePreview(const InlinePreviewBinding &p_binding) {
-  if (!isOrigin(p_binding.m_row, p_binding.m_column)) {
+  if (p_binding.m_generation != m_inlinePreviewGenerations[p_binding.m_source] ||
+      !isOrigin(p_binding.m_row, p_binding.m_column)) {
     return false;
   }
   const auto cell = m_table->cellAt(p_binding.m_row, p_binding.m_column);
@@ -1340,6 +1357,7 @@ void TablePreviewDocument::setInlinePreviews(PreviewData::Source p_source,
       binding.m_end.setKeepPositionOnInsert(true);
       binding.m_elementSource = spelling;
       binding.m_source = p_source;
+      binding.m_generation = m_inlinePreviewGenerations[p_source];
       binding.m_slot = m_freeInlinePreviewSlots.isEmpty() ? m_nextInlinePreviewSlot++
                                                           : m_freeInlinePreviewSlots.takeLast();
       binding.m_suspended =
@@ -1814,6 +1832,11 @@ bool TablePreviewDocument::refreshCellSyntaxFormats(int p_start, int p_end) {
         if (cached == m_cellHighlightCache.end()) {
           cellInlineData(text);
           cached = m_cellHighlightCache.find(text);
+          qCDebug(previewTableLog)
+              << "sheet cell highlighted" << "document" << m_doc.data() << "row" << r << "column"
+              << c << "characters" << text.size() << "highlightUnits" << cached->m_units.size()
+              << "imageElements" << cached->imageElements.size() << "mathElements"
+              << cached->mathElements.size();
           newText = true;
         }
         cached->m_used = true;
@@ -5077,13 +5100,21 @@ void TablePreviewWidget::setInlinePreviews(PreviewData::Source p_source,
     m_pendingInlinePreviews.clear();
     m_pendingInlinePreviewStructure = structure;
   }
-  m_pendingInlinePreviews.insert(p_source, p_previews);
   if (p_previews.isEmpty()) {
-    // Invalidate even synthetic suspended objects before a guarded source
-    // operation can restore them. Physical retirement still waits for its exit.
-    ++m_document->m_inlinePreviewGenerations[p_source];
+    invalidateInlinePreviews(p_source);
+  } else {
+    m_pendingInlinePreviews.insert(p_source, p_previews);
   }
   applyDeferredInlinePreviews();
+}
+
+void TablePreviewWidget::invalidateInlinePreviews(PreviewData::Source p_source) {
+  // No document mutation or callbacks: the host may be blocked in a layout or
+  // factory callback. Retire both managed and synthetic suspended bindings
+  // before they can be restored, and retain the clear independently of new data.
+  m_pendingInlinePreviews.remove(p_source);
+  m_pendingInlinePreviewClears |= 1 << p_source;
+  ++m_document->m_inlinePreviewGenerations[p_source];
 }
 
 void TablePreviewWidget::revalidateInlinePreviews() {
@@ -5093,7 +5124,8 @@ void TablePreviewWidget::revalidateInlinePreviews() {
 
 void TablePreviewWidget::applyDeferredInlinePreviews() {
   if (!m_sheet || m_sheet->inlinePreviewsDeferred() || m_applyingCellPreviews ||
-      (m_pendingInlinePreviews.isEmpty() && !m_inlinePreviewRevalidationPending)) {
+      (m_pendingInlinePreviews.isEmpty() && !m_pendingInlinePreviewClears &&
+       !m_inlinePreviewRevalidationPending)) {
     return;
   }
   {
@@ -5106,8 +5138,15 @@ void TablePreviewWidget::applyDeferredInlinePreviews() {
     do {
       const auto structure = m_pendingInlinePreviewStructure;
       auto pending = std::move(m_pendingInlinePreviews);
+      const int clears = m_pendingInlinePreviewClears;
       m_pendingInlinePreviews.clear();
+      m_pendingInlinePreviewClears = 0;
       m_inlinePreviewRevalidationPending = false;
+      for (auto source : {PreviewData::ImageLink, PreviewData::MathBlock}) {
+        if (clears & (1 << source)) {
+          m_document->clearInlinePreviews(source);
+        }
+      }
       if (structure == m_document->structureGeneration()) {
         for (auto it = pending.cbegin(); it != pending.cend(); ++it) {
           m_document->setInlinePreviews(static_cast<PreviewData::Source>(it.key()), it.value());
@@ -5115,7 +5154,8 @@ void TablePreviewWidget::applyDeferredInlinePreviews() {
       }
       m_document->revalidateInlinePreviews();
     } while (!m_sheet->inlinePreviewsDeferred() &&
-             (!m_pendingInlinePreviews.isEmpty() || m_inlinePreviewRevalidationPending));
+             (!m_pendingInlinePreviews.isEmpty() || m_pendingInlinePreviewClears ||
+              m_inlinePreviewRevalidationPending));
     if (selection.m_row >= 0) {
       m_sheet->restoreSourceSelection(selection);
     } else {
@@ -5126,6 +5166,19 @@ void TablePreviewWidget::applyDeferredInlinePreviews() {
     m_sheet->horizontalScrollBar()->setValue(horizontal);
     m_sheet->verticalScrollBar()->setValue(vertical);
     m_sheet->viewport()->update();
+    if (previewTableLog().isDebugEnabled()) {
+      int imageObjects = 0;
+      for (auto block = m_document->document()->begin(); block.isValid(); block = block.next()) {
+        for (auto it = block.begin(); !it.atEnd(); ++it) {
+          const auto fragment = it.fragment();
+          if (fragment.isValid() && fragment.charFormat().isImageFormat()) {
+            imageObjects += fragment.length();
+          }
+        }
+      }
+      qCDebug(previewTableLog) << "sheet inline previews applied" << "document"
+                               << m_document->document() << "imageObjects" << imageObjects;
+    }
   }
   m_sheet->handleDocumentSizeChanged();
 }
@@ -5214,8 +5267,8 @@ bool TablePreviewWidget::setPreview(const QSharedPointer<const Preview> &p_previ
   }
 
   qCDebug(previewTableLog) << "rebuilding the sheet from" << table->rowCount() << "row(s) x"
-                           << table->columnCount() << "declared column(s), source"
-                           << table->sourceMarkdown().left(60);
+                           << table->columnCount() << "declared column(s), source characters"
+                           << table->sourceMarkdown().size();
 
   m_table = table;
   // The next snapshot is what a rejected sheet waits for.
@@ -5342,6 +5395,7 @@ void TablePreviewWidget::resetFromSource() {
   // user's accepted change.
   rebindFromContext();
   m_pendingInlinePreviews.clear();
+  m_pendingInlinePreviewClears = 0;
   m_inlinePreviewRevalidationPending = false;
 
   {

@@ -241,6 +241,8 @@ private slots:
   void testTableInlinePreviewRejectsStalePublication();
   void testTableInlinePreviewUsesRebasedLiveAnchor();
   void testTableInlinePreviewDirtyCellBeforeResult();
+  void testTableInlinePreviewClearBeforeFreshPublication_data();
+  void testTableInlinePreviewClearBeforeFreshPublication();
   void testTableInlinePreviewRetirementAndRemoval();
   void testTableInlinePreviewOffscreenRealization();
   void testHtmlTableInlinePreviewsRemainSourceOnly();

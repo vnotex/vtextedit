@@ -430,6 +430,10 @@ void InteractivePreviewHost::setEnabled(bool p_enabled) {
   }
 
   m_enabled = p_enabled;
+  if (!p_enabled) {
+    invalidateTableCellPreviews(PreviewData::ImageLink);
+    invalidateTableCellPreviews(PreviewData::MathBlock);
+  }
   scheduleTableCellPreviewRefresh();
   publishEnabledTypeMask();
   // Enabling widens the mask the highlighter builds for; disabling only ever
@@ -444,6 +448,10 @@ void InteractivePreviewHost::setTypeEnabled(PreviewElementType p_type, bool p_en
   }
 
   m_typeEnabled[idx] = p_enabled;
+  if (!p_enabled && (p_type == PreviewElementType::Image || p_type == PreviewElementType::Math)) {
+    invalidateTableCellPreviews(p_type == PreviewElementType::Image ? PreviewData::ImageLink
+                                                                    : PreviewData::MathBlock);
+  }
   scheduleTableCellPreviewRefresh();
   publishEnabledTypeMask();
   reconcileLater(p_enabled);
@@ -583,6 +591,12 @@ void InteractivePreviewHost::capturePreviewData(PreviewData::Source p_source,
   if (p_source != PreviewData::ImageLink && p_source != PreviewData::MathBlock) {
     return;
   }
+  const auto type =
+      p_source == PreviewData::ImageLink ? PreviewElementType::Image : PreviewElementType::Math;
+  if (!m_enabled || !isTypeEnabled(type)) {
+    invalidateTableCellPreviews(p_source);
+    return;
+  }
   QVector<CapturedPreviewBlock> captured;
   captured.reserve(p_blocks.size());
   for (const auto &block : p_blocks) {
@@ -622,8 +636,28 @@ void InteractivePreviewHost::capturePreviewData(PreviewData::Source p_source,
       captured.append(std::move(entry));
     }
   }
-  m_emptyPreviewPublication[p_source] = captured.isEmpty();
+  if (captured.isEmpty()) {
+    invalidateTableCellPreviews(p_source);
+    return;
+  }
+  ++m_capturedPreviewGenerations[p_source];
+  m_emptyPreviewPublication[p_source] = false;
   m_capturedPreviews[p_source] = std::move(captured);
+  scheduleTableCellPreviewRefresh();
+}
+
+void InteractivePreviewHost::invalidateTableCellPreviews(PreviewData::Source p_source) {
+  ++m_capturedPreviewGenerations[p_source];
+  m_capturedPreviews[p_source].clear();
+  m_emptyPreviewPublication[p_source] = true;
+  // A later publication can arrive before the host drains, including during a
+  // source edit or IME transaction. Invalidate copies now without touching the
+  // sheet document: the clear edge must survive coalescing with that publication.
+  for (const auto &item : m_items) {
+    if (auto widget = qobject_cast<TablePreviewWidget *>(item.m_widget.data())) {
+      widget->invalidateInlinePreviews(p_source);
+    }
+  }
   scheduleTableCellPreviewRefresh();
 }
 
@@ -660,6 +694,10 @@ void InteractivePreviewHost::refreshTableCellPreviews() {
     }
 
     QVector<TableCellInlinePreview> records[PreviewData::MaxSource];
+    quint64 publicationGenerations[PreviewData::MaxSource] = {};
+    for (auto source : {PreviewData::ImageLink, PreviewData::MathBlock}) {
+      publicationGenerations[source] = m_capturedPreviewGenerations[source];
+    }
     bool sourceCurrent = table->syntax() == PreviewTableSyntax::Markdown &&
                          previewSourceText(m_doc, anchor.selectionStart(), anchor.selectionEnd()) ==
                              table->sourceMarkdown();
@@ -721,6 +759,13 @@ void InteractivePreviewHost::refreshTableCellPreviews() {
     for (auto source : {PreviewData::ImageLink, PreviewData::MathBlock}) {
       if (!widget) {
         break;
+      }
+      // Applying the previous source can deliver callbacks which clear or
+      // replace either publication. Never replay the pre-callback copies after
+      // that clear edge has been consumed by the widget.
+      if (publicationGenerations[source] != m_capturedPreviewGenerations[source]) {
+        scheduleTableCellPreviewRefresh();
+        continue;
       }
       const auto type =
           source == PreviewData::ImageLink ? PreviewElementType::Image : PreviewElementType::Math;

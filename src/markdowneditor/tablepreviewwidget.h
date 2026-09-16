@@ -640,6 +640,7 @@ private:
     QSize m_logicalSize;
     QRgb m_backgroundColor = 0;
     int m_slot = -1;
+    quint64 m_generation = 0;
     bool m_installed = false;
     bool m_suspended = false;
   };
@@ -1554,7 +1555,9 @@ private:
 
   bool observeSourceChanges(int p_start = -1, int p_end = -1);
   void applyDeferredInlinePreviews();
+  void invalidateInlinePreviews(PreviewData::Source p_source);
   QHash<int, QVector<TableCellInlinePreview>> m_pendingInlinePreviews;
+  int m_pendingInlinePreviewClears = 0;
   bool m_inlinePreviewRevalidationPending = false;
   bool m_applyingCellPreviews = false;
   quint64 m_pendingInlinePreviewStructure = 0;

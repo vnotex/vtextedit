@@ -6466,6 +6466,43 @@ void TestTablePreview::testInlineBindingsDeferRefreshDuringComposition() {
   QCOMPARE(harness.requestCount(), 0);
 }
 
+void TestTablePreview::testInlineBindingsClearSurvivesDeferredPublication() {
+  const QString image = QStringLiteral("![x](a.png)");
+  SheetHarness harness(
+      makeSnapshot({{QStringLiteral("h"), QStringLiteral("other")}, {image, image}},
+                   {PreviewTableAlignment::None, PreviewTableAlignment::None}));
+  auto sheet = harness.sheet();
+  QVERIFY(sheet);
+  showOffScreen(*harness.widget(), 700);
+  sheet->setFocus();
+  auto document = sheet->tableDocument();
+  const auto first = inlinePreview(1, 0, image, image, PreviewData::ImageLink);
+  auto second = inlinePreview(1, 1, image, image, PreviewData::ImageLink);
+  harness.widget()->setInlinePreviews(PreviewData::ImageLink, {first, second});
+  selectSource(sheet, 1, 0, 0, 0);
+  QTest::keyClicks(sheet, QStringLiteral("lead "));
+  QCOMPARE(inlineObjects(*document, 1, 0).size(), 1);
+  const QString dirty = QStringLiteral("lead ") + image;
+  QCOMPARE(document->cells()[1][0], dirty);
+
+  QInputMethodEvent preedit(QStringLiteral("\u3042"), {});
+  QApplication::sendEvent(sheet, &preedit);
+  QVERIFY(!sheet->textCursor().block().layout()->preeditAreaText().isEmpty());
+  harness.widget()->setInlinePreviews(PreviewData::ImageLink, {});
+  second.m_image = inlinePixmap(QSize(40, 32), Qt::green);
+  harness.widget()->setInlinePreviews(PreviewData::ImageLink, {second});
+  QInputMethodEvent endComposition;
+  QApplication::sendEvent(sheet, &endComposition);
+  QCOMPARE(inlineObjects(*document, 1, 0).size(), 0);
+  const auto objects = inlineObjects(*document, 1, 1);
+  QCOMPARE(objects.size(), 1);
+  QCOMPARE(inlineResource(*document, objects.first().m_format).toImage().pixelColor(0, 0),
+           QColor(Qt::green));
+  QCOMPARE(document->cells()[1][0], dirty);
+  QCOMPARE(document->cells()[1][1], image);
+  QCOMPARE(harness.requestCount(), 0);
+}
+
 void TestTablePreview::testInlineBindingsOrderMultipleImagesInOneCell() {
   const QString image = QStringLiteral("![x](a.png)");
   const QString source = QStringLiteral("\U0001f600 ") + image + QStringLiteral(" ") + image;

@@ -13,6 +13,7 @@
 
 #include "../utils/networkutils.h"
 #include "documentresourcemgr.h"
+#include "previewlogging.h"
 
 using namespace vte;
 
@@ -133,6 +134,10 @@ void PreviewMgr::setPreviewEnabled(bool p_enabled) {
 
 void PreviewMgr::updateImageLinks(const QVector<md::ImageLinkInfo> &p_links) {
   auto &data = m_previewData[Source::ImageLink];
+  qCDebug(previewTableLog) << "source image update" << "document" << document() << "links"
+                           << p_links.size() << "enabled" << data.m_enabled << "basePathPresent"
+                           << !m_interface->basePath().isEmpty() << "exclusiveReader"
+                           << m_exclusiveResourceReader;
   if (!data.m_enabled) {
     return;
   }
@@ -265,6 +270,9 @@ void PreviewMgr::updateBlockPreview(TimeStamp p_timeStamp, const QVector<ImageLi
     }
 
     QString name = imageResourceName(link);
+    qCDebug(previewTableLog) << "source image resource" << "document" << doc << "block"
+                             << link.m_blockNumber << "ready" << !name.isEmpty() << "inline"
+                             << !link.m_isBlockwise;
     if (name.isEmpty()) {
       continue;
     }
@@ -663,6 +671,10 @@ void PreviewMgr::updateBlockPreview(TimeStamp p_timeStamp, Source p_source,
     }
 
     QString name = imageResourceNameForSource(p_source, *item);
+    qCDebug(previewTableLog) << "source rendered resource" << "document" << doc << "source"
+                             << static_cast<int>(p_source) << "block" << item->m_blockNumber
+                             << "ready" << !name.isEmpty() << "pixels" << item->m_image.size()
+                             << "inline" << !item->m_isBlockwise;
     if (name.isEmpty()) {
       continue;
     }
@@ -691,6 +703,9 @@ void PreviewMgr::updateMathBlocks(const QVector<QSharedPointer<PreviewItem>> &p_
 void PreviewMgr::updatePreviewSource(PreviewData::Source p_source,
                                      const QVector<QSharedPointer<PreviewItem>> &p_items) {
   auto &data = m_previewData[p_source];
+  qCDebug(previewTableLog) << "source rendered update" << "document" << document() << "source"
+                           << static_cast<int>(p_source) << "items" << p_items.size() << "enabled"
+                           << data.m_enabled;
   if (!data.m_enabled) {
     return;
   }

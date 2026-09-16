@@ -119,8 +119,9 @@ states, source highlighting, and semantic signals. In particular:
 
 ## Preview model
 
-Rendered previews are side metadata and pixmaps. They are not `QTextObject` instances, do not
-insert document characters, and do not hide or replace the editable Markdown source.
+In the note's source document, rendered previews are side metadata and pixmaps. They do not
+insert document characters or replace editable Markdown. Interactive table sheets use a separate
+document with transient image objects, as described below.
 
 ```
 cmark image regions                   host-rendered code/math
@@ -183,10 +184,10 @@ are expected.
 The opt-in table sheet is a live `QTextDocument`, separate from the note's source
 highlighting. `TablePreview` snapshots carry text, grid and source metadata, but no
 resolved character formats. `TablePreviewDocument` highlights each origin's current
-single-line Markdown through `md::highlightInlineSnippet()` and the editor's shared
-`md::resolveFormatRuns()` precedence rules.
+single-line Markdown through `md::parseInlineSnippet()` and the editor's shared
+`md::resolveFormatRuns()` precedence rules. The same parse also identifies image and math spans.
 
-Each table caches style-indexed units by exact live text, including empty parse
+Each table caches typed snippet results by exact live source text, including empty parse
 results. Duplicate texts share an entry; entries absent from the live grid are pruned.
 Rebuilds retain matching entries. A coherent cell edit refreshes synchronously before
 source commit; structural changes repaint the final grid while reusing unchanged text.
@@ -196,13 +197,42 @@ first block uses `QTextTableCell::setFormat()` so Qt's row/column spans survive.
 `MarkdownHighlighter::getSyntaxStyles()` supplies the existing zoom-adjusted vector.
 `syntaxStylesChanged()` schedules the host's blocked-aware publication drain, which
 restyles realized tables and invalidates their measurements without rebuilding cells
-or moving the caret. Style-only changes reuse cached units. Empty style vectors skip
-snippet parsing and leave the baseline alignment/header formatting.
+or moving the caret. Style-only changes reuse cached units. Empty style vectors leave the
+baseline alignment/header formatting; inline preview validation can still parse typed spans.
 
 For Markdown-backed HTML tables, decoded `vte-md` payloads remain authoritative;
 comment-less cells in a backed table are Markdown too. One malformed payload leaves
 the whole table HTML-only and unhighlighted. Covered slots, empty cells and unexpected
 multiline text do no snippet work. Full note parses and unrealized tables do none either.
+
+### Inline images and math in table sheets
+
+For Markdown pipe tables, `PreviewMgr::previewDataUpdated()` publishes complete image/math
+records after updating source resources. `InteractivePreviewHost` copies those records and
+pixmaps synchronously, validates the live source revision and cell offsets, and supplies
+`TableCellInlinePreview` records to realized sheets. Enable `Table` together with `ImageLink`
+and/or `Math`; applications keep their existing `updateMathBlocks()` renderer connection.
+There is no separate sheet base path, network loader, or resource reader.
+
+The sheet installs tagged `QTextImageFormat` objects beside the corresponding source spans.
+Its source projection excludes only those decorations from editing, clipboard output,
+serialization and undo; an authored object-replacement character remains source text. Input-mode
+and IME edits suspend and revalidate decorations without committing presentation-only changes.
+HTML tables, including pipe tables converted by merging cells, remain source-only for these
+inline previews.
+
+Clearing previews or disabling a source invalidates captured copies and pending bindings.
+A clear remains pending even if fresh data arrives before a guarded operation or IME transaction
+finishes. Publication generations prevent reentrant callbacks from replaying stale copied data.
+The existing exclusive `setResourceReader()` policy therefore also governs table resources;
+revoking it must not leave a copied image available for later revalidation.
+
+Table image actions emit `VMarkdownEditor::imageInsertionRequested(requestId, selectedText)`.
+The application completes the captured target with
+`completeImageInsertion(requestId, singleLineImageReference)` or calls
+`cancelImageInsertion(requestId)`. Completion is one-shot and validates the original cell even
+when a dialog or asynchronous upload moved focus. Rejection never falls back to the source
+cursor. Embedded data URLs must be inline references, not separate reference definitions.
 
 ## Image preview lifecycle
 
@@ -591,10 +621,12 @@ folding is covered at three levels: `test_textfolding` for the range accessors,
 `test_markdownfolding` for reconciliation, the auto-fold decision and the restore, and
 `test_interactivepreview` end to end on a real `VMarkdownEditor`.
 
-There are no dedicated tests for `PreviewMgr`, `BlockPreviewData`, `DocumentResourceMgr`, or
-`EditorPreviewMgr`. Image extraction/loading and network races, resource cleanup, code/math preview
-host wiring, image geometry and painting, markers, preview-space hit testing, external math source
-highlighting, and parser-to-rendered-preview end-to-end behavior are also not covered directly.
+`test_interactivepreview` also exercises image/math resource publications, table-cell mapping,
+image-insertion tokens, source flags, geometry, resource retirement and reader-policy revocation.
+`test_tablepreview` covers decorated source projection, clipboard/serialization, undo and IME
+transactions, including clear-then-publish ordering. `test_tablepreviewinputmode` checks decorated
+cells under the editor's input modes. These tests supply rendered math pixmaps through the host
+API; they do not exercise an application's external KaTeX/MathJax renderer.
 
 ## Source index
 

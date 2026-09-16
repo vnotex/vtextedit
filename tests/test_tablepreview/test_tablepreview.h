@@ -53,6 +53,7 @@ private slots:
   void testInlineBindingsLeaveHtmlAndMergedCellsSourceOnly();
   void testInlineBindingsDoNotCreateSourceCommitsOrUndoSteps();
   void testInlineBindingsDeferRefreshDuringComposition();
+  void testInlineBindingsClearSurvivesDeferredPublication();
   void testInlineBindingsOrderMultipleImagesInOneCell();
 
   void testDocumentBuildsTheTable();

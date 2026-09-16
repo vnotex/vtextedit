@@ -683,6 +683,7 @@ private:
   // edges - the outermost BlockGuard and becameIdle() - both come back here.
   void scheduleOwedWork();
   void capturePreviewData(PreviewData::Source p_source, const QVector<QTextBlock> &p_blocks);
+  void invalidateTableCellPreviews(PreviewData::Source p_source);
   void scheduleTableCellPreviewRefresh();
   void refreshTableCellPreviews();
 
@@ -844,6 +845,7 @@ private:
     QVector<CapturedPreviewImage> m_images;
   };
   QVector<CapturedPreviewBlock> m_capturedPreviews[PreviewData::MaxSource];
+  quint64 m_capturedPreviewGenerations[PreviewData::MaxSource] = {};
   bool m_emptyPreviewPublication[PreviewData::MaxSource] = {true, true, true};
   bool m_tableCellPreviewsPending = false;
   bool m_publishPending = false;

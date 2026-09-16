@@ -7937,6 +7937,72 @@ void TestInteractivePreview::testTableInlinePreviewUsesRebasedLiveAnchor() {
   QCOMPARE(editor.document()->toPlainText(), QStringLiteral("new paragraph\n\n") + source);
 }
 
+void TestInteractivePreview::testTableInlinePreviewClearBeforeFreshPublication_data() {
+  QTest::addColumn<int>("operation");
+  QTest::newRow("empty-publication") << 0;
+  QTest::newRow("disable-image") << 1;
+  QTest::newRow("reader-policy-change") << 2;
+}
+
+void TestInteractivePreview::testTableInlinePreviewClearBeforeFreshPublication() {
+  QFETCH(int, operation);
+  QByteArray bytes = previewImageBytes(QSize(24, 12), qRgb(200, 20, 30));
+  bool allowOld = true;
+  const PreviewMgr::ResourceReader reader = [&](const QString &p_destination, QByteArray &p_data) {
+    if (!allowOld && p_destination == QStringLiteral("old.png")) {
+      return false;
+    }
+    p_data = bytes;
+    return true;
+  };
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  auto manager = editor.getPreviewMgr();
+  manager->setResourceReader(reader, true);
+  const QString source = QStringLiteral("| head | other |\n| --- | --- |\n"
+                                        "| ![old](old.png) | ![fresh](fresh.png) |\n");
+  setTextAndSettle(editor, source);
+  auto sheet = sheetView(singlePreviewWidget(editor));
+  QVERIFY(sheet);
+  QTRY_COMPARE(sheetInlineObjectCount(sheet), 2);
+  const auto links = editor.getHighlighter()->getImageLinks();
+  QCOMPARE(links.size(), 2);
+
+  // This still-valid local binding normally survives stale source offsets.
+  // Revocation must retire its copied pixels even while the cell is dirty.
+  auto cursor = sheetTable(sheet)->cellAt(1, 0).firstCursorPosition();
+  cursor.insertText(QStringLiteral("lead "));
+  QCOMPARE(sheetInlineCell(sheet, 1, 0).m_source, QStringLiteral("lead ![old](old.png)"));
+  QCOMPARE(sheetInlineObjectCount(sheet), 2);
+  allowOld = false;
+  bytes = previewImageBytes(QSize(24, 12), qRgb(20, 200, 30));
+  if (operation == 0) {
+    manager->updateImageLinks({});
+  } else if (operation == 1) {
+    manager->setPreviewEnabled(PreviewData::ImageLink, false);
+    manager->setPreviewEnabled(PreviewData::ImageLink, true);
+  } else {
+    manager->setResourceReader(reader, true);
+  }
+  // Deliberately publish before returning to the event loop. The new nonempty
+  // publication must not overwrite the clear owed to the dirty first cell.
+  manager->updateImageLinks({links.last()});
+  QCoreApplication::processEvents();
+  QCOMPARE(sheetInlineCell(sheet, 1, 0).m_objects.size(), 0);
+  const auto fresh = sheetInlineCell(sheet, 1, 1);
+  QCOMPARE(fresh.m_objects.size(), 1);
+  QCOMPARE(fresh.m_objects.first().m_image.toImage().pixelColor(0, 0), QColor(20, 200, 30));
+  QCOMPARE(editor.document()->toPlainText(), source);
+  QCOMPARE(sheetInlineCell(sheet, 1, 0).m_source, QStringLiteral("lead ![old](old.png)"));
+
+  // Revoking the reader remains deny-all; neither a captured sheet resource
+  // nor another publication may bypass the outer resource policy.
+  manager->setResourceReader({}, true);
+  manager->updateImageLinks(links);
+  QCoreApplication::processEvents();
+  QCOMPARE(sheetInlineObjectCount(sheet), 0);
+  QCOMPARE(editor.document()->toPlainText(), source);
+}
+
 void TestInteractivePreview::testTableInlinePreviewRetirementAndRemoval() {
   VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
   auto manager = editor.getPreviewMgr();

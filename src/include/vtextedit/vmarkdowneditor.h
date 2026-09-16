@@ -133,13 +133,13 @@ public slots:
   void handleExternalMathHighlightData(int p_idx, TimeStamp p_timeStamp, const QString &p_html);
 
 signals:
-  // The application supplies image-reference source through completeImageInsertion(),
-  // or cancels the token. A newer request invalidates the previous request.
-  void imageInsertionRequested(quint64 p_requestId, const QString &p_selectedText);
-
   // Original full-parse heading data. The guarantee is true only when there
   // is at least one eligible heading and every requested source prefix matches.
   void headingsUpdated(const QVector<md::HeadingInfo> &p_headings, bool p_hasSectionNumber);
+
+  // The application supplies image-reference source through completeImageInsertion(),
+  // or cancels the token. A newer request invalidates the previous request.
+  void imageInsertionRequested(quint64 p_requestId, const QString &p_selectedText);
 
   // Used when using WebCodeBlockHighlighter.
   void externalCodeBlockHighlightRequested(int p_idx, TimeStamp p_timeStamp, const QString &p_text);
