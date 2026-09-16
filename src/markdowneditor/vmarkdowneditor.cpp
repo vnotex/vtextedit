@@ -2094,6 +2094,17 @@ bool VMarkdownEditor::unregisterPreviewWidgetFactory(PreviewWidgetFactory *p_fac
   auto host = interactivePreviewHost();
   return host ? host->unregisterFactory(p_factory) : false;
 }
+
+QVector<PreviewWidgetLocation> VMarkdownEditor::getVisiblePreviewWidgetLocations() const {
+  auto host = interactivePreviewHost();
+  return host ? host->getVisiblePreviewWidgetLocations() : QVector<PreviewWidgetLocation>();
+}
+
+bool VMarkdownEditor::focusPreviewWidget(quint64 p_identity) {
+  auto host = interactivePreviewHost();
+  return host ? host->focusPreviewWidget(p_identity) : false;
+}
+
 bool VMarkdownEditor::completeImageInsertion(quint64 p_requestId, const QString &p_imageSource) {
   auto host = interactivePreviewHost();
   return host && host->completeImageInsertion(p_requestId, p_imageSource);

@@ -280,6 +280,12 @@ private slots:
   void testGlobalDisableRemovesWidgets();
   void testDuplicateTablesGetDistinctIdentities();
   void testWidgetGeometryFollowsScrolling();
+  void testPreviewWidgetLocationsFollowGeometry();
+  void testPreviewWidgetLocationsDoNotRealize();
+  void testPreviewWidgetLocationsRejectHiddenAndDisabled();
+  void testPreviewWidgetFocusPreservesFoldedSourceAndScroll();
+  void testPreviewWidgetFocusUsesProxyAndRevalidates();
+  void testPreviewWidgetFocusRejectsBlockedHost();
   void testAnUnchangedRebindDoesNotRemeasure();
   void testEditingTheTableDoesRemeasure();
 

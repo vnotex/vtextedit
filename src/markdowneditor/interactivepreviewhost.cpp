@@ -1124,6 +1124,92 @@ QVector<PreviewedRange> InteractivePreviewHost::previewedRanges() const {
   return ranges;
 }
 
+PreviewWidget *InteractivePreviewHost::visiblePreviewWidget(quint64 p_identity,
+                                                            QRect &p_rect) const {
+  auto *vp = viewport();
+  if (!m_enabled || isBlocked() || !m_doc || !vp || !vp->isVisible() || vp->rect().isEmpty() ||
+      !m_placedIds.contains(p_identity)) {
+    return nullptr;
+  }
+
+  const auto it = m_items.constFind(p_identity);
+  if (it == m_items.constEnd()) {
+    return nullptr;
+  }
+  const auto &item = it.value();
+  auto *widget = item.m_widget.data();
+  if (!item.m_preview || !widget || !isTypeEnabled(item.m_preview->type()) ||
+      item.m_anchor.isNull() || widget->parentWidget() != vp || !widget->isVisible()) {
+    return nullptr;
+  }
+
+  // Match previewedRanges()'s live-anchor checks. Source blocks may be folded:
+  // the realized widget's visibility, not its source visibility, is decisive.
+  const int start = item.m_anchor.selectionStart();
+  const int end = item.m_anchor.selectionEnd();
+  if (start < 0 || end <= start || end > m_doc->characterCount() - 1) {
+    return nullptr;
+  }
+  const QTextBlock firstBlock = m_doc->findBlock(start);
+  const QTextBlock lastBlock = m_doc->findBlock(end - 1);
+  if (!firstBlock.isValid() || !lastBlock.isValid() ||
+      lastBlock.blockNumber() < firstBlock.blockNumber()) {
+    return nullptr;
+  }
+
+  p_rect = widget->geometry().intersected(vp->rect());
+  return p_rect.isEmpty() ? nullptr : widget;
+}
+
+QVector<PreviewWidgetLocation> InteractivePreviewHost::getVisiblePreviewWidgetLocations() const {
+  QVector<PreviewWidgetLocation> locations;
+  auto *vp = viewport();
+  if (!m_enabled || isBlocked() || !m_doc || !vp || !vp->isVisible() || vp->rect().isEmpty()) {
+    return locations;
+  }
+  locations.reserve(m_placedIds.size());
+  for (quint64 id : m_placedIds) {
+    QRect rect;
+    if (visiblePreviewWidget(id, rect)) {
+      locations.append({id, rect});
+    }
+  }
+  std::sort(locations.begin(), locations.end(),
+            [](const PreviewWidgetLocation &p_left, const PreviewWidgetLocation &p_right) {
+              if (p_left.m_rect.top() != p_right.m_rect.top()) {
+                return p_left.m_rect.top() < p_right.m_rect.top();
+              }
+              if (p_left.m_rect.left() != p_right.m_rect.left()) {
+                return p_left.m_rect.left() < p_right.m_rect.left();
+              }
+              return p_left.m_identity < p_right.m_identity;
+            });
+  return locations;
+}
+
+bool InteractivePreviewHost::focusPreviewWidget(quint64 p_identity) {
+  QRect rect;
+  const QPointer<PreviewWidget> widget = visiblePreviewWidget(p_identity, rect);
+  if (!widget) {
+    return false;
+  }
+
+  // Focus events are application callbacks. They may destroy either the widget
+  // or this host, or replace the item, so retain no hash iterator across them.
+  const QPointer<InteractivePreviewHost> self(this);
+  if (auto *table = qobject_cast<TablePreviewWidget *>(widget.data())) {
+    table->focusSheet();
+  } else {
+    widget->setFocus(Qt::ShortcutFocusReason);
+  }
+
+  if (!self || !widget || self->visiblePreviewWidget(p_identity, rect) != widget.data()) {
+    return false;
+  }
+  auto *focus = QApplication::focusWidget();
+  return focus && (focus == widget.data() || widget->isAncestorOf(focus));
+}
+
 void InteractivePreviewHost::setPreviewFoldStates(
     const QVector<QPair<quint64, PreviewFoldState>> &p_states) {
   for (const auto &state : p_states) {

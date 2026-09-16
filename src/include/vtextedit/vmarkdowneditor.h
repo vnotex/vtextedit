@@ -6,6 +6,7 @@
 #include <vtextedit/vtexteditor.h>
 
 #include <QHash>
+#include <QRect>
 #include <QVariant>
 
 #include <functional>
@@ -41,6 +42,12 @@ enum class TypeAction {
   TypeLink,
   TypeImage,
   TypeTable
+};
+
+// One visible, realized preview in text-viewport logical coordinates.
+struct PreviewWidgetLocation {
+  quint64 m_identity = 0;
+  QRect m_rect;
 };
 
 class VTEXTEDIT_EXPORT VMarkdownEditor : public VTextEditor {
@@ -104,6 +111,14 @@ public:
   // Deactivate and destroy a previously registered factory. Ownership never
   // returns to the caller: the pointer is invalid once this returns true.
   bool unregisterPreviewWidgetFactory(PreviewWidgetFactory *p_factory);
+
+  // Only visible realized widgets, clipped to getTextEdit()->viewport().
+  // Collection never realizes previews or changes source, layout or focus.
+  QVector<PreviewWidgetLocation> getVisiblePreviewWidgetLocations() const;
+
+  // Revalidate a current identity and focus its sheet or renderer focus proxy.
+  // Hidden, disabled, deleted or otherwise stale previews cannot take focus.
+  bool focusPreviewWidget(quint64 p_identity);
 
   // Route one Markdown typing action to the focused interactive preview, or
   // apply it to the source editor when no preview owns focus. TypeHeading

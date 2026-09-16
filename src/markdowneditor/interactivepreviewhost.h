@@ -31,6 +31,7 @@ class TablePreviewWidget;
 class TablePreviewWidgetFactory;
 class VMarkdownEditor;
 class VTextEdit;
+struct PreviewWidgetLocation;
 
 // Defined in tablepreviewwidget.h. Only ever passed by value through plain
 // member functions below, never through a signal or slot, so moc never has to
@@ -55,6 +56,10 @@ public:
   bool registerFactory(PreviewWidgetFactory *p_factory, int p_priority);
 
   bool unregisterFactory(PreviewWidgetFactory *p_factory);
+
+  QVector<PreviewWidgetLocation> getVisiblePreviewWidgetLocations() const;
+  bool focusPreviewWidget(quint64 p_identity);
+
   // Dispatch to the live preview root which owns application focus. A focused
   // preview consumes the action even when it has no optional handler.
   bool handleTypeAction(TypeAction p_action, const QVariant &p_data);
@@ -375,6 +380,10 @@ private:
   };
 
   QWidget *viewport() const;
+
+  // Pure lookup shared by collection and focus revalidation. No callbacks or
+  // geometry publication; the rectangle describes the current widget only.
+  PreviewWidget *visiblePreviewWidget(quint64 p_identity, QRect &p_rect) const;
 
   // A sheet is handing the caret back to the editor. The destination is
   // resolved here rather than in the sheet: only this host holds a live anchor

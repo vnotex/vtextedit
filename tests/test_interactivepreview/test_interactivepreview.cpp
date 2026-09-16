@@ -14,6 +14,7 @@
 #include <QFocusEvent>
 #include <QImage>
 #include <QKeySequence>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMimeData>
 #include <QPointer>
@@ -8288,6 +8289,293 @@ void TestInteractivePreview::testHtmlTableInlinePreviewsRemainSourceOnly() {
   QCOMPARE(sheetInlineCell(sheet, 0, 0).m_source, cellSource);
   QCOMPARE(sheetInlineCell(sheet, 1, 0).m_source, QStringLiteral("edited"));
   QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("colspan=\"2\"")));
+}
+
+// Public navigation locations are a snapshot of actual visible widget geometry,
+// not of the layout reservations for every table in the document.
+void TestInteractivePreview::testPreviewWidgetLocationsFollowGeometry() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 550);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  QString source = QLatin1String(c_table) + QStringLiteral("\n") + QLatin1String(c_table);
+  for (int i = 0; i < 100; ++i) {
+    source += QStringLiteral("\nfiller paragraph %1\n").arg(i);
+  }
+  const int offscreenStart = source.size();
+  source += QStringLiteral("\n") + QLatin1String(c_table);
+  for (int i = 0; i < 100; ++i) {
+    source += QStringLiteral("\ntrailing paragraph %1\n").arg(i);
+  }
+  setTextAndSettle(editor, source);
+
+  auto *viewport = editor.getTextEdit()->viewport();
+  auto *vbar = editor.getTextEdit()->verticalScrollBar();
+  vbar->setValue(vbar->minimum());
+  QTRY_COMPARE(editor.getVisiblePreviewWidgetLocations().size(), 2);
+  auto widgets = previewWidgets(editor);
+  QCOMPARE(widgets.size(), 2);
+  for (auto *widget : widgets) {
+    QVERIFY(widget->previewContext()->preview()->startPos() < offscreenStart);
+  }
+  std::sort(widgets.begin(), widgets.end(), [](PreviewWidget *p_left, PreviewWidget *p_right) {
+    return p_left->y() < p_right->y();
+  });
+  auto *first = widgets.first();
+  const quint64 firstId = first->previewContext()->identity();
+
+  const auto compareVisibleGeometry = [&]() {
+    QList<PreviewWidget *> visible;
+    for (auto *widget : previewWidgets(editor)) {
+      if (widget->isVisible() && !widget->geometry().intersected(viewport->rect()).isEmpty()) {
+        visible.append(widget);
+      }
+    }
+    std::sort(visible.begin(), visible.end(),
+              [viewport](PreviewWidget *p_left, PreviewWidget *p_right) {
+                const QRect left = p_left->geometry().intersected(viewport->rect());
+                const QRect right = p_right->geometry().intersected(viewport->rect());
+                if (left.top() != right.top()) {
+                  return left.top() < right.top();
+                }
+                if (left.left() != right.left()) {
+                  return left.left() < right.left();
+                }
+                return p_left->previewContext()->identity() < p_right->previewContext()->identity();
+              });
+    const auto locations = editor.getVisiblePreviewWidgetLocations();
+    QCOMPARE(locations.size(), visible.size());
+    for (int i = 0; i < locations.size(); ++i) {
+      QCOMPARE(locations[i].m_identity, visible[i]->previewContext()->identity());
+      QCOMPARE(locations[i].m_rect, visible[i]->geometry().intersected(viewport->rect()));
+    }
+  };
+  compareVisibleGeometry();
+
+  vbar->setValue(vbar->value() + first->y() + first->height() / 2);
+  QTRY_VERIFY(first->isVisible() && first->y() < 0 && first->geometry().bottom() >= 0);
+  auto clipped = editor.getVisiblePreviewWidgetLocations();
+  QVERIFY(!clipped.isEmpty());
+  QCOMPARE(clipped.first().m_identity, firstId);
+  QCOMPARE(clipped.first().m_rect.top(), 0);
+  QVERIFY(clipped.first().m_rect.height() < first->height());
+  compareVisibleGeometry();
+
+  const int oldWidth = first->width();
+  editor.resize(420, 550);
+  QTRY_VERIFY(first->width() < oldWidth);
+  compareVisibleGeometry();
+
+  vbar->setValue(vbar->maximum());
+  QTRY_VERIFY(editor.getVisiblePreviewWidgetLocations().isEmpty());
+  QVERIFY(!editor.focusPreviewWidget(firstId));
+  QCOMPARE(editor.document()->toPlainText(), source);
+}
+
+void TestInteractivePreview::testPreviewWidgetLocationsDoNotRealize() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 300);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  auto *factory = new RecordingPreviewFactory({PreviewElementType::Table});
+  QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
+  const QString source = tableBetweenFiller();
+  setTextAndSettle(editor, source);
+  const int initialCreates = factory->m_createCount;
+  const int initialWidgets = previewWidgets(editor).size();
+  for (int i = 0; i < 3; ++i) {
+    QVERIFY(editor.getVisiblePreviewWidgetLocations().isEmpty());
+  }
+  QCOMPARE(factory->m_createCount, initialCreates);
+  QCOMPARE(previewWidgets(editor).size(), initialWidgets);
+
+  auto *vbar = editor.getTextEdit()->verticalScrollBar();
+  const int step = qMax(1, editor.getTextEdit()->viewport()->height() / 4);
+  for (int value = vbar->minimum(); value <= vbar->maximum(); value += step) {
+    vbar->setValue(value);
+    QTest::qWait(20);
+    if (!editor.getVisiblePreviewWidgetLocations().isEmpty()) {
+      break;
+    }
+  }
+  QCOMPARE(editor.getVisiblePreviewWidgetLocations().size(), 1);
+  const quint64 id = editor.getVisiblePreviewWidgetLocations().first().m_identity;
+  const int creates = factory->m_createCount;
+  const auto cursor = editor.getTextEdit()->textCursor();
+  const int scroll = vbar->value();
+  for (int i = 0; i < 3; ++i) {
+    const auto locations = editor.getVisiblePreviewWidgetLocations();
+    QCOMPARE(locations.size(), 1);
+    QCOMPARE(locations.first().m_identity, id);
+  }
+  QCOMPARE(factory->m_createCount, creates);
+  QCOMPARE(editor.getTextEdit()->textCursor().position(), cursor.position());
+  QCOMPARE(vbar->value(), scroll);
+  QCOMPARE(editor.document()->toPlainText(), source);
+}
+
+void TestInteractivePreview::testPreviewWidgetLocationsRejectHiddenAndDisabled() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QLatin1String(c_table));
+  auto *widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  QTRY_COMPARE(editor.getVisiblePreviewWidgetLocations().size(), 1);
+  const quint64 id = widget->previewContext()->identity();
+
+  widget->hide();
+  QVERIFY(editor.getVisiblePreviewWidgetLocations().isEmpty());
+  QVERIFY(!editor.focusPreviewWidget(id));
+  widget->show();
+  QCOMPARE(editor.getVisiblePreviewWidgetLocations().size(), 1);
+
+  editor.hide();
+  QVERIFY(editor.getVisiblePreviewWidgetLocations().isEmpty());
+  QVERIFY(!editor.focusPreviewWidget(id));
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  QTRY_COMPARE(editor.getVisiblePreviewWidgetLocations().size(), 1);
+
+  // These checks precede the queued teardown: an old widget may still exist,
+  // but a disabled host/type must already reject its identity.
+  editor.setInplacePreviewEnabled(false);
+  QVERIFY(editor.getVisiblePreviewWidgetLocations().isEmpty());
+  QVERIFY(!editor.focusPreviewWidget(id));
+  settle(editor);
+  editor.setInplacePreviewEnabled(true);
+  settle(editor);
+  QTRY_COMPARE(editor.getVisiblePreviewWidgetLocations().size(), 1);
+  const quint64 enabledId = editor.getVisiblePreviewWidgetLocations().first().m_identity;
+  auto config = makeConfig();
+  config->m_inplacePreviewSources &= ~MarkdownEditorConfig::Table;
+  editor.setConfig(config);
+  QVERIFY(editor.getVisiblePreviewWidgetLocations().isEmpty());
+  QVERIFY(!editor.focusPreviewWidget(enabledId));
+}
+
+void TestInteractivePreview::testPreviewWidgetFocusPreservesFoldedSourceAndScroll() {
+  VMarkdownEditor editor(makeAutoFoldConfig(true), QSharedPointer<TextEditorParameters>::create());
+  editor.resize(600, 300);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  setTextAndSettle(editor, tableAboveFiller());
+  settleFolding();
+  QVERIFY(!blockVisible(editor, 1));
+  auto *widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto *sheet = sheetView(widget);
+  QVERIFY(sheet);
+  auto *textEdit = editor.getTextEdit();
+  auto *vbar = textEdit->verticalScrollBar();
+  auto *hbar = textEdit->horizontalScrollBar();
+  putEditorCaretInBlock(editor, 20);
+  vbar->setValue(vbar->value() + widget->y() + widget->height() / 2);
+  QTRY_VERIFY(widget->isVisible() && widget->y() < 0);
+  QTRY_COMPARE(editor.getVisiblePreviewWidgetLocations().size(), 1);
+  const auto location = editor.getVisiblePreviewWidgetLocations().first();
+  QCOMPARE(location.m_identity, widget->previewContext()->identity());
+  QCOMPARE(location.m_rect, widget->geometry().intersected(textEdit->viewport()->rect()));
+  const int vertical = vbar->value();
+  const int horizontal = hbar->value();
+  const QString source = editor.document()->toPlainText();
+  const int sourceStart = widget->previewContext()->preview()->startPos();
+  const int sourceEnd = widget->previewContext()->preview()->endPos();
+  QSignalSpy vspy(vbar, &QScrollBar::valueChanged);
+  QSignalSpy hspy(hbar, &QScrollBar::valueChanged);
+
+  QVERIFY(editor.focusPreviewWidget(location.m_identity));
+  QVERIFY(sheet->hasFocus());
+  settleCursorLineSync();
+  QVERIFY(sheet->hasFocus());
+  QCOMPARE(vspy.count(), 0);
+  QCOMPARE(hspy.count(), 0);
+  QCOMPARE(vbar->value(), vertical);
+  QCOMPARE(hbar->value(), horizontal);
+  QCOMPARE(editor.document()->toPlainText(), source);
+  QVERIFY(!blockVisible(editor, 1));
+
+  QTextCursor remove(editor.document());
+  remove.setPosition(sourceStart);
+  remove.setPosition(sourceEnd, QTextCursor::KeepAnchor);
+  remove.removeSelectedText();
+  // Reject the collapsed live anchor even before a new parse drops the item.
+  QVERIFY(!editor.focusPreviewWidget(location.m_identity));
+  QVERIFY(editor.getVisiblePreviewWidgetLocations().isEmpty());
+  settle(editor);
+  QVERIFY(previewWidgets(editor).isEmpty());
+  QVERIFY(!editor.focusPreviewWidget(location.m_identity));
+}
+
+void TestInteractivePreview::testPreviewWidgetFocusUsesProxyAndRevalidates() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  auto *factory = new RecordingPreviewFactory({PreviewElementType::Table});
+  QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
+  setTextAndSettle(editor, QLatin1String(c_table));
+  auto *widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto *proxy = new QLineEdit(widget);
+  proxy->setGeometry(widget->rect());
+  proxy->show();
+  widget->setFocusProxy(proxy);
+  editor.activateWindow();
+  editor.getTextEdit()->setFocus();
+  QTRY_VERIFY(editor.getTextEdit()->hasFocus());
+  QTRY_COMPARE(editor.getVisiblePreviewWidgetLocations().size(), 1);
+  const quint64 id = editor.getVisiblePreviewWidgetLocations().first().m_identity;
+  const QString source = editor.document()->toPlainText();
+  QVERIFY(editor.focusPreviewWidget(id));
+  QCOMPARE(QApplication::focusWidget(), proxy);
+  settleCursorLineSync();
+  QCOMPARE(editor.document()->toPlainText(), source);
+
+  editor.getTextEdit()->setFocus();
+  QTRY_VERIFY(editor.getTextEdit()->hasFocus());
+  const QPointer<PreviewWidget> guardedWidget(widget);
+  const auto connection = connect(qApp, &QApplication::focusChanged, &editor,
+                                  [widget, proxy](QWidget *, QWidget *p_now) {
+                                    if (p_now == proxy) {
+                                      widget->hide();
+                                      widget->deleteLater();
+                                    }
+                                  });
+  QVERIFY(!editor.focusPreviewWidget(id));
+  disconnect(connection);
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  QVERIFY(guardedWidget.isNull());
+  QVERIFY(!editor.focusPreviewWidget(id));
+  QVERIFY(editor.getVisiblePreviewWidgetLocations().isEmpty());
+}
+
+void TestInteractivePreview::testPreviewWidgetFocusRejectsBlockedHost() {
+  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  auto *factory = new RecordingPreviewFactory({PreviewElementType::Table});
+  QVERIFY(editor.registerPreviewWidgetFactory(factory, 5));
+  setTextAndSettle(editor, QLatin1String(c_table));
+  QCOMPARE(factory->m_widgets.size(), 1);
+  auto *widget = factory->m_widgets.first();
+  auto *proxy = new QLineEdit(widget);
+  proxy->setGeometry(widget->rect());
+  proxy->show();
+  widget->setFocusProxy(proxy);
+  editor.activateWindow();
+  editor.getTextEdit()->setFocus();
+  QTRY_VERIFY(editor.getTextEdit()->hasFocus());
+  const quint64 id = widget->previewContext()->identity();
+  bool invoked = false;
+  bool focusedWhileBlocked = true;
+  bool emptyWhileBlocked = false;
+  widget->m_duringSpin = [&]() {
+    invoked = true;
+    focusedWhileBlocked = editor.focusPreviewWidget(id);
+    emptyWhileBlocked = editor.getVisiblePreviewWidgetLocations().isEmpty();
+  };
+  widget->m_spinOnNextSetPreview = true;
+  settle(editor);
+  QVERIFY(invoked);
+  QVERIFY(!focusedWhileBlocked);
+  QVERIFY(emptyWhileBlocked);
+  QVERIFY(editor.getTextEdit()->hasFocus());
+  QVERIFY(editor.focusPreviewWidget(id));
+  QVERIFY(proxy->hasFocus());
 }
 
 QTEST_MAIN(tests::TestInteractivePreview)
