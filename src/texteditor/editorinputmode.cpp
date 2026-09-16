@@ -1,5 +1,8 @@
 #include "editorinputmode.h"
 
+#include <QTextBlock>
+#include <QTextDocument>
+
 #include <vtextedit/vtextedit.h>
 #include <vtextedit/vtexteditor.h>
 
@@ -9,6 +12,28 @@ using namespace vte;
 
 EditorInputMode::EditorInputMode(VTextEditor *p_editor)
     : TextEditInputMode(p_editor->getTextEdit()), m_editor(p_editor) {}
+
+void EditorInputMode::updateCursor(int p_line, int p_column) {
+  auto block = document()->findBlockByNumber(p_line);
+  if (!block.isValid() || p_column < 0 || p_column >= block.length()) {
+    return;
+  }
+  auto folding = m_editor->getTextFolding();
+  qint64 previousOwner = TextFolding::InvalidRangeId;
+  while (!block.isVisible()) {
+    const auto owner = folding->outermostFoldedRangeOnBlock(p_line);
+    if (owner == TextFolding::InvalidRangeId || owner == previousOwner ||
+        folding->toggleRange(owner) == false) {
+      return;
+    }
+    previousOwner = owner;
+    block = document()->findBlockByNumber(p_line);
+    if (!block.isValid()) {
+      return;
+    }
+  }
+  TextEditInputMode::updateCursor(p_line, p_column);
+}
 
 int EditorInputMode::lineToVisibleLine(int p_line) const {
   return m_editor->getTextFolding()->lineToVisibleLine(p_line);

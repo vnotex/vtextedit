@@ -57,6 +57,9 @@ class ActiveMode;
  * dismissal via ctrl-c and ctrl-[; bi-directional incremental searching, with
  * SmartCase; interactive sed-replace; plus a few extensions such as completion
  * from document and navigable sed search and sed replace history.
+ * Search patterns use Qt regular expressions (multiline), not Vim regex syntax.
+ * Preview is cursor-only; acceptance updates the last search and cancellation
+ * restores the original cursor/visual selection without closing revealed folds.
  */
 class KATEVI_EXPORT EmulatedCommandBar : public QWidget {
   Q_OBJECT
@@ -99,6 +102,7 @@ signals:
 
 private:
   friend class ActiveMode;
+  friend class SearchMode;
 
   void showBarTypeIndicator(Mode mode);
 
@@ -153,8 +157,9 @@ private:
 #if 0
     QScopedPointer<MatchHighlighter> m_matchHighligher;
     QScopedPointer<InteractiveSedReplaceMode> m_interactiveSedReplaceMode;
-    QScopedPointer<SearchMode> m_searchMode;
 #endif
+
+  QScopedPointer<SearchMode> m_searchMode;
 
   QScopedPointer<CommandMode> m_commandMode;
 

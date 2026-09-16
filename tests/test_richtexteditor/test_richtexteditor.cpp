@@ -2,6 +2,8 @@
 
 #include <QApplication>
 #include <QGuiApplication>
+#include <QLabel>
+#include <QLineEdit>
 #include <QMimeData>
 #include <QSignalSpy>
 #include <QStyleHints>
@@ -13,7 +15,9 @@
 #include <QVBoxLayout>
 
 #include <inputmode/abstractinputmode.h>
+#include <vtextedit/markdowneditorconfig.h>
 #include <vtextedit/richtexteditorconfig.h>
+#include <vtextedit/vmarkdowneditor.h>
 #include <vtextedit/vrichtexteditor.h>
 #include <vtextedit/vtextedit.h>
 
@@ -33,6 +37,54 @@ QSharedPointer<RichTextEditorConfig> configWithMode(InputMode p_mode) {
   config->m_inputMode = p_mode;
   return config;
 }
+
+// Own the published status widget separately from the host, including on assertion failure.
+struct ViSearchHost {
+  QWidget m_host;
+  VRichTextEditor *m_editor;
+  VTextEdit *m_edit;
+  QSharedPointer<QWidget> m_status;
+
+  explicit ViSearchHost(const QString &p_source) {
+    auto layout = new QVBoxLayout(&m_host);
+    m_editor = new VRichTextEditor(configWithMode(InputMode::ViMode), &m_host);
+    m_edit = m_editor->getTextEdit();
+    m_edit->setPlainText(p_source);
+    layout->addWidget(m_editor);
+    m_status = m_editor->inputModeStatusWidget();
+    layout->addWidget(m_status.data());
+    m_status->show();
+    m_host.show();
+    m_host.activateWindow();
+    m_edit->setFocus();
+  }
+
+  ~ViSearchHost() { m_status->setParent(nullptr); }
+
+  void setPosition(int p_position) {
+    auto cursor = m_edit->textCursor();
+    cursor.setPosition(p_position);
+    m_edit->setTextCursor(cursor);
+  }
+
+  bool search(const QString &p_keys, const QString &p_pattern) {
+    QTest::keyClicks(m_edit, p_keys);
+    auto prompt = qobject_cast<QLineEdit *>(QApplication::focusWidget());
+    if (!prompt || !prompt->isVisible() ||
+        prompt->objectName() != QStringLiteral("CommandText.EmulatedCommandBar.KateVi")) {
+      return false;
+    }
+    QTest::keyClicks(prompt, p_pattern);
+    return prompt->hasFocus();
+  }
+
+  bool close(int p_key = Qt::Key_Return, Qt::KeyboardModifiers p_modifiers = Qt::NoModifier) {
+    QTest::keyClick(QApplication::focusWidget(), static_cast<Qt::Key>(p_key), p_modifiers);
+    return m_edit->hasFocus();
+  }
+
+  int position() const { return m_edit->textCursor().position(); }
+};
 
 // A short document with a bold run and a bullet list.
 const char *c_html = "<p>plain <b>bold</b> tail</p>"
@@ -358,6 +410,308 @@ void TestRichTextEditor::testFocusTransitionsFireOncePerConsumer() {
 
   // And restores the application flash time on focus out.
   QVERIFY(QGuiApplication::styleHints()->cursorFlashTime() > 0);
+}
+
+void TestRichTextEditor::testViSearchDirectionsCountsAndRepeat() {
+  for (bool readOnly : {false, true}) {
+    const QString source = QStringLiteral("one two one\none");
+    ViSearchHost host(source);
+    QVERIFY(QTest::qWaitForWindowExposed(&host.m_host));
+    host.m_edit->setReadOnly(readOnly);
+    const auto html = host.m_edit->toHtml();
+    const int revision = host.m_edit->document()->revision();
+    QVERIFY(host.search("/", "one"));
+    QCOMPARE(host.position(), 8);
+    QVERIFY(host.close());
+    QCOMPARE(host.position(), 8);
+    QTest::keyClicks(host.m_edit, "n");
+    QCOMPARE(host.position(), 12);
+    QTest::keyClicks(host.m_edit, "n");
+    QCOMPARE(host.position(), 0);
+    QTest::keyClicks(host.m_edit, "N");
+    QCOMPARE(host.position(), 12);
+    QVERIFY(host.search("?", "one"));
+    QCOMPARE(host.position(), 8);
+    QVERIFY(host.close());
+    QTest::keyClicks(host.m_edit, "n");
+    QCOMPARE(host.position(), 0);
+    QTest::keyClicks(host.m_edit, "N");
+    QCOMPARE(host.position(), 8);
+    host.setPosition(0);
+    QVERIFY(host.search("2/", "one"));
+    QCOMPARE(host.position(), 12);
+    QVERIFY(host.close());
+    QVERIFY(host.search("/", ""));
+    QVERIFY(host.close());
+    QCOMPARE(host.position(), 0);
+    QVERIFY(host.search("/", "one"));
+    QVERIFY(host.close(Qt::Key_Escape));
+    QCOMPARE(host.position(), 0);
+    QVERIFY(host.search("/", "one"));
+    QVERIFY(host.close());
+    QCOMPARE(host.position(), 8);
+    QCOMPARE(host.m_edit->toPlainText(), source);
+    QCOMPARE(host.m_edit->toHtml(), html);
+    QCOMPARE(host.m_edit->document()->revision(), revision);
+  }
+}
+
+void TestRichTextEditor::testViSearchCancelAndInvalidPattern() {
+  ViSearchHost host(QStringLiteral("one two one\none"));
+  QVERIFY(QTest::qWaitForWindowExposed(&host.m_host));
+  QVERIFY(host.search("/", "one"));
+  QVERIFY(host.close());
+  QCOMPARE(host.position(), 8);
+  QVERIFY(host.search("/", "two"));
+  QCOMPARE(host.position(), 4);
+  QVERIFY(host.close(Qt::Key_Escape));
+  QCOMPARE(host.position(), 8);
+  QTest::keyClicks(host.m_edit, "n");
+  QCOMPARE(host.position(), 12);
+  for (int key : {Qt::Key_C, Qt::Key_BracketLeft}) {
+    QVERIFY(host.search("/", "two"));
+    QCOMPARE(host.position(), 4);
+    QVERIFY(host.close(key, Qt::ControlModifier));
+    QCOMPARE(host.position(), 12);
+  }
+  QVERIFY(host.search("/", ""));
+  QVERIFY(host.close(Qt::Key_Backspace));
+  QCOMPARE(host.position(), 12);
+  QTest::keyClicks(host.m_edit, "n");
+  QCOMPARE(host.position(), 0);
+
+  const auto original = host.m_edit->toPlainText();
+  for (const auto &pattern : {QStringLiteral("["), QStringLiteral("absent")}) {
+    host.setPosition(0);
+    QVERIFY(host.search("d/", pattern));
+    auto feedback = host.m_status->findChild<QLabel *>(
+        QStringLiteral("CommandResponseMessage.EmulatedCommandBar.KateVi"));
+    QVERIFY(feedback && feedback->isVisible());
+    QVERIFY(host.close());
+    QCOMPARE(host.position(), 0);
+    QCOMPARE(host.m_edit->toPlainText(), original);
+    QTest::keyClicks(host.m_edit, "n");
+    QCOMPARE(host.position(), pattern == QStringLiteral("[") ? 8 : 0);
+    host.setPosition(0);
+    QTest::keyClicks(host.m_edit, "x");
+    QCOMPARE(host.m_edit->toPlainText(), original.mid(1));
+    QTest::keyClicks(host.m_edit, "u");
+    QCOMPARE(host.m_edit->toPlainText(), original);
+  }
+
+  ViSearchHost fresh(QStringLiteral("a/b"));
+  QVERIFY(QTest::qWaitForWindowExposed(&fresh.m_host));
+  QVERIFY(fresh.search("/", ""));
+  QVERIFY(fresh.close());
+  QCOMPARE(fresh.position(), 0);
+  QCOMPARE(fresh.m_edit->getInputMode()->editorMode(), EditorMode::ViModeNormal);
+  QTest::keyClicks(fresh.m_edit, "f/");
+  QCOMPARE(fresh.position(), 1);
+  QVERIFY(fresh.m_edit->hasFocus());
+  QTest::keyClicks(fresh.m_edit, "r?");
+  QCOMPARE(fresh.m_edit->toPlainText(), QStringLiteral("a?b"));
+  QVERIFY(fresh.m_edit->hasFocus());
+  QTest::keyClicks(fresh.m_edit, "i/?");
+  QCOMPARE(fresh.m_edit->toPlainText(), QStringLiteral("a/??b"));
+  QCOMPARE(fresh.m_edit->getInputMode()->editorMode(), EditorMode::ViModeInsert);
+}
+
+void TestRichTextEditor::testViSearchRegexBoundaries() {
+  ViSearchHost host(QStringLiteral("alpha ALPHA Alpha"));
+  QVERIFY(QTest::qWaitForWindowExposed(&host.m_host));
+  QVERIFY(host.search("/", "alpha"));
+  QCOMPARE(host.position(), 6);
+  QVERIFY(host.close());
+  host.setPosition(0);
+  QVERIFY(host.search("/", "Alpha"));
+  QCOMPARE(host.position(), 12);
+  QVERIFY(host.close());
+
+  host.m_edit->setPlainText(QStringLiteral("xx\nalpha\nbeta\nalpha\nbeta"));
+  host.setPosition(10); // line 2, column 1, inside the multiline match.
+  QVERIFY(host.search("?", QStringLiteral("alpha\\nbeta")));
+  QCOMPARE(host.m_edit->textCursor().blockNumber(), 1);
+  QCOMPARE(host.m_edit->textCursor().positionInBlock(), 0);
+  QVERIFY(host.close());
+
+  const QString anchors = QStringLiteral("a\nb\n");
+  host.m_edit->setPlainText(anchors);
+  const int revision = host.m_edit->document()->revision();
+  QVERIFY(host.search("/", "^"));
+  QCOMPARE(host.position(), 2);
+  QVERIFY(host.close());
+  // Qt/PCRE excludes the terminal-newline EOF from ^; \z names that boundary explicitly.
+  QTest::keyClicks(host.m_edit, "n");
+  QCOMPARE(host.position(), 0);
+  QTest::keyClicks(host.m_edit, "N");
+  QCOMPARE(host.position(), 2);
+  host.setPosition(0);
+  QVERIFY(host.search("/", QStringLiteral("^|\\z")));
+  QCOMPARE(host.position(), 2);
+  QVERIFY(host.close());
+  QTest::keyClicks(host.m_edit, "n");
+  QCOMPARE(host.position(), 4);
+  QTest::keyClicks(host.m_edit, "N");
+  QCOMPARE(host.position(), 2);
+  QTest::keyClicks(host.m_edit, "1000000n");
+  QCOMPARE(host.position(), 4);
+  QCOMPARE(host.m_edit->toPlainText(), anchors);
+  QCOMPARE(host.m_edit->document()->revision(), revision);
+
+  host.m_edit->setPlainText(QStringLiteral("a\nb"));
+  QVERIFY(host.search("/", "$"));
+  QCOMPARE(host.position(), 1);
+  QVERIFY(host.close());
+  QCOMPARE(host.position(), 1);
+  QTest::keyClicks(host.m_edit, "n");
+  QCOMPARE(host.position(), 3);
+  host.setPosition(0);
+  QVERIFY(host.search("/", QStringLiteral("\\z")));
+  QCOMPARE(host.position(), host.m_edit->document()->characterCount() - 1);
+  QVERIFY(host.close());
+
+  host.m_edit->setPlainText(QString());
+  const int emptyRevision = host.m_edit->document()->revision();
+  QVERIFY(host.search("/", "^"));
+  QVERIFY(host.close());
+  QCOMPARE(host.position(), 0);
+  QCOMPARE(host.m_edit->toPlainText(), QString());
+  QCOMPARE(host.m_edit->document()->revision(), emptyRevision);
+
+  const QString unicode = QStringLiteral("x\U0001F600needle");
+  host.m_edit->setPlainText(unicode);
+  QVERIFY(host.search("/", "needle"));
+  QCOMPARE(host.m_edit->textCursor().positionInBlock(), 3);
+  QVERIFY(host.close());
+  QCOMPARE(host.m_edit->toPlainText(), unicode);
+}
+
+void TestRichTextEditor::testViSearchComposesWithOperatorsAndVisualMode() {
+  const QString source = QStringLiteral("zero one two one");
+  ViSearchHost host(source);
+  QVERIFY(QTest::qWaitForWindowExposed(&host.m_host));
+  QVERIFY(host.search("d/", "one"));
+  QCOMPARE(host.m_edit->toPlainText(), source); // Preview never edits.
+  QVERIFY(host.close());
+  QCOMPARE(host.m_edit->toPlainText(), QStringLiteral("one two one"));
+  QTest::keyClicks(host.m_edit, ".");
+  QCOMPARE(host.m_edit->toPlainText(), QStringLiteral("one"));
+  QTest::keyClicks(host.m_edit, "u");
+  QCOMPARE(host.m_edit->toPlainText(), QStringLiteral("one two one"));
+  QTest::keyClicks(host.m_edit, "u");
+  QCOMPARE(host.m_edit->toPlainText(), source);
+
+  for (bool cancel : {true, false}) {
+    host.setPosition(0);
+    QVERIFY(host.search("d/", cancel ? QStringLiteral("one") : QStringLiteral("absent")));
+    QVERIFY(host.close(cancel ? Qt::Key_Escape : Qt::Key_Return));
+    QCOMPARE(host.m_edit->toPlainText(), source);
+    QCOMPARE(host.position(), 0);
+    QTest::keyClicks(host.m_edit, "x");
+    QCOMPARE(host.m_edit->toPlainText(), source.mid(1));
+    QTest::keyClicks(host.m_edit, "u");
+    QCOMPARE(host.m_edit->toPlainText(), source);
+  }
+
+  host.m_edit->setPlainText(QStringLiteral("one two one tail"));
+  host.setPosition(8);
+  QVERIFY(host.search("c?", "one"));
+  QVERIFY(host.close());
+  QCOMPARE(host.m_edit->toPlainText(), QStringLiteral("one tail"));
+  QCOMPARE(host.position(), 0);
+  QCOMPARE(host.m_edit->getInputMode()->editorMode(), EditorMode::ViModeInsert);
+  QTest::keyClicks(host.m_edit, "X");
+  QCOMPARE(host.m_edit->toPlainText(), QStringLiteral("Xone tail"));
+  QTest::keyClick(host.m_edit, Qt::Key_Escape);
+
+  host.m_edit->setPlainText(source);
+  for (bool reversed : {false, true}) {
+    host.setPosition(reversed ? 12 : 1);
+    QTest::keyClicks(host.m_edit, reversed ? "vhh" : "vl");
+    const auto selection = host.m_edit->getSelection();
+    const int position = host.position();
+    QVERIFY(selection.end() > selection.start());
+    QVERIFY(host.search(reversed ? "?" : "/", "one"));
+    QVERIFY(host.position() != position);
+    QVERIFY(host.close(Qt::Key_Escape));
+    QCOMPARE(host.position(), position);
+    QCOMPARE(host.m_edit->getSelection().start(), selection.start());
+    QCOMPARE(host.m_edit->getSelection().end(), selection.end());
+    QCOMPARE(host.m_edit->getInputMode()->editorMode(), EditorMode::ViModeVisual);
+    QVERIFY(host.search(reversed ? "?" : "/", "one"));
+    QVERIFY(host.close());
+    QCOMPARE(host.position(), 5);
+    QCOMPARE(host.m_edit->getSelection().start(), reversed ? 5 : selection.start());
+    QCOMPARE(host.m_edit->getSelection().end(), reversed ? selection.end() : 6);
+    QCOMPARE(host.m_edit->getInputMode()->editorMode(), EditorMode::ViModeVisual);
+    QCOMPARE(host.m_edit->toPlainText(), source);
+    QTest::keyClick(host.m_edit, Qt::Key_Escape);
+  }
+}
+
+void TestRichTextEditor::testViSearchRevealsFoldedSource() {
+  for (bool interior : {false, true}) {
+    QWidget host;
+    auto layout = new QVBoxLayout(&host);
+    auto config = QSharedPointer<TextEditorConfig>::create();
+    config->m_inputMode = InputMode::ViMode;
+    auto markdownConfig = QSharedPointer<MarkdownEditorConfig>::create(config);
+    auto parameters = QSharedPointer<TextEditorParameters>::create();
+    parameters->m_spellCheckEnabled = false;
+    auto editor = new VMarkdownEditor(markdownConfig, parameters, &host);
+    layout->addWidget(editor);
+    auto status = editor->statusWidget();
+    layout->addWidget(status.data());
+    status->show();
+    struct Unmount {
+      QWidget *m_widget;
+      ~Unmount() { m_widget->setParent(nullptr); }
+    } unmount{status.data()};
+    // Folding keeps the final block visible; the second fixture moves that boundary
+    // past needle so reaching line 4 must open BOTH enclosing folds.
+    const QString source =
+        interior
+            ? QStringLiteral("# Outer\nanchor\n## Inner\nhidden\nneedle\nboundary\n# End\nneedle")
+            : QStringLiteral("# Outer\nanchor\n## Inner\nhidden\nneedle\n# End\nneedle");
+    editor->setText(source);
+    auto edit = editor->getTextEdit();
+    host.resize(800, 600);
+    host.show();
+    host.activateWindow();
+    edit->setFocus();
+    QVERIFY(QTest::qWaitForWindowExposed(&host));
+    QTextCursor cursor(edit->document()->findBlockByNumber(2));
+    edit->setTextCursor(cursor);
+    // foldAtCursor() also returns true before parsing has produced any ranges.
+    QVERIFY(QTest::qWaitFor(
+        [editor, edit]() {
+          editor->foldAtCursor();
+          return !edit->document()->findBlockByNumber(3).isVisible();
+        },
+        5000));
+    cursor.setPosition(0);
+    edit->setTextCursor(cursor);
+    QVERIFY(editor->foldAtCursor());
+    QCOMPARE(edit->document()->findBlockByNumber(4).isVisible(), !interior);
+    QTest::keyClicks(edit, "/");
+    auto prompt = qobject_cast<QLineEdit *>(QApplication::focusWidget());
+    QVERIFY(prompt && prompt->isVisible());
+    QCOMPARE(prompt->objectName(), QStringLiteral("CommandText.EmulatedCommandBar.KateVi"));
+    QTest::keyClicks(prompt, "needle");
+    QCOMPARE(edit->textCursor().blockNumber(), 4);
+    QCOMPARE(edit->textCursor().positionInBlock(), 0);
+    QVERIFY(edit->document()->findBlockByNumber(4).isVisible());
+    if (interior) {
+      QVERIFY(edit->document()->findBlockByNumber(3).isVisible());
+    }
+    QTest::keyClick(prompt, Qt::Key_Return);
+    QVERIFY(edit->hasFocus());
+    QCOMPARE(edit->textCursor().blockNumber(), 4);
+    QTest::keyClicks(edit, "n");
+    QCOMPARE(edit->textCursor().blockNumber(), interior ? 7 : 6);
+    QCOMPARE(edit->textCursor().positionInBlock(), 0);
+    QCOMPARE(editor->getText(), source);
+  }
 }
 
 void TestRichTextEditor::testFocusThroughTheViCommandBar() {

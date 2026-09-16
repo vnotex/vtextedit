@@ -47,9 +47,9 @@
 #include "macros.h"
 #include "marks.h"
 #include "registers.h"
+#include "searcher.h"
 #include "viutils.h"
 #include <katevi/emulatedcommandbar.h>
-// #include "searcher.h"
 
 using namespace KateVi;
 
@@ -72,7 +72,7 @@ InputModeManager::InputModeManager(KateViI::KateViInputMode *inputAdapter,
 
   m_marks.reset(new Marks(this));
 
-  // m_searcher = new Searcher(this);
+  m_searcher.reset(new Searcher(this));
 
   m_completionRecorder.reset(new CompletionRecorder(this));
   m_completionReplayer.reset(new CompletionReplayer(this));
@@ -97,11 +97,7 @@ InputModeManager::InputModeManager(KateViI::KateViInputMode *inputAdapter,
   });
 }
 
-InputModeManager::~InputModeManager() {
-  /*
-  delete m_searcher;
-  */
-}
+InputModeManager::~InputModeManager() {}
 
 bool InputModeManager::handleKeyPress(const QKeyEvent *e) {
   m_insideHandlingKeyPressCount++;

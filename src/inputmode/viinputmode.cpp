@@ -77,6 +77,10 @@ void ViInputMode::activate() {
 
 void ViInputMode::deactivate() {
   Q_ASSERT(m_active);
+  if (m_viEmulatedCommandBar && m_viEmulatedCommandBar->isActive()) {
+    m_viEmulatedCommandBar->closed();
+    emit m_viEmulatedCommandBar->hideMe();
+  }
   m_active = false;
   m_interface->setUndoMergeAllEdits(false);
   m_interface->setCaretStyle(CaretStyle::Line);
@@ -122,7 +126,7 @@ KateVi::EmulatedCommandBar *ViInputMode::viModeEmulatedCommandBar() {
   return m_viEmulatedCommandBar;
 }
 
-void ViInputMode::showViModeEmulatedCommandBar() { emit m_viEmulatedCommandBar->showMe(); }
+void ViInputMode::showViModeEmulatedCommandBar() { emit viModeEmulatedCommandBar() -> showMe(); }
 
 KateVi::InputModeManager *ViInputMode::viInputModeManager() const { return m_viModeManager.data(); }
 

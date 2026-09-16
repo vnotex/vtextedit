@@ -192,9 +192,7 @@ public:
   // Whether the MacroRecorder is recording.
   bool isRecording() const;
 
-#if 0
-    inline Searcher *searcher() { return m_searcher; }
-#endif
+  Searcher *searcher() { return m_searcher.data(); }
 
   CompletionRecorder *completionRecorder() { return m_completionRecorder.data(); }
   CompletionReplayer *completionReplayer() { return m_completionReplayer.data(); }
@@ -270,7 +268,7 @@ private:
 
   QScopedPointer<Jumps> m_jumps;
 
-  Searcher *m_searcher;
+  QScopedPointer<Searcher> m_searcher;
 
   QSharedPointer<CompletionRecorder> m_completionRecorder;
   QSharedPointer<CompletionReplayer> m_completionReplayer;

@@ -33,7 +33,7 @@ class TablePreviewSheet;
 //
 //       removeText, removeLine, setSelection (both overloads), setBlockSelection,
 //       lineLength, currentTextLine, line, textLines, getText, cursorPosition,
-//       lines, selectionRange, documentEnd, cursorPrevChar, connectTextInserted,
+//       lines, selectionRange, searchText, documentEnd, cursorPrevChar, connectTextInserted,
 //       toVirtualColumn, fromVirtualColumn, endLine, goVisualLineUpDownDry,
 //       characterAt, joinLines, undoCount, undo, redoCount, redo, replaceText,
 //       insertText, indent, pageDown, pageUp, scrollInPage, align(Range),
@@ -67,9 +67,6 @@ class TablePreviewSheet;
 //                         always inside a cell, and every katevi consumer of a
 //                         POSITION goes through cursorPosition() instead.
 //       selection       - a bool.
-//       searchText      - the base is unimplemented and returns nothing, so
-//                         '/' and '?' find nothing rather than escaping the
-//                         cell. Not a regression: it never worked.
 //       wordAt          - likewise unimplemented.
 //       editStart / editEnd - begin/endEditBlock pairing plus the scroll-bar
 //                         workaround. No range of its own; editStart is
@@ -155,6 +152,9 @@ public:
   int lines() const Q_DECL_OVERRIDE;
 
   KateViI::Range selectionRange() const Q_DECL_OVERRIDE;
+
+  QVector<KateViI::Range> searchText(const KateViI::Range &p_range, const QString &p_pattern,
+                                     KateViI::SearchOptions p_options) const Q_DECL_OVERRIDE;
 
   KateViI::Cursor documentEnd() const Q_DECL_OVERRIDE;
 

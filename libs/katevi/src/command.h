@@ -35,8 +35,9 @@ enum CommandFlags {
   SHOULD_NOT_RESET = 0x4, // the command should not cause the current mode to be left
   IS_CHANGE = 0x8,        // the command changes the buffer
   IS_NOT_LINEWISE = 0x10, // the motion is not line wise
-  CAN_CHANGE_WHOLE_VISUAL_MODE_SELECTION = 0x20 // the motion is a text object that can set the
-                                                // whole Visual Mode selection to the text object
+  CAN_CHANGE_WHOLE_VISUAL_MODE_SELECTION = 0x20, // the motion is a text object that can set the
+                                                 // whole Visual Mode selection to the text object
+  IS_ABSOLUTE_MOTION = 0x40                      // the target uses absolute source coordinates
 };
 
 class Command {
@@ -54,6 +55,7 @@ public:
   bool shouldReset() const { return !(m_flags & SHOULD_NOT_RESET); }
   bool isChange() const { return m_flags & IS_CHANGE; }
   bool isLineWise() const { return !(m_flags & IS_NOT_LINEWISE); }
+  bool isAbsoluteMotion() const { return m_flags & IS_ABSOLUTE_MOTION; }
   bool canChangeWholeVisualModeSelection() const {
     return m_flags & CAN_CHANGE_WHOLE_VISUAL_MODE_SELECTION;
   }

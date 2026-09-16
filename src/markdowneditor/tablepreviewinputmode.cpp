@@ -1,11 +1,14 @@
 #include "tablepreviewinputmode.h"
 
+#include <algorithm>
+
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextTable>
 #include <QTextTableCell>
 
+#include <vtextedit/textutils.h>
 #include <vtextedit/vtextedit.h>
 
 #include "previewlogging.h"
@@ -44,6 +47,35 @@ QString TablePreviewInputMode::cellText() const {
   }
 
   return m_sheet->tableDocument()->sourceText(first, last);
+}
+
+QVector<KateViI::Range> TablePreviewInputMode::searchText(const KateViI::Range &p_range,
+                                                          const QString &p_pattern,
+                                                          KateViI::SearchOptions p_options) const {
+  QVector<KateViI::Range> results;
+  int first = 0;
+  int last = 0;
+  if (!cellRange(first, last) || !p_range.isValid() || p_pattern.isEmpty()) {
+    return results;
+  }
+  auto content = cellText();
+  const auto validCursor = [&content](const KateViI::Cursor &p_cursor) {
+    return p_cursor.isValid() && p_cursor.line() == 0 && p_cursor.column() <= content.size();
+  };
+  if (!validCursor(p_range.start()) || !validCursor(p_range.end())) {
+    return results;
+  }
+  const int end = p_range.end().column() == content.size() ? -1 : p_range.end().column();
+  TextUtils::forEachSearchMatch(
+      std::move(content), p_pattern, searchOptionsToFindFlags(p_options), p_range.start().column(),
+      end, [&results](const QRegularExpressionMatch &p_match) {
+        results.append(KateViI::Range(0, p_match.capturedStart(), 0, p_match.capturedEnd()));
+        return true;
+      });
+  if (p_options & KateViI::Backwards) {
+    std::reverse(results.begin(), results.end());
+  }
+  return results;
 }
 
 int TablePreviewInputMode::positionOf(const KateViI::Cursor &p_cursor, bool p_afterPreview) const {

@@ -21,6 +21,7 @@
 #include <QDebug>
 
 #include "keyparser.h"
+#include <katevi/emulatedcommandbar.h>
 #include <katevi/interface/kateviinputmode.h>
 
 using namespace KateVi;
@@ -179,11 +180,11 @@ bool Mappings::isRecursive(MappingMode mode, const QString &from) const {
 void Mappings::setLeader(const QChar &leader) { m_leader = leader; }
 
 Mappings::MappingMode Mappings::mappingModeForCurrentViMode(KateViI::KateViInputMode *viInputMode) {
+  if (viInputMode->viModeEmulatedCommandBar()->isActive()) {
+    return CommandModeMapping;
+  }
   return NormalModeMapping;
   /*
-  if (viInputMode->viModeEmulatedCommandBar()->isActive()) {
-      return CommandModeMapping;
-  }
   const ViMode mode = viInputMode->viInputModeManager()->getCurrentViMode();
   switch (mode) {
   case ViMode::NormalMode:

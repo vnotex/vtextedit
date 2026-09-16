@@ -3,6 +3,7 @@
 
 #include "vtextedit_export.h"
 
+#include <QRegularExpression>
 #include <QString>
 
 #include "global.h"
@@ -11,6 +12,67 @@ namespace vte {
 class VTEXTEDIT_EXPORT TextUtils {
 public:
   TextUtils() = delete;
+
+  // Preserve UTF-16 source offsets. An explicit end is exclusive; -1 includes EOF matches.
+  template <typename Visitor>
+  static void forEachSearchMatch(QString p_content, const QString &p_text, FindFlags p_flags,
+                                 int p_start, int p_end, Visitor p_visitor) {
+    if (p_text.isEmpty() || p_start < 0 || p_end < -1) {
+      return;
+    }
+
+    // Preserve UTF-16 offsets, NBSP, and all text except document separators.
+    p_content.replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
+    p_content.replace(QChar::LineSeparator, QLatin1Char('\n'));
+    const int size = p_content.size();
+    const int end = p_end == -1 ? size : qMin(p_end, size);
+    if (p_start > size || (p_end != -1 && p_start >= end)) {
+      return;
+    }
+
+    auto pattern = p_text;
+    if (!(p_flags & FindFlag::RegularExpression)) {
+      TextUtils::transformLineEnding(pattern, LineEnding::CRLF, LineEnding::LF);
+      TextUtils::transformLineEnding(pattern, LineEnding::CR, LineEnding::LF);
+      pattern.replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
+      pattern.replace(QChar::LineSeparator, QLatin1Char('\n'));
+      pattern = QRegularExpression::escape(pattern);
+    }
+    QRegularExpression::PatternOptions options = QRegularExpression::MultilineOption;
+    if (!(p_flags & FindFlag::CaseSensitive)) {
+      options |= QRegularExpression::CaseInsensitiveOption;
+    }
+    const QRegularExpression regex(pattern, options);
+    if (!regex.isValid()) {
+      return;
+    }
+
+    auto matches = regex.globalMatch(p_content, p_start);
+    int emptyMatchStart = -1;
+    while (matches.hasNext()) {
+      const auto match = matches.next();
+      const int start = match.capturedStart();
+      const int matchEnd = match.capturedEnd();
+      if (start > end || (p_end != -1 && start == end)) {
+        break;
+      }
+      if (start < p_start || matchEnd > end || start == emptyMatchStart) {
+        continue;
+      }
+      if ((p_flags & FindFlag::WholeWordOnly) &&
+          ((start > 0 && p_content.at(start - 1).isLetterOrNumber()) ||
+           (matchEnd < size && p_content.at(matchEnd).isLetterOrNumber()))) {
+        continue;
+      }
+      if (start == matchEnd) {
+        // globalMatch may retry a nonempty alternative at this same position.
+        emptyMatchStart = start;
+      }
+      if (!p_visitor(match)) {
+        break;
+      }
+    }
+  }
 
   static int firstNonSpace(const QString &p_text);
 

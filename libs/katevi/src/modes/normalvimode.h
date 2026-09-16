@@ -125,10 +125,8 @@ public:
   bool commandReplaceCharacter();
 
   bool commandSwitchToCmdLine();
-#if 0
-    bool commandSearchBackward();
-    bool commandSearchForward();
-#endif
+  bool commandSearchBackward();
+  bool commandSearchForward();
 
   bool commandUndo();
   bool commandRedo();
@@ -272,8 +270,9 @@ public:
     Range motionToNextOccurrence();
     Range motionToPrevOccurrence();
 
-    Range motionToIncrementalSearchMatch();
 #endif
+
+  Range motionToIncrementalSearchMatch();
 
   // TEXT OBJECTS
   Range textObjectAWord();

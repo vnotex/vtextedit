@@ -30,18 +30,20 @@
 #include <modes/normalvimode.h>
 // #include "matchhighlighter.h"
 // #include "interactivesedreplacemode.h"
-// #include "searchmode.h"
 #include "commandmode.h"
 #include "completer.h"
 
 #include <history.h>
 
 #include <registers.h>
-// #include <searcher.h>
+#include <searcher.h>
 
 #include <QApplication>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QRegularExpression>
+#include <QScopedValueRollback>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -69,6 +71,113 @@ QString escapedForSearchingAsLiteral(const QString &originalQtRegex) {
 }
 } // namespace
 
+class KateVi::SearchMode : public ActiveMode {
+public:
+  SearchMode(EmulatedCommandBar *p_bar, InputModeManager *p_manager, QLineEdit *p_edit)
+      : ActiveMode(p_bar, nullptr, p_manager), m_edit(p_edit) {}
+
+  void init(bool p_backwards) {
+    m_origin = editorInterface()->cursorPosition();
+    m_params = Searcher::SearchParams();
+    m_params.isBackwards = p_backwards;
+    m_match = KateViI::Range::invalid();
+    m_count = viInputModeManager()->getCurrentViModeHandler()->getCount();
+    m_active = true;
+  }
+
+  bool handleKeyPress(const QKeyEvent *p_event) Q_DECL_OVERRIDE {
+    Q_UNUSED(p_event);
+    return false;
+  }
+
+  void editTextChanged(const QString &p_text) Q_DECL_OVERRIDE { updateSearch(p_text); }
+
+  void completionChosen() Q_DECL_OVERRIDE {
+    const QString pattern = m_edit->text().isEmpty()
+                                ? viInputModeManager()->searcher()->getLastSearchPattern()
+                                : m_edit->text();
+    m_match = KateViI::Range::invalid();
+    if (!pattern.isEmpty() && QRegularExpression(pattern).isValid()) {
+      m_params.pattern = pattern;
+      m_params.isCaseSensitive = std::any_of(pattern.cbegin(), pattern.cend(),
+                                             [](QChar p_char) { return p_char.isUpper(); });
+      m_match = viInputModeManager()->searcher()->findPattern(m_params, m_origin, m_count, true);
+      if (m_match.isValid() && !moveTo(m_match.start())) {
+        m_match = KateViI::Range::invalid();
+      }
+    }
+    emulatedCommandBar()->m_wasAborted = false;
+    emit emulatedCommandBar() -> hideMe();
+  }
+
+  CompletionStartParams
+  completionInvoked(Completer::CompletionInvocation p_invocation) Q_DECL_OVERRIDE {
+    Q_UNUSED(p_invocation);
+    const auto &history = viInputModeManager()->globalState()->searchHistory()->items();
+    return history.isEmpty() ? CompletionStartParams::invalid()
+                             : CompletionStartParams::createModeSpecific(history, 0);
+  }
+
+  void deactivate(bool p_wasAborted) Q_DECL_OVERRIDE {
+    if (!m_active) {
+      return;
+    }
+    m_active = false;
+    const bool success = m_match.isValid() && !p_wasAborted;
+    if (!success) {
+      moveTo(m_origin);
+    }
+    QScopedValueRollback<bool> sending(m_sendingSyntheticSearchCompletedKeypress, true);
+    QKeyEvent event(QEvent::KeyPress, success ? Qt::Key_Enter : Qt::Key_Escape, Qt::NoModifier,
+                    success ? QStringLiteral("\r") : QString());
+    viInputModeManager()->handleKeyPress(&event);
+  }
+
+  bool isSendingSyntheticSearchCompletedKeypress() const {
+    return m_sendingSyntheticSearchCompletedKeypress;
+  }
+
+private:
+  void updateSearch(const QString &p_pattern) {
+    m_params.pattern = p_pattern;
+    m_params.isCaseSensitive = std::any_of(p_pattern.cbegin(), p_pattern.cend(),
+                                           [](QChar p_char) { return p_char.isUpper(); });
+    m_match = KateViI::Range::invalid();
+    auto feedback = emulatedCommandBar()->m_exitStatusMessageDisplay;
+    feedback->hide();
+    if (p_pattern.isEmpty()) {
+      moveTo(m_origin);
+      return;
+    }
+    const bool valid = QRegularExpression(p_pattern).isValid();
+    if (valid) {
+      m_match = viInputModeManager()->searcher()->findPattern(m_params, m_origin, m_count, false);
+      if (m_match.isValid() && !moveTo(m_match.start())) {
+        m_match = KateViI::Range::invalid();
+      }
+    }
+    if (!m_match.isValid()) {
+      moveTo(m_origin);
+      feedback->setText(valid ? EmulatedCommandBar::tr("Pattern not found")
+                              : EmulatedCommandBar::tr("Invalid regular expression"));
+      feedback->show();
+    }
+  }
+
+  bool moveTo(const KateViI::Cursor &p_cursor) {
+    viInputModeManager()->getCurrentViModeHandler()->goToPos(Range(p_cursor, ExclusiveMotion));
+    return editorInterface()->cursorPosition() == p_cursor;
+  }
+
+  QLineEdit *m_edit;
+  KateViI::Cursor m_origin;
+  Searcher::SearchParams m_params;
+  KateViI::Range m_match;
+  int m_count = 1;
+  bool m_active = false;
+  bool m_sendingSyntheticSearchCompletedKeypress = false;
+};
+
 EmulatedCommandBar::EmulatedCommandBar(KateViI::KateViInputMode *viInputMode,
                                        InputModeManager *viInputModeManager, QWidget *parent)
     : QWidget(parent), m_viInputMode(viInputMode), m_viInputModeManager(viInputModeManager),
@@ -94,13 +203,13 @@ EmulatedCommandBar::EmulatedCommandBar(KateViI::KateViInputMode *viInputMode,
   m_interactiveSedReplaceMode.reset(new InteractiveSedReplaceMode(this,
   m_matchHighligher.data(), m_viInputModeManager, m_view));
   layout->addWidget(m_interactiveSedReplaceMode->label());
-  m_searchMode.reset(new SearchMode(this, m_matchHighligher.data(),
-  m_viInputModeManager, m_view, m_edit)); m_commandMode.reset(new
+  m_commandMode.reset(new
   CommandMode(this, m_matchHighligher.data(), m_viInputModeManager, m_view,
                                       m_edit,
                                       m_interactiveSedReplaceMode.data(),
                                       m_completer.data()));
   */
+  m_searchMode.reset(new SearchMode(this, m_viInputModeManager, m_edit));
   m_commandMode.reset(
       new CommandMode(this, nullptr, m_viInputModeManager, m_edit, nullptr, m_completer.data()));
 }
@@ -108,35 +217,35 @@ EmulatedCommandBar::EmulatedCommandBar(KateViI::KateViInputMode *viInputMode,
 EmulatedCommandBar::~EmulatedCommandBar() {}
 
 void EmulatedCommandBar::init(EmulatedCommandBar::Mode mode, const QString &initialText) {
+  if (m_isActive) {
+    closed();
+  }
   m_mode = mode;
   m_isActive = true;
   m_wasAborted = true;
-
+  m_waitingForRegister = false;
+  m_insertedTextShouldBeEscapedForSearchingAsLiteral = false;
+  m_waitingForRegisterIndicator->hide();
+  m_exitStatusMessageDisplay->hide();
+  m_exitStatusMessageDisplayHideTimer->stop();
   showBarTypeIndicator(mode);
 
   if (mode == SearchBackward || mode == SearchForward) {
-    KATEVI_NIY;
-    /*
     switchToMode(m_searchMode.data());
-    m_searchMode->init(mode == SearchBackward ?
-    SearchMode::SearchDirection::Backward :
-    SearchMode::SearchDirection::Forward);
-    */
+    m_searchMode->init(mode == SearchBackward);
   } else {
     switchToMode(m_commandMode.data());
   }
 
-  m_edit->setFocus();
-  m_edit->setText(initialText);
+  const bool unchanged = m_edit->text() == initialText;
   m_edit->show();
+  m_edit->setText(initialText);
+  if (unchanged) {
+    editTextChanged(initialText);
+  }
+  m_edit->setFocus();
 
-  m_exitStatusMessageDisplay->hide();
-  m_exitStatusMessageDisplayHideTimer->stop();
-
-  // A change in focus will have occurred: make sure we process it now, instead
-  // of having it occur later and stop() m_commandResponseMessageDisplayHide.
-  // This is generally only a problem when feeding a sequence of keys without
-  // human intervention, as when we execute a mapping, macro, or test case.
+  // Deliver focus changes before a mapping, macro or test feeds the next key.
   QApplication::processEvents();
 }
 
@@ -148,14 +257,13 @@ void EmulatedCommandBar::setCommandResponseMessageTimeout(
 }
 
 void EmulatedCommandBar::closed() {
-  KATEVI_NIY;
-  // m_matchHighligher->updateMatchHighlight(KTextEditor::Range::invalid());
-  m_completer->deactivateCompletion();
   m_isActive = false;
-
-  if (m_currentMode) {
-    m_currentMode->deactivate(m_wasAborted);
-    m_currentMode = nullptr;
+  m_completer->deactivateCompletion();
+  auto mode = m_currentMode;
+  m_currentMode = nullptr;
+  m_completer->setCurrentMode(nullptr);
+  if (mode) {
+    mode->deactivate(m_wasAborted);
   }
 }
 
@@ -335,9 +443,7 @@ bool EmulatedCommandBar::handleKeyPress(const QKeyEvent *keyEvent) {
 }
 
 bool EmulatedCommandBar::isSendingSyntheticSearchCompletedKeypress() {
-  KATEVI_NIY;
-  // return m_searchMode->isSendingSyntheticSearchCompletedKeypress();
-  return false;
+  return m_searchMode && m_searchMode->isSendingSyntheticSearchCompletedKeypress();
 }
 
 /*
@@ -390,10 +496,9 @@ void EmulatedCommandBar::closeWithStatusMessage(const QString &exitStatusMessage
 }
 
 void EmulatedCommandBar::editTextChanged(const QString &newText) {
-  KATEVI_NIY;
-  /*
-  Q_ASSERT(!m_interactiveSedReplaceMode->isActive());
-  */
+  if (!m_isActive || !m_currentMode) {
+    return;
+  }
   m_currentMode->editTextChanged(newText);
   m_completer->editTextChanged(newText);
 }
@@ -405,9 +510,8 @@ void EmulatedCommandBar::startHideExitStatusMessageTimer() {
 }
 
 void EmulatedCommandBar::setViInputModeManager(InputModeManager *viInputModeManager) {
-  KATEVI_NIY;
   m_viInputModeManager = viInputModeManager;
-  // m_searchMode->setViInputModeManager(viInputModeManager);
+  m_searchMode->setViInputModeManager(viInputModeManager);
   m_commandMode->setViInputModeManager(viInputModeManager);
   // m_interactiveSedReplaceMode->setViInputModeManager(viInputModeManager);
 }

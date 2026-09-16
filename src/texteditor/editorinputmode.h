@@ -15,6 +15,8 @@ public:
 
 public:
   // InputModeEditorInterface.
+  void updateCursor(int p_line, int p_column) Q_DECL_OVERRIDE;
+
   bool foldAtCursor() Q_DECL_OVERRIDE;
 
   bool unfoldAtCursor() Q_DECL_OVERRIDE;

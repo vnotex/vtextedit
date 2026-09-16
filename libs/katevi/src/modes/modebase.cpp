@@ -1203,17 +1203,11 @@ void ModeBase::switchView(Direction direction) {
 }
 
 Range ModeBase::motionFindPrev() {
-  return Range();
-  /*
   return m_viInputModeManager->searcher()->motionFindPrev(getCount());
-  */
 }
 
 Range ModeBase::motionFindNext() {
-  return Range();
-  /*
   return m_viInputModeManager->searcher()->motionFindNext(getCount());
-  */
 }
 
 void ModeBase::goToPos(const Range &r) {

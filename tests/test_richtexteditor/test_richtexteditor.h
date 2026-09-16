@@ -12,6 +12,12 @@ private slots:
   void testSearchRangesAndZeroLengthMatches();
   void testSearchForwardBackwardWrap();
 
+  void testViSearchDirectionsCountsAndRepeat();
+  void testViSearchCancelAndInvalidPattern();
+  void testViSearchRegexBoundaries();
+  void testViSearchComposesWithOperatorsAndVisualMode();
+  void testViSearchRevealsFoldedSource();
+
   // Base interface defaults through the public widget.
   void testFoldKeysFallThroughWithoutFolding();
   void testCompletionKeysDoNothing();

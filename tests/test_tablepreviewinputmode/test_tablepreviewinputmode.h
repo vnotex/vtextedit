@@ -32,6 +32,8 @@ private slots:
   void testDecoratedBackspaceRemovesSourceGraphemes();
   void testDecoratedViYankPutAndRepeatUseSource();
 
+  void testViSearchStaysInProjectedCell();
+
   // Cell confinement: motions.
   void testVerticalMotionsStayInTheCell();
   void testDocumentMotionsStayInTheCell();

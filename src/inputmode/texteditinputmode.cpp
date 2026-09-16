@@ -1,5 +1,7 @@
 #include "texteditinputmode.h"
 
+#include <algorithm>
+
 #include <QApplication>
 #include <QClipboard>
 #include <QDebug>
@@ -219,11 +221,45 @@ KateViI::Range TextEditInputMode::selectionRange() const {
   return KateViI::Range::invalid();
 }
 
+FindFlags TextEditInputMode::searchOptionsToFindFlags(KateViI::SearchOptions p_options) {
+  FindFlags flags = FindFlag::None;
+  if (p_options & KateViI::Regex) {
+    flags |= FindFlag::RegularExpression;
+  }
+  if (!(p_options & KateViI::CaseInsensitive)) {
+    flags |= FindFlag::CaseSensitive;
+  }
+  if (p_options & KateViI::WholeWords) {
+    flags |= FindFlag::WholeWordOnly;
+  }
+  return flags;
+}
+
 QVector<KateViI::Range>
 TextEditInputMode::searchText(const KateViI::Range &p_range, const QString &p_pattern,
                               const KateViI::SearchOptions p_options) const {
-  EDITOR_NIY;
-  return QVector<KateViI::Range>();
+  QVector<KateViI::Range> results;
+  const auto validCursor = [this](const KateViI::Cursor &p_cursor) {
+    return p_cursor.isValid() && p_cursor.line() < lines() &&
+           p_cursor.column() <= lineLength(p_cursor.line());
+  };
+  if (p_pattern.isEmpty() || !p_range.isValid() || !validCursor(p_range.start()) ||
+      !validCursor(p_range.end())) {
+    return results;
+  }
+  const int start = kateViCursorToPosition(p_range.start());
+  const int end = p_range.end() == documentEnd() ? -1 : kateViCursorToPosition(p_range.end());
+  const auto matches =
+      m_textEdit->findAllText(p_pattern, searchOptionsToFindFlags(p_options), start, end);
+  results.reserve(matches.size());
+  for (const auto &match : matches) {
+    results.append(KateViI::Range(toKateViCursor(match.selectionStart()),
+                                  toKateViCursor(match.selectionEnd())));
+  }
+  if (p_options & KateViI::Backwards) {
+    std::reverse(results.begin(), results.end());
+  }
+  return results;
 }
 
 KateViI::Cursor TextEditInputMode::documentEnd() const {

@@ -4284,10 +4284,12 @@ void TablePreviewSheet::focusInEvent(QFocusEvent *p_event) {
   ensureInputMode();
   clampCursorIntoTable();
   m_lastCellIndex = currentCellIndex();
-  // The undo ring is per sheet and survives a focus round trip, but its
-  // baseline is per cell and the caret may have been moved while the sheet was
-  // in the background.
-  captureUndoBaseline();
+  // A command-bar operator may edit the cell while the sheet lacks focus.
+  // Preserve that pending change before re-anchoring the baseline. A change
+  // operator entering insert mode keeps its deletion and insertion in one step.
+  if (!m_inputModeInterface || !m_inputModeInterface->isUndoMergeAllEditsEnabled()) {
+    commitUndoCheckpoint();
+  }
   // Decision D7: only focusIn()/focusOut() are driven from here. For Vi this
   // is what restores the caret's blink state; the mode itself is neither
   // activated nor deactivated by a focus change.

@@ -111,6 +111,22 @@ bool NormalViMode::handleKeyPress(const QKeyEvent *e) {
     return false;
   }
 
+  // Search cancellation discards pending operators without dropping a visual anchor.
+  if (keyCode == Qt::Key_Escape && m_viInputModeManager->inputAdapter()
+                                       ->viModeEmulatedCommandBar()
+                                       ->isSendingSyntheticSearchCompletedKeypress()) {
+    if (m_viInputModeManager->isAnyVisualMode()) {
+      resetParser();
+    } else {
+      NormalViMode::reset();
+    }
+    if (m_viInputModeManager->getTemporaryNormalMode()) {
+      startInsertMode();
+      m_interface->update();
+    }
+    return true;
+  }
+
   // Ignore skipped keys.
   if (m_viInputModeManager->kateViConfig()->shouldSkipKey(keyCode, modifiers)) {
     return false;
@@ -170,30 +186,16 @@ bool NormalViMode::handleKeyPress(const QKeyEvent *e) {
     return true;
   }
 
-  /* TODO
-  if ((key == QLatin1Char('/') || key == QLatin1Char('?')) &&
-  !isWaitingForRegisterOrChar) {
-      // Special case for "/" and "?": these should be motions, but this is
-  complicated by
-      // the fact that the user must interact with the search bar before the
-  range of the
-      // motion can be determined.
-      // We hack around this by showing the search bar immediately, and, when
-  the user has
-      // finished interacting with it, have the search bar send a "synthetic"
-  keypresses
-      // that will either abort everything (if the search was aborted) or
-  "complete" the motion
-      // otherwise.
-      m_positionWhenIncrementalSearchBegan = m_view->cursorPosition();
-      if (key == QLatin1Char('/')) {
-          commandSearchForward();
-      } else {
-          commandSearchBackward();
-      }
-      return true;
+  if ((key == QLatin1Char('/') || key == QLatin1Char('?')) && !isWaitingForRegisterOrChar) {
+    // Keep the operator/count parser alive until the bar dispatches Enter or Escape.
+    m_positionWhenIncrementalSearchBegan = m_interface->cursorPosition();
+    if (key == QLatin1Char('/')) {
+      commandSearchForward();
+    } else {
+      commandSearchBackward();
+    }
+    return true;
   }
-  */
 
   // Special case: "cw" and "cW" work the same as "ce" and "cE" if the cursor is
   // on a non-blank.  This is because Vim interprets "cw" as change-word, and a
@@ -1214,25 +1216,19 @@ bool NormalViMode::commandSwitchToCmdLine() {
   return true;
 }
 
-#if 0
-bool NormalViMode::commandSearchBackward()
-{
-    /*
-    m_viInputModeManager->inputAdapter()->showViModeEmulatedCommandBar();
-    m_viInputModeManager->inputAdapter()->viModeEmulatedCommandBar()->init(EmulatedCommandBar::SearchBackward);
-    */
-    return true;
+bool NormalViMode::commandSearchBackward() {
+  m_viInputModeManager->inputAdapter()->showViModeEmulatedCommandBar();
+  m_viInputModeManager->inputAdapter()->viModeEmulatedCommandBar()->init(
+      EmulatedCommandBar::SearchBackward);
+  return true;
 }
 
-bool NormalViMode::commandSearchForward()
-{
-    /*
-    m_viInputModeManager->inputAdapter()->showViModeEmulatedCommandBar();
-    m_viInputModeManager->inputAdapter()->viModeEmulatedCommandBar()->init(EmulatedCommandBar::SearchForward);
-    */
-    return true;
+bool NormalViMode::commandSearchForward() {
+  m_viInputModeManager->inputAdapter()->showViModeEmulatedCommandBar();
+  m_viInputModeManager->inputAdapter()->viModeEmulatedCommandBar()->init(
+      EmulatedCommandBar::SearchForward);
+  return true;
 }
-#endif
 
 bool NormalViMode::commandUndo() {
   // See BUG #328277
@@ -2675,15 +2671,12 @@ Range NormalViMode::motionToAfterParagraph() {
   return Range(line, column, InclusiveMotion);
 }
 
-#if 0
-Range NormalViMode::motionToIncrementalSearchMatch()
-{
-    return Range(m_positionWhenIncrementalSearchBegan.line(),
-                       m_positionWhenIncrementalSearchBegan.column(),
-                       m_view->cursorPosition().line(),
-                       m_view->cursorPosition().column(), ExclusiveMotion);
+Range NormalViMode::motionToIncrementalSearchMatch() {
+  const auto cursor = m_interface->cursorPosition();
+  return motionWillBeUsedWithCommand()
+             ? Range(m_positionWhenIncrementalSearchBegan, cursor, ExclusiveMotion)
+             : Range(cursor, ExclusiveMotion);
 }
-#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 // TEXT OBJECTS
@@ -3326,10 +3319,8 @@ void NormalViMode::initializeCommands() {
   ADDMOTION("T.", motionToCharBackward, REGEX_PATTERN);
   ADDMOTION(";", motionRepeatlastTF, 0);
   ADDMOTION(",", motionRepeatlastTFBackward, 0);
-  /*
-  ADDMOTION("n", motionFindNext, 0);
-  ADDMOTION("N", motionFindPrev, 0);
-  */
+  ADDMOTION("n", motionFindNext, IS_NOT_LINEWISE | IS_ABSOLUTE_MOTION);
+  ADDMOTION("N", motionFindPrev, IS_NOT_LINEWISE | IS_ABSOLUTE_MOTION);
   ADDMOTION("gg", motionToLineFirst, 0);
   ADDMOTION("G", motionToLineLast, 0);
   ADDMOTION("w", motionWordForward, IS_NOT_LINEWISE);
@@ -3397,10 +3388,8 @@ void NormalViMode::initializeCommands() {
   ADDMOTION("a,", textObjectAComma, IS_NOT_LINEWISE);
   */
 
-  /*
-  ADDMOTION("/<enter>", motionToIncrementalSearchMatch, IS_NOT_LINEWISE);
-  ADDMOTION("?<enter>", motionToIncrementalSearchMatch, IS_NOT_LINEWISE);
-  */
+  ADDMOTION("/<enter>", motionToIncrementalSearchMatch, IS_NOT_LINEWISE | IS_ABSOLUTE_MOTION);
+  ADDMOTION("?<enter>", motionToIncrementalSearchMatch, IS_NOT_LINEWISE | IS_ABSOLUTE_MOTION);
 }
 
 QRegularExpression NormalViMode::generateMatchingItemRegex() const {
@@ -3945,23 +3934,28 @@ void NormalViMode::executeMotionWithoutCommand(Motion *p_motion) {
   Range r = p_motion->execute();
   m_motionCanChangeWholeVisualModeSelection = p_motion->canChangeWholeVisualModeSelection();
 
-  // Jump over folding regions since we are just moving the cursor.
-  int currLine = m_interface->cursorPosition().line();
-  int delta = r.endLine - currLine;
-  int vline = m_interface->lineToVisibleLine(currLine);
-  r.endLine = m_interface->visibleLineToLine(qMax(vline + delta, 0));
-  if (r.endLine >= m_interface->lines()) {
-    r.endLine = m_interface->lines() - 1;
+  if (!p_motion->isAbsoluteMotion()) {
+    // Ordinary motions count visible lines; search targets are source coordinates.
+    const int currLine = m_interface->cursorPosition().line();
+    const int delta = r.endLine - currLine;
+    const int vline = m_interface->lineToVisibleLine(currLine);
+    r.endLine = m_interface->visibleLineToLine(qMax(vline + delta, 0));
+    if (r.endLine >= m_interface->lines()) {
+      r.endLine = m_interface->lines() - 1;
+    }
   }
 
   // make sure the position is valid before moving the cursor there
   if (r.valid && r.endLine >= 0 && (r.endLine == 0 || r.endLine <= m_interface->lines() - 1) &&
-      r.endColumn >= 0) {
+      r.endColumn >= 0 &&
+      (!p_motion->isAbsoluteMotion() || r.endColumn <= m_interface->lineLength(r.endLine))) {
     const int lineLength = m_interface->lineLength(r.endLine);
-    if (lineLength == 0) {
-      r.endColumn = 0;
-    } else if (r.endColumn >= lineLength) {
-      r.endColumn = lineLength - 1;
+    if (!p_motion->isAbsoluteMotion()) {
+      if (lineLength == 0) {
+        r.endColumn = 0;
+      } else if (r.endColumn >= lineLength) {
+        r.endColumn = lineLength - 1;
+      }
     }
 
     goToPos(r);

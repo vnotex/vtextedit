@@ -205,6 +205,8 @@ public:
   void removeMark(int line, uint markType) Q_DECL_OVERRIDE;
 
 protected:
+  static FindFlags searchOptionsToFindFlags(KateViI::SearchOptions p_options);
+
   bool eventFilter(QObject *p_obj, QEvent *p_event) Q_DECL_OVERRIDE;
 
   QTextDocument *document() const;

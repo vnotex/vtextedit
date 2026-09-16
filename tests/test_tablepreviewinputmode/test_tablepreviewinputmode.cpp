@@ -2,6 +2,7 @@
 
 #include <QApplication>
 #include <QImage>
+#include <QLineEdit>
 #include <QSignalSpy>
 #include <QTextCursor>
 #include <QTextDocument>
@@ -10,8 +11,10 @@
 #include <QTextTable>
 #include <QTextTableCell>
 #include <QUrl>
+#include <QVBoxLayout>
 
 #include <inputmode/abstractinputmode.h>
+#include <texteditor/inputmodestatuswidget.h>
 #include <vtextedit/global.h>
 #include <vtextedit/preview.h>
 
@@ -323,6 +326,103 @@ void TestTablePreviewInputMode::testDecoratedTypingInEveryMode() {
   QCOMPARE(cell.lastPosition() - cell.firstPosition(), source.size());
   QCOMPARE(document->cells()[1][1], QStringLiteral("neighbor"));
   QVERIFY(document->isIntact());
+}
+
+void TestTablePreviewInputMode::testViSearchStaysInProjectedCell() {
+  QWidget host;
+  auto layout = new QVBoxLayout(&host);
+  QScopedPointer<TablePreviewWidget> holder;
+  const QString source = QStringLiteral("$x$ needle needle");
+  const QString neighbor = QStringLiteral("only-neighbor needle");
+  auto widget = buildSheet(
+      holder, InputMode::ViMode,
+      makeTable({{QStringLiteral("h1"), QStringLiteral("h2")}, {source, neighbor}}), true);
+  QVERIFY(widget);
+  layout->addWidget(widget);
+  widget->show();
+  auto sheet = sheetOf(*widget);
+  QVERIFY(sheet);
+  sheet->ensureInputMode();
+  putCaretIn(sheet, 1, 0);
+  appendInlinePreview(sheet, 1, 0, 3);
+  TablePreviewInputMode adapter(sheet);
+  adapter.updateCursor(0, 0);
+  auto document = sheet->tableDocument();
+  auto status = sheet->inputModeStatusWidget();
+  QVERIFY(status);
+  auto statusWidget = status->widget();
+  layout->addWidget(statusWidget.data());
+  statusWidget->show();
+  struct Unmount {
+    QWidget *m_widget;
+    ~Unmount() { m_widget->setParent(nullptr); }
+  } unmount{statusWidget.data()};
+  connect(status.data(), &InputModeStatusWidget::focusOut, sheet, [sheet]() { sheet->setFocus(); });
+  host.show();
+  host.activateWindow();
+  QVERIFY(QTest::qWaitForWindowExposed(&host));
+  QVERIFY(takeFocus(sheet));
+  const auto search = [sheet](const QString &p_keys, const QString &p_pattern) {
+    QTest::keyClicks(sheet, p_keys);
+    auto prompt = qobject_cast<QLineEdit *>(QApplication::focusWidget());
+    if (!prompt || !prompt->isVisible() ||
+        prompt->objectName() != QStringLiteral("CommandText.EmulatedCommandBar.KateVi")) {
+      return false;
+    }
+    QTest::keyClicks(prompt, p_pattern);
+    return prompt->hasFocus();
+  };
+  QVERIFY(search("/", "needle"));
+  QCOMPARE(adapter.cursorPosition(), KateViI::Cursor(0, 4));
+  QTest::keyClick(QApplication::focusWidget(), Qt::Key_Return);
+  QVERIFY(sheet->hasFocus());
+  QCOMPARE(adapter.cursorPosition(), KateViI::Cursor(0, 4));
+  QTest::keyClicks(sheet, "n");
+  QCOMPARE(adapter.cursorPosition(), KateViI::Cursor(0, 11));
+  QTest::keyClicks(sheet, "n");
+  QCOMPARE(adapter.cursorPosition(), KateViI::Cursor(0, 4));
+  QVERIFY(search("?", "needle"));
+  QCOMPARE(adapter.cursorPosition(), KateViI::Cursor(0, 11));
+  QTest::keyClick(QApplication::focusWidget(), Qt::Key_Return);
+  QVERIFY(sheet->hasFocus());
+  QVERIFY(search("/", "only-neighbor"));
+  QCOMPARE(adapter.cursorPosition(), KateViI::Cursor(0, 11));
+  QTest::keyClick(QApplication::focusWidget(), Qt::Key_Return);
+  QVERIFY(sheet->hasFocus());
+  QCOMPARE(caretCell(sheet), 2);
+  QCOMPARE(document->cells()[1][0], source);
+  QCOMPARE(document->cells()[1][1], neighbor);
+
+  adapter.updateCursor(0, 0);
+  QVERIFY(search("d/", "needle"));
+  QCOMPARE(document->cells()[1][0], source);
+  QTest::keyClick(QApplication::focusWidget(), Qt::Key_Return);
+  QVERIFY(sheet->hasFocus());
+  QCOMPARE(document->cells()[1][0], QStringLiteral("needle needle"));
+  QCOMPARE(document->cells()[1][1], neighbor);
+  QCOMPARE(document->table()->rows(), 2);
+  QCOMPARE(document->table()->columns(), 2);
+  QTest::keyClicks(sheet, "u");
+  QCOMPARE(document->cells()[1][0], source);
+  QCOMPARE(document->cells()[1][1], neighbor);
+  QCOMPARE(document->table()->rows(), 2);
+  QCOMPARE(document->table()->columns(), 2);
+  QCOMPARE(caretCell(sheet), 2);
+
+  // Returning from a change-search must not split deletion from its insert session.
+  adapter.updateCursor(0, 11);
+  QVERIFY(search("c?", "needle"));
+  QTest::keyClick(QApplication::focusWidget(), Qt::Key_Return);
+  QVERIFY(sheet->hasFocus());
+  QCOMPARE(editorModeOf(sheet), EditorMode::ViModeInsert);
+  QTest::keyClicks(sheet, "X");
+  QTest::keyClick(sheet, Qt::Key_Escape);
+  QCOMPARE(document->cells()[1][0], QStringLiteral("$x$ Xneedle"));
+  QTest::keyClicks(sheet, "u");
+  QCOMPARE(document->cells()[1][0], source);
+  QCOMPARE(document->cells()[1][1], neighbor);
+  QCOMPARE(document->table()->rows(), 2);
+  QCOMPARE(document->table()->columns(), 2);
 }
 
 void TestTablePreviewInputMode::testDecoratedCellUsesSourceColumns() {

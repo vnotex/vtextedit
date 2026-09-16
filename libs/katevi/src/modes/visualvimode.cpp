@@ -342,10 +342,8 @@ void VisualViMode::initializeCommands() {
   ADDMOTION("T.", motionToCharBackward, REGEX_PATTERN);
   ADDMOTION(";", motionRepeatlastTF, 0);
   ADDMOTION(",", motionRepeatlastTFBackward, 0);
-  /*
-  ADDMOTION("n", motionFindNext, 0);
-  ADDMOTION("N", motionFindPrev, 0);
-  */
+  ADDMOTION("n", motionFindNext, IS_NOT_LINEWISE | IS_ABSOLUTE_MOTION);
+  ADDMOTION("N", motionFindPrev, IS_NOT_LINEWISE | IS_ABSOLUTE_MOTION);
   ADDMOTION("gg", motionToLineFirst, 0);
   ADDMOTION("G", motionToLineLast, 0);
   ADDMOTION("w", motionWordForward, 0);
@@ -411,8 +409,6 @@ void VisualViMode::initializeCommands() {
     ADDMOTION("a,", textObjectAComma, 0);
 #endif
 
-  /*
-  ADDMOTION("/<enter>", motionToIncrementalSearchMatch, 0);
-  ADDMOTION("?<enter>", motionToIncrementalSearchMatch, 0);
-  */
+  ADDMOTION("/<enter>", motionToIncrementalSearchMatch, IS_NOT_LINEWISE | IS_ABSOLUTE_MOTION);
+  ADDMOTION("?<enter>", motionToIncrementalSearchMatch, IS_NOT_LINEWISE | IS_ABSOLUTE_MOTION);
 }

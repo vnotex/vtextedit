@@ -163,69 +163,6 @@ void VTextEdit::mouseReleaseEvent(QMouseEvent *p_event) {
   emit mouseReleased(p_event);
 }
 
-namespace {
-template <typename Visitor>
-void forEachSearchMatch(QTextDocument *p_doc, const QString &p_text, FindFlags p_flags, int p_start,
-                        int p_end, Visitor p_visitor) {
-  if (p_text.isEmpty() || p_start < 0 || p_end < -1) {
-    return;
-  }
-
-  // Preserve UTF-16 offsets, NBSP, and all text except document separators.
-  auto text = p_doc->toRawText();
-  text.replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
-  text.replace(QChar::LineSeparator, QLatin1Char('\n'));
-  const int size = text.size();
-  const int end = p_end == -1 ? size : qMin(p_end, size);
-  if (p_start > size || (p_end != -1 && p_start >= end)) {
-    return;
-  }
-
-  auto pattern = p_text;
-  if (!(p_flags & FindFlag::RegularExpression)) {
-    TextUtils::transformLineEnding(pattern, LineEnding::CRLF, LineEnding::LF);
-    TextUtils::transformLineEnding(pattern, LineEnding::CR, LineEnding::LF);
-    pattern.replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
-    pattern.replace(QChar::LineSeparator, QLatin1Char('\n'));
-    pattern = QRegularExpression::escape(pattern);
-  }
-  QRegularExpression::PatternOptions options = QRegularExpression::MultilineOption;
-  if (!(p_flags & FindFlag::CaseSensitive)) {
-    options |= QRegularExpression::CaseInsensitiveOption;
-  }
-  const QRegularExpression regex(pattern, options);
-  if (!regex.isValid()) {
-    return;
-  }
-
-  auto matches = regex.globalMatch(text, p_start);
-  int emptyMatchStart = -1;
-  while (matches.hasNext()) {
-    const auto match = matches.next();
-    const int start = match.capturedStart();
-    const int matchEnd = match.capturedEnd();
-    if (start > end || (p_end != -1 && start == end)) {
-      break;
-    }
-    if (start < p_start || matchEnd > end || start == emptyMatchStart) {
-      continue;
-    }
-    if ((p_flags & FindFlag::WholeWordOnly) &&
-        ((start > 0 && text.at(start - 1).isLetterOrNumber()) ||
-         (matchEnd < size && text.at(matchEnd).isLetterOrNumber()))) {
-      continue;
-    }
-    if (start == matchEnd) {
-      // globalMatch may retry a nonempty alternative at this same position.
-      emptyMatchStart = start;
-    }
-    if (!p_visitor(match)) {
-      break;
-    }
-  }
-}
-} // namespace
-
 QList<QTextCursor> VTextEdit::findAllText(const QString &p_text, FindFlags p_flags, int p_start,
                                           int p_end,
                                           QList<QRegularExpressionMatch> *p_regExpMatches) {
@@ -234,17 +171,18 @@ QList<QTextCursor> VTextEdit::findAllText(const QString &p_text, FindFlags p_fla
     p_regExpMatches->clear();
   }
   auto doc = document();
-  forEachSearchMatch(doc, p_text, p_flags, p_start, p_end,
-                     [&](const QRegularExpressionMatch &p_match) {
-                       QTextCursor cursor(doc);
-                       cursor.setPosition(p_match.capturedStart());
-                       cursor.setPosition(p_match.capturedEnd(), QTextCursor::KeepAnchor);
-                       results.append(cursor);
-                       if (p_regExpMatches && (p_flags & FindFlag::RegularExpression)) {
-                         p_regExpMatches->append(p_match);
-                       }
-                       return true;
-                     });
+  TextUtils::forEachSearchMatch(doc->toRawText(), p_text, p_flags, p_start, p_end,
+                                [&](const QRegularExpressionMatch &p_match) {
+                                  QTextCursor cursor(doc);
+                                  cursor.setPosition(p_match.capturedStart());
+                                  cursor.setPosition(p_match.capturedEnd(),
+                                                     QTextCursor::KeepAnchor);
+                                  results.append(cursor);
+                                  if (p_regExpMatches && (p_flags & FindFlag::RegularExpression)) {
+                                    p_regExpMatches->append(p_match);
+                                  }
+                                  return true;
+                                });
   return results;
 }
 
@@ -256,19 +194,20 @@ QTextCursor VTextEdit::findText(const QString &p_text, FindFlags p_flags, int p_
   const bool backward = p_flags & FindFlag::FindBackward;
   QTextCursor candidate;
   bool beforeStart = false;
-  forEachSearchMatch(doc, p_text, p_flags, 0, -1, [&](const QRegularExpressionMatch &p_match) {
-    const int start = p_match.capturedStart();
-    if (backward && start >= p_start && beforeStart) {
-      return false;
-    }
-    if (backward || candidate.isNull() || start >= p_start) {
-      candidate = QTextCursor(doc);
-      candidate.setPosition(start);
-      candidate.setPosition(p_match.capturedEnd(), QTextCursor::KeepAnchor);
-    }
-    beforeStart = start < p_start;
-    return backward || start < p_start;
-  });
+  TextUtils::forEachSearchMatch(
+      doc->toRawText(), p_text, p_flags, 0, -1, [&](const QRegularExpressionMatch &p_match) {
+        const int start = p_match.capturedStart();
+        if (backward && start >= p_start && beforeStart) {
+          return false;
+        }
+        if (backward || candidate.isNull() || start >= p_start) {
+          candidate = QTextCursor(doc);
+          candidate.setPosition(start);
+          candidate.setPosition(p_match.capturedEnd(), QTextCursor::KeepAnchor);
+        }
+        beforeStart = start < p_start;
+        return backward || start < p_start;
+      });
   return candidate;
 }
 
