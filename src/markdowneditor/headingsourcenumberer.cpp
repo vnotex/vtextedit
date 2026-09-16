@@ -127,9 +127,8 @@ bool HeadingSourceNumberer::restoreViewportAfterHighlight() {
   auto edit = m_editor->getTextEdit();
   edit->horizontalScrollBar()->setValue(m_horizontalScroll);
   edit->verticalScrollBar()->setValue(m_verticalScroll);
-  if (isCurrent(m_editor->getHighlighter()->m_result)) {
-    m_restoreViewport = false;
-  }
+  // A source change can produce several full highlights. Keep the viewport
+  // until cursor/selection, scroll input, or a new source edit takes ownership.
   return true;
 }
 
