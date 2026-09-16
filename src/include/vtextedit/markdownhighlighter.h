@@ -23,6 +23,7 @@ class Theme;
 class MarkdownHighlightBlockData;
 class MathBlockHighlighter;
 class MarkdownSourceFormatter;
+class HeadingSourceNumberer;
 
 class MarkdownHighlighterInterface {
 public:
@@ -47,6 +48,7 @@ struct ContentsChange {
 class VTEXTEDIT_EXPORT MarkdownHighlighter : public VSyntaxHighlighter {
   Q_OBJECT
   friend class MarkdownSourceFormatter;
+  friend class HeadingSourceNumberer;
 
 public:
   MarkdownHighlighter(MarkdownHighlighterInterface *p_interface, QTextDocument *p_doc,
