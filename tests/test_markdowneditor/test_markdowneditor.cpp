@@ -274,16 +274,39 @@ static QRectF concealConfigViewportRange(Fixture &p_fixture, int p_start, int p_
 }
 
 static int concealConfigColorCount(const QImage &p_image, const QRectF &p_rect,
-                                   const QColor &p_color) {
+                                   const QColor &p_color, const QColor &p_background = QColor()) {
   const qreal dpr = p_image.devicePixelRatio();
   const auto pixels =
       QRect(QPoint(qCeil(p_rect.left() * dpr), qCeil(p_rect.top() * dpr)),
             QPoint(qCeil(p_rect.right() * dpr) - 1, qCeil(p_rect.bottom() * dpr) - 1))
           .intersected(p_image.rect());
+  const int foreground[] = {p_color.red(), p_color.green(), p_color.blue()};
+  const int background[] = {p_background.red(), p_background.green(), p_background.blue()};
+  int strongest = 0;
+  for (int channel = 1; channel < 3; ++channel) {
+    if (qAbs(foreground[channel] - background[channel]) >
+        qAbs(foreground[strongest] - background[strongest])) {
+      strongest = channel;
+    }
+  }
+  const int contrast = qAbs(foreground[strongest] - background[strongest]);
   int count = 0;
   for (int y = pixels.top(); !pixels.isEmpty() && y <= pixels.bottom(); ++y) {
     for (int x = pixels.left(); x <= pixels.right(); ++x) {
-      count += p_image.pixelColor(x, y) == p_color;
+      const auto pixel = p_image.pixelColor(x, y);
+      if (pixel == p_color) {
+        ++count;
+      } else if (p_background.isValid() && contrast > 0) {
+        // Small glyphs may have no solid ink pixel. Subpixel antialiasing blends each
+        // channel separately, but each must stay between the expected ink and background.
+        const int sample[] = {pixel.red(), pixel.green(), pixel.blue()};
+        bool matches = qAbs(sample[strongest] - background[strongest]) >= contrast * 0.1;
+        for (int channel = 0; matches && channel < 3; ++channel) {
+          matches = sample[channel] >= qMin(foreground[channel], background[channel]) &&
+                    sample[channel] <= qMax(foreground[channel], background[channel]);
+        }
+        count += matches;
+      }
     }
   }
   return count;
@@ -536,7 +559,7 @@ void TestMarkdownEditor::testConcealMarkdownConfig() {
          {qMakePair(start, start + 3), qMakePair(start + 3, end - 3), qMakePair(end - 3, end)}) {
       const auto rect = concealConfigViewportRange(fixture, part.first, part.second);
       QVERIFY(rect.width() > 0);
-      QVERIFY(concealConfigColorCount(image, rect, style.first) > 0);
+      QVERIFY(concealConfigColorCount(image, rect, style.first, style.second) > 0);
       QVERIFY(concealConfigColorCount(image, rect, style.second) > 0);
       if (style.first == secondForeground) {
         QCOMPARE(concealConfigColorCount(image, rect, firstForeground), 0);
@@ -551,7 +574,7 @@ void TestMarkdownEditor::testConcealMarkdownConfig() {
   concealConfigVerifyWidth(fixture, start, end, alphabet);
   const QColor sourceForeground(QStringLiteral("#174db5"));
   auto rect = concealConfigViewportRange(fixture, start, end);
-  QVERIFY(concealConfigColorCount(revealed, rect, sourceForeground) > 0);
+  QVERIFY(concealConfigColorCount(revealed, rect, sourceForeground, QColor(Qt::white)) > 0);
   QCOMPARE(concealConfigColorCount(revealed, rect, secondBackground), 0);
   setConcealCursor(fixture, doc->characterCount() - 1);
 
@@ -567,7 +590,7 @@ void TestMarkdownEditor::testConcealMarkdownConfig() {
   for (const auto &part :
        {qMakePair(start, start + 3), qMakePair(start + 3, end - 3), qMakePair(end - 3, end)}) {
     rect = concealConfigViewportRange(fixture, part.first, part.second);
-    QVERIFY(concealConfigColorCount(omitted, rect, sourceForeground) > 0);
+    QVERIFY(concealConfigColorCount(omitted, rect, sourceForeground, QColor(Qt::white)) > 0);
     QVERIFY(concealConfigColorCount(omitted, rect, QColor(Qt::white)) > 0);
     QCOMPARE(concealConfigColorCount(omitted, rect, secondForeground), 0);
     QCOMPARE(concealConfigColorCount(omitted, rect, secondBackground), 0);
@@ -5059,8 +5082,11 @@ QPoint concealEditGlyphPoint(Fixture &p_fixture, int p_position) {
 
 QImage concealEditCrop(const QImage &p_image, const QRect &p_rect) {
   const qreal dpr = p_image.devicePixelRatio();
-  return p_image.copy(QRect(qRound(p_rect.x() * dpr), qRound(p_rect.y() * dpr),
-                            qRound(p_rect.width() * dpr), qRound(p_rect.height() * dpr)));
+  // Exclude fractional boundary pixels: rounding outward can sample the next line's caret.
+  const QPoint topLeft(qCeil(p_rect.x() * dpr), qCeil(p_rect.y() * dpr));
+  const QPoint bottomRight(qFloor((p_rect.x() + p_rect.width()) * dpr) - 1,
+                           qFloor((p_rect.y() + p_rect.height()) * dpr) - 1);
+  return p_image.copy(QRect(topLeft, bottomRight));
 }
 
 QRect concealEditColorBounds(const QImage &p_image, const QColor &p_color) {
