@@ -8,6 +8,9 @@ namespace tests {
 class TestMarkdownEditor : public QObject {
   Q_OBJECT
 private slots:
+  void testShiftWheelScroll_data();
+  void testShiftWheelScroll();
+
   // Source-preserving Markdown concealment through the real editor and Vi input.
   void testConcealMarkdownConfig();
   void testConcealHoverToolTip();

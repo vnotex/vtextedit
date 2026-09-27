@@ -153,6 +153,33 @@ void VTextEdit::wheelEvent(QWheelEvent *p_event) {
     p_event->ignore();
     return;
   }
+  if (p_event->modifiers() & Qt::ShiftModifier) {
+    const auto horizontalDelta = [](const QPoint &p_delta) {
+      return qAbs(p_delta.x()) > qAbs(p_delta.y()) ? p_delta.x() : p_delta.y();
+    };
+    if (!p_event->pixelDelta().isNull()) {
+      // Pixel deltas already include the system's natural scrolling direction.
+      auto bar = horizontalScrollBar();
+      bar->setValue(bar->value() - horizontalDelta(p_event->pixelDelta()));
+    } else {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+      const auto pos = p_event->position();
+      const auto globalPos = p_event->globalPosition();
+#else
+      const auto pos = QPointF(p_event->pos());
+      const auto globalPos = p_event->globalPosF();
+#endif
+      // Retain Qt's wheel steps and fractional deltas, without Shift's page step.
+      QWheelEvent horizontalEvent(pos, globalPos, QPoint(),
+                                  QPoint(horizontalDelta(p_event->angleDelta()), 0),
+                                  p_event->buttons(), p_event->modifiers() & ~Qt::ShiftModifier,
+                                  p_event->phase(), p_event->inverted(), p_event->source());
+      QTextEdit::wheelEvent(&horizontalEvent);
+    }
+    // Do not fall back to vertical scrolling at a horizontal boundary.
+    p_event->accept();
+    return;
+  }
   QTextEdit::wheelEvent(p_event);
 }
 

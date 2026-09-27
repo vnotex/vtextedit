@@ -10,6 +10,8 @@
 
 ### Behavior changes
 
+- Shift+wheel scrolls horizontally in `VTextEditor` and `VMarkdownEditor`, including over
+  the line-number gutter. Ordinary wheel scrolling and Ctrl+wheel handling are unchanged.
 - Long Markdown image/link/reference destinations and HTML image `src` values display
   three graphemes at each end around three middle dots, without changing source. The default
   threshold is 20 graphemes; `m_concealElements` selects eligible URL kinds and an empty mask

@@ -25,6 +25,7 @@
 #include <QTextLayout>
 #include <QTimer>
 #include <QToolTip>
+#include <QWheelEvent>
 
 #include <QtMath>
 #include <cmark.h>
@@ -150,6 +151,118 @@ private:
   VMarkdownEditor m_editor;
 };
 } // namespace
+
+void TestMarkdownEditor::testShiftWheelScroll_data() {
+  QTest::addColumn<bool>("markdown");
+  QTest::addColumn<bool>("inverted");
+  QTest::newRow("text") << false << false;
+  QTest::newRow("markdown") << true << false;
+  QTest::newRow("text-natural") << false << true;
+  QTest::newRow("markdown-natural") << true << true;
+}
+
+void TestMarkdownEditor::testShiftWheelScroll() {
+  QFETCH(bool, markdown);
+  QFETCH(bool, inverted);
+  auto config = makeConfig();
+  config->m_inplacePreviewSources = MarkdownEditorConfig::NoInplacePreview;
+  auto paras = QSharedPointer<TextEditorParameters>::create();
+  std::unique_ptr<VTextEditor> editor;
+  if (markdown) {
+    editor.reset(new VMarkdownEditor(config, paras, nullptr));
+  } else {
+    editor.reset(new VTextEditor(config->m_textEditorConfig, paras, nullptr));
+  }
+  editor->setSpellCheckEnabled(false);
+  editor->resize(480, 240);
+  auto edit = editor->getTextEdit();
+  edit->setLineWrapMode(QTextEdit::NoWrap);
+  editor->setText((QString(300, QLatin1Char('x')) + QLatin1Char('\n')).repeated(60));
+  editor->show();
+  QVERIFY(QTest::qWaitForWindowExposed(editor.get()));
+  auto horizontal = edit->horizontalScrollBar();
+  auto vertical = edit->verticalScrollBar();
+  QTRY_VERIFY(horizontal->maximum() > horizontal->pageStep() * 2);
+  QTRY_VERIFY(vertical->maximum() > vertical->pageStep() * 2);
+  const int start = horizontal->maximum() / 2;
+  const int top = vertical->maximum() / 2;
+  auto resetScroll = [&]() {
+    horizontal->setValue(start);
+    vertical->setValue(top);
+  };
+  auto wheel = [&](const QPoint &p_angle, const QPoint &p_pixel,
+                   Qt::KeyboardModifiers p_modifiers) {
+    const QPoint pos = edit->viewport()->rect().center();
+    QWheelEvent event(pos, edit->viewport()->mapToGlobal(pos), p_pixel, p_angle, Qt::NoButton,
+                      p_modifiers, Qt::NoScrollPhase, inverted);
+    QApplication::sendEvent(edit->viewport(), &event);
+    return event.isAccepted();
+  };
+
+  // Match a native horizontal notch, not Qt's Shift-modified page step.
+  resetScroll();
+  QVERIFY(wheel(QPoint(-120, 0), QPoint(), Qt::NoModifier));
+  const int right = horizontal->value();
+  QVERIFY(right > start);
+  resetScroll();
+  QVERIFY(wheel(QPoint(0, -120), QPoint(), Qt::ShiftModifier));
+  QCOMPARE(horizontal->value(), right);
+  QCOMPARE(vertical->value(), top);
+  QVERIFY(wheel(QPoint(0, 120), QPoint(), Qt::ShiftModifier));
+  QCOMPARE(horizontal->value(), start);
+  QCOMPARE(vertical->value(), top);
+
+  // Native horizontal gestures remain horizontal with Shift held.
+  QVERIFY(wheel(QPoint(-120, 0), QPoint(), Qt::ShiftModifier));
+  QCOMPARE(horizontal->value(), right);
+  QCOMPARE(vertical->value(), top);
+
+  // High-resolution angle deltas accumulate just like a complete notch.
+  resetScroll();
+  for (int idx = 0; idx < 120; ++idx) {
+    QVERIFY(wheel(QPoint(0, -1), QPoint(), Qt::ShiftModifier));
+  }
+  QVERIFY(qAbs(horizontal->value() - right) <= 1);
+  QCOMPARE(vertical->value(), top);
+
+  // Pixel deltas are already signed for natural scrolling, and take precedence.
+  resetScroll();
+  QVERIFY(wheel(QPoint(), QPoint(0, -17), Qt::ShiftModifier));
+  QCOMPARE(horizontal->value(), start + 17);
+  QVERIFY(wheel(QPoint(0, 120), QPoint(0, 9), Qt::ShiftModifier));
+  QCOMPARE(horizontal->value(), start + 8);
+  QVERIFY(wheel(QPoint(), QPoint(-5, 0), Qt::ShiftModifier));
+  QCOMPARE(horizontal->value(), start + 13);
+  QCOMPARE(vertical->value(), top);
+
+  resetScroll();
+  QVERIFY(!wheel(QPoint(0, -120), QPoint(), Qt::ControlModifier | Qt::ShiftModifier));
+  QCOMPARE(horizontal->value(), start);
+  QCOMPARE(vertical->value(), top);
+  QVERIFY(wheel(QPoint(0, -120), QPoint(), Qt::NoModifier));
+  QCOMPARE(horizontal->value(), start);
+  QVERIFY(vertical->value() > top);
+
+  // At either edge, Shift must not become vertical scrolling.
+  vertical->setValue(top);
+  horizontal->setValue(horizontal->maximum());
+  QVERIFY(wheel(QPoint(0, -120), QPoint(), Qt::ShiftModifier));
+  QCOMPARE(horizontal->value(), horizontal->maximum());
+  QCOMPARE(vertical->value(), top);
+  horizontal->setValue(0);
+  QVERIFY(wheel(QPoint(0, 120), QPoint(), Qt::ShiftModifier));
+  QCOMPARE(horizontal->value(), 0);
+  QCOMPARE(vertical->value(), top);
+
+  editor->setText(QStringLiteral("short\n").repeated(100));
+  QTRY_COMPARE(horizontal->maximum(), 0);
+  QTRY_VERIFY(vertical->maximum() > 0);
+  vertical->setValue(vertical->maximum() / 2);
+  const int noOverflowTop = vertical->value();
+  QVERIFY(wheel(QPoint(0, -120), QPoint(), Qt::ShiftModifier));
+  QCOMPARE(horizontal->value(), 0);
+  QCOMPARE(vertical->value(), noOverflowTop);
+}
 
 namespace {
 static QSharedPointer<MarkdownEditorConfig> makeConcealConfig(bool p_vi = false) {
