@@ -178,6 +178,17 @@ JS string is text. cmark emits an opening tag, the contents and the closing tag 
 advanced for **every** HTML node — including one whose span could not be resolved.
 Otherwise an unresolvable `<script>` would unmask an `<img>` inside it.
 
+## Pipe Tables After Paragraph Text
+
+A valid pipe-table header/delimiter can interrupt paragraph text without a blank line,
+including inside lists and blockquotes. cmark matches the final pending paragraph line;
+earlier lines remain a separate paragraph in the same container. Preserve each row's
+source columns and the preceding paragraph's end: previews and source formatting use
+these ranges to rewrite only the table. Code blocks and disabled extensions are unchanged.
+
+Regression coverage: cmark's `parser_test/table_tests.c` and
+`testTableInterruptsListParagraph()` in `tests/test_markdowneditor/`.
+
 ## HTML `<table>`: a second first-class reference
 
 A top-level `<table>` HTML block in a strict canonical subset is a

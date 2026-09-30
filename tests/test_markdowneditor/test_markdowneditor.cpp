@@ -2375,6 +2375,41 @@ void TestMarkdownEditor::testTableSourceFormatUndoRedo() {
   }
 }
 
+void TestMarkdownEditor::testTableInterruptsListParagraph() {
+  auto config = makeTableSourceConfig();
+  config->m_inplacePreviewSources = MarkdownEditorConfig::Table;
+  config->m_autoFoldPreviewedBlocksEnabled = false;
+  VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+  const QString prefix = QStringLiteral("- before\n- item\n");
+  const QString suffix = QStringLiteral("\n- after");
+  const QString table = QStringLiteral("  | h1 | header2 |\n  | --- | --- |\n  | a | b |");
+  const QString aligned =
+      QStringLiteral("  | h1  | header2 |\n  | --- | ------- |\n  | z   | b       |");
+  editor.resize(640, 480);
+  editor.setText(prefix + table + suffix);
+  editor.show();
+  selectTableSource(editor, 5, 3, 5, 3);
+  auto widgets = [&]() {
+    return editor.getTextEdit()->viewport()->findChildren<PreviewWidget *>(
+        QString(), Qt::FindDirectChildrenOnly);
+  };
+  QTRY_COMPARE_WITH_TIMEOUT(widgets().size(), 1, 5000);
+  auto preview = widgets().first()->previewContext()->preview();
+  QCOMPARE(preview->type(), PreviewElementType::Table);
+  QCOMPARE(preview->startPos(), prefix.size());
+  QCOMPARE(preview->endPos(), prefix.size() + table.size());
+  QCOMPARE(preview->sourceMarkdown(), table);
+
+  replaceTableSource(editor, 4, 4, 1, QStringLiteral("z"));
+  QTRY_COMPARE_WITH_TIMEOUT(editor.document()->toPlainText(), prefix + aligned + suffix, 5000);
+  QTRY_COMPARE_WITH_TIMEOUT(widgets().size(), 1, 5000);
+  QTRY_COMPARE_WITH_TIMEOUT(widgets().first()->previewContext()->preview()->sourceMarkdown(),
+                            aligned, 5000);
+  preview = widgets().first()->previewContext()->preview();
+  QCOMPARE(preview->startPos(), prefix.size());
+  QCOMPARE(preview->endPos(), prefix.size() + aligned.size());
+}
+
 void TestMarkdownEditor::testTableSourceFormatSyntaxBoundaries() {
   {
     VMarkdownEditor editor(makeTableSourceConfig(), QSharedPointer<TextEditorParameters>::create());

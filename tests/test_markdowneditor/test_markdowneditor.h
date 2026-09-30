@@ -137,6 +137,7 @@ private slots:
   void testTableSourceFormatCursorAndSelection();
   void testTableSourceFormatProtectedPositions();
   void testTableSourceFormatUndoRedo();
+  void testTableInterruptsListParagraph();
   void testTableSourceFormatSyntaxBoundaries();
   void testTableSourceFormatIdempotence();
 
