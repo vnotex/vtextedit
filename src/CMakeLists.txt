@@ -32,6 +32,7 @@ set(LIBS_FOLDER "../libs")
 set(TRANS_FILES
     data/translations/vtextedit_zh_CN.ts
     data/translations/vtextedit_ja.ts
+    data/translations/vtextedit_ko.ts
 )
 qt_add_translation(QM_FILES ${TRANS_FILES})
 

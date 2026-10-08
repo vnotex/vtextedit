@@ -330,6 +330,15 @@ Once written back as HTML a table **stays** HTML, even after every merge is spli
 is no in-editor route back to pipe syntax.
 
 
+## Translation Catalogs
+
+`src/data/translations/` contains Simplified Chinese (`vtextedit_zh_CN`), Japanese
+(`vtextedit_ja`) and Korean (`vtextedit_ko`, locale `ko_KR`) catalogs. The explicit
+`update_translations` target refreshes all three TS files; translate unfinished entries
+before releasing. VNote packages the checked-in QM files, so regenerate them with Qt 5.15
+`lrelease` and commit both TS and QM changes (Qt 6 can load these files). The host installs
+the `vtextedit` translator with its chosen `QLocale` before constructing editors.
+
 ## Testing
 
 * Framework: QtTest (`#include <QtTest>`, link `Qt::Test`)
