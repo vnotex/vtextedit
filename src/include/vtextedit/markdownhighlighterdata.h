@@ -216,6 +216,9 @@ struct HeadingInfo {
   // 1..6, as reported by cmark.
   int m_level = -1;
 
+  // No inline AST children, unlike image/HTML-only headings with an empty title.
+  bool m_isEmpty = false;
+
   // AST-derived rendered text of the heading, trimmed. For display.
   QString m_title;
 

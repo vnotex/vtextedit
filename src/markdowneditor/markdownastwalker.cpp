@@ -2032,6 +2032,7 @@ static void extractHeading(cmark_node *p_node, ASTWalkResult &p_result, int p_ab
   heading.m_startPos = p_absStart;
   heading.m_endPos = p_absEnd;
   heading.m_level = cmark_node_get_heading_level(p_node);
+  heading.m_isEmpty = cmark_node_first_child(p_node) == nullptr;
   appendHeadingText(p_node, heading.m_title, heading.m_anchorText);
   // Only the display title is trimmed; see the note above on why the anchor
   // input must keep markdown-it-anchor's raw concatenation.

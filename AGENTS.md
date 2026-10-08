@@ -70,6 +70,14 @@ Note: actual ordering varies slightly between files. Follow the pattern in the f
 * Defined as `Q_DECL_EXPORT` when building (`VTEXTEDIT_LIB` defined), `Q_DECL_IMPORT` when consuming
 * Tests compile with `VTEXTEDIT_STATIC_DEFINE` (empty macro) to link sources directly
 
+## Empty Heading Metadata
+
+`md::HeadingInfo::m_isEmpty` records that the cmark heading has no inline AST children.
+Bare ATX markers, whitespace-only contents and closing-marker-only contents are empty.
+Do not derive this flag from `m_title`: images and inline HTML can have an empty display
+title despite containing source content. Parsing, highlighting and heading publication
+retain empty headings; the host decides whether to number them.
+
 ## Single-Line Display Math
 
 Single-line `$$...$$` is inline source syntax throughout the document, including pipe-table
