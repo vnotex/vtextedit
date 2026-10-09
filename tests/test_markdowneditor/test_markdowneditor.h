@@ -197,6 +197,18 @@ private slots:
   void testHeadingSourceLayoutDeferral();
   void testHeadingSourceGuaranteeReset();
   void testHeadingSourceTableCoexistence();
+  void testHeadingSourceRemovalRestoresAuthored();
+  void testHeadingSourceRemovalMatchingIsUnchanged();
+  void testHeadingSourceRemovalRenumberAndPattern();
+  void testHeadingSourceRemovalTracksOrdinaryEdits();
+  void testHeadingSourceRemovalManualOverride();
+  void testHeadingSourceRemovalReplacementAndHistory();
+  void testHeadingSourceRemovalDeletionAndBranch();
+  void testHeadingSourceRemovalReloadAndHistoryClear();
+  void testHeadingSourceRemovalBareAtx_data();
+  void testHeadingSourceRemovalBareAtx();
+  void testHeadingSourceRemovalSelectionAndScroll();
+  void testHeadingSourceRemovalUnavailable();
 };
 } // namespace tests
 

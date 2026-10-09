@@ -5602,6 +5602,7 @@ const QString c_headingNumbered =
     QStringLiteral("# Title\n## 1. Alpha\n### 1.1. Detail\n## 2. Beta\n");
 const QVector<QString> c_headingPrefixes{QString(), QStringLiteral("1."), QStringLiteral("1.1."),
                                          QStringLiteral("2.")};
+using HeadingRemoval = VMarkdownEditor::HeadingSectionNumberRemovalResult;
 
 // These are explicit fixture outputs, not a second implementation of the host's
 // title exemption, base-level or counter policy.
@@ -6700,6 +6701,368 @@ void TestMarkdownEditor::testHeadingSourceTableCoexistence() {
   QCOMPARE(editor.document()->availableUndoSteps(), undoSteps);
   QCOMPARE(editor.getTextEdit()->textCursor().position(), cursor.position());
   QCOMPARE(editor.getTextEdit()->textCursor().anchor(), cursor.anchor());
+}
+
+void TestMarkdownEditor::testHeadingSourceRemovalRestoresAuthored() {
+  const QString source = QStringLiteral(
+      "# Title\n## Fresh\n## 42)  Authored\n## 3. Matching\n\n7\\.  Setext\n-----\n");
+  const QString numbered = QStringLiteral(
+      "# Title\n## 1. Fresh\n## 2. Authored\n## 3. Matching\n\n4\\. Setext\n-----\n");
+  Fixture fixture(source);
+  auto editor = fixture.editor();
+  auto doc = editor->document();
+  editor->setHeadingSectionNumberProvider(
+      headingPrefixes({QString(), QStringLiteral("1."), QStringLiteral("2."), QStringLiteral("3."),
+                       QStringLiteral("4.")}));
+  editor->setHeadingSectionNumberingActive(true);
+  QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), numbered, 5000);
+  editor->setHeadingSectionNumberProvider({});
+  editor->setHeadingSectionNumberingActive(false);
+  QCOMPARE(editor->removeHeadingSectionNumbers(), HeadingRemoval::Removed);
+  QCOMPARE(fixture.text(), source);
+  doc->undo();
+  QCOMPARE(fixture.text(), numbered);
+  doc->redo();
+  QCOMPARE(fixture.text(), source);
+  // Hosts can roll back a failed hidden-editor buffer commit synchronously,
+  // and the exact rollback frontier must be removable again without a provider.
+  doc->undo();
+  QCOMPARE(editor->removeHeadingSectionNumbers(), HeadingRemoval::Removed);
+  QCOMPARE(fixture.text(), source);
+  doc->setModified(false);
+  const int undo = doc->availableUndoSteps();
+  const int revision = doc->revision();
+  QSignalSpy changed(fixture.edit(), &VTextEdit::contentsChanged);
+  QCOMPARE(editor->removeHeadingSectionNumbers(), HeadingRemoval::Unchanged);
+  QCOMPARE(doc->availableUndoSteps(), undo);
+  QCOMPARE(doc->revision(), revision);
+  QVERIFY(!doc->isModified());
+  QVERIFY(changed.isEmpty());
+}
+
+void TestMarkdownEditor::testHeadingSourceRemovalMatchingIsUnchanged() {
+  const QString source = QStringLiteral("## 1. Authored\n");
+  Fixture fixture(source);
+  auto editor = fixture.editor();
+  auto doc = editor->document();
+  HeadingSnapshot snapshot(*editor);
+  editor->setHeadingSectionNumberProvider(headingPrefixes({QStringLiteral("1.")}));
+  editor->setHeadingSectionNumberingActive(true);
+  QTRY_VERIFY_WITH_TIMEOUT(snapshot.m_numbered, 5000);
+  editor->setHeadingSectionNumberProvider({});
+  doc->setModified(false);
+  const int undo = doc->availableUndoSteps();
+  QCOMPARE(editor->removeHeadingSectionNumbers(), HeadingRemoval::Unchanged);
+  QCOMPARE(fixture.text(), source);
+  QCOMPARE(doc->availableUndoSteps(), undo);
+  QVERIFY(!doc->isModified());
+}
+
+void TestMarkdownEditor::testHeadingSourceRemovalRenumberAndPattern() {
+  Fixture fixture(QStringLiteral("## 42)  Original\n"));
+  auto editor = fixture.editor();
+  QVector<QString> desired{QStringLiteral("1.")};
+  editor->setHeadingSectionNumberProvider(
+      [&desired](const QVector<md::HeadingInfo> &) { return desired; });
+  editor->setHeadingSectionNumberingActive(true);
+  QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("## 1. Original\n"), 5000);
+  desired = {QStringLiteral("1."), QStringLiteral("2.")};
+  editHeadingSource(*editor, 0, 0, QStringLiteral("## New\n"));
+  const QString numbered = QStringLiteral("## 1. New\n## 2. Original\n");
+  QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), numbered, 5000);
+  editor->setHeadingSectionNumberProvider(
+      headingPrefixes({QStringLiteral("1)"), QStringLiteral("2)")}));
+  const QString patterned = QStringLiteral("## 1) New\n## 2) Original\n");
+  QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), patterned, 5000);
+  editor->setHeadingSectionNumberProvider({});
+  editor->document()->undo();
+  QCOMPARE(fixture.text(), numbered);
+  editor->document()->redo();
+  QCOMPARE(fixture.text(), patterned);
+  QCOMPARE(editor->removeHeadingSectionNumbers(), HeadingRemoval::Removed);
+  QCOMPARE(fixture.text(), QStringLiteral("## New\n## 42)  Original\n"));
+  editor->document()->undo();
+  QCOMPARE(fixture.text(), patterned);
+  editor->document()->undo();
+  QCOMPARE(fixture.text(), numbered);
+  editor->document()->undo();
+  QCOMPARE(fixture.text(), QStringLiteral("## 1. Original\n"));
+  QCOMPARE(editor->removeHeadingSectionNumbers(), HeadingRemoval::Removed);
+  QCOMPARE(fixture.text(), QStringLiteral("## 42)  Original\n"));
+}
+
+void TestMarkdownEditor::testHeadingSourceRemovalTracksOrdinaryEdits() {
+  Fixture fixture(QStringLiteral("intro\n\n## Alpha\n\nend\n"));
+  auto editor = fixture.editor();
+  auto doc = editor->document();
+  editor->setHeadingSectionNumberProvider(headingPrefixes({QStringLiteral("1.")}));
+  editor->setHeadingSectionNumberingActive(true);
+  QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("intro\n\n## 1. Alpha\n\nend\n"), 5000);
+  editor->setHeadingSectionNumberProvider({});
+  editor->setHeadingSectionNumberingActive(false);
+  editHeadingSource(*editor, fixture.blockEnd(2), 0, QStringLiteral(" title"));
+  editHeadingSource(*editor, 0, 0, QStringLiteral("before\n"));
+  QTextCursor cursor(doc);
+  cursor.beginEditBlock();
+  cursor.setPosition(doc->characterCount() - 1);
+  cursor.insertText(QStringLiteral("]"));
+  cursor.setPosition(0);
+  cursor.insertText(QStringLiteral("["));
+  cursor.endEditBlock();
+  const QString numbered = QStringLiteral("[before\nintro\n\n## 1. Alpha title\n\nend\n]");
+  QCOMPARE(fixture.text(), numbered);
+  QCOMPARE(editor->removeHeadingSectionNumbers(), HeadingRemoval::Removed);
+  QCOMPARE(fixture.text(), QStringLiteral("[before\nintro\n\n## Alpha title\n\nend\n]"));
+  doc->undo();
+  QCOMPARE(fixture.text(), numbered);
+  doc->undo();
+  QCOMPARE(fixture.text(), QStringLiteral("before\nintro\n\n## 1. Alpha title\n\nend\n"));
+  doc->undo();
+  QCOMPARE(fixture.text(), QStringLiteral("intro\n\n## 1. Alpha title\n\nend\n"));
+  QCOMPARE(editor->removeHeadingSectionNumbers(), HeadingRemoval::Removed);
+  QCOMPARE(fixture.text(), QStringLiteral("intro\n\n## Alpha title\n\nend\n"));
+  doc->undo();
+  doc->undo();
+  QCOMPARE(fixture.text(), QStringLiteral("intro\n\n## 1. Alpha\n\nend\n"));
+  QCOMPARE(editor->removeHeadingSectionNumbers(), HeadingRemoval::Removed);
+  QCOMPARE(fixture.text(), QStringLiteral("intro\n\n## Alpha\n\nend\n"));
+}
+
+void TestMarkdownEditor::testHeadingSourceRemovalManualOverride() {
+  Fixture fixture(QStringLiteral("## Alpha\n## Beta\n"));
+  auto editor = fixture.editor();
+  auto doc = editor->document();
+  editor->setHeadingSectionNumberProvider(
+      headingPrefixes({QStringLiteral("1."), QStringLiteral("2.")}));
+  editor->setHeadingSectionNumberingActive(true);
+  const QString numbered = QStringLiteral("## 1. Alpha\n## 2. Beta\n");
+  QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), numbered, 5000);
+  editor->setHeadingSectionNumberProvider({});
+  editHeadingSource(*editor, 3, 3, QStringLiteral("77)  "));
+  QCOMPARE(editor->removeHeadingSectionNumbers(), HeadingRemoval::Removed);
+  QCOMPARE(fixture.text(), QStringLiteral("## 77)  Alpha\n## Beta\n"));
+  doc->undo();
+  doc->undo();
+  QCOMPARE(fixture.text(), numbered);
+  QCOMPARE(editor->removeHeadingSectionNumbers(), HeadingRemoval::Removed);
+  QCOMPARE(fixture.text(), QStringLiteral("## Alpha\n## Beta\n"));
+
+  // A later automatic replacement owns the newly authored prefix, not the
+  // first generation's original empty prefix.
+  editor->setHeadingSectionNumberProvider(
+      headingPrefixes({QStringLiteral("1."), QStringLiteral("2.")}));
+  QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), numbered, 5000);
+  editHeadingSource(*editor, 3, 3, QStringLiteral("77)  "));
+  QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), numbered, 5000);
+  editor->setHeadingSectionNumberProvider({});
+  QCOMPARE(editor->removeHeadingSectionNumbers(), HeadingRemoval::Removed);
+  QCOMPARE(fixture.text(), QStringLiteral("## 77)  Alpha\n## Beta\n"));
+}
+
+void TestMarkdownEditor::testHeadingSourceRemovalReplacementAndHistory() {
+  const QString source = QStringLiteral("## Alpha\n## Beta\n");
+  const QString numbered = QStringLiteral("## 1. Alpha\n## 2. Beta\n");
+  Fixture fixture(source);
+  auto editor = fixture.editor();
+  auto doc = editor->document();
+  editor->setHeadingSectionNumberProvider(
+      headingPrefixes({QStringLiteral("1."), QStringLiteral("2.")}));
+  editor->setHeadingSectionNumberingActive(true);
+  QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), numbered, 5000);
+  editor->setHeadingSectionNumberProvider({});
+  doc->undo();
+  QCOMPARE(fixture.text(), source);
+  QCOMPARE(editor->removeHeadingSectionNumbers(), HeadingRemoval::Unchanged);
+  doc->redo();
+  QCOMPARE(fixture.text(), numbered);
+  // Identical copied source is not proof of identity. Replacing a heading
+  // relinquishes its lineage without sacrificing untouched adjacent headings.
+  editHeadingSource(*editor, 0, 12, QStringLiteral("## 1. Alpha\n"));
+  QCOMPARE(fixture.text(), numbered);
+  QCOMPARE(editor->removeHeadingSectionNumbers(), HeadingRemoval::Removed);
+  QCOMPARE(fixture.text(), QStringLiteral("## 1. Alpha\n## Beta\n"));
+  doc->undo();
+  doc->undo();
+  QCOMPARE(fixture.text(), numbered);
+  QCOMPARE(editor->removeHeadingSectionNumbers(), HeadingRemoval::Removed);
+  QCOMPARE(fixture.text(), source);
+}
+
+void TestMarkdownEditor::testHeadingSourceRemovalDeletionAndBranch() {
+  const QString numbered = QStringLiteral("## 1. Alpha\n## 2. Beta\n");
+  Fixture fixture(QStringLiteral("## Alpha\n## Beta\n"));
+  auto editor = fixture.editor();
+  auto doc = editor->document();
+  editor->setHeadingSectionNumberProvider(
+      headingPrefixes({QStringLiteral("1."), QStringLiteral("2.")}));
+  editor->setHeadingSectionNumberingActive(true);
+  QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), numbered, 5000);
+  editor->setHeadingSectionNumberProvider({});
+  editHeadingSource(*editor, 0, 12, QString());
+  QCOMPARE(fixture.text(), QStringLiteral("## 2. Beta\n"));
+  QCOMPARE(editor->removeHeadingSectionNumbers(), HeadingRemoval::Removed);
+  QCOMPARE(fixture.text(), QStringLiteral("## Beta\n"));
+  doc->undo();
+  doc->undo();
+  QCOMPARE(fixture.text(), numbered);
+  doc->redo();
+  QCOMPARE(fixture.text(), QStringLiteral("## 2. Beta\n"));
+  doc->undo();
+  QCOMPARE(fixture.text(), numbered);
+  editHeadingSource(*editor, fixture.blockEnd(1), 0, QStringLiteral(" branch"));
+  QVERIFY(!doc->isRedoAvailable());
+  QCOMPARE(editor->removeHeadingSectionNumbers(), HeadingRemoval::Removed);
+  QCOMPARE(fixture.text(), QStringLiteral("## Alpha\n## Beta branch\n"));
+  doc->undo();
+  QCOMPARE(fixture.text(), QStringLiteral("## 1. Alpha\n## 2. Beta branch\n"));
+  doc->redo();
+  QCOMPARE(fixture.text(), QStringLiteral("## Alpha\n## Beta branch\n"));
+}
+
+void TestMarkdownEditor::testHeadingSourceRemovalReloadAndHistoryClear() {
+  const QString source = QStringLiteral("## Alpha\n");
+  const QString numbered = QStringLiteral("## 1. Alpha\n");
+  Fixture fixture(source);
+  auto editor = fixture.editor();
+  auto doc = editor->document();
+  editor->setHeadingSectionNumberProvider(headingPrefixes({QStringLiteral("1.")}));
+  editor->setHeadingSectionNumberingActive(true);
+  QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), numbered, 5000);
+  editor->setHeadingSectionNumberProvider({});
+  doc->clearUndoRedoStacks();
+  QCOMPARE(editor->removeHeadingSectionNumbers(), HeadingRemoval::Removed);
+  QCOMPARE(fixture.text(), source);
+  doc->undo();
+  QCOMPARE(fixture.text(), numbered);
+  QVERIFY(!doc->isUndoAvailable());
+  editHeadingSource(*editor, fixture.blockEnd(0), 0, QStringLiteral(" edited"));
+  QCOMPARE(editor->removeHeadingSectionNumbers(), HeadingRemoval::Removed);
+  QCOMPARE(fixture.text(), QStringLiteral("## Alpha edited\n"));
+  doc->undo();
+  const QString reloaded = fixture.text();
+  editor->setText(reloaded);
+  doc->setModified(false);
+  QCOMPARE(editor->removeHeadingSectionNumbers(), HeadingRemoval::Unchanged);
+  QCOMPARE(fixture.text(), reloaded);
+  QVERIFY(!doc->isModified());
+  QVERIFY(!doc->isUndoAvailable());
+}
+
+void TestMarkdownEditor::testHeadingSourceRemovalBareAtx_data() {
+  QTest::addColumn<bool>("withTitle");
+  QTest::newRow("restore-bare-marker") << false;
+  QTest::newRow("retain-title-separator") << true;
+}
+
+void TestMarkdownEditor::testHeadingSourceRemovalBareAtx() {
+  QFETCH(bool, withTitle);
+  Fixture fixture(QStringLiteral("##\n"));
+  auto editor = fixture.editor();
+  editor->setHeadingSectionNumberProvider(headingPrefixes({QStringLiteral("1.")}));
+  editor->setHeadingSectionNumberingActive(true);
+  QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("## 1. \n"), 5000);
+  editor->setHeadingSectionNumberProvider(headingPrefixes({QStringLiteral("1)")}));
+  QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), QStringLiteral("## 1) \n"), 5000);
+  editor->setHeadingSectionNumberProvider({});
+  if (withTitle) {
+    editHeadingSource(*editor, fixture.blockEnd(0), 0, QStringLiteral("Title"));
+  }
+  QCOMPARE(editor->removeHeadingSectionNumbers(), HeadingRemoval::Removed);
+  QCOMPARE(fixture.text(), withTitle ? QStringLiteral("## Title\n") : QStringLiteral("##\n"));
+}
+
+void TestMarkdownEditor::testHeadingSourceRemovalSelectionAndScroll() {
+  const QString filler =
+      QStringLiteral("long unchanged paragraph ").repeated(30) + QLatin1Char('\n');
+  const QString source = QStringLiteral("## Alpha\n## Beta\n") + filler.repeated(80);
+  Fixture fixture(source);
+  auto editor = fixture.editor();
+  auto edit = fixture.edit();
+  editor->resize(480, 240);
+  edit->setLineWrapMode(QTextEdit::NoWrap);
+  editor->show();
+  QVERIFY(QTest::qWaitForWindowExposed(editor));
+  editor->setHeadingSectionNumberProvider(
+      headingPrefixes({QStringLiteral("1."), QStringLiteral("2.")}));
+  editor->setHeadingSectionNumberingActive(true);
+  QTRY_COMPARE_WITH_TIMEOUT(
+      fixture.text(), QStringLiteral("## 1. Alpha\n## 2. Beta\n") + filler.repeated(80), 5000);
+  editor->setHeadingSectionNumberProvider({});
+  selectHeadingSource(*editor, 11, 6);
+  edit->setOverriddenSelection(18, 22);
+  QTRY_VERIFY(edit->horizontalScrollBar()->maximum() > 100);
+  QTRY_VERIFY(edit->verticalScrollBar()->maximum() > 100);
+  edit->horizontalScrollBar()->setValue(100);
+  edit->verticalScrollBar()->setValue(100);
+  QCOMPARE(editor->removeHeadingSectionNumbers(), HeadingRemoval::Removed);
+  QCOMPARE(fixture.text(), source);
+  QCOMPARE(edit->textCursor().anchor(), 8);
+  QCOMPARE(edit->textCursor().position(), 3);
+  QCOMPARE(edit->textCursor().selectedText(), QStringLiteral("Alpha"));
+  QCOMPARE(edit->getSelection().start(), 12);
+  QCOMPARE(edit->getSelection().end(), 16);
+  QCOMPARE(edit->selectedText(), QStringLiteral("Beta"));
+  QCOMPARE(edit->horizontalScrollBar()->value(), 100);
+  QCOMPARE(edit->verticalScrollBar()->value(), 100);
+  QSignalSpy completed(editor->getHighlighter(), &MarkdownHighlighter::highlightCompleted);
+  editor->getHighlighter()->updateHighlight();
+  QTRY_VERIFY_WITH_TIMEOUT(!completed.isEmpty(), 5000);
+  QCOMPARE(edit->horizontalScrollBar()->value(), 100);
+  QCOMPARE(edit->verticalScrollBar()->value(), 100);
+}
+
+void TestMarkdownEditor::testHeadingSourceRemovalUnavailable() {
+  const QString source = QStringLiteral("## Alpha\n\nprose\n");
+  const QString numbered = QStringLiteral("## 1. Alpha\n\nprose\n");
+  Fixture fixture(source, 2);
+  auto editor = fixture.editor();
+  auto edit = fixture.edit();
+  auto doc = editor->document();
+  editor->resize(640, 480);
+  editor->show();
+  editor->activateWindow();
+  edit->setFocus();
+  QTRY_VERIFY_WITH_TIMEOUT(edit->hasFocus(), 5000);
+  editor->setHeadingSectionNumberProvider(headingPrefixes({QStringLiteral("1.")}));
+  editor->setHeadingSectionNumberingActive(true);
+  QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), numbered, 5000);
+  editor->setHeadingSectionNumberProvider({});
+  const int undo = doc->availableUndoSteps();
+  editor->setReadOnly(true);
+  QCOMPARE(editor->removeHeadingSectionNumbers(), HeadingRemoval::Unavailable);
+  QCOMPARE(fixture.text(), numbered);
+  QCOMPARE(doc->availableUndoSteps(), undo);
+  editor->setReadOnly(false);
+  QInputMethodEvent preedit(QStringLiteral("\u3042"), QList<QInputMethodEvent::Attribute>());
+  QCoreApplication::sendEvent(edit, &preedit);
+  QCOMPARE(doc->findBlockByNumber(2).layout()->preeditAreaText(), QStringLiteral("\u3042"));
+  QCOMPARE(editor->removeHeadingSectionNumbers(), HeadingRemoval::Unavailable);
+  QCOMPARE(fixture.text(), numbered);
+  QInputMethodEvent cancel;
+  QCoreApplication::sendEvent(edit, &cancel);
+  bool entered = false;
+  HeadingRemoval busyResult = HeadingRemoval::Unchanged;
+  const auto notification = connect(doc->documentLayout(), &QAbstractTextDocumentLayout::update,
+                                    editor, [&](const QRectF &) {
+                                      if (!entered && editor->documentLayout()->isBusy()) {
+                                        entered = true;
+                                        busyResult = editor->removeHeadingSectionNumbers();
+                                      }
+                                    });
+  doc->markContentsDirty(0, doc->characterCount());
+  QTRY_VERIFY_WITH_TIMEOUT(entered, 5000);
+  disconnect(notification);
+  QCOMPARE(busyResult, HeadingRemoval::Unavailable);
+  QCOMPARE(fixture.text(), numbered);
+  QCOMPARE(doc->availableUndoSteps(), undo);
+  HeadingRemoval reentrantResult = HeadingRemoval::Unchanged;
+  const auto reentrant = connect(doc, &QTextDocument::contentsChanged, editor, [&]() {
+    reentrantResult = editor->removeHeadingSectionNumbers();
+  });
+  QCOMPARE(editor->removeHeadingSectionNumbers(), HeadingRemoval::Removed);
+  disconnect(reentrant);
+  QCOMPARE(reentrantResult, HeadingRemoval::Unavailable);
+  QCOMPARE(fixture.text(), source);
 }
 
 QTEST_MAIN(tests::TestMarkdownEditor)

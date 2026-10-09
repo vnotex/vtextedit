@@ -1974,6 +1974,14 @@ void VMarkdownEditor::setHeadingSectionNumberingActive(bool p_active) {
   }
 }
 
+VMarkdownEditor::HeadingSectionNumberRemovalResult VMarkdownEditor::removeHeadingSectionNumbers() {
+  if (auto numberer = findChild<HeadingSourceNumberer *>(
+          QStringLiteral("vte_heading_source_numberer"), Qt::FindDirectChildrenOnly)) {
+    return numberer->remove();
+  }
+  return HeadingSectionNumberRemovalResult::Unchanged;
+}
+
 void VMarkdownEditor::setupSyntaxHighlighter() {
   m_highlighterInterface.reset(new EditorMarkdownHighlighter(this));
   CodeBlockHighlighter *codeBlockHighlighter = nullptr;

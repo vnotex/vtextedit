@@ -78,6 +78,29 @@ Do not derive this flag from `m_title`: images and inline HTML can have an empty
 title despite containing source content. Parsing, highlighting and heading publication
 retain empty headings; the host decides whether to number them.
 
+## Session-Owned Heading Source Numbers
+
+`setHeadingSectionNumberProvider({})` and `setHeadingSectionNumberingActive(false)` only
+suspend numbering; neither removes source prefixes. Hosts restoring numbers must clear the
+provider first, then call synchronous `removeHeadingSectionNumbers()`, even for a hidden editor.
+
+Removal restores only unchanged prefixes actually written in this editing session. Overwritten
+authored prefixes are restored byte-for-byte; already-matching/manual prefixes stay untouched.
+Renumbering retains the original prefix. Ownership follows title and surrounding edits, but
+replacement, cut/paste or reordering of a tracked span loses its lineage; known undo checkpoints
+can restore it. Loading/reopening starts without ownership. No provenance is persisted.
+
+`Removed` is one standalone undo step preserving mapped selection and viewport. Immediate undo
+restores source and ownership. `Unchanged` makes no source/history/dirty change. `Unavailable`
+must be reported by the host, never retried asynchronously against hidden content. Cleanup rejects
+read-only, busy/reentrant, IME composition, unsupported additional selections, and an owned edit
+without undo support. Bare ATX markers retain a generated separator if a title was later authored.
+
+The prefix-only ledger processes undo/redo even without a provider; it never snapshots documents.
+Qt reset notifications can arrive while its cursor registry is detached: defer history-clear
+callbacks and ignore synthetic terminal insertion before the safe reset notification releases
+owned cursors. Coverage: `testHeadingSourceRemoval*` and `testHeadingSourceGuaranteeReset`.
+
 ## Single-Line Display Math
 
 Single-line `$$...$$` is inline source syntax throughout the document, including pipe-table

@@ -61,6 +61,7 @@ public:
   typedef QHash<QString, QTextCharFormat> ExternalCodeBlockHighlightStyles;
   using HeadingSectionNumberProvider =
       std::function<QVector<QString>(const QVector<md::HeadingInfo> &)>;
+  enum class HeadingSectionNumberRemovalResult { Unchanged, Removed, Unavailable };
 
   VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_config,
                   const QSharedPointer<TextEditorParameters> &p_paras, QWidget *p_parent = nullptr);
@@ -86,6 +87,11 @@ public:
   // Initially inactive. Activation queues owed normalization after source
   // inactivity; it never rewrites synchronously during loading or mode changes.
   void setHeadingSectionNumberingActive(bool p_active);
+
+  // Restore only unchanged number prefixes written in this editing session.
+  // Clear the provider first. Works while inactive; Removed is one standalone
+  // undo step, Unchanged does not edit, and Unavailable must be reported by hosts.
+  HeadingSectionNumberRemovalResult removeHeadingSectionNumbers();
 
   PreviewMgr *getPreviewMgr() const;
 

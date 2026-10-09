@@ -4,7 +4,9 @@
 #include <vtextedit/vmarkdowneditor.h>
 
 #include <QElapsedTimer>
+#include <QMap>
 #include <QObject>
+#include <QTextCursor>
 #include <QTimer>
 
 class QTextDocument;
@@ -22,6 +24,7 @@ public:
 
   void setProvider(VMarkdownEditor::HeadingSectionNumberProvider p_provider);
   void setActive(bool p_active);
+  VMarkdownEditor::HeadingSectionNumberRemovalResult remove();
 
   // Preserve the source edit's viewport until explicit user interaction.
   bool restoreViewportAfterHighlight();
@@ -36,6 +39,27 @@ private:
     int m_position = 0;
     QString m_before;
     QString m_after;
+    bool m_separator = false;
+  };
+
+  struct Prefix {
+    QString m_original;
+    QString m_generated;
+    QChar m_leftCharacter;
+    bool m_separator = false;
+  };
+
+  struct OwnedPrefix {
+    Prefix m_prefix;
+    QTextCursor m_start;
+    QTextCursor m_end;
+    QTextCursor m_left;
+  };
+
+  struct PrefixSnapshot {
+    Prefix m_prefix;
+    int m_position = 0;
+    bool m_hasLeft = false;
   };
 
   struct Plan {
@@ -63,7 +87,16 @@ private:
   bool prepare(const QSharedPointer<MarkdownHighlighterResult> &p_result);
   void publishCurrent();
   void apply();
-  int mapPosition(int p_position, bool p_followInsertion) const;
+  bool valid(const OwnedPrefix &p_owned) const;
+  OwnedPrefix anchorPrefix(const Prefix &p_prefix, int p_position, bool p_hasLeft) const;
+  void validateOwnership();
+  void rememberOwnership();
+  void restoreOwnership(int p_undoSteps);
+  void resetHistory();
+  void pruneHistory(int p_undoSteps);
+  void writeReplacements(const QVector<Replacement> &p_replacements, bool p_removing, bool p_join);
+  int mapPosition(const QVector<Replacement> &p_replacements, int p_position,
+                  bool p_followInsertion) const;
 
   VMarkdownEditor *m_editor;
   QTextDocument *m_doc;
@@ -71,6 +104,9 @@ private:
   QTimer m_timer;
   QElapsedTimer m_idle;
   Plan m_plan;
+  QVector<OwnedPrefix> m_owned;
+  QMap<int, QVector<PrefixSnapshot>> m_history;
+  QVector<PrefixSnapshot> m_snapshot;
   quint64 m_generation = 0;
   quint64 m_providerGeneration = 0;
   int m_revision = 0;

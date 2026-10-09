@@ -15,6 +15,7 @@
 #include <QTextDocument>
 #include <QTextLayout>
 
+#include <algorithm>
 #include <limits>
 #include <utility>
 
@@ -54,6 +55,20 @@ HeadingSourceNumberer::HeadingSourceNumberer(VMarkdownEditor *p_editor)
       m_newUndoCommand = true;
     }
   });
+  const auto historyCleared = [this](bool) {
+    // QTextDocument::clear() emits these signals with its cursor registry
+    // temporarily detached. Releasing our cursors there would leave dangling
+    // pointers in Qt's saved registry, restored before contentsChange.
+    QTimer::singleShot(0, this, [this]() {
+      if (!m_applying && !m_sourceChanged && m_doc->availableUndoSteps() == 0 &&
+          m_doc->availableRedoSteps() == 0 && (m_undoSteps != 0 || m_redoSteps != 0)) {
+        resetHistory();
+        observeDocument();
+      }
+    });
+  };
+  connect(m_doc, &QTextDocument::undoAvailable, this, historyCleared);
+  connect(m_doc, &QTextDocument::redoAvailable, this, historyCleared);
   connect(p_editor->getHighlighter(), &MarkdownHighlighter::headingsUpdated, this,
           [this](const QVector<md::HeadingInfo> &p_headings) {
             const auto result = m_editor->getHighlighter()->m_result;
@@ -178,11 +193,21 @@ void HeadingSourceNumberer::requestNormalization(bool p_sourceEdit) {
 }
 
 void HeadingSourceNumberer::contentsChange(int p_position, int p_removed, int p_added) {
+  // clear() initializes an empty document before restoring Qt's saved cursor
+  // registry. Ignore that synthetic terminal insertion: releasing owned cursors
+  // here would leave dangling entries. The subsequent reset signal is safe.
+  if (!m_doc->isUndoRedoEnabled() && p_position == 0 && p_removed == 0 && p_added == 1 &&
+      m_doc->characterCount() == 1) {
+    return;
+  }
   // As in TableSourceFormatter, clear removes the terminal character too;
   // selecting all with a cursor does not. setPlainText then inserts it again.
   const bool reset = p_position == 0 && p_added == 0 && p_removed > m_characters - 1 &&
                      m_doc->characterCount() == 1;
   if (reset) {
+    m_owned.clear();
+    m_history.clear();
+    m_snapshot.clear();
     cancel();
     m_replaySuppressed = false;
     m_reset = !m_doc->isUndoRedoEnabled();
@@ -211,8 +236,7 @@ void HeadingSourceNumberer::contentsChanged() {
     observeDocument();
     return;
   }
-  if (m_applying || !m_provider) {
-    observeDocument();
+  if (m_applying) {
     return;
   }
   if (!m_sourceChanged || m_doc->revision() == m_revision) {
@@ -226,9 +250,20 @@ void HeadingSourceNumberer::contentsChanged() {
       m_doc->isUndoRedoEnabled() &&
       (undo < m_undoSteps || (undo > m_undoSteps && redo < m_redoSteps && !m_newUndoCommand));
   if (replay) {
+    restoreOwnership(undo);
+  } else {
+    if (!m_doc->isUndoRedoEnabled()) {
+      resetHistory();
+    } else {
+      pruneHistory(m_undoSteps);
+      validateOwnership();
+      rememberOwnership();
+    }
+  }
+  if (replay) {
     cancel();
     m_replaySuppressed = true;
-  } else {
+  } else if (m_provider) {
     m_replaySuppressed = false;
     requestNormalization(true);
   }
@@ -457,8 +492,8 @@ bool HeadingSourceNumberer::prepare(const QSharedPointer<MarkdownHighlighterResu
             plan.m_valid = false;
             break;
           }
-          plan.m_replacements.append(
-              {source.m_block.position() + source.m_content, before, std::move(after)});
+          plan.m_replacements.append({source.m_block.position() + source.m_content, before,
+                                      std::move(after), source.m_needsSeparator});
         }
       }
     }
@@ -513,9 +548,162 @@ void HeadingSourceNumberer::attempt() {
   apply();
 }
 
-int HeadingSourceNumberer::mapPosition(int p_position, bool p_followInsertion) const {
+bool HeadingSourceNumberer::valid(const OwnedPrefix &p_owned) const {
+  const int start = p_owned.m_start.position();
+  const int end = p_owned.m_end.position();
+  const auto &prefix = p_owned.m_prefix;
+  if (start < 0 || end - start != prefix.m_generated.size() || end > m_doc->characterCount() - 1) {
+    return false;
+  }
+  if (!p_owned.m_left.isNull()) {
+    if (p_owned.m_left.position() != start - 1 ||
+        m_doc->characterAt(start - 1) != prefix.m_leftCharacter) {
+      return false;
+    }
+  } else if (start != p_owned.m_start.block().position()) {
+    // A document-start prefix can follow inserted whole blocks, but text
+    // inserted directly into its first line no longer has that boundary.
+    return false;
+  }
+  for (int i = 0; i < prefix.m_generated.size(); ++i) {
+    if (m_doc->characterAt(start + i) != prefix.m_generated[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+HeadingSourceNumberer::OwnedPrefix
+HeadingSourceNumberer::anchorPrefix(const Prefix &p_prefix, int p_position, bool p_hasLeft) const {
+  OwnedPrefix owned;
+  owned.m_prefix = p_prefix;
+  owned.m_start = QTextCursor(m_doc);
+  owned.m_start.setPosition(p_position);
+  owned.m_end = QTextCursor(m_doc);
+  owned.m_end.setPosition(p_position + p_prefix.m_generated.size());
+  // Opposing insertion affinities preserve title edits, but collapse/invert
+  // a replaced span even when a compound edit pastes identical bytes back.
+  owned.m_end.setKeepPositionOnInsert(true);
+  if (p_hasLeft) {
+    owned.m_left = QTextCursor(m_doc);
+    owned.m_left.setPosition(p_position - 1);
+  }
+  return owned;
+}
+
+void HeadingSourceNumberer::validateOwnership() {
+  m_owned.erase(std::remove_if(m_owned.begin(), m_owned.end(),
+                               [this](const OwnedPrefix &p_owned) { return !valid(p_owned); }),
+                m_owned.end());
+}
+
+void HeadingSourceNumberer::rememberOwnership() {
+  if (m_owned.isEmpty() && m_history.isEmpty()) {
+    return;
+  }
+  if (m_snapshot.size() != m_owned.size()) {
+    m_snapshot.resize(m_owned.size());
+  }
+  for (int i = 0; i < m_owned.size(); ++i) {
+    const auto &owned = m_owned[i];
+    const auto &previous = m_snapshot.at(i);
+    const auto &prefix = owned.m_prefix;
+    if (previous.m_position != owned.m_start.position() ||
+        previous.m_hasLeft != !owned.m_left.isNull() ||
+        previous.m_prefix.m_original != prefix.m_original ||
+        previous.m_prefix.m_generated != prefix.m_generated ||
+        previous.m_prefix.m_leftCharacter != prefix.m_leftCharacter ||
+        previous.m_prefix.m_separator != prefix.m_separator) {
+      m_snapshot[i] = {prefix, owned.m_start.position(), !owned.m_left.isNull()};
+    }
+  }
+  // QVector and QString share unchanged frontiers/prefix bytes. Never retain
+  // a document snapshot, heading title, or live cursor in the undo ledger.
+  m_history.insert(m_doc->availableUndoSteps(), m_snapshot);
+}
+
+void HeadingSourceNumberer::restoreOwnership(int p_undoSteps) {
+  m_owned.clear();
+  const auto checkpoint = m_history.constFind(p_undoSteps);
+  if (checkpoint == m_history.cend()) {
+    // Unknown earlier states have no provenance; retain known redo frontiers.
+    m_snapshot.clear();
+    return;
+  }
+  m_snapshot = checkpoint.value();
+  m_owned.reserve(m_snapshot.size());
+  const auto &snapshots = m_snapshot;
+  for (const auto &snapshot : snapshots) {
+    if (snapshot.m_position < 0 ||
+        snapshot.m_position + snapshot.m_prefix.m_generated.size() > m_doc->characterCount() - 1 ||
+        (snapshot.m_hasLeft && snapshot.m_position == 0)) {
+      continue;
+    }
+    auto owned = anchorPrefix(snapshot.m_prefix, snapshot.m_position, snapshot.m_hasLeft);
+    if (valid(owned)) {
+      m_owned.append(std::move(owned));
+    }
+  }
+}
+
+void HeadingSourceNumberer::resetHistory() {
+  validateOwnership();
+  m_history.clear();
+  m_snapshot.clear();
+  rememberOwnership();
+}
+
+void HeadingSourceNumberer::pruneHistory(int p_undoSteps) {
+  auto it = m_history.upperBound(p_undoSteps);
+  while (it != m_history.end()) {
+    it = m_history.erase(it);
+  }
+}
+
+VMarkdownEditor::HeadingSectionNumberRemovalResult HeadingSourceNumberer::remove() {
+  using Result = VMarkdownEditor::HeadingSectionNumberRemovalResult;
+  if (m_editor->isReadOnly() || m_applying || m_preparing || m_sourceChanged ||
+      m_editor->documentLayout()->isBusy() ||
+      !m_editor->getTextEdit()->getSelections().getAdditionalSelections().isEmpty()) {
+    return Result::Unavailable;
+  }
+  for (auto block = m_doc->begin(); block.isValid(); block = block.next()) {
+    if (block.layout() && !block.layout()->preeditAreaText().isEmpty()) {
+      return Result::Unavailable;
+    }
+  }
+  validateOwnership();
+  if (m_owned.isEmpty()) {
+    return Result::Unchanged;
+  }
+  if (!m_doc->isUndoRedoEnabled()) {
+    return Result::Unavailable;
+  }
+  QVector<Replacement> replacements;
+  replacements.reserve(m_owned.size());
+  const auto &ownedPrefixes = m_owned;
+  for (const auto &owned : ownedPrefixes) {
+    const auto &prefix = owned.m_prefix;
+    QString original = prefix.m_original;
+    if (prefix.m_separator) {
+      const auto next = m_doc->characterAt(owned.m_end.position());
+      if (!next.isSpace() && next != QChar::ParagraphSeparator) {
+        // A title typed into a formerly bare ATX heading still needs its
+        // marker separator. The number remains wholly session-owned.
+        original.prepend(QLatin1Char(' '));
+      }
+    }
+    replacements.append({owned.m_start.position(), prefix.m_generated, std::move(original)});
+  }
+  cancel();
+  writeReplacements(replacements, true, false);
+  return Result::Removed;
+}
+
+int HeadingSourceNumberer::mapPosition(const QVector<Replacement> &p_replacements, int p_position,
+                                       bool p_followInsertion) const {
   int delta = 0;
-  for (const auto &replacement : m_plan.m_replacements) {
+  for (const auto &replacement : p_replacements) {
     if (p_position < replacement.m_position) {
       break;
     }
@@ -550,43 +738,99 @@ void HeadingSourceNumberer::apply() {
   if (!isCurrent(m_plan) || !canApply()) {
     return;
   }
+  // A callback reached by endEditBlock may replace the member plan.
+  const auto replacements = m_plan.m_replacements;
+  const bool join = m_joinSourceEdit && m_doc->isUndoRedoEnabled() && m_triggerUndoSteps > 0 &&
+                    m_triggerUndoSteps == m_doc->availableUndoSteps() &&
+                    m_doc->availableRedoSteps() == 0;
+  validateOwnership();
+  writeReplacements(replacements, false, join);
+}
+
+void HeadingSourceNumberer::writeReplacements(const QVector<Replacement> &p_replacements,
+                                              bool p_removing, bool p_join) {
+  pruneHistory(m_doc->availableUndoSteps());
+  rememberOwnership();
   auto edit = m_editor->getTextEdit();
   const QTextCursor original = edit->textCursor();
   const auto selection = edit->getSelection();
   const bool overridden =
       selection.isValid() &&
       !(selection == VTextEdit::Selection(original.anchor(), original.position()));
-  const int anchor = mapPosition(original.anchor(), original.anchor() <= original.position());
-  const int position = mapPosition(original.position(), original.position() <= original.anchor());
-  const int selectionStart = overridden ? mapPosition(selection.start(), true) : 0;
-  const int selectionEnd = overridden ? mapPosition(selection.end(), false) : 0;
+  const int anchor =
+      mapPosition(p_replacements, original.anchor(), original.anchor() <= original.position());
+  const int position =
+      mapPosition(p_replacements, original.position(), original.position() <= original.anchor());
+  const int selectionStart = overridden ? mapPosition(p_replacements, selection.start(), true) : 0;
+  const int selectionEnd = overridden ? mapPosition(p_replacements, selection.end(), false) : 0;
   const int horizontal = edit->horizontalScrollBar()->value();
   const int vertical = edit->verticalScrollBar()->value();
   m_horizontalScroll = horizontal;
   m_verticalScroll = vertical;
   m_restoreViewport = true;
   const auto generation = m_generation;
-  // A callback reached by endEditBlock may change the provider and invalidate
-  // the member plan. Keep this implicitly-shared replacement snapshot alive.
-  const auto replacements = m_plan.m_replacements;
   QScopedValueRollback<bool> applying(m_applying, true);
   m_pending = false;
   m_timer.stop();
+  if (p_removing) {
+    m_owned.clear();
+  }
+  int ownedIndex = m_owned.size() - 1;
+  bool addedPrefixes = false;
+  if (!p_removing) {
+    m_owned.reserve(qMax(m_owned.size(), p_replacements.size()));
+  }
   QTextCursor cursor(m_doc);
   // Qt can reopen a grouped edit, but cannot promote a bare insertion into a
   // block. Never undo/replay input to manufacture the latter's grouping.
-  if (m_joinSourceEdit && m_doc->isUndoRedoEnabled() && m_triggerUndoSteps > 0 &&
-      m_triggerUndoSteps == m_doc->availableUndoSteps() && m_doc->availableRedoSteps() == 0) {
+  if (p_join) {
     cursor.joinPreviousEditBlock();
   } else {
     cursor.beginEditBlock();
   }
-  for (int i = replacements.size() - 1; i >= 0; --i) {
-    const auto &replacement = replacements[i];
+  for (int i = p_replacements.size() - 1; i >= 0; --i) {
+    const auto &replacement = p_replacements[i];
+    Prefix prefix;
+    int start = replacement.m_position;
+    int matched = -1;
+    bool hasLeft = start > 0;
+    if (!p_removing) {
+      prefix.m_original = replacement.m_before;
+      prefix.m_generated = replacement.m_after;
+      prefix.m_separator = replacement.m_separator;
+      while (ownedIndex >= 0 && m_owned[ownedIndex].m_start.position() > start) {
+        --ownedIndex;
+      }
+      if (ownedIndex >= 0) {
+        const auto &owned = m_owned[ownedIndex];
+        if (owned.m_start.position() + int(owned.m_prefix.m_separator) == start &&
+            owned.m_end.position() == start + replacement.m_before.size()) {
+          prefix.m_original = owned.m_prefix.m_original;
+          prefix.m_separator = owned.m_prefix.m_separator;
+          if (prefix.m_separator) {
+            --start;
+            prefix.m_generated.prepend(QLatin1Char(' '));
+          }
+          hasLeft = !owned.m_left.isNull();
+          matched = ownedIndex;
+          --ownedIndex;
+        }
+      }
+      prefix.m_leftCharacter = hasLeft ? m_doc->characterAt(start - 1) : QChar();
+    }
     cursor.setPosition(replacement.m_position);
     cursor.setPosition(replacement.m_position + replacement.m_before.size(),
                        QTextCursor::KeepAnchor);
     cursor.insertText(replacement.m_after);
+    if (!p_removing) {
+      auto owned = anchorPrefix(prefix, start, hasLeft);
+      if (matched >= 0) {
+        m_owned[matched] = std::move(owned);
+      } else {
+        m_owned.append(std::move(owned));
+        addedPrefixes = true;
+      }
+    }
   }
   cursor.endEditBlock();
   QTextCursor restored(m_doc);
@@ -601,5 +845,13 @@ void HeadingSourceNumberer::apply() {
   if (generation == m_generation) {
     m_joinSourceEdit = false;
   }
+  validateOwnership();
+  if (addedPrefixes) {
+    std::sort(m_owned.begin(), m_owned.end(),
+              [](const OwnedPrefix &p_left, const OwnedPrefix &p_right) {
+                return p_left.m_start.position() < p_right.m_start.position();
+              });
+  }
+  rememberOwnership();
   observeDocument();
 }
