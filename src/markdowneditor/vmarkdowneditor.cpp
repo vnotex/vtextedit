@@ -1993,8 +1993,9 @@ void VMarkdownEditor::setupSyntaxHighlighter() {
 
     codeBlockHighlighter = m_webCodeBlockHighlighter;
   } else {
-    codeBlockHighlighter =
+    m_ksyntaxCodeBlockHighlighter =
         new KSyntaxCodeBlockHighlighter(m_config->m_textEditorConfig->m_syntaxTheme, this);
+    codeBlockHighlighter = m_ksyntaxCodeBlockHighlighter;
   }
   auto highlighterConfig = QSharedPointer<md::HighlighterConfig>::create();
   highlighterConfig->m_mathExtEnabled = true;
@@ -2264,13 +2265,17 @@ void VMarkdownEditor::setConfig(const QSharedPointer<MarkdownEditorConfig> &p_co
 
   VTextEditor::setConfig(p_config->m_textEditorConfig);
 
-  // The base VTextEditor::updateFromConfig only re-applies the syntax theme to a
-  // SyntaxHighlighter; the MarkdownHighlighter is not one, so its styles stay
-  // locked to the theme set at construction. Re-apply the new theme explicitly
-  // and rehighlight so a theme switch refreshes editor colors.
+  const bool syntaxThemeChanged =
+      m_ksyntaxCodeBlockHighlighter &&
+      m_ksyntaxCodeBlockHighlighter->setTheme(m_config->m_textEditorConfig->m_syntaxTheme);
   if (auto *hl = getHighlighter()) {
+    // The base editor does not update Markdown or fenced-code highlighters.
     hl->setTheme(theme());
-    hl->rehighlight();
+    if (syntaxThemeChanged) {
+      hl->invalidateHighlightCaches();
+    } else {
+      hl->rehighlight();
+    }
   }
 
   updateFromConfig();
@@ -2903,7 +2908,15 @@ void VMarkdownEditor::handleExternalCodeBlockHighlightData(int p_idx, TimeStamp 
 
 void VMarkdownEditor::setExternalCodeBlockHighlihgtStyles(
     const ExternalCodeBlockHighlightStyles &p_styles) {
-  WebCodeBlockHighlighter::setExternalCodeBlockHighlihgtStyles(p_styles);
+  if (m_externalCodeBlockHighlightStyles == p_styles) {
+    return;
+  }
+  m_externalCodeBlockHighlightStyles = p_styles;
+  if (m_webCodeBlockHighlighter) {
+    m_webCodeBlockHighlighter->setExternalCodeBlockHighlihgtStyles(p_styles);
+  }
+  m_mathBlockHighlighter->setExternalHighlightStyles(p_styles);
+  getHighlighter()->invalidateHighlightCaches();
 }
 
 void VMarkdownEditor::handleExternalMathHighlightData(int p_idx, TimeStamp p_timeStamp,

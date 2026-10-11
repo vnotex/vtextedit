@@ -7,8 +7,6 @@
 
 using namespace vte;
 
-WebCodeBlockHighlighter::ExternalCodeBlockHighlightStyles WebCodeBlockHighlighter::s_styles;
-
 WebCodeBlockHighlighter::WebCodeBlockHighlighter(QObject *p_parent)
     : CodeBlockHighlighter(p_parent) {}
 
@@ -20,29 +18,29 @@ void WebCodeBlockHighlighter::highlightInternal(int p_idx) {
   }
 
   const auto &unindentedText = TextUtils::unindentTextMultiLines(block.m_text);
-  emit externalCodeBlockHighlightRequested(p_idx, m_timeStamp, unindentedText);
+  emit externalCodeBlockHighlightRequested(p_idx, m_requestSerial, unindentedText);
 }
 
 void WebCodeBlockHighlighter::handleExternalCodeBlockHighlightData(int p_idx, TimeStamp p_timeStamp,
                                                                    const QString &p_html) {
-  if (m_timeStamp != p_timeStamp) {
+  if (m_requestSerial != p_timeStamp) {
     return;
   }
 
   if (p_html.isEmpty()) {
-    finishHighlightOne(HighlightResult(p_timeStamp, p_idx));
+    finishHighlightOne(HighlightResult(m_timeStamp, p_idx));
     return;
   }
 
   auto lines = m_codeBlocks[p_idx].m_text.split(QLatin1Char('\n'));
   Q_ASSERT(lines.size() > 2);
 
-  HighlightResult hiRes(p_timeStamp, p_idx);
+  HighlightResult hiRes(m_timeStamp, p_idx);
   hiRes.m_highlights.resize(lines.size());
 
-  parseHtmlToStyles(p_html, lines, 1, hiRes.m_highlights);
+  parseHtmlToStyles(p_html, lines, 1, hiRes.m_highlights, m_styles);
 
-  if (m_timeStamp != p_timeStamp) {
+  if (m_requestSerial != p_timeStamp) {
     return;
   }
 
@@ -50,20 +48,21 @@ void WebCodeBlockHighlighter::handleExternalCodeBlockHighlightData(int p_idx, Ti
 }
 
 void WebCodeBlockHighlighter::parseHtmlToStyles(const QString &p_html, const QStringList &p_lines,
-                                                int p_startLineIdx, HighlightStyles &p_styles) {
+                                                int p_startLineIdx, HighlightStyles &p_styles,
+                                                const ExternalCodeBlockHighlightStyles &p_palette) {
   auto htmlLines = p_html.split(QLatin1Char('\n'));
 
   int lineIdx = p_startLineIdx;
   int lineOffset = 0;
 
   for (int htmlLineIdx = 0; htmlLineIdx < htmlLines.size(); ++htmlLineIdx) {
-    parseXmlAndMatch(htmlLines[htmlLineIdx], p_lines, p_styles, lineIdx, lineOffset);
+    parseXmlAndMatch(htmlLines[htmlLineIdx], p_lines, p_styles, lineIdx, lineOffset, p_palette);
   }
 }
 
 void WebCodeBlockHighlighter::parseXmlAndMatch(const QString &p_html, const QStringList &p_lines,
-                                               HighlightStyles &p_styles, int &p_idx,
-                                               int &p_offset) {
+                                               HighlightStyles &p_styles, int &p_idx, int &p_offset,
+                                               const ExternalCodeBlockHighlightStyles &p_palette) {
   if (p_html.isEmpty()) {
     return;
   }
@@ -92,7 +91,7 @@ void WebCodeBlockHighlighter::parseXmlAndMatch(const QString &p_html, const QStr
       }
 
       QStringList classList;
-      failed = !parseSpanElement(reader, p_lines, p_styles, classList, p_idx, p_offset);
+      failed = !parseSpanElement(reader, p_lines, p_styles, classList, p_idx, p_offset, p_palette);
       break;
     }
 
@@ -107,7 +106,8 @@ void WebCodeBlockHighlighter::parseXmlAndMatch(const QString &p_html, const QStr
 bool WebCodeBlockHighlighter::parseSpanElement(QXmlStreamReader &p_reader,
                                                const QStringList &p_lines,
                                                HighlightStyles &p_styles, QStringList &p_classList,
-                                               int &p_idx, int &p_offset) {
+                                               int &p_idx, int &p_offset,
+                                               const ExternalCodeBlockHighlightStyles &p_palette) {
   if (p_idx >= p_lines.size()) {
     return false;
   }
@@ -147,7 +147,7 @@ bool WebCodeBlockHighlighter::parseSpanElement(QXmlStreamReader &p_reader,
             auto &unit = p_styles[p_idx].back();
             unit.start = pos;
             unit.length = tokenText.size();
-            unit.format = styleOfClasses(p_classList);
+            unit.format = styleOfClasses(p_classList, p_palette);
           }
           break;
         }
@@ -170,7 +170,8 @@ bool WebCodeBlockHighlighter::parseSpanElement(QXmlStreamReader &p_reader,
       }
 
       // Embedded <span>.
-      failed = !parseSpanElement(p_reader, p_lines, p_styles, p_classList, p_idx, p_offset);
+      failed =
+          !parseSpanElement(p_reader, p_lines, p_styles, p_classList, p_idx, p_offset, p_palette);
       break;
     }
 
@@ -197,14 +198,16 @@ bool WebCodeBlockHighlighter::parseSpanElement(QXmlStreamReader &p_reader,
   return !failed;
 }
 
-QTextCharFormat WebCodeBlockHighlighter::styleOfClasses(const QStringList &p_classList) {
+QTextCharFormat
+WebCodeBlockHighlighter::styleOfClasses(const QStringList &p_classList,
+                                        const ExternalCodeBlockHighlightStyles &p_palette) {
   QTextCharFormat fmt;
   for (const auto &cla : p_classList) {
     if (cla == QStringLiteral("token")) {
       continue;
     }
-    auto it = s_styles.find(cla);
-    if (it != s_styles.end()) {
+    auto it = p_palette.constFind(cla);
+    if (it != p_palette.cend()) {
       fmt.merge(it.value());
     }
   }
@@ -213,5 +216,5 @@ QTextCharFormat WebCodeBlockHighlighter::styleOfClasses(const QStringList &p_cla
 
 void WebCodeBlockHighlighter::setExternalCodeBlockHighlihgtStyles(
     const ExternalCodeBlockHighlightStyles &p_styles) {
-  s_styles = p_styles;
+  m_styles = p_styles;
 }

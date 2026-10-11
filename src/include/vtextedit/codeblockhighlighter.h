@@ -55,13 +55,20 @@ public:
 
   void highlight(TimeStamp p_timeStamp, const QVector<md::FencedCodeBlock> &p_codeBlocks);
 
+  // Drop cached formats and reject replies from earlier request batches.
+  void invalidateHighlightCache();
+
 protected:
   // @p_idx Index in m_codeBlocks.
   virtual void highlightInternal(int p_idx) = 0;
 
   void finishHighlightOne(const HighlightResult &p_result);
 
+  // Document identity for completed highlights; never sent over the web bridge.
   TimeStamp m_timeStamp = 0;
+
+  // Request identity, independent of document edits and palette changes.
+  TimeStamp m_requestSerial = 0;
 
   QVector<md::FencedCodeBlock> m_codeBlocks;
 

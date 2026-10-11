@@ -410,6 +410,45 @@ void MarkdownHighlighter::updateHighlight() {
   }
 }
 
+void MarkdownHighlighter::invalidateHighlightCaches() {
+  if (m_codeBlockHighlighter) {
+    m_codeBlockHighlighter->invalidateHighlightCache();
+  }
+  if (m_mathBlockHighlighter) {
+    m_mathBlockHighlighter->invalidateHighlightCache();
+  }
+
+  for (auto &codeBlock : m_result->m_codeBlocks) {
+    codeBlock.m_highlights.clear();
+  }
+  m_result->m_numOfCodeBlockHighlightsToRecv = 0;
+  m_result->m_codeBlockHighlightReceived = false;
+  m_result->m_codeBlockTimeStamp = nextCodeBlockTimeStamp();
+  m_result->m_mathBlockHighlights.clear();
+  m_result->m_numOfMathHighlightsToRecv = 0;
+  m_result->m_mathHighlightReceived = false;
+  m_result->m_mathTimeStamp = nextCodeBlockTimeStamp();
+
+  // Applied formats also outlive the provider and parsed-result caches.
+  for (auto block = document()->begin(); block.isValid(); block = block.next()) {
+    if (!block.userData()) {
+      continue;
+    }
+    const auto &data = TextBlockData::get(block)->getMarkdownHighlightBlockData();
+    if (data) {
+      data->clearCodeBlockHighlight();
+      data->clearMathHighlight();
+    }
+  }
+
+  // A pending parse will request fresh tokens when its result is accepted.
+  if (m_result->matched(m_timeStamp)) {
+    updateCodeBlocks(m_result);
+    updateMathBlocks(m_result);
+  }
+  rehighlight();
+}
+
 void MarkdownHighlighter::handleParseResult(
     const QSharedPointer<md::MarkdownParseResult> &p_result) {
   if (!m_result.isNull() && p_result->m_timeStamp != m_timeStamp) {
@@ -702,10 +741,6 @@ bool MarkdownHighlighter::isFastParseBlock(int p_blockNum) const {
 }
 
 void MarkdownHighlighter::setTheme(const QSharedPointer<Theme> &p_theme) {
-  if (m_theme == p_theme) {
-    return;
-  }
-
   m_theme = p_theme;
   Q_ASSERT(m_theme);
 

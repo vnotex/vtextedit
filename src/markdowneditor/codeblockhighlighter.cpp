@@ -8,6 +8,7 @@ CodeBlockHighlighter::CodeBlockHighlighter(QObject *p_parent)
 void CodeBlockHighlighter::highlight(TimeStamp p_timeStamp,
                                      const QVector<md::FencedCodeBlock> &p_codeBlocks) {
   m_timeStamp = p_timeStamp;
+  ++m_requestSerial;
   // It is OK since QVector is implicitly shared.
   m_codeBlocks = p_codeBlocks;
 
@@ -24,6 +25,12 @@ void CodeBlockHighlighter::highlight(TimeStamp p_timeStamp,
       highlightInternal(idx);
     }
   }
+}
+
+void CodeBlockHighlighter::invalidateHighlightCache() {
+  ++m_requestSerial;
+  m_cache.clear();
+  m_codeBlocks.clear();
 }
 
 void CodeBlockHighlighter::finishHighlightOne(const HighlightResult &p_result) {

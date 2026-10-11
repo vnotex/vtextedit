@@ -16,13 +16,14 @@ public:
   void handleExternalCodeBlockHighlightData(int p_idx, TimeStamp p_timeStamp,
                                             const QString &p_html);
 
-  static void setExternalCodeBlockHighlihgtStyles(const ExternalCodeBlockHighlightStyles &p_styles);
+  void setExternalCodeBlockHighlihgtStyles(const ExternalCodeBlockHighlightStyles &p_styles);
 
   // Parse Prism-highlighted @p_html into per-line highlight styles, matching token
   // text against @p_lines starting from line @p_startLineIdx. @p_styles must be
   // pre-sized to @p_lines.size(). Shared by the code block and math highlighters.
   static void parseHtmlToStyles(const QString &p_html, const QStringList &p_lines,
-                                int p_startLineIdx, HighlightStyles &p_styles);
+                                int p_startLineIdx, HighlightStyles &p_styles,
+                                const ExternalCodeBlockHighlightStyles &p_palette);
 
 signals:
   void externalCodeBlockHighlightRequested(int p_idx, TimeStamp p_timeStamp, const QString &p_text);
@@ -32,17 +33,19 @@ protected:
   void highlightInternal(int p_idx) Q_DECL_OVERRIDE;
 
 private:
-  static QTextCharFormat styleOfClasses(const QStringList &p_classList);
+  static QTextCharFormat styleOfClasses(const QStringList &p_classList,
+                                        const ExternalCodeBlockHighlightStyles &p_palette);
 
   static void parseXmlAndMatch(const QString &p_html, const QStringList &p_lines,
-                               HighlightStyles &p_styles, int &p_idx, int &p_offset);
+                               HighlightStyles &p_styles, int &p_idx, int &p_offset,
+                               const ExternalCodeBlockHighlightStyles &p_palette);
 
   // Return true on success.
   static bool parseSpanElement(QXmlStreamReader &p_reader, const QStringList &p_lines,
                                HighlightStyles &p_styles, QStringList &p_classList, int &p_idx,
-                               int &p_offset);
+                               int &p_offset, const ExternalCodeBlockHighlightStyles &p_palette);
 
-  static ExternalCodeBlockHighlightStyles s_styles;
+  ExternalCodeBlockHighlightStyles m_styles;
 };
 } // namespace vte
 

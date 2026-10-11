@@ -33,6 +33,14 @@ KSyntaxCodeBlockHighlighter::KSyntaxCodeBlockHighlighter(const QString &p_theme,
   };
 
   m_syntaxHighlighter = new KSyntaxHighlighterWrapper(formatFunctor, foldingFunctor, this);
+  setTheme(p_theme);
+}
+
+bool KSyntaxCodeBlockHighlighter::setTheme(const QString &p_theme) {
+  if (m_theme == p_theme && m_syntaxHighlighter->theme().isValid()) {
+    return false;
+  }
+  m_theme = p_theme;
 
   KSyntaxHighlighting::Theme th;
   if (!p_theme.isEmpty()) {
@@ -46,6 +54,9 @@ KSyntaxCodeBlockHighlighter::KSyntaxCodeBlockHighlighter(const QString &p_theme,
     th = KSyntaxHighlighterWrapper::repository()->defaultTheme();
   }
   m_syntaxHighlighter->setTheme(th);
+  m_formatCache.clear();
+  invalidateHighlightCache();
+  return true;
 }
 
 void KSyntaxCodeBlockHighlighter::highlightInternal(int p_idx) {

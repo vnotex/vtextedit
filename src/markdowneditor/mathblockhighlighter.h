@@ -43,6 +43,10 @@ public:
   // @p_mathBlocks: display math blocks only (m_previewedAsBlock == true).
   void highlight(TimeStamp p_timeStamp, const QVector<md::MathBlock> &p_mathBlocks);
 
+  void invalidateHighlightCache();
+
+  void setExternalHighlightStyles(const QHash<QString, QTextCharFormat> &p_styles);
+
   void handleExternalMathHighlightData(int p_idx, TimeStamp p_timeStamp, const QString &p_html);
 
 signals:
@@ -67,7 +71,13 @@ private:
   // is the last block of the range.
   static int startBlockOf(const md::MathBlock &p_block);
 
+  // Document identity, preserved in every completion.
   TimeStamp m_timeStamp = 0;
+
+  // Used only to identify requests and reject obsolete external replies.
+  TimeStamp m_requestSerial = 0;
+
+  QHash<QString, QTextCharFormat> m_styles;
 
   QVector<md::MathBlock> m_mathBlocks;
 

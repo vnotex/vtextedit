@@ -5,6 +5,7 @@
 #include <QClipboard>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QGuiApplication>
 #include <QHelpEvent>
 #include <QImage>
@@ -150,7 +151,298 @@ public:
 private:
   VMarkdownEditor m_editor;
 };
+
+const QString c_highlightSource =
+    QStringLiteral("```cpp\nint value = 1;\n```\n\n$$\n\\alpha + 1\n$$\n\nNote");
+const QColor c_staleHighlightColor(QStringLiteral("#ed00a8"));
+
+QSharedPointer<MarkdownEditorConfig> makeHighlightConfig(bool p_web = true) {
+  if (!p_web) {
+    VTextEditor::addSyntaxCustomSearchPaths({QFINDTESTDATA("../../libs/syntax-highlighting/data")});
+  }
+  auto config = makeConfig();
+  config->m_webCodeBlockHighlighterEnabled = p_web;
+  config->m_inplacePreviewSources = MarkdownEditorConfig::NoInplacePreview;
+  return config;
+}
+
+VMarkdownEditor::ExternalCodeBlockHighlightStyles highlightPalette(const QColor &p_code,
+                                                                   const QColor &p_math) {
+  VMarkdownEditor::ExternalCodeBlockHighlightStyles styles;
+  QTextCharFormat format;
+  format.setForeground(p_code);
+  styles.insert(QStringLiteral("keyword"), format);
+  format.setForeground(p_math);
+  styles.insert(QStringLiteral("function"), format);
+  format.setForeground(c_staleHighlightColor);
+  styles.insert(QStringLiteral("stale"), format);
+  return styles;
+}
+
+QColor highlightForeground(Fixture &p_fixture, int p_block, int p_column = 0) {
+  const auto block = p_fixture.editor()->document()->findBlockByNumber(p_block);
+  if (block.isValid() && block.layout()) {
+    for (const auto &range : block.layout()->formats()) {
+      if (range.start <= p_column && p_column < range.start + range.length &&
+          range.format.hasProperty(QTextFormat::ForegroundBrush)) {
+        return range.format.foreground().color();
+      }
+    }
+  }
+  return QColor();
+}
+
+// Supply only the external HTML boundary; parsing, caches and QTextLayout are real.
+class ExternalHighlightReplies : public QObject {
+public:
+  struct Request {
+    int m_index;
+    TimeStamp m_serial;
+  };
+
+  explicit ExternalHighlightReplies(VMarkdownEditor *p_editor, bool p_automatic = true)
+      : m_editor(p_editor) {
+    connect(p_editor, &VMarkdownEditor::externalCodeBlockHighlightRequested, this,
+            [this, p_automatic](int p_index, TimeStamp p_serial, const QString &) {
+              const Request request{p_index, p_serial};
+              m_code.append(request);
+              if (p_automatic) {
+                QTimer::singleShot(0, this, [this, request]() { replyCode(request); });
+              }
+            });
+    connect(p_editor, &VMarkdownEditor::externalMathHighlightRequested, this,
+            [this, p_automatic](int p_index, TimeStamp p_serial, const QString &) {
+              const Request request{p_index, p_serial};
+              m_math.append(request);
+              if (p_automatic) {
+                QTimer::singleShot(0, this, [this, request]() { replyMath(request); });
+              }
+            });
+  }
+
+  void replyCode(const Request &p_request, bool p_stale = false) {
+    m_editor->handleExternalCodeBlockHighlightData(
+        p_request.m_index, p_request.m_serial,
+        QStringLiteral("<span class=\"token %1\">int</span> value = 1;")
+            .arg(p_stale ? QStringLiteral("stale") : QStringLiteral("keyword")));
+  }
+
+  void replyMath(const Request &p_request, bool p_stale = false) {
+    m_editor->handleExternalMathHighlightData(
+        p_request.m_index, p_request.m_serial,
+        QStringLiteral("$$\n<span class=\"token %1\">\\alpha</span> + 1\n$$")
+            .arg(p_stale ? QStringLiteral("stale") : QStringLiteral("function")));
+  }
+
+  QVector<Request> m_code;
+  QVector<Request> m_math;
+
+private:
+  VMarkdownEditor *m_editor;
+};
+
+void waitForHighlight(Fixture &p_fixture) {
+  auto highlighter = p_fixture.editor()->getHighlighter();
+  QSignalSpy completed(highlighter, &MarkdownHighlighter::highlightCompleted);
+  highlighter->updateHighlight();
+  QTRY_VERIFY_WITH_TIMEOUT(!completed.isEmpty(), 5000);
+}
 } // namespace
+
+void TestMarkdownEditor::testHighlightPaletteRefreshPreservesState() {
+  const QColor oldCode(QStringLiteral("#a32d21")), oldMath(QStringLiteral("#a16d13"));
+  const QColor newCode(QStringLiteral("#238151")), newMath(QStringLiteral("#315cb7"));
+  const auto oldPalette = highlightPalette(oldCode, oldMath);
+  const auto newPalette = highlightPalette(newCode, newMath);
+  Fixture fixture(QString(), 0, 0, makeHighlightConfig());
+  fixture.editor()->setSpellCheckEnabled(false);
+  ExternalHighlightReplies replies(fixture.editor());
+  fixture.editor()->setExternalCodeBlockHighlihgtStyles(oldPalette);
+  fixture.editor()->setText(c_highlightSource);
+  QTRY_COMPARE_WITH_TIMEOUT(highlightForeground(fixture, 1), oldCode, 5000);
+  QTRY_COMPARE_WITH_TIMEOUT(highlightForeground(fixture, 5), oldMath, 5000);
+
+  auto doc = fixture.editor()->document();
+  QTextCursor edit(doc);
+  edit.movePosition(QTextCursor::End);
+  edit.beginEditBlock();
+  edit.insertText(QStringLiteral(" A"));
+  edit.endEditBlock();
+  edit.beginEditBlock();
+  edit.insertText(QStringLiteral(" B"));
+  edit.endEditBlock();
+  doc->undo();
+  waitForHighlight(fixture);
+  fixture.select(5, 6, 1, 0); // Keep the direction of a cross-block selection.
+  const auto cursor = fixture.edit()->textCursor();
+  const auto text = fixture.text();
+  const int undoSteps = doc->availableUndoSteps();
+  const int redoSteps = doc->availableRedoSteps();
+  QVERIFY(doc->isModified());
+  QVERIFY(doc->isUndoAvailable());
+  QVERIFY(doc->isRedoAvailable());
+
+  fixture.editor()->setExternalCodeBlockHighlihgtStyles(newPalette);
+  QTRY_COMPARE_WITH_TIMEOUT(highlightForeground(fixture, 1), newCode, 5000);
+  QTRY_COMPARE_WITH_TIMEOUT(highlightForeground(fixture, 5), newMath, 5000);
+  QCOMPARE(fixture.text(), text);
+  QCOMPARE(fixture.edit()->textCursor().anchor(), cursor.anchor());
+  QCOMPARE(fixture.edit()->textCursor().position(), cursor.position());
+  QCOMPARE(fixture.edit()->textCursor().selectedText(), cursor.selectedText());
+  QVERIFY(doc->isModified());
+  QCOMPARE(doc->availableUndoSteps(), undoSteps);
+  QCOMPARE(doc->availableRedoSteps(), redoSteps);
+
+  const int codeRequests = replies.m_code.size();
+  const int mathRequests = replies.m_math.size();
+  fixture.editor()->setExternalCodeBlockHighlihgtStyles(newPalette);
+  waitForHighlight(fixture);
+  QCOMPARE(replies.m_code.size(), codeRequests);
+  QCOMPARE(replies.m_math.size(), mathRequests);
+  QCOMPARE(highlightForeground(fixture, 1), newCode);
+  QCOMPARE(highlightForeground(fixture, 5), newMath);
+
+  doc->redo();
+  QCOMPARE(fixture.text(), c_highlightSource + QStringLiteral(" A B"));
+  doc->undo();
+  QCOMPARE(fixture.text(), text);
+  doc->undo();
+  QCOMPARE(fixture.text(), c_highlightSource);
+  doc->redo();
+  QCOMPARE(fixture.text(), text);
+
+  // A saved document with both histories available must stay saved, too.
+  waitForHighlight(fixture);
+  fixture.select(1, 0, 1, 3);
+  const auto cleanCursor = fixture.edit()->textCursor();
+  doc->setModified(false);
+  const int cleanUndoSteps = doc->availableUndoSteps();
+  const int cleanRedoSteps = doc->availableRedoSteps();
+  fixture.editor()->setExternalCodeBlockHighlihgtStyles(oldPalette);
+  QTRY_COMPARE_WITH_TIMEOUT(highlightForeground(fixture, 1), oldCode, 5000);
+  QTRY_COMPARE_WITH_TIMEOUT(highlightForeground(fixture, 5), oldMath, 5000);
+  QCOMPARE(fixture.text(), text);
+  QCOMPARE(fixture.edit()->textCursor().anchor(), cleanCursor.anchor());
+  QCOMPARE(fixture.edit()->textCursor().position(), cleanCursor.position());
+  QVERIFY(!doc->isModified());
+  QCOMPARE(doc->availableUndoSteps(), cleanUndoSteps);
+  QCOMPARE(doc->availableRedoSteps(), cleanRedoSteps);
+  doc->redo();
+  QCOMPARE(fixture.text(), c_highlightSource + QStringLiteral(" A B"));
+}
+
+void TestMarkdownEditor::testHighlightPaletteRejectsLateReplies() {
+  const QColor oldColor(QStringLiteral("#a32d21"));
+  const QColor newCode(QStringLiteral("#238151")), newMath(QStringLiteral("#315cb7"));
+  Fixture fixture(QString(), 0, 0, makeHighlightConfig());
+  fixture.editor()->setSpellCheckEnabled(false);
+  ExternalHighlightReplies replies(fixture.editor(), false);
+  fixture.editor()->setExternalCodeBlockHighlihgtStyles(highlightPalette(oldColor, oldColor));
+  fixture.editor()->setText(c_highlightSource);
+  QTRY_COMPARE_WITH_TIMEOUT(replies.m_code.size(), 1, 5000);
+  QTRY_COMPARE_WITH_TIMEOUT(replies.m_math.size(), 1, 5000);
+  const auto oldCode = replies.m_code.last();
+  const auto oldMath = replies.m_math.last();
+
+  fixture.editor()->setExternalCodeBlockHighlihgtStyles(highlightPalette(newCode, newMath));
+  QTRY_COMPARE_WITH_TIMEOUT(replies.m_code.size(), 2, 5000);
+  QTRY_COMPARE_WITH_TIMEOUT(replies.m_math.size(), 2, 5000);
+  replies.replyCode(replies.m_code.last());
+  replies.replyMath(replies.m_math.last());
+  QTRY_COMPARE_WITH_TIMEOUT(highlightForeground(fixture, 1), newCode, 5000);
+  QTRY_COMPARE_WITH_TIMEOUT(highlightForeground(fixture, 5), newMath, 5000);
+
+  // These belong to the old palette but the exact same document/source/index.
+  replies.replyCode(oldCode, true);
+  replies.replyMath(oldMath, true);
+  QTextCursor edit(fixture.editor()->document());
+  edit.movePosition(QTextCursor::End);
+  edit.insertText(QStringLiteral(" changed"));
+  waitForHighlight(fixture);
+  // Reparse untouched code/math through their LRU entries: rejecting only the
+  // old completion at the consumer would still let poison colors leak here.
+  QCOMPARE(highlightForeground(fixture, 1), newCode);
+  QCOMPARE(highlightForeground(fixture, 5), newMath);
+  QCOMPARE(replies.m_code.size(), 2);
+  QCOMPARE(replies.m_math.size(), 2);
+  QCOMPARE(fixture.text(), c_highlightSource + QStringLiteral(" changed"));
+}
+
+void TestMarkdownEditor::testHighlightPalettesAreEditorLocal() {
+  const QColor webColor(QStringLiteral("#a32d21")), nativeColor(QStringLiteral("#315cb7"));
+  const QColor replacement(QStringLiteral("#238151"));
+  Fixture web(QString(), 0, 0, makeHighlightConfig());
+  Fixture native(QString(), 0, 0, makeHighlightConfig(false));
+  web.editor()->setSpellCheckEnabled(false);
+  native.editor()->setSpellCheckEnabled(false);
+  ExternalHighlightReplies webReplies(web.editor());
+  ExternalHighlightReplies nativeReplies(native.editor());
+  web.editor()->setExternalCodeBlockHighlihgtStyles(highlightPalette(webColor, webColor));
+  native.editor()->setExternalCodeBlockHighlihgtStyles(highlightPalette(nativeColor, nativeColor));
+  web.editor()->setText(c_highlightSource);
+  native.editor()->setText(c_highlightSource);
+  QTRY_COMPARE_WITH_TIMEOUT(highlightForeground(web, 1), webColor, 5000);
+  QTRY_COMPARE_WITH_TIMEOUT(highlightForeground(web, 5), webColor, 5000);
+  QTRY_COMPARE_WITH_TIMEOUT(highlightForeground(native, 5), nativeColor, 5000);
+
+  native.editor()->setExternalCodeBlockHighlihgtStyles(highlightPalette(replacement, replacement));
+  QTRY_COMPARE_WITH_TIMEOUT(highlightForeground(native, 5), replacement, 5000);
+  // Make the other editor miss its source-keyed caches, not merely retain the
+  // old painted formats; its replies must still use its own palette.
+  QTextCursor edit(web.editor()->document());
+  edit.setPosition(web.editor()->document()->findBlockByNumber(1).position());
+  edit.insertText(QStringLiteral(" "));
+  edit.setPosition(web.editor()->document()->findBlockByNumber(5).position());
+  edit.insertText(QStringLiteral(" "));
+  waitForHighlight(web);
+  QTRY_COMPARE_WITH_TIMEOUT(highlightForeground(web, 1, 1), webColor, 5000);
+  QTRY_COMPARE_WITH_TIMEOUT(highlightForeground(web, 5, 1), webColor, 5000);
+  QCOMPARE(highlightForeground(native, 5), replacement);
+}
+
+void TestMarkdownEditor::testKSyntaxThemeRefreshesCachedCode() {
+  QTemporaryDir dir;
+  QVERIFY(dir.isValid());
+  const QColor firstColor(QStringLiteral("#a32d21")), secondColor(QStringLiteral("#238151"));
+  const QString firstPath = dir.filePath(QStringLiteral("first.theme"));
+  const QString secondPath = dir.filePath(QStringLiteral("second.theme"));
+  const auto writeTheme = [](const QString &p_path, const QColor &p_color) {
+    const QJsonObject json{
+        {QStringLiteral("metadata"),
+         QJsonObject{{QStringLiteral("name"), p_path}, {QStringLiteral("revision"), 1}}},
+        {QStringLiteral("text-styles"),
+         QJsonObject{{QStringLiteral("Normal"),
+                      QJsonObject{{QStringLiteral("text-color"), p_color.name()}}},
+                     {QStringLiteral("DataType"),
+                      QJsonObject{{QStringLiteral("text-color"), p_color.name()}}}}}};
+    const QByteArray data = QJsonDocument(json).toJson();
+    QFile file(p_path);
+    return file.open(QIODevice::WriteOnly) && file.write(data) == data.size();
+  };
+  QVERIFY(writeTheme(firstPath, firstColor));
+  QVERIFY(writeTheme(secondPath, secondColor));
+  auto config = makeHighlightConfig(false);
+  config->m_textEditorConfig->m_syntaxTheme = firstPath;
+  Fixture fixture(QStringLiteral("```cpp\nint value = 1;\n```\n\nNote"), 4, -1, config);
+  fixture.editor()->setSpellCheckEnabled(false);
+  QTRY_COMPARE_WITH_TIMEOUT(highlightForeground(fixture, 1), firstColor, 5000);
+  const QString text = fixture.text();
+
+  auto replacement = makeHighlightConfig(false);
+  replacement->m_textEditorConfig->m_syntaxTheme = secondPath;
+  fixture.editor()->setConfig(replacement);
+  QTRY_COMPARE_WITH_TIMEOUT(highlightForeground(fixture, 1), secondColor, 5000);
+  QCOMPARE(fixture.text(), text);
+
+  // Same syntax format ID on new source also has to use the new FormatCache.
+  QTextCursor edit(fixture.editor()->document());
+  edit.setPosition(fixture.editor()->document()->findBlockByNumber(1).position() + 4);
+  edit.insertText(QStringLiteral("new_"));
+  waitForHighlight(fixture);
+  QCOMPARE(highlightForeground(fixture, 1), secondColor);
+  fixture.editor()->setConfig(config);
+  QTRY_COMPARE_WITH_TIMEOUT(highlightForeground(fixture, 1), firstColor, 5000);
+}
 
 void TestMarkdownEditor::testShiftWheelScroll_data() {
   QTest::addColumn<bool>("markdown");

@@ -11,6 +11,11 @@ private slots:
   void testShiftWheelScroll_data();
   void testShiftWheelScroll();
 
+  void testHighlightPaletteRefreshPreservesState();
+  void testHighlightPaletteRejectsLateReplies();
+  void testHighlightPalettesAreEditorLocal();
+  void testKSyntaxThemeRefreshesCachedCode();
+
   // Source-preserving Markdown concealment through the real editor and Vi input.
   void testConcealMarkdownConfig();
   void testConcealHoverToolTip();

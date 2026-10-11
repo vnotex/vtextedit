@@ -435,7 +435,15 @@ The constructor chooses one `CodeBlockHighlighter`:
 - `WebCodeBlockHighlighter` emits `externalCodeBlockHighlightRequested()`, receives
   `handleExternalCodeBlockHighlightData()`, and converts Prism-like nested `<span>` HTML into
   token formats for the original source lines. Hosts configure class formats through the
-  intentionally spelled API `setExternalCodeBlockHighlihgtStyles()`.
+  intentionally spelled instance API `setExternalCodeBlockHighlihgtStyles()`.
+
+External code/math token palettes belong to each editor, including math when the code backend
+is KSyntaxHighlighting. Installing changed styles invalidates the source-text LRUs, parsed token
+formats and applied block caches, then rehighlights the current parse without editing or
+reparsing its text. Identical palettes do no invalidation work. Native syntax-theme changes also
+clear KSyntaxHighlighting's format cache. Cache keys and ordinary lookup behavior stay unchanged.
+External request serials reject pre-invalidation replies; completions retain the document parse
+timestamp. A pending parse requests fresh tokens only when its matching result arrives.
 
 The returned HTML produces source token formatting only. It does not produce a code preview
 pixmap.

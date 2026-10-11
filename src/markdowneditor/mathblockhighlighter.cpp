@@ -15,6 +15,7 @@ int MathBlockHighlighter::startBlockOf(const md::MathBlock &p_block) {
 void MathBlockHighlighter::highlight(TimeStamp p_timeStamp,
                                      const QVector<md::MathBlock> &p_mathBlocks) {
   m_timeStamp = p_timeStamp;
+  ++m_requestSerial;
   m_mathBlocks = p_mathBlocks;
 
   m_cache.setCapacityHint(m_mathBlocks.size());
@@ -36,13 +37,24 @@ void MathBlockHighlighter::highlight(TimeStamp p_timeStamp,
       continue;
     }
 
-    emit externalMathHighlightRequested(idx, m_timeStamp, block.m_text);
+    emit externalMathHighlightRequested(idx, m_requestSerial, block.m_text);
   }
+}
+
+void MathBlockHighlighter::invalidateHighlightCache() {
+  ++m_requestSerial;
+  m_cache.clear();
+  m_mathBlocks.clear();
+}
+
+void MathBlockHighlighter::setExternalHighlightStyles(
+    const QHash<QString, QTextCharFormat> &p_styles) {
+  m_styles = p_styles;
 }
 
 void MathBlockHighlighter::handleExternalMathHighlightData(int p_idx, TimeStamp p_timeStamp,
                                                            const QString &p_html) {
-  if (m_timeStamp != p_timeStamp) {
+  if (m_requestSerial != p_timeStamp) {
     return;
   }
 
@@ -51,7 +63,7 @@ void MathBlockHighlighter::handleExternalMathHighlightData(int p_idx, TimeStamp 
   }
 
   const auto &block = m_mathBlocks[p_idx];
-  HighlightResult res(p_timeStamp, p_idx, startBlockOf(block));
+  HighlightResult res(m_timeStamp, p_idx, startBlockOf(block));
 
   if (p_html.isEmpty()) {
     emit mathHighlightCompleted(res);
@@ -64,13 +76,13 @@ void MathBlockHighlighter::handleExternalMathHighlightData(int p_idx, TimeStamp 
   // Match the Prism tokens against the actual math source lines. For top-level
   // display formulas the source lines equal the document block lines, so the
   // matched offsets are the correct in-block offsets.
-  WebCodeBlockHighlighter::parseHtmlToStyles(p_html, lines, 0, res.m_highlights);
+  WebCodeBlockHighlighter::parseHtmlToStyles(p_html, lines, 0, res.m_highlights, m_styles);
 
-  if (m_timeStamp != p_timeStamp) {
+  if (m_requestSerial != p_timeStamp) {
     return;
   }
 
-  m_cache.set(block.m_text, CacheEntry(p_timeStamp, res.m_highlights));
+  m_cache.set(block.m_text, CacheEntry(m_timeStamp, res.m_highlights));
 
   emit mathHighlightCompleted(res);
 }

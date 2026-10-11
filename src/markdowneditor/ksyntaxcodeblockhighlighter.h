@@ -21,6 +21,9 @@ public:
   // @p_theme: a theme file path or a theme name.
   KSyntaxCodeBlockHighlighter(const QString &p_theme, QObject *p_parent);
 
+  // Return whether the configured syntax theme changed.
+  bool setTheme(const QString &p_theme);
+
 private:
   struct HighlightInfo {
     void startNewHighlight(int p_index, int p_numOfLines) {
@@ -75,6 +78,8 @@ private:
   HighlightInfo m_currentInfo;
 
   FormatCache m_formatCache;
+
+  QString m_theme;
 
   // To minimize the gap between read mode and edit mode syntax highlighting.
   static QHash<QString, QString> s_extraLangs;

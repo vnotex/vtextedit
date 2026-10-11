@@ -20,6 +20,7 @@ class EditorPreviewMgr;
 class PreviewMgr;
 class MarkdownEditorConfig;
 class WebCodeBlockHighlighter;
+class KSyntaxCodeBlockHighlighter;
 class MathBlockHighlighter;
 class MarkdownFoldingProvider;
 class PreviewWidgetFactory;
@@ -143,7 +144,8 @@ public:
   bool completeImageInsertion(quint64 p_requestId, const QString &p_imageSource);
   void cancelImageInsertion(quint64 p_requestId);
 
-  static void setExternalCodeBlockHighlihgtStyles(const ExternalCodeBlockHighlightStyles &p_styles);
+  // Apply this editor's code/math palette and refresh only when it changes.
+  void setExternalCodeBlockHighlihgtStyles(const ExternalCodeBlockHighlightStyles &p_styles);
 
 public slots:
   // Used when using WebCodeBlockHighlighter.
@@ -242,7 +244,12 @@ private:
   WebCodeBlockHighlighter *m_webCodeBlockHighlighter = nullptr;
 
   // Managed by QObject.
+  KSyntaxCodeBlockHighlighter *m_ksyntaxCodeBlockHighlighter = nullptr;
+
+  // Managed by QObject.
   MathBlockHighlighter *m_mathBlockHighlighter = nullptr;
+
+  ExternalCodeBlockHighlightStyles m_externalCodeBlockHighlightStyles;
 
   // AST context of the block holding the cursor, probed in preKeyReturn
   // (before the block insert) and consumed in postKeyReturn.

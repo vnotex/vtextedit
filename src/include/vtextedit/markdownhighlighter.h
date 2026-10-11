@@ -59,6 +59,9 @@ public:
 
   void setTheme(const QSharedPointer<Theme> &p_theme);
 
+  // Refresh code and math formats without reparsing or editing the document.
+  void invalidateHighlightCaches();
+
   const QVector<QTextCharFormat> &getSyntaxStyles() const;
 
   const QSet<int> &getPossiblePreviewBlocks() const;
