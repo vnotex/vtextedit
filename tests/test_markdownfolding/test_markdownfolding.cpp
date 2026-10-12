@@ -1227,6 +1227,44 @@ void TestMarkdownFolding::testWidgetPreviewInlineBand() {
   QVERIFY(realNear(info->m_widgets.first().m_rect.width(), line.cursorToX(10) - line.cursorToX(6)));
   QVERIFY(info->m_rect.height() > plainHeight + 34);
   QCOMPARE(layout->widgetPreviewRect(4).left(), line.cursorToX(6));
+
+  doc.setTextWidth(400);
+  specs[0].m_fullWidth = true;
+  auto second = makeSpec(5, 17, 22, 40, 25, PreviewPlacement::InlineAboveLine);
+  second.m_fullWidth = true;
+  specs.append(second);
+  specs.append(makeSpec(6, 0, 5, 40, 20, PreviewPlacement::InlineAboveLine));
+  auto below = makeSpec(7, 0, 5, 40, 15, PreviewPlacement::BlockAfterSource);
+  below.m_fullWidth = true;
+  specs.append(below);
+  layout->setWidgetPreviews(specs);
+  const auto firstBand = layout->widgetPreviewRect(4);
+  const auto secondBand = layout->widgetPreviewRect(5);
+  const auto compactBand = layout->widgetPreviewRect(6);
+  QCOMPARE(firstBand.width(), layout->availableContentWidth());
+  QCOMPARE(secondBand.width(), layout->availableContentWidth());
+  QVERIFY(firstBand.bottom() < secondBand.top());
+  QVERIFY(secondBand.bottom() < compactBand.top());
+  QCOMPARE(compactBand.width(), layout->inlinePlacementWidth(0, 5));
+  QCOMPARE(layout->widgetPreviewRect(7).width(), 40.0);
+  const auto fullLine = block.layout()->lineAt(0);
+  bool spanMarker = false;
+  for (const auto &marker : BlockLayoutData::get(block)->m_markers) {
+    spanMarker |= realNear(marker.m_start.x(), fullLine.cursorToX(6)) &&
+                  realNear(marker.m_end.x(), fullLine.cursorToX(10));
+  }
+  QVERIFY(spanMarker);
+
+  doc.setTextWidth(100);
+  const auto wrappedLine = block.layout()->lineForTextPosition(17);
+  QVERIFY(wrappedLine.lineNumber() > 0);
+  const auto wrappedBand = layout->widgetPreviewRect(5);
+  const qreal offset = BlockLayoutData::get(block)->m_offset;
+  const auto previousLine = block.layout()->lineAt(wrappedLine.lineNumber() - 1);
+  QVERIFY(wrappedBand.top() >= offset + previousLine.y() + previousLine.height());
+  QVERIFY(wrappedBand.bottom() <= offset + wrappedLine.y());
+  QCOMPARE(wrappedBand.width(), layout->availableContentWidth());
+  QCOMPARE(doc.toPlainText(), QStringLiteral("alpha beta gamma delta"));
 }
 
 void TestMarkdownFolding::testWidgetPreviewBlockMarker() {

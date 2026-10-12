@@ -18,9 +18,33 @@ permissions:
 
 jobs:
   build-and-test:
-    name: Build and test (Windows, Qt 6)
+    name: Build and test (Windows, Qt ${{ matrix.qt-version }}, Typst ${{ matrix.typst }})
     runs-on: windows-2022
-    timeout-minutes: 60
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - qt-version: '5.15.2'
+            qt-major: 5
+            arch: 'win64_msvc2019_64'
+            modules: ''
+            typst: 'OFF'
+            expected-tests: 16
+          - qt-version: '6.10.3'
+            qt-major: 6
+            arch: 'win64_msvc2022_64'
+            modules: 'qt5compat'
+            typst: 'OFF'
+            expected-tests: 16
+          - qt-version: '6.10.3'
+            qt-major: 6
+            arch: 'win64_msvc2022_64'
+            modules: 'qt5compat qtpdf'
+            typst: 'ON'
+            expected-tests: 17
+    env:
+      CARGO_BUILD_JOBS: 2
 
     steps:
       - name: Checkout
@@ -29,18 +53,32 @@ jobs:
           fetch-depth: 1
           submodules: recursive
 
-      # qt5compat is the only add-on module needed (Core5Compat is linked
-      # unconditionally for Qt > 5 in src/CMakeLists.txt). Do NOT add qtsvg or
-      # qtdeclarative here: they are part of the base desktop archive and aqt
-      # fails the whole install step when they are passed as `modules`.
+      # Typst is Qt 6-only and requires qtpdf; ordinary Qt 5 builds remain enabled.
+      # Qt 6 also needs qt5compat. Svg is in the base archive.
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.10.3'
+          version: ${{ matrix.qt-version }}
           target: 'desktop'
-          arch: 'win64_msvc2022_64'
-          modules: 'qt5compat'
+          arch: ${{ matrix.arch }}
+          modules: ${{ matrix.modules }}
           cache: 'true'
+
+      - name: Install locked Rust toolchain
+        if: matrix.typst == 'ON'
+        run: rustup toolchain install 1.99.0 --profile minimal
+
+      - name: Cache locked Cargo dependencies and artifacts
+        if: matrix.typst == 'ON'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/registry/src
+            ~/.cargo/git/db
+            ${{ runner.workspace }}/build/typst-cargo
+          key: ${{ runner.os }}-${{ runner.arch }}-rust-1.99.0-${{ hashFiles('tools/typst-backend/Cargo.lock') }}
 
       # vcvars64 does not persist across steps, so every cmd step that needs the
       # MSVC toolchain must resolve and `call` it again. vswhere is used instead
@@ -49,10 +87,20 @@ jobs:
         shell: cmd
         run: |
           for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat"
-          if not defined VSINSTALLDIR echo Failed to initialize the MSVC environment & exit /b 1
-          cmake -S "%GITHUB_WORKSPACE%" -B "%RUNNER_WORKSPACE%\build" -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
+          if not defined VSINSTALLDIR (echo Failed to initialize the MSVC environment & exit /b 1)
+          cmake -S "%GITHUB_WORKSPACE%" -B "%RUNNER_WORKSPACE%\build" -GNinja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DQT_DEFAULT_MAJOR_VERSION=${{ matrix.qt-major }} -DVTEXTEDIT_ENABLE_TYPST=${{ matrix.typst }} -DCMAKE_INSTALL_PREFIX="%RUNNER_WORKSPACE%\install-typst"
           if errorlevel 1 exit /b 1
           cmake --build "%RUNNER_WORKSPACE%\build"
+          if errorlevel 1 exit /b 1
+
+      - name: Run locked Rust tests
+        if: matrix.typst == 'ON'
+        shell: cmd
+        working-directory: tools/typst-backend
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat"
+          if not defined VSINSTALLDIR (echo Failed to initialize the MSVC environment & exit /b 1)
+          cargo +1.99.0 test --release --locked --target-dir "%RUNNER_WORKSPACE%\build\typst-cargo"
           if errorlevel 1 exit /b 1
 
       # Guards against a silently-dropped add_subdirectory producing a vacuously
@@ -66,8 +114,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "ctest -N failed with exit code $LASTEXITCODE" }
           $listing | ForEach-Object { Write-Host $_ }
           $total = $listing | Select-String '^Total Tests: (\d+)$'
-          if (-not $total -or [int]$total.Matches[0].Groups[1].Value -ne 16) {
-            throw "Expected exactly 16 registered tests"
+          if (-not $total -or [int]$total.Matches[0].Groups[1].Value -ne ${{ matrix.expected-tests }}) {
+            throw "Expected exactly ${{ matrix.expected-tests }} registered tests"
           }
 
       # Ninja is single-config, so no -C Release. Uses the default `windows` QPA
@@ -77,9 +125,82 @@ jobs:
         shell: cmd
         run: |
           for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat"
-          if not defined VSINSTALLDIR echo Failed to initialize the MSVC environment & exit /b 1
-          ctest --test-dir "%RUNNER_WORKSPACE%\build" --output-on-failure --no-tests=error
+          if not defined VSINSTALLDIR (echo Failed to initialize the MSVC environment & exit /b 1)
+          ctest --test-dir "%RUNNER_WORKSPACE%\build" --output-on-failure --no-tests=error --output-junit "%RUNNER_WORKSPACE%\build\ctest-results.xml"
           if errorlevel 1 exit /b 1
+
+      - name: Verify executed tests and Typst no-skip policy
+        shell: python {0}
+        run: |
+          import re
+          import xml.etree.ElementTree as ET
+          root = ET.parse(r"${{runner.workspace}}/build/ctest-results.xml").getroot()
+          cases = root.findall(".//testcase")
+          if len(cases) != ${{ matrix.expected-tests }}:
+              raise SystemExit("CTest did not execute the expected number of tests")
+          for case in cases:
+              if case.find("skipped") is not None or case.get("status") in ("notrun", "disabled"):
+                  raise SystemExit("CTest skipped " + case.get("name", "unknown test"))
+          if "${{ matrix.typst }}" == "ON":
+              typst = [case for case in cases if case.get("name") == "test_typsteditor"]
+              if len(typst) != 1:
+                  raise SystemExit("Missing Typst integration test result")
+              if re.search(r"(?m)^SKIP\s*:", typst[0].findtext("system-out", default="")):
+                  raise SystemExit("Typst integration tests must not use QSKIP")
+          # Preserve existing suites' deliberate golden-generation/platform skips.
+
+      - name: Install feature and deploy native Qt runtime
+        if: matrix.typst == 'ON'
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat"
+          if not defined VSINSTALLDIR (echo Failed to initialize the MSVC environment & exit /b 1)
+          cmake --install "%RUNNER_WORKSPACE%\build"
+          if errorlevel 1 exit /b 1
+          rem Scan the project DLL too: the demo imports Qt Pdf through VTextEdit.
+          rem Keep deployment native: no Quick imports and no --qmldir.
+          "%QT_ROOT_DIR%\bin\windeployqt.exe" --release --no-quick-import --dir "%RUNNER_WORKSPACE%\install-typst\bin" "%RUNNER_WORKSPACE%\install-typst\bin\VTextEditDemo.exe" "%RUNNER_WORKSPACE%\install-typst\bin\VTextEdit.dll"
+          if errorlevel 1 exit /b 1
+
+      - name: Reject non-native deployed dependency closure
+        if: matrix.typst == 'ON'
+        shell: pwsh
+        run: |
+          $bin = "$env:RUNNER_WORKSPACE\install-typst\bin"
+          foreach ($required in @('VTextEditDemo.exe', 'VTextEdit.dll', 'vtextedit-typst.exe', 'Qt${{ matrix.qt-major }}Pdf.dll', 'platforms\qwindows.dll')) {
+            if (-not (Test-Path "$bin\$required")) { throw "Missing installed runtime: $required" }
+          }
+          $dumpbin = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
+          if (-not $dumpbin) { throw 'Could not locate MSVC dumpbin' }
+          $forbidden = '(?i)Qt[56]\S*(WebEngine|Quick|Qml|PdfWidgets)\S*\.dll|QtWebEngineProcess'
+          # Inspect deployed files and PE imports, never the SDK archive's contents.
+          foreach ($file in Get-ChildItem $bin -Recurse -File | Where-Object { $_.Extension -in '.dll', '.exe' }) {
+            if ($file.Name -match $forbidden) { throw "Forbidden deployed file: $($file.FullName)" }
+            $imports = & $dumpbin /DEPENDENTS $file.FullName
+            if ($LASTEXITCODE -ne 0) { throw "Cannot inspect $($file.FullName)" }
+            if (($imports -join "`n") -match $forbidden) { throw "Forbidden dependency in $($file.FullName): $($Matches[0])" }
+          }
+          # Override compiled-in SDK plugin paths for the installed executable.
+          Set-Content -Path "$bin\qt.conf" -Encoding ascii -Value "[Paths]`nPrefix=.`nPlugins=."
+
+      - name: Smoke deployed demo without developer runtime paths
+        if: matrix.typst == 'ON'
+        shell: pwsh
+        run: |
+          $bin = "$env:RUNNER_WORKSPACE\install-typst\bin"
+          $work = "$env:RUNNER_TEMP\typst-installed-smoke"
+          New-Item -ItemType Directory -Force $work | Out-Null
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          Get-ChildItem Env: | Where-Object { $_.Name -match '^(QT_|QML|VTEXTEDIT_|CARGO_|RUSTUP_|CMAKE_PREFIX_PATH$)' } | ForEach-Object { Remove-Item "Env:$($_.Name)" }
+          # Keep the default Windows QPA. System fonts and the runner's installed
+          # MSVC redistributable remain legitimate operating-system prerequisites.
+          $process = Start-Process -FilePath "$bin\VTextEditDemo.exe" -ArgumentList '--typst', '--typst-smoke' -WorkingDirectory $work -PassThru -RedirectStandardOutput "$work\stdout.log" -RedirectStandardError "$work\stderr.log"
+          if (-not $process.WaitForExit(120000)) {
+            $process.Kill()
+            throw 'Installed Typst smoke timed out'
+          }
+          Get-Content "$work\stdout.log", "$work\stderr.log"
+          if ($process.ExitCode -ne 0) { throw "Installed Typst smoke failed with exit code $($process.ExitCode)" }
 
       - name: Re-run failed tests verbosely (diagnostics)
         if: failure()

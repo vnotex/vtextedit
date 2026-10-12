@@ -81,7 +81,7 @@ public:
     bool operator==(const WidgetPreviewSpec &p_other) const {
       return m_id == p_other.m_id && m_startPos == p_other.m_startPos &&
              m_endPos == p_other.m_endPos && m_placement == p_other.m_placement &&
-             m_typeOrder == p_other.m_typeOrder &&
+             m_typeOrder == p_other.m_typeOrder && m_fullWidth == p_other.m_fullWidth &&
              qFuzzyCompare(m_width + 1, p_other.m_width + 1) &&
              qFuzzyCompare(m_height + 1, p_other.m_height + 1);
     }
@@ -99,6 +99,10 @@ public:
 
     // Secondary stacking key, derived from the element type.
     int m_typeOrder = 0;
+
+    // An inline widget may request its own full-width band above its source line.
+    // Block placement ignores this flag.
+    bool m_fullWidth = false;
 
     // Preferred size in logical pixels.
     qreal m_width = 0;
@@ -212,7 +216,7 @@ public:
   // document coordinates.
   QRectF sourceTextRect(int p_startPos, int p_endPos) const;
 
-  // The exact width an InlineAboveLine band gets for [p_startPos, p_endPos),
+  // The source-span width a non-full-width InlineAboveLine band gets for [p_startPos, p_endPos),
   // using the same visual-line selection rule as the layout itself. Returns 0
   // when no line claims the range.
   qreal inlinePlacementWidth(int p_startPos, int p_endPos) const;

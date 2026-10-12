@@ -18,9 +18,30 @@ permissions:
 
 jobs:
   build-and-test:
-    name: Build and test (Ubuntu, Qt 6)
+    name: Build and test (Ubuntu, Qt ${{ matrix.qt-version }}, Typst ${{ matrix.typst }})
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - qt-version: '5.15.2'
+            qt-major: 5
+            modules: ''
+            typst: 'OFF'
+            expected-tests: 16
+          - qt-version: '6.10.3'
+            qt-major: 6
+            modules: 'qt5compat'
+            typst: 'OFF'
+            expected-tests: 16
+          - qt-version: '6.10.3'
+            qt-major: 6
+            modules: 'qt5compat qtpdf'
+            typst: 'ON'
+            expected-tests: 17
+    env:
+      CARGO_BUILD_JOBS: 2
 
     steps:
       - name: Checkout
@@ -29,22 +50,43 @@ jobs:
           fetch-depth: 1
           submodules: recursive
 
-      # qt5compat is the only add-on module needed (Core5Compat is linked
-      # unconditionally for Qt > 5 in src/CMakeLists.txt). Do NOT add qtsvg or
-      # qtdeclarative here: they are part of the base desktop archive and aqt
-      # fails the whole install step when they are passed as `modules`.
+      # Typst is Qt 6-only and requires qtpdf; ordinary Qt 5 builds remain enabled.
+      # Qt 6 also needs qt5compat. Svg is in the base archive.
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.10.3'
+          version: ${{ matrix.qt-version }}
           target: 'desktop'
-          modules: 'qt5compat'
+          modules: ${{ matrix.modules }}
           cache: 'true'
+
+      - name: Install locked Rust toolchain
+        if: matrix.typst == 'ON'
+        run: rustup toolchain install 1.99.0 --profile minimal
+
+      - name: Cache locked Cargo dependencies and artifacts
+        if: matrix.typst == 'ON'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/registry/src
+            ~/.cargo/git/db
+            ${{ runner.workspace }}/build/typst-cargo
+          key: ${{ runner.os }}-${{ runner.arch }}-rust-1.99.0-${{ hashFiles('tools/typst-backend/Cargo.lock') }}
 
       - name: Configure and build
         run: |
-          cmake -S "$GITHUB_WORKSPACE" -B "${{runner.workspace}}/build" -DCMAKE_BUILD_TYPE=Release
+          cmake -S "$GITHUB_WORKSPACE" -B "${{runner.workspace}}/build" -DCMAKE_BUILD_TYPE=Release \
+            -DQT_DEFAULT_MAJOR_VERSION=${{ matrix.qt-major }} -DVTEXTEDIT_ENABLE_TYPST=${{ matrix.typst }} \
+            -DCMAKE_INSTALL_PREFIX="${{runner.workspace}}/install-typst" -DCMAKE_INSTALL_LIBDIR=lib
           cmake --build "${{runner.workspace}}/build" --parallel
+
+      - name: Run locked Rust tests
+        if: matrix.typst == 'ON'
+        working-directory: tools/typst-backend
+        run: cargo +1.99.0 test --release --locked --target-dir "${{runner.workspace}}/build/typst-cargo"
 
       # Guards against a silently-dropped add_subdirectory producing a vacuously
       # green run. Keep this count in sync with tests/CMakeLists.txt.
@@ -55,8 +97,8 @@ jobs:
           listing="$(ctest --test-dir "${{runner.workspace}}/build" -N)"
           printf '%s\n' "$listing"
           count="$(printf '%s\n' "$listing" | sed -n 's/^Total Tests: //p')"
-          if [ "$count" != "16" ]; then
-            echo "Expected 16 registered tests, found ${count:-unknown}" >&2
+          if [ "$count" != "${{ matrix.expected-tests }}" ]; then
+            echo "Expected ${{ matrix.expected-tests }} registered tests, found ${count:-unknown}" >&2
             exit 1
           fi
 
@@ -66,7 +108,60 @@ jobs:
           LC_ALL: C.UTF-8
           LANG: C.UTF-8
         run: |
-          ctest --test-dir "${{runner.workspace}}/build" --output-on-failure --no-tests=error
+          ctest --test-dir "${{runner.workspace}}/build" --output-on-failure --no-tests=error --output-junit "${{runner.workspace}}/build/ctest-results.xml"
+
+      - name: Verify executed tests and Typst no-skip policy
+        shell: python {0}
+        run: |
+          import re
+          import xml.etree.ElementTree as ET
+          root = ET.parse(r"${{runner.workspace}}/build/ctest-results.xml").getroot()
+          cases = root.findall(".//testcase")
+          if len(cases) != ${{ matrix.expected-tests }}:
+              raise SystemExit("CTest did not execute the expected number of tests")
+          for case in cases:
+              if case.find("skipped") is not None or case.get("status") in ("notrun", "disabled"):
+                  raise SystemExit("CTest skipped " + case.get("name", "unknown test"))
+          if "${{ matrix.typst }}" == "ON":
+              typst = [case for case in cases if case.get("name") == "test_typsteditor"]
+              if len(typst) != 1:
+                  raise SystemExit("Missing Typst integration test result")
+              if re.search(r"(?m)^SKIP\s*:", typst[0].findtext("system-out", default="")):
+                  raise SystemExit("Typst integration tests must not use QSKIP")
+          # Preserve existing suites' deliberate golden-generation/platform skips.
+
+      - name: Install feature into separate prefix
+        if: matrix.typst == 'ON'
+        run: cmake --install "${{runner.workspace}}/build"
+
+      # This checks the installed project/helper layout with the installed Qt
+      # runtime package, not a self-contained Linux bundle. Only Qt's SDK runtime
+      # paths are allowed; no project build or Cargo paths are supplied.
+      - name: Smoke installed layout with Qt SDK runtime (not a bundle)
+        if: matrix.typst == 'ON'
+        env:
+          LC_ALL: C.UTF-8
+          LANG: C.UTF-8
+        run: |
+          prefix="${{runner.workspace}}/install-typst"
+          export LD_LIBRARY_PATH="$prefix/lib:$QT_ROOT_DIR/lib"
+          for binary in "$prefix/bin/VTextEditDemo" "$prefix/bin/vtextedit-typst" "$prefix/lib/libVTextEdit.so"; do
+            dependencies="$(ldd "$binary")"
+            printf '%s\n%s\n' "$binary" "$dependencies"
+            if [[ "$dependencies" == *"not found"* || "$dependencies" == *"${{runner.workspace}}/build/"* || "$dependencies" == *"$GITHUB_WORKSPACE/"* ]]; then
+              echo "Installed binary has missing or developer-build dependencies" >&2
+              exit 1
+            fi
+            if [[ "$dependencies" =~ Qt[56][^[:space:]]*(WebEngine|Quick|Qml|PdfWidgets)|QtWebEngineProcess ]]; then
+              echo "Unexpected WebEngine/Quick/QML/PdfWidgets dependency" >&2
+              exit 1
+            fi
+          done
+          mkdir -p "$RUNNER_TEMP/typst-installed-smoke"
+          cd "$RUNNER_TEMP/typst-installed-smoke"
+          env -i HOME="$HOME" PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+            QT_QPA_PLATFORM=offscreen LD_LIBRARY_PATH="$LD_LIBRARY_PATH" QT_PLUGIN_PATH="$QT_ROOT_DIR/plugins" \
+            timeout 120 "$prefix/bin/VTextEditDemo" --typst --typst-smoke
 
       - name: Re-run failed tests verbosely (diagnostics)
         if: failure()

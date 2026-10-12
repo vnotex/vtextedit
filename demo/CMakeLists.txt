@@ -15,7 +15,7 @@ else()
     set(CMAKE_AUTOUIC ON)
 endif()
 
-add_executable(VTextEditDemo WIN32 MACOSX_BUNDLE
+set(DEMO_SOURCES
     helper.h
     logger.h
     main.cpp
@@ -23,25 +23,35 @@ add_executable(VTextEditDemo WIN32 MACOSX_BUNDLE
     data/example_files/example_files.qrc
 )
 
-set(SRC_FOLDER "../src")
-target_include_directories(VTextEditDemo PRIVATE
-    ${SRC_FOLDER}/include
-)
-target_link_directories(VTextEditDemo PRIVATE
-    ${SRC_FOLDER}
-)
-
-target_link_libraries(VTextEditDemo PRIVATE
-    Qt::Core
-    Qt::Gui
-    Qt::Network
-    Qt::Svg
-    Qt::Widgets
-    VTextEdit
-)
-
-if((QT_DEFAULT_MAJOR_VERSION GREATER 5))
-    target_link_libraries(VTextEditDemo PUBLIC
-        Qt::Core5Compat
-    )
+add_executable(VTextEditDemo WIN32 MACOSX_BUNDLE ${DEMO_SOURCES})
+set(DEMO_TARGETS VTextEditDemo)
+if(VTEXTEDIT_ENABLE_TYPST)
+    add_executable(VTypstEditorDemo WIN32 MACOSX_BUNDLE ${DEMO_SOURCES})
+    target_compile_definitions(VTypstEditorDemo PRIVATE VTEXTEDIT_TYPST_DEMO)
+    list(APPEND DEMO_TARGETS VTypstEditorDemo)
 endif()
+
+set(SRC_FOLDER "../src")
+foreach(DEMO_TARGET IN LISTS DEMO_TARGETS)
+    target_include_directories(${DEMO_TARGET} PRIVATE
+        ${SRC_FOLDER}/include
+    )
+    target_link_directories(${DEMO_TARGET} PRIVATE
+        ${SRC_FOLDER}
+    )
+
+    target_link_libraries(${DEMO_TARGET} PRIVATE
+        Qt::Core
+        Qt::Gui
+        Qt::Network
+        Qt::Svg
+        Qt::Widgets
+        VTextEdit
+    )
+
+    if((QT_DEFAULT_MAJOR_VERSION GREATER 5))
+        target_link_libraries(${DEMO_TARGET} PUBLIC
+            Qt::Core5Compat
+        )
+    endif()
+endforeach()

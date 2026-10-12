@@ -8,6 +8,20 @@
   the library SOVERSION is now 8. Matching Qt Gui private development headers are required,
   and the runtime must use the Qt build against which the library was compiled.
 
+### Features
+
+- Add optional `VTypstEditor` and `TypstEditorConfig`: one source/undo history across
+  in-place compiled cards, side-by-side selectable PDF and read modes, with unsaved
+  project overlays, diagnostics and compiler-backed navigation. QWidget-only Qt Pdf
+  previews use immutable in-memory buffers and page-local selection/copy; math copy
+  returns PDF text, not source. Preview geometry excludes printer bleed.
+- Add `VTEXTEDIT_ENABLE_TYPST` (default OFF), requiring Qt 6 with Qt Pdf and a helper
+  built with pinned Rust 1.99.0, Typst 0.15.1 and Cargo.lock. Qt 5 remains supported
+  with Typst disabled; enabling Typst on Qt 5 is a configuration error. Package downloads
+  are opt-in; enabled distributions must deploy the helper, Qt Pdf and dependency notices.
+- Add the dedicated `VTypstEditorDemo` target, starting Typst without flags. The existing
+  `VTextEditDemo --typst` entry remains available; both accept optional `--typst-file`.
+
 ### Behavior changes
 
 - Shift+wheel scrolls horizontally in `VTextEditor` and `VMarkdownEditor`, including over

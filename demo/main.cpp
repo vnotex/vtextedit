@@ -20,6 +20,22 @@
 
 #include <vtextedit/spellchecker.h>
 
+#ifdef VTEXTEDIT_ENABLE_TYPST
+#include <QAbstractScrollArea>
+#include <QClipboard>
+#include <QDir>
+#include <QElapsedTimer>
+#include <QFile>
+#include <QFileInfo>
+#include <QKeyEvent>
+#include <QTextDocument>
+#include <QTimer>
+#include <cstdio>
+#include <vtextedit/typsteditorconfig.h>
+#include <vtextedit/vtextedit.h>
+#include <vtextedit/vtypsteditor.h>
+#endif
+
 using namespace vte;
 
 static void setupSpellChecker() {
@@ -136,6 +152,180 @@ static std::function<void()> setupRichTextEditor(QMainWindow *p_win) {
   return [mountStatusWidget]() { mountStatusWidget(QSharedPointer<QWidget>()); };
 }
 
+#ifdef VTEXTEDIT_ENABLE_TYPST
+static VTypstEditor *setupTypstEditor(QMainWindow *p_window, const QStringList &p_arguments) {
+  auto config = QSharedPointer<TypstEditorConfig>::create();
+  config->m_helperExecutable = qEnvironmentVariable("VTEXTEDIT_TYPST_HELPER");
+  config->m_projectRoot = QDir::currentPath();
+  QString contents = QStringLiteral(
+      "#set page(width: 140mm, height: 140mm, margin: 12mm)\n"
+      "#set text(size: 12pt)\n#import \"lib.typ\": mass\n"
+      "= Native Typst preview\nBEFORE smoke. Select and copy this text.\n\n"
+      "Inline formula: $E = #mass c^2$.\n\n"
+      "#set math.equation(numbering: \"(1)\")\n$ E = #mass c^2 $\n\n"
+      "#figure(table(columns: 2, [Quantity], [Value], [Mass], [#mass]), caption: [Live table])\n");
+  const int fileIndex = p_arguments.indexOf(QStringLiteral("--typst-file"));
+  if (fileIndex >= 0) {
+    if (fileIndex + 1 >= p_arguments.size()) {
+      qCritical("--typst-file requires a file path");
+      return nullptr;
+    }
+    const QFileInfo fileInfo(p_arguments[fileIndex + 1]);
+    QFile file(fileInfo.absoluteFilePath());
+    if (!file.open(QIODevice::ReadOnly)) {
+      qCritical("Could not open Typst source");
+      return nullptr;
+    }
+    config->m_projectRoot = fileInfo.absolutePath();
+    config->m_mainFile = fileInfo.fileName();
+    contents = QString::fromUtf8(file.readAll());
+  }
+  auto editor = new VTypstEditor(config, QSharedPointer<TextEditorParameters>::create(), p_window);
+  if (fileIndex < 0) {
+    editor->setFileOverlay(QStringLiteral("lib.typ"), QStringLiteral("#let mass = 7\n"));
+  }
+  editor->getTextEditor()->setText(contents);
+  editor->setMode(VTypstEditor::Mode::SideBySidePreview);
+  p_window->setCentralWidget(editor);
+  return editor;
+}
+
+// Installed-layout smoke drives the actual widget, process and native PDF surface.
+// It is opt-in; ordinary demo use never writes files or edits its initial source.
+static void runTypstSmoke(VTypstEditor *p_editor, const QStringList &p_arguments) {
+  struct SmokeState {
+    int phase = 0;
+    QElapsedTimer deadline;
+    QElapsedTimer settling;
+    QString after;
+    QString imagePrefix;
+    int anchor = 0;
+    int position = 0;
+    bool modified = false;
+  };
+  auto state = QSharedPointer<SmokeState>::create();
+  state->deadline.start();
+  const int imageIndex = p_arguments.indexOf(QStringLiteral("--typst-smoke-image"));
+  if (imageIndex >= 0 && imageIndex + 1 < p_arguments.size()) {
+    state->imagePrefix = p_arguments[imageIndex + 1];
+  }
+  auto *timer = new QTimer(p_editor);
+  timer->setInterval(50);
+  QObject::connect(timer, &QTimer::timeout, p_editor, [p_editor, state, timer]() {
+    const auto abort = [timer](const QString &p_reason) {
+      std::fprintf(stderr, "TYPST_WIDGET_SMOKE_FAILED: %s\n", qPrintable(p_reason));
+      timer->stop();
+      QCoreApplication::exit(2);
+    };
+    if (state->deadline.elapsed() > 60000) {
+      abort(p_editor->compileMessage());
+      return;
+    }
+    auto *pane = p_editor->findChild<QAbstractScrollArea *>(QStringLiteral("typstPdf"));
+    if (!pane) {
+      abort(QStringLiteral("Missing native PDF pane"));
+      return;
+    }
+    const auto key = [pane](int p_key) {
+      QKeyEvent press(QEvent::KeyPress, p_key, Qt::ControlModifier);
+      QKeyEvent release(QEvent::KeyRelease, p_key, Qt::ControlModifier);
+      QCoreApplication::sendEvent(pane, &press);
+      QCoreApplication::sendEvent(pane, &release);
+    };
+    if (p_editor->compileStatus() == VTypstEditor::CompileStatus::Unavailable ||
+        p_editor->compileStatus() == VTypstEditor::CompileStatus::Error) {
+      abort(p_editor->compileMessage());
+      return;
+    }
+    if (state->phase == 0) {
+      if (p_editor->compileStatus() != VTypstEditor::CompileStatus::Ready) {
+        return;
+      }
+      pane->setFocus();
+      key(Qt::Key_A);
+      if (!pane->property("selectedText").toString().contains(QStringLiteral("BEFORE smoke"))) {
+        return;
+      }
+      key(Qt::Key_C);
+      if (!QApplication::clipboard()->text().contains(QStringLiteral("BEFORE smoke"))) {
+        abort(QStringLiteral("Native PDF copy did not reach the clipboard"));
+        return;
+      }
+      auto cursor = p_editor->document()->find(QStringLiteral("BEFORE"));
+      if (cursor.isNull()) {
+        abort(QStringLiteral("Smoke source marker missing"));
+        return;
+      }
+      cursor.beginEditBlock();
+      cursor.insertText(QStringLiteral("AFTER"));
+      cursor.endEditBlock();
+      state->after = p_editor->document()->toPlainText();
+      const auto sourceCursor = p_editor->getTextEditor()->getTextEdit()->textCursor();
+      state->anchor = sourceCursor.anchor();
+      state->position = sourceCursor.position();
+      state->modified = p_editor->document()->isModified();
+      state->phase = 1;
+    } else if (state->phase == 1) {
+      if (!pane->property("hasPendingUpdate").toBool()) {
+        return;
+      }
+      if (!pane->property("selectedText").toString().contains(QStringLiteral("BEFORE smoke"))) {
+        abort(QStringLiteral("Compilation cleared the displayed PDF selection"));
+        return;
+      }
+      if (!QMetaObject::invokeMethod(pane, "publishPending", Qt::DirectConnection)) {
+        abort(QStringLiteral("Explicit PDF update action is unavailable"));
+        return;
+      }
+      state->phase = 2;
+    } else if (state->phase == 2) {
+      if (pane->property("hasPendingUpdate").toBool()) {
+        return;
+      }
+      key(Qt::Key_A);
+      key(Qt::Key_C);
+      if (!QApplication::clipboard()->text().contains(QStringLiteral("AFTER smoke"))) {
+        return;
+      }
+      if (!state->imagePrefix.isEmpty()) {
+        p_editor->grab().save(state->imagePrefix + QStringLiteral("-side.png"));
+      }
+      p_editor->setMode(VTypstEditor::Mode::Read);
+      if (!pane->property("selectedText").toString().contains(QStringLiteral("AFTER smoke"))) {
+        abort(QStringLiteral("Read mode discarded PDF selection"));
+        return;
+      }
+      p_editor->setMode(VTypstEditor::Mode::InPlacePreview);
+      state->settling.start();
+      state->phase = 3;
+    } else if (state->phase == 3 && state->settling.elapsed() >= 1500) {
+      const auto cursor = p_editor->getTextEditor()->getTextEdit()->textCursor();
+      if (p_editor->document()->toPlainText() != state->after ||
+          p_editor->document()->isModified() != state->modified ||
+          cursor.anchor() != state->anchor || cursor.position() != state->position) {
+        abort(QStringLiteral("Preview or mode transition mutated source state"));
+        return;
+      }
+      if (!state->imagePrefix.isEmpty()) {
+        p_editor->grab().save(state->imagePrefix + QStringLiteral("-inplace.png"));
+      }
+      p_editor->document()->undo();
+      if (!p_editor->document()->toPlainText().contains(QStringLiteral("BEFORE smoke"))) {
+        abort(QStringLiteral("Mode transitions damaged source undo"));
+        return;
+      }
+      timer->stop();
+      std::fprintf(
+          stdout,
+          "TYPST_WIDGET_SMOKE_OK selection copy deferred-update read side-by-side in-place undo\n");
+      std::fflush(stdout);
+      QCoreApplication::exit(0);
+    }
+  });
+  timer->start();
+}
+#endif
+
 int main(int p_argc, char *p_argv[]) {
   QApplication app(p_argc, p_argv);
 
@@ -166,6 +356,26 @@ int main(int p_argc, char *p_argv[]) {
 
     return ret;
   }
+
+#ifdef VTEXTEDIT_ENABLE_TYPST
+#ifdef VTEXTEDIT_TYPST_DEMO
+  const bool useTypst = true;
+#else
+  const bool useTypst = app.arguments().contains(QStringLiteral("--typst"));
+#endif
+  if (useTypst) {
+    auto *typstEditor = setupTypstEditor(&win, app.arguments());
+    if (!typstEditor) {
+      return 2;
+    }
+    win.resize(1200, 800);
+    win.show();
+    if (app.arguments().contains(QStringLiteral("--typst-smoke"))) {
+      runTypstSmoke(typstEditor, app.arguments());
+    }
+    return app.exec();
+  }
+#endif
 
   auto editor = setupMarkdownEditor(&win);
 

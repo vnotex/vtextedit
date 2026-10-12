@@ -1746,6 +1746,24 @@ qreal TextDocumentLayout::layoutLines(const QTextBlock &p_block, QTextLayout *p_
           continue;
         }
 
+        if (spec->m_fullWidth) {
+          // Exclusive bands precede the ordinary shared band on this visual
+          // line. Keep the marker on the source span, not the expanded chrome.
+          p_height += c_widgetPreviewPadding;
+          WidgetPaintData wpd;
+          wpd.m_id = spec->m_id;
+          wpd.m_rect = QRectF(m_margin, p_height, p_availableWidth, spec->m_height);
+          p_widgets.append(wpd);
+          p_height += spec->m_height + c_widgetPreviewPadding;
+          Marker mk;
+          mk.m_start = QPointF(startX, p_height + c_markerThickness);
+          mk.m_end = QPointF(endX, p_height + c_markerThickness);
+          p_widgetMarkers.append(mk);
+          p_height += c_markerThickness * 2;
+          inlineWidgetPlaced[i] = true;
+          continue;
+        }
+
         onThisLine.append(i);
         spans.append(QPair<qreal, qreal>(startX, endX));
         bandHeight = qMax(bandHeight, spec->m_height);

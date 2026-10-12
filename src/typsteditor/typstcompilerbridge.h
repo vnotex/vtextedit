@@ -1,0 +1,99 @@
+#ifndef VTE_TYPSTCOMPILERBRIDGE_H
+#define VTE_TYPSTCOMPILERBRIDGE_H
+
+#include "typstcompiledsnapshot.h"
+#include <vtextedit/typsteditorconfig.h>
+
+#include <QFileSystemWatcher>
+#include <QImage>
+#include <QJsonObject>
+#include <QMap>
+#include <QObject>
+#include <QProcess>
+#include <QTimer>
+#include <QVector>
+
+namespace vte {
+
+// One serialized helper operation, one coalesced newest compile, no GUI-thread compiler work.
+class TypstCompilerBridge : public QObject {
+  Q_OBJECT
+public:
+  enum class State { Idle, Starting, Compiling, Ready, Error, Unavailable };
+  explicit TypstCompilerBridge(QObject *p_parent = nullptr);
+  ~TypstCompilerBridge() Q_DECL_OVERRIDE;
+
+  void updateProject(const TypstEditorConfig &p_config, const QString &p_activeFile,
+                     const QMap<QString, QString> &p_overlays);
+  void retry();
+  void setDisplayedSnapshot(const TypstSnapshot &p_snapshot);
+  void requestPdf(quint64 p_snapshot);
+  void requestRaster(quint64 p_snapshot, int p_page, qreal p_scale);
+  void sourceToOutput(const QString &p_file, int p_offset);
+  void outputToSource(quint64 p_snapshot, int p_page, const QPointF &p_point);
+  quint64 epoch() const { return m_epoch; }
+  quint64 generation() const { return m_generation; }
+  TypstSnapshot latestSnapshot() const { return m_latest; }
+
+signals:
+  void generationChanged(quint64 p_epoch, quint64 p_generation);
+  void stateChanged(vte::TypstCompilerBridge::State p_state, const QString &p_message);
+  void highlightsReady(quint64 p_generation, const QVector<vte::TypstHighlight> &p_ranges,
+                       const QString &p_activeFile);
+  void diagnosticsReady(const QVector<vte::TypstDiagnostic> &p_diagnostics);
+  void snapshotReady(const vte::TypstSnapshot &p_snapshot);
+  void pdfReady(const vte::TypstSnapshot &p_snapshot, const QByteArray &p_pdf);
+  // A null image completes a failed raster request; consumers must not retry the same input.
+  void pageImageReady(quint64 p_snapshot, int p_page, qreal p_scale, const QImage &p_image);
+  void outputLocationReady(quint64 p_snapshot, int p_page, const QPointF &p_point);
+  void sourceLocationReady(const QString &p_file, int p_start, int p_end);
+  void externalLinkRequested(const QUrl &p_url);
+  void operationFailed(const QString &p_operation, const QString &p_message);
+
+private:
+  void invalidate();
+  void start();
+  void stop();
+  void pump();
+  void send(QJsonObject p_header);
+  void enqueue(QJsonObject p_header);
+  void readOutput();
+  void handleReply(const QJsonObject &p_header, QByteArray p_payload);
+  void fail(const QString &p_message, bool p_unavailable = false);
+  void finishRequest();
+  void failRaster(const QJsonObject &p_request);
+  void updateDependencies(const QJsonArray &p_dependencies);
+  QJsonObject configuration() const;
+  QJsonArray retained(bool p_forCompile) const;
+  bool isCurrent(const QJsonObject &p_header) const;
+
+  TypstEditorConfig m_config;
+  QString m_activeFile;
+  QMap<QString, QString> m_overlays;
+  QProcess m_process;
+  QFileSystemWatcher m_watcher;
+  QTimer m_debounce;
+  QTimer m_timeout;
+  quint64 m_epoch = 1;
+  quint64 m_generation = 0;
+  quint64 m_nextRequest = 1;
+  quint64 m_displayed = 0;
+  TypstSnapshot m_latest;
+  QJsonObject m_request;
+  QVector<QJsonObject> m_queue;
+  bool m_ready = false;
+  bool m_failed = false;
+  bool m_compilePending = false;
+  bool m_compileDue = false;
+  bool m_stopping = false;
+  char m_prefix[8] = {};
+  qint64 m_prefixRead = 0;
+  QByteArray m_header;
+  QByteArray m_payload;
+  qint64 m_headerRead = 0;
+  qint64 m_payloadRead = 0;
+};
+
+} // namespace vte
+
+#endif // VTE_TYPSTCOMPILERBRIDGE_H

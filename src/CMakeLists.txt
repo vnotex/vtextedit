@@ -42,7 +42,7 @@ qt_add_translation(QM_FILES ${TRANS_FILES})
 if (TARGET Qt${QT_DEFAULT_MAJOR_VERSION}::lupdate)
     add_custom_target(update_translations
         COMMAND Qt${QT_DEFAULT_MAJOR_VERSION}::lupdate
-                -locations relative -no-obsolete
+                -locations relative -no-obsolete -I ${CMAKE_CURRENT_SOURCE_DIR}/include
                 ${CMAKE_CURRENT_SOURCE_DIR}
                 -ts ${TRANS_FILES}
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
@@ -165,6 +165,29 @@ add_library(VTextEdit SHARED
     utils/textutils.cpp
     utils/utils.cpp utils/utils.h
 )
+if(VTEXTEDIT_ENABLE_TYPST)
+    find_package(Qt6 REQUIRED COMPONENTS Pdf)
+    target_sources(VTextEdit PRIVATE
+        include/vtextedit/typsteditorconfig.h
+        include/vtextedit/vtypsteditor.h
+        typsteditor/typstcompiledsnapshot.h
+        typsteditor/typstcompilerbridge.cpp typsteditor/typstcompilerbridge.h
+        typsteditor/typsthighlighter.cpp typsteditor/typsthighlighter.h
+        typsteditor/typstpreviewhost.cpp typsteditor/typstpreviewhost.h
+        typsteditor/typstpreviewpane.cpp typsteditor/typstpreviewpane.h
+        typsteditor/typstsourceeditor.cpp typsteditor/typstsourceeditor.h
+        typsteditor/vtypsteditor.cpp
+    )
+    target_compile_definitions(VTextEdit PUBLIC VTEXTEDIT_ENABLE_TYPST)
+    target_link_libraries(VTextEdit PRIVATE Qt6::Pdf)
+    target_include_directories(VTextEdit PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_dependencies(VTextEdit vtextedit-typst)
+    # Typst's public headers include the existing editor API. Install that closure too.
+    install(DIRECTORY include/vtextedit
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        FILES_MATCHING PATTERN "*.h"
+    )
+endif()
 target_include_directories(VTextEdit PUBLIC
     include
 )
