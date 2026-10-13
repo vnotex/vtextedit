@@ -300,10 +300,15 @@ The optional `VTypstEditor` is also a consumer of the existing `WidgetPreviewSpe
 reservation API. Its source editor installs this layout with an empty, lifetime-owned
 `DocumentResourceMgr`; a Typst-only host reserves inline-above-line/block-after-source
 space for compiled image cards and follows the layout's busy/idle publication contract.
-A narrow inline card can opt into `WidgetPreviewSpec::m_fullWidth`: it receives an
-exclusive full-width band above its owning visual source line, with the marker still
-on its exact source span. Ordinary inline reservations keep their shared span-aligned
-band; block placement ignores the flag.
+A narrow inline source span can opt into `WidgetPreviewSpec::m_fullWidth`: it reserves
+an exclusive band above its owning visual line, but the finite widget rectangle starts
+at the source span's X, not the line margin. With wrapping, preferred width is clamped
+to the remaining line width; with `QTextOption::NoWrap`, its right edge contributes to
+the scrollable document width. A positive page width alone does not imply wrapping.
+`inlinePlacementWidth()` optionally returns the same source X used during layout, so
+host measurement and assigned geometry agree. The marker stays on the exact source
+span. Ordinary inline reservations keep their shared span-aligned band; block placement
+ignores the flag.
 This shares geometry, not Markdown parsing or host behavior: Typst does not use the
 Markdown preview model, painted-preview pipeline, or interactive table/source-rewriting
 host. No Typst preview kind is added to the Markdown preview enums.

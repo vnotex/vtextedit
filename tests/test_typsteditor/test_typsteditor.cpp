@@ -979,6 +979,21 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
              return repeated() && coloredPixels(widgetImage(repeated()), false) > 10;
            }),
            qPrintable(fixture.editor.compileMessage()));
+  const auto sourceRect = [&](int p_position) {
+    QTextCursor cursor(fixture.editor.document());
+    cursor.setPosition(p_position);
+    return fixture.edit()->cursorRect(cursor);
+  };
+  const auto scrollToSource = [&](int p_position) {
+    auto *bar = fixture.edit()->horizontalScrollBar();
+    bar->setValue(bar->value() + sourceRect(p_position).left() -
+                  qRound(fixture.editor.document()->documentMargin()));
+  };
+  const int equationStart = source.indexOf(QStringLiteral("$x$"));
+  QVERIFY(sourceRect(equationStart).left() > fixture.editor.document()->documentMargin() + 10);
+  QVERIFY(std::abs(repeated()->geometry().left() - sourceRect(equationStart).left()) <= 1);
+  QVERIFY(repeated()->width() >
+          sourceRect(equationStart + 3).left() - sourceRect(equationStart).left());
   const auto image = widgetImage(repeated());
   QRect redBounds, blueBounds;
   QVERIFY(coloredPixels(image, true, &redBounds) > 10);
@@ -1000,6 +1015,41 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
   }));
   QCOMPARE(inlineCard()->width(), compactWidth);
   QVERIFY(!repeated()->geometry().intersects(inlineCard()->geometry()));
+  QVERIFY(std::abs(repeated()->geometry().left() - sourceRect(equationStart).left()) <= 1);
+
+  const int fullRowWidth = repeated()->width();
+  const int spanWidth = sourceRect(equationStart + 3).left() - sourceRect(equationStart).left();
+  const int chromeWidth = fixture.editor.width() - fixture.edit()->viewport()->width();
+  const int remaining = (spanWidth + fullRowWidth) / 2;
+  fixture.editor.resize(chromeWidth + sourceRect(equationStart).left() + remaining +
+                            qRound(fixture.editor.document()->documentMargin()) + 4, 650);
+  QVERIFY(waitUntil([&]() {
+    return repeated() && repeated()->width() < fullRowWidth &&
+           coloredPixels(widgetImage(repeated()), false) > 10;
+  }));
+  QVERIFY(std::abs(repeated()->geometry().left() - sourceRect(equationStart).left()) <= 1);
+  QVERIFY(repeated()->width() > spanWidth);
+  QVERIFY(repeated()->geometry().right() < fixture.edit()->viewport()->width());
+
+  // The claimed source is mid-line on a soft-wrapped continuation, not at its origin.
+  fixture.editor.resize(450, 650);
+  QVERIFY(waitUntil([&]() {
+    const auto block = fixture.editor.document()->findBlock(equationStart);
+    const auto line = block.layout()->lineForTextPosition(equationStart - block.position());
+    return line.lineNumber() > 0 && repeated() &&
+           coloredPixels(widgetImage(repeated()), false) > 10 &&
+           std::abs(repeated()->geometry().left() - sourceRect(equationStart).left()) <= 1;
+  }));
+  const auto equationBlock = fixture.editor.document()->findBlock(equationStart);
+  const int localStart = equationStart - equationBlock.position();
+  const auto sourceLine = equationBlock.layout()->lineForTextPosition(localStart);
+  QVERIFY(sourceLine.lineNumber() > 0);
+  QVERIFY(sourceLine.textStart() < localStart);
+  QVERIFY(sourceRect(equationStart).left() > fixture.editor.document()->documentMargin() + 10);
+  QVERIFY(repeated()->width() >
+          sourceRect(equationStart + 3).left() - sourceRect(equationStart).left());
+  QCOMPARE(fixture.editor.document()->toPlainText(), source);
+  fixture.editor.resize(1200, 650);
 
   // The combined natural row must shrink, not wrap or crop, in a narrow editor.
   const auto wide = QStringLiteral("#set page(width: 3000pt, height: 300pt, margin: 10pt)\n"
@@ -1009,18 +1059,31 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
   fixture.edit()->setLineWrapMode(QTextEdit::NoWrap);
   fixture.editor.setFileOverlay(QStringLiteral("main.typ"), wide);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  const int wideStart = wide.indexOf(QStringLiteral("$x+"));
+  QVERIFY(waitUntil([&]() {
+    const auto doc = fixture.editor.document();
+    const auto block = doc->findBlock(wideStart);
+    return doc->documentLayout()->documentSize().width() >
+           block.layout()->lineAt(0).naturalTextWidth() + 2 * doc->documentMargin();
+  }));
+  scrollToSource(wideStart);
   QVERIFY(waitUntil([&]() {
     return repeated() && coloredPixels(widgetImage(repeated()), false) > 10;
   }));
   const auto wideSize = repeated()->size();
+  const qreal wideDocumentWidth = fixture.editor.document()->documentLayout()->documentSize().width();
   const auto wideSelection = fixture.edit()->textCursor();
   const auto wideUndo = fixture.editor.document()->availableUndoSteps();
   const auto wideModified = fixture.editor.document()->isModified();
   fixture.editor.resize(600, 650);
   QVERIFY(waitUntil([&]() {
+    return fixture.editor.document()->documentLayout()->documentSize().width() < wideDocumentWidth;
+  }));
+  scrollToSource(wideStart);
+  QVERIFY(waitUntil([&]() {
     return repeated() && repeated()->width() < wideSize.width() &&
            coloredPixels(widgetImage(repeated()), false) > 10;
-  }));
+  }, paintTimeout));
   const auto narrowImage = widgetImage(repeated());
   QVERIFY(coloredPixels(narrowImage, true, &redBounds) > 10);
   QVERIFY(coloredPixels(narrowImage, false, &blueBounds) > 10);
@@ -1028,6 +1091,20 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
   QVERIFY(redBounds.top() <= blueBounds.bottom() && blueBounds.top() <= redBounds.bottom());
   QVERIFY(repeated()->height() < wideSize.height());
   QVERIFY(repeated()->width() <= fixture.edit()->viewport()->width());
+  QVERIFY(std::abs(repeated()->geometry().left() - sourceRect(wideStart).left()) <= 1);
+  auto *horizontal = fixture.edit()->horizontalScrollBar();
+  const int rowLeft = repeated()->geometry().left();
+  const int previousScroll = horizontal->value();
+  horizontal->setValue(qMax(0, previousScroll - 20));
+  QCoreApplication::processEvents();
+  QVERIFY(repeated());
+  QCOMPARE(repeated()->geometry().left() - rowLeft, previousScroll - horizontal->value());
+  scrollToSource(wideStart);
+  QCoreApplication::processEvents();
+  QVERIFY(repeated());
+  QVERIFY(repeated()->geometry().right() < fixture.edit()->viewport()->width());
+  QVERIFY(fixture.editor.document()->documentLayout()->documentSize().width() >=
+          horizontal->value() + repeated()->geometry().right());
   QCOMPARE(fixture.editor.document()->toPlainText(), wide);
   QCOMPARE(fixture.edit()->textCursor().anchor(), wideSelection.anchor());
   QCOMPARE(fixture.edit()->textCursor().position(), wideSelection.position());
@@ -1051,6 +1128,7 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
   }));
   fixture.edit()->moveCursor(QTextCursor::Start);
   fixture.edit()->verticalScrollBar()->setValue(0);
+  scrollToSource(unequal.indexOf(QStringLiteral("$x$")));
   QVERIFY(waitUntil([&]() {
     return repeated() && coloredPixels(widgetImage(repeated()), false) > 10;
   }));
@@ -1092,6 +1170,7 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
   split += QStringLiteral(" $\nAfter");
   fixture.edit()->setLineWrapMode(QTextEdit::NoWrap);
   fixture.editor.setFileOverlay(QStringLiteral("main.typ"), split);
+  fixture.edit()->horizontalScrollBar()->setValue(0);
   auto *editorScroll = fixture.edit()->verticalScrollBar();
   editorScroll->setValue(0);
   const auto splitCard = [&]() {

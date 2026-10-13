@@ -1578,7 +1578,8 @@ void TextDocumentLayout::layoutBlock(const QTextBlock &p_block) {
   QVector<WidgetPaintData> widgets;
   QVector<Marker> widgetMarkers;
 
-  layoutLines(p_block, tl, markers, images, widgets, widgetMarkers, availableWidth, 0);
+  qreal widgetRight = 0;
+  layoutLines(p_block, tl, markers, images, widgets, widgetMarkers, availableWidth, 0, widgetRight);
 
   // Set this block's line count to its layout's line count.
   // That is one block may occupy multiple visual lines.
@@ -1586,6 +1587,10 @@ void TextDocumentLayout::layoutBlock(const QTextBlock &p_block) {
 
   // Update the info about this block.
   finishBlockLayout(p_block, markers, images, widgets, widgetMarkers);
+  // A source-aligned inline card may extend beyond the source text in NoWrap
+  // mode. Keep its tail reachable through the editor's horizontal scrollbar.
+  auto info = BlockLayoutData::get(p_block);
+  info->m_rect.setWidth(qMax(info->m_rect.width(), widgetRight + m_margin + c_cursorGeometryWidth));
 }
 
 void TextDocumentLayout::updateOffsetBefore(const QTextBlock &p_block) {
@@ -1659,8 +1664,9 @@ qreal TextDocumentLayout::layoutLines(const QTextBlock &p_block, QTextLayout *p_
                                       QVector<Marker> &p_markers, QVector<ImagePaintData> &p_images,
                                       QVector<WidgetPaintData> &p_widgets,
                                       QVector<Marker> &p_widgetMarkers, qreal p_availableWidth,
-                                      qreal p_height) {
+                                      qreal p_height, qreal &p_widgetRight) {
   Q_ASSERT(p_block.isValid());
+  p_widgetRight = 0;
 
   // Handle block inline image.
   QVector<PreviewData *> previewData;
@@ -1748,11 +1754,16 @@ qreal TextDocumentLayout::layoutLines(const QTextBlock &p_block, QTextLayout *p_
 
         if (spec->m_fullWidth) {
           // Exclusive bands precede the ordinary shared band on this visual
-          // line. Keep the marker on the source span, not the expanded chrome.
+          // line. Content and marker both stay anchored to the source span.
           p_height += c_widgetPreviewPadding;
           WidgetPaintData wpd;
           wpd.m_id = spec->m_id;
-          wpd.m_rect = QRectF(m_margin, p_height, p_availableWidth, spec->m_height);
+          qreal width = qMax<qreal>(0, spec->m_width);
+          if (p_tl->textOption().wrapMode() != QTextOption::NoWrap) {
+            width = qMin(width, qMax<qreal>(0, p_availableWidth - (startX - m_margin)));
+          }
+          wpd.m_rect = QRectF(startX, p_height, width, spec->m_height);
+          p_widgetRight = qMax(p_widgetRight, wpd.m_rect.right());
           p_widgets.append(wpd);
           p_height += spec->m_height + c_widgetPreviewPadding;
           Marker mk;
@@ -2716,7 +2727,10 @@ bool TextDocumentLayout::lineClaimsRange(const QTextLine &p_line, int p_start, i
   return true;
 }
 
-qreal TextDocumentLayout::inlinePlacementWidth(int p_startPos, int p_endPos) const {
+qreal TextDocumentLayout::inlinePlacementWidth(int p_startPos, int p_endPos, qreal *p_startX) const {
+  if (p_startX) {
+    *p_startX = m_margin;
+  }
   QTextDocument *doc = document();
   if (p_startPos < 0 || p_endPos <= p_startPos || p_startPos > doc->characterCount() - 1) {
     return 0;
@@ -2736,6 +2750,9 @@ qreal TextDocumentLayout::inlinePlacementWidth(int p_startPos, int p_endPos) con
     qreal startX = 0;
     qreal endX = 0;
     if (lineClaimsRange(layout->lineAt(i), start, end, true, &startX, &endX)) {
+      if (p_startX) {
+        *p_startX = startX;
+      }
       return qMax<qreal>(0, endX - startX);
     }
   }

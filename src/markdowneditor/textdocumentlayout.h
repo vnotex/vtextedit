@@ -100,8 +100,9 @@ public:
     // Secondary stacking key, derived from the element type.
     int m_typeOrder = 0;
 
-    // An inline widget may request its own full-width band above its source line.
-    // Block placement ignores this flag.
+    // An inline widget may reserve its own exclusive band above its source line.
+    // Its content stays source-aligned and uses its preferred width, clamped to
+    // the remaining line width. Block placement ignores this flag.
     bool m_fullWidth = false;
 
     // Preferred size in logical pixels.
@@ -218,8 +219,9 @@ public:
 
   // The source-span width a non-full-width InlineAboveLine band gets for [p_startPos, p_endPos),
   // using the same visual-line selection rule as the layout itself. Returns 0
-  // when no line claims the range.
-  qreal inlinePlacementWidth(int p_startPos, int p_endPos) const;
+  // when no line claims the range. Optionally returns the same source-span
+  // start X in document coordinates (the margin when no line claims it).
+  qreal inlinePlacementWidth(int p_startPos, int p_endPos, qreal *p_startX = nullptr) const;
 
   // Whether a layout pass is currently running.
   //
@@ -291,9 +293,11 @@ private:
   // from @p_markers because finishBlockLayout() asserts that @p_markers is
   // empty when the block carries a block-level painted image, while a widget
   // claim may coexist with such an image.
+  // @p_widgetRight: rightmost finite exclusive widget edge, for horizontal scrolling.
   qreal layoutLines(const QTextBlock &p_block, QTextLayout *p_tl, QVector<Marker> &p_markers,
                     QVector<ImagePaintData> &p_images, QVector<WidgetPaintData> &p_widgets,
-                    QVector<Marker> &p_widgetMarkers, qreal p_availableWidth, qreal p_height);
+                    QVector<Marker> &p_widgetMarkers, qreal p_availableWidth, qreal p_height,
+                    qreal &p_widgetRight);
 
   // Layout inline image in a line.
   // @p_data: if NULL, means just layout a marker.

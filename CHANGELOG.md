@@ -29,6 +29,9 @@
 
 ### Behavior changes
 
+- Typst inline previews align to their source span's start, including in exclusive bands
+  and wrapped continuations. Rows fit the remaining wrapped-line width; in no-wrap mode,
+  their full source-aligned extent is reachable through the editor's horizontal scrollbar.
 - Repeated Typst inline preview occurrences now appear horizontally in evaluation order,
   scaling together to fit the editor width. Block previews and page fragments within
   each occurrence remain vertically stacked.

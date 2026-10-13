@@ -453,7 +453,9 @@ public:
     QVector<TextDocumentLayout::WidgetPreviewSpec> specs;
     if (m_enabled && m_snapshot) {
       specs.reserve(m_items.size());
-      qreal available = m_layout->availableContentWidth();
+      const qreal contentWidth = m_layout->availableContentWidth();
+      const bool wrapped = m_doc->defaultTextOption().wrapMode() != QTextOption::NoWrap;
+      qreal available = contentWidth;
       if (available <= 0)
         available = m_edit->viewport()->width() - 2 * m_doc->documentMargin();
       available = qMax<qreal>(1, available);
@@ -467,14 +469,22 @@ public:
         spec.m_typeOrder = typeOrder(first.m_kind);
         spec.m_placement = isInlinePreview(first) ? PreviewPlacement::InlineAboveLine
                                                   : PreviewPlacement::BlockAfterSource;
+        qreal width = available;
+        qreal spanWidth = 0;
+        if (spec.m_placement == PreviewPlacement::InlineAboveLine) {
+          qreal startX = 0;
+          spanWidth = m_layout->inlinePlacementWidth(spec.m_startPos, spec.m_endPos, &startX);
+          if (wrapped && contentWidth > 0) {
+            width = qMax<qreal>(1, available - qMax<qreal>(0, startX - m_doc->documentMargin()));
+          }
+        }
         QSizeF size;
-        partsFor(item.m_occurrences, available, dpiScale, m_maxHeight, m_edit->font(), &size, true);
+        partsFor(item.m_occurrences, width, dpiScale, m_maxHeight, m_edit->font(), &size, true);
         spec.m_width = size.width();
         spec.m_height = size.height();
         item.m_preferredWidth = 0;
         if (spec.m_placement == PreviewPlacement::InlineAboveLine) {
-          spec.m_fullWidth =
-              spec.m_width > m_layout->inlinePlacementWidth(spec.m_startPos, spec.m_endPos);
+          spec.m_fullWidth = spec.m_width > spanWidth;
           item.m_preferredWidth = spec.m_width;
         }
         specs.append(spec);

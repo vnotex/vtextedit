@@ -1241,8 +1241,14 @@ void TestMarkdownFolding::testWidgetPreviewInlineBand() {
   const auto firstBand = layout->widgetPreviewRect(4);
   const auto secondBand = layout->widgetPreviewRect(5);
   const auto compactBand = layout->widgetPreviewRect(6);
-  QCOMPARE(firstBand.width(), layout->availableContentWidth());
-  QCOMPARE(secondBand.width(), layout->availableContentWidth());
+  const auto alignedLine = block.layout()->lineAt(0);
+  QCOMPARE(firstBand.left(), alignedLine.cursorToX(6));
+  QCOMPARE(secondBand.left(), alignedLine.cursorToX(17));
+  QCOMPARE(firstBand.width(), 40.0);
+  QCOMPARE(secondBand.width(), 40.0);
+  qreal measuredStart = 0;
+  layout->inlinePlacementWidth(6, 10, &measuredStart);
+  QCOMPARE(firstBand.left(), measuredStart);
   QVERIFY(firstBand.bottom() < secondBand.top());
   QVERIFY(secondBand.bottom() < compactBand.top());
   QCOMPARE(compactBand.width(), layout->inlinePlacementWidth(0, 5));
@@ -1255,7 +1261,10 @@ void TestMarkdownFolding::testWidgetPreviewInlineBand() {
   }
   QVERIFY(spanMarker);
 
-  doc.setTextWidth(100);
+  // Keep "gamma" before "delta" on the continuation, so margin placement
+  // cannot accidentally pass the source-start assertion.
+  const qreal tailWidth = fullLine.cursorToX(22) - fullLine.cursorToX(11);
+  doc.setTextWidth(tailWidth + doc.textWidth() - layout->availableContentWidth() + 1);
   const auto wrappedLine = block.layout()->lineForTextPosition(17);
   QVERIFY(wrappedLine.lineNumber() > 0);
   const auto wrappedBand = layout->widgetPreviewRect(5);
@@ -1263,7 +1272,28 @@ void TestMarkdownFolding::testWidgetPreviewInlineBand() {
   const auto previousLine = block.layout()->lineAt(wrappedLine.lineNumber() - 1);
   QVERIFY(wrappedBand.top() >= offset + previousLine.y() + previousLine.height());
   QVERIFY(wrappedBand.bottom() <= offset + wrappedLine.y());
-  QCOMPARE(wrappedBand.width(), layout->availableContentWidth());
+  QVERIFY(wrappedLine.textStart() < 17);
+  QCOMPARE(wrappedBand.left(), wrappedLine.cursorToX(17));
+  const qreal remaining = layout->availableContentWidth() + doc.documentMargin() - wrappedBand.left();
+  QVERIFY(remaining < 40);
+  QCOMPARE(wrappedBand.width(), remaining);
+
+  // An unwrapped source-aligned preview must grow the scrollable document,
+  // but the exclusive band itself must not contribute INT_MAX to its width.
+  auto option = doc.defaultTextOption();
+  option.setWrapMode(QTextOption::NoWrap);
+  doc.setDefaultTextOption(option);
+  specs[0].m_width = 500;
+  for (const qreal pageWidth : {100.0, -1.0}) {
+    // QTextEdit can retain a positive page width even in NoWrap mode.
+    doc.setTextWidth(pageWidth);
+    layout->setWidgetPreviews(specs);
+    const auto unwrappedBand = layout->widgetPreviewRect(4);
+    QCOMPARE(unwrappedBand.left(), block.layout()->lineAt(0).cursorToX(6));
+    QCOMPARE(unwrappedBand.width(), 500.0);
+    QVERIFY(layout->documentSize().width() >= unwrappedBand.right() + doc.documentMargin());
+    QVERIFY(layout->documentSize().width() < 1000);
+  }
   QCOMPARE(doc.toPlainText(), QStringLiteral("alpha beta gamma delta"));
 }
 
