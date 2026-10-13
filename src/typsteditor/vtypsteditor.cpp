@@ -246,13 +246,6 @@ public:
                      &TypstCompilerBridge::requestRaster);
     QObject::connect(bridge, &TypstCompilerBridge::pageImageReady, host,
                      &TypstPreviewHost::setPageImage);
-    QObject::connect(
-        host, &TypstPreviewHost::sourceRangeRequested, q,
-        [this](int p_start, int p_end) { navigateSource(activeFile, p_start, p_end); });
-    QObject::connect(host, &TypstPreviewHost::pageRequested, q,
-                     [this](quint64 p_id, int p_page, const QPointF &p_point) {
-                       navigateOutput(p_id, p_page, p_point);
-                     });
     QObject::connect(pane, &TypstPreviewPane::sourceLocationRequested, bridge,
                      &TypstCompilerBridge::outputToSource);
     QObject::connect(bridge, &TypstCompilerBridge::sourceLocationReady, q,

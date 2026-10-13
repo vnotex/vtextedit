@@ -33,6 +33,12 @@ one source document, undo history and compiler session across three modes:
 | `SideBySidePreview` | The same source beside a live, selectable PDF preview. |
 | `Read` | Source hidden and input disabled; the same PDF fills the widget. |
 
+In-place cards show rendered elements without Source/Open page actions or title/page
+rows. Inline cards fit their rendered content instead of stretching across the block;
+they reuse the existing editor layout reservations. Clicking a preview does not select
+source or change modes. Previous/Next appears only for repeated occurrences of the
+same source expression, and split output can still scroll through its rendered parts.
+
 Changing modes does not reload source, clear undo or mark the document modified.
 `setReadOnly()` records the host's explicit policy; `isReadOnly()` returns that policy.
 Effective source read-only is also true in `Read`, and leaving it restores the explicit

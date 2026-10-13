@@ -891,9 +891,13 @@ void TestTypstEditor::inPlaceReservationsDoNotEditSource() {
   const auto top = [&]() { return document->documentLayout()->blockBoundingRect(after).top(); };
   const qreal baseline = top();
   const int undoSteps = document->availableUndoSteps();
+  auto selection = fixture.edit()->textCursor();
+  selection.setPosition(source.indexOf(QStringLiteral("Before")));
+  selection.setPosition(selection.position() + 6, QTextCursor::KeepAnchor);
+  fixture.edit()->setTextCursor(selection);
   QSignalSpy changes(document, &QTextDocument::contentsChange);
   fixture.editor.setMode(VTypstEditor::Mode::InPlacePreview);
-  QVERIFY(waitUntil([&]() { return top() > baseline + 40; }, paintTimeout));
+  QVERIFY(waitUntil([&]() { return top() > baseline; }, paintTimeout));
   QVERIFY2(
       waitUntil([&]() {
         auto *card =
@@ -901,6 +905,17 @@ void TestTypstEditor::inPlaceReservationsDoNotEditSource() {
         return card && card->isVisible() && coloredPixels(widgetImage(card->viewport()), true) > 20;
       }),
       qPrintable(fixture.editor.compileMessage()));
+  auto *card =
+      fixture.editor.findChild<QAbstractScrollArea *>(QStringLiteral("typstPreviewCard"));
+  const auto viewportRect = card->viewport()->rect();
+  for (const auto &point : {viewportRect.center(),
+                            QPoint(viewportRect.right() - 1, viewportRect.center().y())}) {
+    QTest::mouseClick(card->viewport(), Qt::LeftButton, Qt::NoModifier, point);
+    QCoreApplication::processEvents();
+    QCOMPARE(fixture.editor.mode(), VTypstEditor::Mode::InPlacePreview);
+    QCOMPARE(fixture.edit()->textCursor().anchor(), selection.anchor());
+    QCOMPARE(fixture.edit()->textCursor().position(), selection.position());
+  }
   QCOMPARE(document->toPlainText(), source);
   QCOMPARE(document->availableUndoSteps(), undoSteps);
   QVERIFY(!document->isModified());
@@ -908,7 +923,7 @@ void TestTypstEditor::inPlaceReservationsDoNotEditSource() {
   fixture.editor.setMode(VTypstEditor::Mode::SideBySidePreview);
   QVERIFY(waitUntil([&]() { return std::abs(top() - baseline) < 1; }, paintTimeout));
   fixture.editor.setMode(VTypstEditor::Mode::InPlacePreview);
-  QVERIFY(waitUntil([&]() { return top() > baseline + 40; }, paintTimeout));
+  QVERIFY(waitUntil([&]() { return top() > baseline; }, paintTimeout));
   QCOMPARE(textChangeCount(changes), 0);
   QCOMPARE(document->toPlainText(), source);
 }
@@ -921,9 +936,6 @@ void TestTypstEditor::occurrenceControlsAndSplitPartsRenderRealOutput() {
   const auto source = QStringLiteral("#set text(size: 24pt)\n#for color in (rgb(\"#ff0000\"), "
                                      "rgb(\"#0000ff\")) { text(fill: color)[$x$] } $y$\nAfter");
   EditorFixture fixture(root.path(), source, VTypstEditor::Mode::InPlacePreview, config);
-  auto palette = fixture.editor.palette();
-  palette.setColor(QPalette::Link, Qt::black); // Only compiled glyphs count as blue pixels.
-  fixture.editor.setPalette(palette);
   const auto card = [&]() -> QAbstractScrollArea * {
     const auto entries =
         fixture.editor.findChildren<QAbstractScrollArea *>(QStringLiteral("typstPreviewCard"));
@@ -934,6 +946,14 @@ void TestTypstEditor::occurrenceControlsAndSplitPartsRenderRealOutput() {
     }
     return entries.isEmpty() ? nullptr : entries.first();
   };
+  const auto inlineCard = [&]() -> QAbstractScrollArea * {
+    for (auto *entry : fixture.editor.findChildren<QAbstractScrollArea *>(
+             QStringLiteral("typstPreviewCard"))) {
+      if (entry->findChildren<QToolButton *>().isEmpty())
+        return entry;
+    }
+    return nullptr;
+  };
   QVERIFY2(waitUntil([&]() {
              return card() && coloredPixels(widgetImage(card()->viewport()), true) > 10;
            }),
@@ -942,6 +962,10 @@ void TestTypstEditor::occurrenceControlsAndSplitPartsRenderRealOutput() {
       fixture.editor.findChildren<QAbstractScrollArea *>(QStringLiteral("typstPreviewCard"));
   QCOMPARE(cards.size(), 2);
   QVERIFY(!cards[0]->geometry().intersects(cards[1]->geometry()));
+  QVERIFY(inlineCard());
+  const int compactWidth = inlineCard()->width();
+  QVERIFY(compactWidth < fixture.edit()->viewport()->width() / 2);
+  const int originalViewportWidth = fixture.edit()->viewport()->width();
   for (auto *entry : cards) {
     for (auto *button : entry->findChildren<QToolButton *>()) {
       if (button->isVisible())
@@ -963,34 +987,37 @@ void TestTypstEditor::occurrenceControlsAndSplitPartsRenderRealOutput() {
   }));
   QVERIFY(!card()->findChild<QToolButton *>(QStringLiteral("typstNextOccurrence"))->isEnabled());
   QVERIFY(card()->findChild<QToolButton *>(QStringLiteral("typstPreviousOccurrence"))->isEnabled());
-  auto *sourceButton = card()->findChild<QToolButton *>(QStringLiteral("typstPreviewSource"));
-  QVERIFY(sourceButton);
-  QTest::mouseClick(sourceButton, Qt::LeftButton);
-  QCOMPARE(fixture.edit()->textCursor().selectedText(), QStringLiteral("$x$"));
   QCOMPARE(fixture.editor.document()->toPlainText(), source);
   QTest::mouseClick(card()->findChild<QToolButton *>(QStringLiteral("typstPreviousOccurrence")),
                     Qt::LeftButton);
   QVERIFY(waitUntil(
       [&]() { return card() && coloredPixels(widgetImage(card()->viewport()), true) > 10; }));
 
+  fixture.editor.resize(1200, 650);
+  QCoreApplication::processEvents();
+  QVERIFY(waitUntil([&]() {
+    return fixture.edit()->viewport()->width() > originalViewportWidth && inlineCard() && card() &&
+           coloredPixels(widgetImage(card()->viewport()), true) > 10;
+  }));
+  QCOMPARE(inlineCard()->width(), compactWidth);
+  QVERIFY(!card()->geometry().intersects(inlineCard()->geometry()));
+
   fixture.editor.setFileOverlay(QStringLiteral("main.typ"), splitSource());
   fixture.edit()->verticalScrollBar()->setValue(0);
+  // Keep this a scrolling case even without the old per-part label rows.
+  auto splitConfig = editorConfig(root.path());
+  splitConfig->m_previewMaxHeight = 80;
+  fixture.editor.setConfig(splitConfig);
   QVERIFY2(waitUntil([&]() {
              return card() && card()->verticalScrollBar()->maximum() > 0 &&
                     coloredPixels(widgetImage(card()->viewport()), true) > 5;
            }),
            qPrintable(fixture.editor.compileMessage()));
-  QVERIFY(!card()->findChild<QToolButton *>(QStringLiteral("typstNextOccurrence"))->isVisible());
   card()->verticalScrollBar()->setValue(card()->verticalScrollBar()->maximum());
   QVERIFY2(waitUntil([&]() {
              return card() && coloredPixels(widgetImage(card()->viewport()), true) > 5;
            }),
            "The final page fragment must render, not just reserve space or label a part");
-  QTest::mouseClick(card()->findChild<QToolButton *>(QStringLiteral("typstPreviewSource")),
-                    Qt::LeftButton);
-  QCOMPARE(
-      fixture.edit()->textCursor().selectedText(),
-      QStringLiteral("$ x &= 1 \\ x &= 2 \\ x &= 3 \\ x &= 4 \\ x &= 5 \\ x &= 6 \\ x &= 7 $"));
   QCOMPARE(fixture.editor.document()->toPlainText(), splitSource());
 }
 

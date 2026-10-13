@@ -27,8 +27,6 @@ public:
 
 signals:
   void rasterRequested(quint64 p_snapshot, int p_page, qreal p_scale);
-  void sourceRangeRequested(int p_start, int p_end);
-  void pageRequested(quint64 p_snapshot, int p_page, QPointF p_point);
 
 protected:
   bool eventFilter(QObject *p_object, QEvent *p_event) Q_DECL_OVERRIDE;
