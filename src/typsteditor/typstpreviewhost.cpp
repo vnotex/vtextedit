@@ -1,24 +1,24 @@
 #include "typstpreviewhost.h"
 
-#include <QAbstractScrollArea>
+#include <QCoreApplication>
 #include <QEvent>
 #include <QFontMetricsF>
 #include <QMap>
 #include <QPainter>
+#include <QPaintEvent>
 #include <QPointer>
 #include <QScrollBar>
 #include <QSet>
-#include <QStyle>
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTimer>
-#include <QToolButton>
+#include <QWheelEvent>
+#include <QWidget>
 #include <QtMath>
 #include <algorithm>
 #include <cmath>
 #include <functional>
-#include <limits>
 
 #include "typstsourceeditor.h"
 #include <markdowneditor/textdocumentlayout.h>
@@ -71,161 +71,114 @@ struct PageImage {
 };
 
 struct Part {
-  TypstPreviewRegion m_region;
+  const TypstPreviewRegion *m_region = nullptr;
+  const QString *m_status = nullptr;
   QRectF m_imageRect;
   qreal m_scale = 1;
 };
 
-QVector<Part> partsFor(const TypstPreviewOccurrence &p_occurrence, qreal p_width, qreal p_dpiScale,
-                       qreal p_maxHeight, const QFont &p_font, qreal *p_height,
+QVector<Part> partsFor(const QVector<TypstPreviewOccurrence> &p_occurrences, qreal p_width,
+                       qreal p_dpiScale, qreal p_maxHeight, const QFont &p_font, qreal *p_height,
                        bool p_measureOnly = false) {
   QVector<Part> parts;
-  if (!p_measureOnly)
-    parts.reserve(p_occurrence.m_regions.size());
-  qreal top = c_padding;
-  for (const auto &region : p_occurrence.m_regions) {
-    const qreal scale =
-        qMin(p_dpiScale, qMin(qMax<qreal>(1, p_width - 2 * c_padding) / region.m_rect.width(),
-                              qMax<qreal>(1, p_maxHeight - 2 * c_padding) /
-                                  region.m_rect.height()));
-    Part part;
-    part.m_region = region;
-    part.m_scale = scale;
-    part.m_imageRect =
-        QRectF(c_padding, top, region.m_rect.width() * scale, region.m_rect.height() * scale);
-    top += part.m_imageRect.height() + c_padding;
-    if (!p_measureOnly)
-      parts.append(part);
+  if (!p_measureOnly) {
+    qsizetype count = 0;
+    for (const auto &occurrence : p_occurrences)
+      count += qMax<qsizetype>(1, occurrence.m_regions.size());
+    parts.reserve(count);
   }
-  *p_height = p_occurrence.m_regions.isEmpty()
-                  ? qCeil(QFontMetricsF(p_font).height()) + 2 * c_padding
-                  : top;
+  qreal top = c_padding;
+  qreal statusHeight = 0;
+  for (const auto &occurrence : p_occurrences) {
+    if (occurrence.m_regions.isEmpty()) {
+      if (!statusHeight)
+        statusHeight = qCeil(QFontMetricsF(p_font).height());
+      if (!p_measureOnly) {
+        parts.append({nullptr, &occurrence.m_status,
+                      QRectF(c_padding, top, qMax<qreal>(1, p_width - 2 * c_padding), statusHeight),
+                      1});
+      }
+      top += statusHeight + c_padding;
+      continue;
+    }
+    for (const auto &region : occurrence.m_regions) {
+      const qreal scale =
+          qMin(p_dpiScale, qMin(qMax<qreal>(1, p_width - 2 * c_padding) / region.m_rect.width(),
+                                qMax<qreal>(1, p_maxHeight - 2 * c_padding) /
+                                    region.m_rect.height()));
+      const QRectF rect(c_padding, top, region.m_rect.width() * scale,
+                        region.m_rect.height() * scale);
+      if (!p_measureOnly)
+        parts.append({&region, nullptr, rect, scale});
+      top += rect.height() + c_padding;
+    }
+  }
+  *p_height = top;
   return parts;
 }
 
-// One widget per visible reservation. It paints original-page image windows,
-// never a regenerated object or an independently scaled cropped image cache.
-class PreviewCard : public QAbstractScrollArea {
+// One viewport-sized widget paints the visible slice of a reservation. Parts
+// reference item-owned records; the host destroys widgets before rebuilding items.
+class PreviewCard : public QWidget {
 public:
-  PreviewCard(QWidget *p_parent, const TypstPreviewOccurrence *p_occurrence, int p_index,
-              int p_count, qreal p_maxHeight)
-      : QAbstractScrollArea(p_parent), m_occurrence(p_occurrence), m_index(p_index),
-        m_count(p_count), m_maxHeight(p_maxHeight) {
+  PreviewCard(QWidget *p_parent, const QVector<TypstPreviewOccurrence> *p_occurrences,
+              qreal p_maxHeight)
+      : QWidget(p_parent), m_occurrences(p_occurrences), m_maxHeight(p_maxHeight) {
     setObjectName(QStringLiteral("typstPreviewCard"));
-    setFrameShape(QFrame::NoFrame);
     setFocusPolicy(Qt::NoFocus);
-    setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    // A single region scales to fit. Split output keeps a stable scrollbar
-    // width so visibility changes cannot cause alternating relayouts.
-    setVerticalScrollBarPolicy(m_occurrence->m_regions.size() > 1 ? Qt::ScrollBarAlwaysOn
-                                                                : Qt::ScrollBarAlwaysOff);
-    viewport()->setAttribute(Qt::WA_NoMousePropagation);
-    if (m_count > 1) {
-      m_previous = new QToolButton(viewport());
-      m_next = new QToolButton(viewport());
-      m_previous->setObjectName(QStringLiteral("typstPreviousOccurrence"));
-      m_next->setObjectName(QStringLiteral("typstNextOccurrence"));
-      m_previous->setText(TypstPreviewHost::tr("Previous"));
-      m_next->setText(TypstPreviewHost::tr("Next"));
-      m_previous->setToolTip(TypstPreviewHost::tr("Previous occurrence"));
-      m_next->setToolTip(TypstPreviewHost::tr("Next occurrence"));
-      for (auto button : {m_previous, m_next})
-        button->setFocusPolicy(Qt::NoFocus);
-      m_previous->setEnabled(m_index > 0);
-      m_next->setEnabled(m_index + 1 < m_count);
-      connect(m_previous, &QToolButton::clicked, this, [this]() {
-        if (m_select)
-          m_select(m_index - 1);
-      });
-      connect(m_next, &QToolButton::clicked, this, [this]() {
-        if (m_select)
-          m_select(m_index + 1);
-      });
-    }
-    const QString title = TypstPreviewHost::tr("%1 — occurrence %2 of %3")
-                              .arg(kindLabel(m_occurrence->m_kind))
-                              .arg(m_index + 1)
-                              .arg(m_count);
+    setAttribute(Qt::WA_NoMousePropagation);
+    const QString title = kindLabel(m_occurrences->first().m_kind);
     setToolTip(title);
     setAccessibleName(title);
-    connect(verticalScrollBar(), &QScrollBar::valueChanged, this, [this]() {
-      viewport()->update();
-      if (m_changed)
-        m_changed();
-    });
   }
 
-  void setVisibleClip(const QRect &p_rect) { m_visibleClip = p_rect; }
+  void setContentGeometry(qreal p_width, const QPointF &p_offset) {
+    const bool widthChanged = !qFuzzyCompare(m_contentWidth + 1, p_width + 1);
+    if (widthChanged) {
+      m_contentWidth = p_width;
+      qreal height = 0;
+      m_parts = partsFor(*m_occurrences, p_width, logicalDpiX() / 72.0, m_maxHeight, font(), &height);
+    }
+    if (widthChanged || m_contentOffset != p_offset) {
+      m_contentOffset = p_offset;
+      update();
+    }
+  }
 
   void appendNeeds(QHash<int, qreal> &p_needs, qreal p_dpr) const {
-    const QRectF clip =
-        QRectF(viewport()->rect().intersected(m_visibleClip.translated(-viewport()->pos())))
-            .intersected(QRectF(0, m_header, viewport()->width(),
-                                qMax<qreal>(0, viewport()->height() - m_header)));
-    if (clip.isEmpty())
-      return;
-    const qreal offset = scrollOffset();
-    for (int i = firstPart(clip.top() - m_header + offset); i < m_parts.size(); ++i) {
+    const QRectF clip = QRectF(rect()).translated(m_contentOffset);
+    for (int i = firstPart(clip.top()); i < m_parts.size(); ++i) {
       const auto &part = m_parts[i];
-      if (part.m_imageRect.top() > clip.bottom() - m_header + offset)
+      if (part.m_imageRect.top() > clip.bottom())
         break;
-      const QRectF image = part.m_imageRect.translated(0, m_header - offset);
-      if (image.intersects(clip) && image.bottom() > m_header) {
-        p_needs[part.m_region.m_page] =
-            qMax(p_needs.value(part.m_region.m_page), part.m_scale * p_dpr);
+      if (part.m_region && part.m_imageRect.intersects(clip)) {
+        p_needs[part.m_region->m_page] =
+            qMax(p_needs.value(part.m_region->m_page), part.m_scale * p_dpr);
       }
     }
   }
 
   std::function<const PageImage *(int)> m_pageImage;
   std::function<bool(int)> m_failed;
-  std::function<void(int)> m_select;
-  std::function<void()> m_changed;
 
 protected:
-  void resizeEvent(QResizeEvent *p_event) override {
-    QAbstractScrollArea::resizeEvent(p_event);
-    if (m_count > 1) {
-      m_header = qMax(m_previous->sizeHint().height(), m_next->sizeHint().height()) + c_padding;
-      int right = viewport()->width() - int(c_padding);
-      for (auto button : {m_next, m_previous}) {
-        const int width = button->sizeHint().width();
-        right -= width;
-        button->setGeometry(right, 0, width, int(m_header - c_padding));
-        right -= int(c_padding);
-      }
-    }
-    m_parts = partsFor(*m_occurrence, viewport()->width(), logicalDpiX() / 72.0,
-                       m_maxHeight - m_header, font(), &m_bodyHeight);
-    const qreal extent =
-        qMax<qreal>(0, m_bodyHeight - qMax<qreal>(0, viewport()->height() - m_header));
-    const int maximum = int(qMin<qreal>(extent, std::numeric_limits<int>::max() / 2));
-    verticalScrollBar()->setRange(0, maximum);
-    verticalScrollBar()->setPageStep(qMax(1, viewport()->height() - int(m_header)));
-    if (m_changed)
-      m_changed();
-  }
-
-  void paintEvent(QPaintEvent *) override {
-    QPainter painter(viewport());
-    painter.fillRect(viewport()->rect(), palette().base());
-    painter.setPen(palette().text().color());
-    painter.setClipRect(
-        QRectF(0, m_header, viewport()->width(), qMax<qreal>(0, viewport()->height() - m_header)));
-    const qreal offset = scrollOffset();
-    if (m_parts.isEmpty()) {
-      painter.drawText(
-          QRectF(c_padding, m_header, viewport()->width() - 2 * c_padding, m_bodyHeight),
-          Qt::AlignLeft | Qt::AlignVCenter, statusLabel(m_occurrence->m_status));
-    }
-    for (int i = firstPart(offset); i < m_parts.size(); ++i) {
+  void paintEvent(QPaintEvent *p_event) override {
+    QPainter painter(this);
+    painter.translate(-m_contentOffset);
+    const QRectF clip = QRectF(p_event->rect()).translated(m_contentOffset);
+    for (int i = firstPart(clip.top()); i < m_parts.size(); ++i) {
       const auto &part = m_parts[i];
-      const auto imageRect = part.m_imageRect.translated(0, m_header - offset);
-      if (imageRect.top() > viewport()->height())
+      const auto &imageRect = part.m_imageRect;
+      if (imageRect.top() > clip.bottom())
         break;
-      const PageImage *page = m_pageImage ? m_pageImage(part.m_region.m_page) : nullptr;
+      if (!part.m_region) {
+        painter.setPen(palette().text().color());
+        painter.drawText(imageRect, Qt::AlignLeft | Qt::AlignVCenter, statusLabel(*part.m_status));
+        continue;
+      }
+      const PageImage *page = m_pageImage ? m_pageImage(part.m_region->m_page) : nullptr;
       if (page && !page->m_image.isNull()) {
-        const auto &r = part.m_region.m_rect;
+        const auto &r = part.m_region->m_rect;
         const QRect crop(QPoint(int(std::floor(r.left() * page->m_scale)),
                                 int(std::floor(r.top() * page->m_scale))),
                          QPoint(int(std::ceil(r.right() * page->m_scale)) - 1,
@@ -243,11 +196,21 @@ protected:
       } else {
         painter.setPen(palette().text().color());
         painter.drawText(imageRect, Qt::AlignCenter,
-                         m_failed && m_failed(part.m_region.m_page)
+                         m_failed && m_failed(part.m_region->m_page)
                              ? TypstPreviewHost::tr("Preview unavailable")
                              : TypstPreviewHost::tr("Loading preview…"));
       }
     }
+  }
+
+  void wheelEvent(QWheelEvent *p_event) override {
+    // Clicks remain passive, but the editor owns all preview scrolling.
+    QWheelEvent forwarded(p_event->position() + QPointF(pos()), p_event->globalPosition(),
+                           p_event->pixelDelta(), p_event->angleDelta(), p_event->buttons(),
+                           p_event->modifiers(), p_event->phase(), p_event->inverted(),
+                           p_event->source(), p_event->pointingDevice());
+    QCoreApplication::sendEvent(parentWidget(), &forwarded);
+    p_event->setAccepted(forwarded.isAccepted());
   }
 
 private:
@@ -259,25 +222,11 @@ private:
                m_parts.constBegin());
   }
 
-  qreal scrollOffset() const {
-    const int maximum = verticalScrollBar()->maximum();
-    if (!maximum)
-      return 0;
-    const qreal extent =
-        qMax<qreal>(0, m_bodyHeight - qMax<qreal>(0, viewport()->height() - m_header));
-    return extent * verticalScrollBar()->value() / maximum;
-  }
-
-  const TypstPreviewOccurrence *m_occurrence;
-  int m_index = 0;
-  int m_count = 0;
+  const QVector<TypstPreviewOccurrence> *m_occurrences;
   qreal m_maxHeight = 0;
-  qreal m_header = 0;
-  qreal m_bodyHeight = 0;
-  QRect m_visibleClip;
+  qreal m_contentWidth = 0;
+  QPointF m_contentOffset;
   QVector<Part> m_parts;
-  QToolButton *m_previous = nullptr;
-  QToolButton *m_next = nullptr;
 };
 } // namespace
 
@@ -287,7 +236,6 @@ public:
     quint64 m_id = 0;
     TypstSourceRange m_source;
     QVector<TypstPreviewOccurrence> m_occurrences;
-    int m_selected = 0;
     qreal m_preferredWidth = 0;
     QRectF m_rect;
     QPointer<PreviewCard> m_widget;
@@ -455,53 +403,39 @@ public:
       if (available <= 0)
         available = m_edit->viewport()->width() - 2 * m_doc->documentMargin();
       available = qMax<qreal>(1, available);
-      const qreal scrollWidth = m_edit->style()->pixelMetric(QStyle::PM_ScrollBarExtent);
       const qreal dpiScale = m_edit->logicalDpiX() / 72.0;
-      QSize controlsSize;
       for (auto &item : m_items) {
-        const auto &occurrence = item.m_occurrences[item.m_selected];
-        if (item.m_occurrences.size() > 1 && controlsSize.isEmpty()) {
-          QToolButton measure(m_edit);
-          measure.hide();
-          measure.setFont(m_edit->font());
-          measure.setText(TypstPreviewHost::tr("Previous"));
-          controlsSize = measure.sizeHint();
-          measure.setText(TypstPreviewHost::tr("Next"));
-          controlsSize.setWidth(controlsSize.width() + measure.sizeHint().width() + int(c_padding));
-          controlsSize.setHeight(qMax(controlsSize.height(), measure.sizeHint().height()));
-        }
-        const qreal header = item.m_occurrences.size() > 1 ? controlsSize.height() + c_padding : 0;
-        const qreal scrollbar = occurrence.m_regions.size() > 1 ? scrollWidth : 0;
+        const auto &first = item.m_occurrences.first();
         TextDocumentLayout::WidgetPreviewSpec spec;
         spec.m_id = item.m_id;
         spec.m_startPos = item.m_source.m_start;
         spec.m_endPos = item.m_source.m_end;
-        spec.m_typeOrder = typeOrder(occurrence.m_kind);
-        spec.m_placement = occurrence.m_kind == QLatin1String("equation") && !occurrence.m_block
+        spec.m_typeOrder = typeOrder(first.m_kind);
+        spec.m_placement = first.m_kind == QLatin1String("equation") && !first.m_block
                                ? PreviewPlacement::InlineAboveLine
                                : PreviewPlacement::BlockAfterSource;
         spec.m_width = available;
         item.m_preferredWidth = 0;
         if (spec.m_placement == PreviewPlacement::InlineAboveLine) {
-          qreal contentWidth = item.m_occurrences.size() > 1 ? controlsSize.width() : 0;
-          for (const auto &region : occurrence.m_regions) {
-            const qreal scale = qMin(dpiScale, qMax<qreal>(1, m_maxHeight - header - 2 * c_padding) /
-                                                  region.m_rect.height());
-            contentWidth = qMax(contentWidth, region.m_rect.width() * scale);
+          qreal contentWidth = 0;
+          for (const auto &occurrence : item.m_occurrences) {
+            for (const auto &region : occurrence.m_regions) {
+              const qreal scale = qMin(dpiScale, qMax<qreal>(1, m_maxHeight - 2 * c_padding) /
+                                                    region.m_rect.height());
+              contentWidth = qMax(contentWidth, region.m_rect.width() * scale);
+            }
+            if (occurrence.m_regions.isEmpty()) {
+              contentWidth = qMax(contentWidth, QFontMetricsF(m_edit->font()).horizontalAdvance(
+                                                   statusLabel(occurrence.m_status)));
+            }
           }
-          if (occurrence.m_regions.isEmpty()) {
-            contentWidth = qMax(contentWidth, QFontMetricsF(m_edit->font()).horizontalAdvance(
-                                                 statusLabel(occurrence.m_status)));
-          }
-          spec.m_width = qMin(available, contentWidth + scrollbar + 2 * c_padding);
+          spec.m_width = qMin(available, contentWidth + 2 * c_padding);
           spec.m_fullWidth =
               spec.m_width > m_layout->inlinePlacementWidth(spec.m_startPos, spec.m_endPos);
           item.m_preferredWidth = spec.m_width;
         }
-        qreal height = 0;
-        partsFor(occurrence, qMax<qreal>(1, spec.m_width - scrollbar), dpiScale,
-                 m_maxHeight - header, m_edit->font(), &height, true);
-        spec.m_height = qMin(m_maxHeight, height + header);
+        partsFor(item.m_occurrences, spec.m_width, dpiScale, m_maxHeight, m_edit->font(),
+                 &spec.m_height, true);
         specs.append(spec);
       }
     }
@@ -531,24 +465,9 @@ public:
 
   PreviewCard *createWidget(int p_index) {
     auto &item = m_items[p_index];
-    auto widget = new PreviewCard(m_edit->viewport(), &item.m_occurrences[item.m_selected],
-                                  item.m_selected, item.m_occurrences.size(), m_maxHeight);
+    auto widget = new PreviewCard(m_edit->viewport(), &item.m_occurrences, m_maxHeight);
     widget->setFont(m_edit->font());
     widget->setPalette(m_edit->palette());
-    widget->m_changed = [this]() { schedule(); };
-    widget->m_select = [this, p_index](int p_selected) {
-      if (p_index >= m_items.size())
-        return;
-      auto &item = m_items[p_index];
-      if (p_selected < 0 || p_selected >= item.m_occurrences.size())
-        return;
-      preserveAnchor();
-      item.m_selected = p_selected;
-      // Defer deletion until the button's clicked stack has unwound.
-      m_recreate.insert(p_index);
-      m_publish = true;
-      schedule();
-    };
     widget->m_pageImage = [this](int p_page) -> const PageImage * {
       auto image = m_images.find(p_page);
       if (image == m_images.end())
@@ -578,10 +497,13 @@ public:
         if (!item.m_widget)
           item.m_widget = createWidget(it->m_item);
         auto widget = item.m_widget.data();
-        const QRect target = item.m_rect.translated(-offset).toAlignedRect();
+        const QRectF full = item.m_rect.translated(-offset);
+        // Intersect before integer conversion: the sequence may be much taller
+        // than a QWidget, but its painted surface never exceeds the viewport.
+        const QRect target = full.intersected(QRectF(viewport->rect())).toAlignedRect();
         if (widget->geometry() != target)
           widget->setGeometry(target);
-        widget->setVisibleClip(viewport->rect().intersected(target).translated(-target.topLeft()));
+        widget->setContentGeometry(full.width(), QPointF(target.topLeft()) - full.topLeft());
         widget->show();
         widget->appendNeeds(m_needs, viewport->devicePixelRatioF());
         visible.insert(it->m_item);
@@ -864,7 +786,7 @@ void TypstPreviewHost::setPageImage(quint64 p_snapshot, int p_page, qreal p_scal
   }
   for (int index : d->m_visible) {
     if (index < d->m_items.size() && d->m_items[index].m_widget)
-      d->m_items[index].m_widget->viewport()->update();
+      d->m_items[index].m_widget->update();
   }
   d->schedule();
 }

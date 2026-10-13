@@ -28,6 +28,8 @@ public:
   qint64 m_maxPdfBytes = 64LL * 1024 * 1024;
   qint64 m_maxCacheBytes = 256LL * 1024 * 1024;
   int m_maxRasterPixels = 16 * 1024 * 1024;
+  // Scaling bound for each page fragment, including padding. The complete
+  // sequential preview is not height-capped and scrolls with the source editor.
   qreal m_previewMaxHeight = 480;
   qreal m_initialZoom = 1.0;
 };

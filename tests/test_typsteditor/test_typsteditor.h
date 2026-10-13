@@ -15,7 +15,7 @@ private slots:
   void diagnosticsPreserveLastGoodOutput();
   void selectionDefersPublicationAcrossScrollAndModes();
   void inPlaceReservationsDoNotEditSource();
-  void occurrenceControlsAndSplitPartsRenderRealOutput();
+  void occurrencesAndSplitPartsRenderSequentially();
   void supersededCompileCannotPublish();
   void syntaxHighlightsSurviveRehighlightAndThemeChanges();
   void syntaxHighlightsFollowEditsAndErrors();

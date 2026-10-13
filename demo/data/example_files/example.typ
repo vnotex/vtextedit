@@ -228,17 +228,17 @@ This example cites a classic typesetting book. @knuth1984
 
 = Repeated occurrences
 
-Choose *In-place preview*. Use *Next* and *Previous* above this formula to switch
-between red and blue. The loop evaluates the same source expression twice;
-side-by-side and read modes show both outputs on the page.
+Choose *In-place preview*. The loop evaluates the same source expression twice:
+both results appear in order, red then blue, without an occurrence selector.
+Edit the colors or formula to see both outputs update.
 
 #for color in (rgb("#ff0000"), rgb("#0000ff")) { text(fill: color)[$x$] }
 
-= Split-output scrolling
+= Sequential page fragments
 
 This is *one equation* with many aligned rows, not separate equations. Short pages
-force it to span several PDF pages. In *In-place preview*, scroll *inside the
-rendered equation* to reach the final row, $x_32 = 32$.
+force it to span several PDF pages. In *In-place preview*, all page fragments are
+stacked in order. Scroll the *editor* to reach $x_32 = 32$; the preview has no scrollbar.
 
 // Page size is local to the rest of this sample, not a demo/editor setting.
 #set page(width: 140mm, height: 80mm, margin: 12mm)

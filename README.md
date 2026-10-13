@@ -33,11 +33,12 @@ one source document, undo history and compiler session across three modes:
 | `SideBySidePreview` | The same source beside a live, selectable PDF preview. |
 | `Read` | Source hidden and input disabled; the same PDF fills the widget. |
 
-In-place cards show rendered elements without Source/Open page actions or title/page
-rows. Inline cards fit their rendered content instead of stretching across the block;
-they reuse the existing editor layout reservations. Clicking a preview does not select
-source or change modes. Previous/Next appears only for repeated occurrences of the
-same source expression, and split output can still scroll through its rendered parts.
+In-place previews have no panel background, navigation controls, title/page rows, or
+internal scrollbar. Repeated occurrences and page fragments are stacked in order;
+scrolling over them scrolls the source editor. Inline previews fit their rendered
+content instead of stretching across the block, using the existing layout reservations.
+Clicking a preview does not select source or change modes. Authored backgrounds inside
+the compiled output remain intact.
 
 Changing modes does not reload source, clear undo or mark the document modified.
 `setReadOnly()` records the host's explicit policy; `isReadOnly()` returns that policy.
@@ -90,8 +91,8 @@ The bundled showcase covers text and show rules, headings/outline/lists, math, t
 figures, SVG/raster images, a computed sine graph, layout/templates, programming/imports,
 CSV/JSON data, counters/state, cross-references, footnotes and citations/bibliography.
 All example data is embedded; no package downloads are needed. In **In-place preview**,
-try **Repeated occurrences** (Previous/Next switches a formula between red and blue) and
-**Split-output scrolling** (scroll inside one multi-page equation to its final row).
+try **Repeated occurrences** (red and blue formulas shown together) and **Sequential page
+fragments** (scroll the editor through one multi-page equation to its final row).
 
 CMake builds the helper with `cargo build --release --locked`, places it in the build's
 `bin`, and installs it in `CMAKE_INSTALL_BINDIR`. For cross compilation also set
@@ -130,6 +131,9 @@ editor->setMode(vte::VTypstEditor::Mode::SideBySidePreview);
 `m_maxPdfBytes`, `m_maxCacheBytes`, `m_maxRasterPixels`, `m_previewMaxHeight` and
 `m_initialZoom`. Apply changes through `VTypstEditor::setConfig()`, not the contained
 source editor's `setConfig()`, so Typst highlighting and preview settings are refreshed.
+`m_previewMaxHeight` bounds the scaled height of each page fragment, including padding,
+not the total sequential preview. The host reserves the complete sequence while only
+painting and requesting rasters for the visible editor slice.
 
 Overlay paths are project-root-relative. Unsaved overlays take precedence over disk;
 the host supplies other open buffers with `setFileOverlay()`/`removeFileOverlay()`.
@@ -155,8 +159,9 @@ In-place cards show crops of the original compiled pages for supported equations
 tables and figures, including page backgrounds, clipping and surrounding overlap. They
 are not independently compiled formula strings or editable generated pixels. Source stays
 visible. Inline cards sit above their source line; when a short source span cannot fit
-the controls, the card gets its own full-width band above that same line. Repeated
-evaluations have occurrence controls; split output has labeled parts.
+the rendered content, the layout reserves an exclusive band above that line while the
+preview itself stays content-sized. All repeated evaluations and split-page fragments
+flow sequentially in the editor, without buttons, labels or nested scrolling.
 Nested figure/table ownership avoids redundant cards. Unmapped/generated/imported objects
 remain in the page preview rather than being attached to guessed active-source offsets.
 Stale in-place cards are removed when input changes.
