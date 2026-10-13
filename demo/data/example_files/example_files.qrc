@@ -3,6 +3,7 @@
         <file>example.cpp</file>
         <file>example.md</file>
         <file>example.txt</file>
+        <file>example.typ</file>
         <file>jiafei.png</file>
         <file>vnote.png</file>
     </qresource>

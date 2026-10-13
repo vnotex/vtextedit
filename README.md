@@ -82,8 +82,16 @@ Multi-configuration generators may place demos in a configuration subdirectory; 
 and install with `--config Release`. `VTypstEditorDemo` starts Typst directly, without
 `--typst`. `VTextEditDemo` retains its Markdown default and supports `--typst` when enabled;
 it also accepts `--typst-file` after `--typst`. Without a file, the Typst demo uses an
-in-memory example and unsaved import. With a file, its directory becomes the project
-root and its basename the main entry; the demo is not a project-root discovery tool.
+embedded copy of `demo/data/example_files/example.typ` and an unsaved `lib.typ` import.
+With a file, its directory becomes the project root and its basename the main entry;
+the demo is not a project-root discovery tool.
+
+The bundled showcase covers text and show rules, headings/outline/lists, math, tables,
+figures, SVG/raster images, a computed sine graph, layout/templates, programming/imports,
+CSV/JSON data, counters/state, cross-references, footnotes and citations/bibliography.
+All example data is embedded; no package downloads are needed. In **In-place preview**,
+try **Repeated occurrences** (Previous/Next switches a formula between red and blue) and
+**Split-output scrolling** (scroll inside one multi-page equation to its final row).
 
 CMake builds the helper with `cargo build --release --locked`, places it in the build's
 `bin`, and installs it in `CMAKE_INSTALL_BINDIR`. For cross compilation also set

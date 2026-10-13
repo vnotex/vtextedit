@@ -157,13 +157,7 @@ static VTypstEditor *setupTypstEditor(QMainWindow *p_window, const QStringList &
   auto config = QSharedPointer<TypstEditorConfig>::create();
   config->m_helperExecutable = qEnvironmentVariable("VTEXTEDIT_TYPST_HELPER");
   config->m_projectRoot = QDir::currentPath();
-  QString contents = QStringLiteral(
-      "#set page(width: 140mm, height: 140mm, margin: 12mm)\n"
-      "#set text(size: 12pt)\n#import \"lib.typ\": mass\n"
-      "= Native Typst preview\nBEFORE smoke. Select and copy this text.\n\n"
-      "Inline formula: $E = #mass c^2$.\n\n"
-      "#set math.equation(numbering: \"(1)\")\n$ E = #mass c^2 $\n\n"
-      "#figure(table(columns: 2, [Quantity], [Value], [Mass], [#mass]), caption: [Live table])\n");
+  QString contents;
   const int fileIndex = p_arguments.indexOf(QStringLiteral("--typst-file"));
   if (fileIndex >= 0) {
     if (fileIndex + 1 >= p_arguments.size()) {
@@ -178,6 +172,13 @@ static VTypstEditor *setupTypstEditor(QMainWindow *p_window, const QStringList &
     }
     config->m_projectRoot = fileInfo.absolutePath();
     config->m_mainFile = fileInfo.fileName();
+    contents = QString::fromUtf8(file.readAll());
+  } else {
+    QFile file(QStringLiteral(":/demo/data/example_files/example.typ"));
+    if (!file.open(QIODevice::ReadOnly)) {
+      qCritical("Could not open the bundled Typst example");
+      return nullptr;
+    }
     contents = QString::fromUtf8(file.readAll());
   }
   auto editor = new VTypstEditor(config, QSharedPointer<TextEditorParameters>::create(), p_window);
