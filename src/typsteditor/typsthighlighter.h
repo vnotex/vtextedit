@@ -12,6 +12,8 @@ class TextEditorConfig;
 
 // Formatting consumes only the asynchronous official-parser result. Block user
 // data belongs to the shared editor/layout/spell-check infrastructure.
+// Source edits and compiler-generation changes invalidate ranges; rehighlighting,
+// theme refreshes and zoom preserve them without modifying source or undo history.
 class TypstHighlighter : public VSyntaxHighlighter {
   Q_OBJECT
 public:
@@ -40,7 +42,6 @@ private:
   QHash<int, QVector<Range>> m_blocks;
   QTimer m_refreshTimer;
   quint64 m_generation = 0;
-  int m_revision = -1;
   bool m_acceptHighlights = false;
 };
 } // namespace vte

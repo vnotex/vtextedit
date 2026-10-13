@@ -17,6 +17,8 @@ private slots:
   void inPlaceReservationsDoNotEditSource();
   void occurrenceControlsAndSplitPartsRenderRealOutput();
   void supersededCompileCannotPublish();
+  void syntaxHighlightsSurviveRehighlightAndThemeChanges();
+  void syntaxHighlightsFollowEditsAndErrors();
   void pdfBudgetFailurePreservesOutputAndRecovers();
   void repeatedCloseDuringPendingOutput();
 };

@@ -32,11 +32,12 @@ TypstHighlighter::TypstHighlighter(QTextDocument *p_document, const TextEditorCo
 }
 
 void TypstHighlighter::setGeneration(quint64 p_generation) {
-  if (m_generation != p_generation || m_revision != document()->revision()) {
+  // Qt rehighlighting advances the document revision without changing source.
+  // Only source edits and compiler generations invalidate parser ranges.
+  if (m_generation != p_generation) {
     invalidate();
   }
   m_generation = p_generation;
-  m_revision = document()->revision();
   m_acceptHighlights = p_generation != 0;
 }
 
@@ -52,7 +53,7 @@ void TypstHighlighter::invalidate() {
 void TypstHighlighter::setHighlights(quint64 p_generation,
                                      const QVector<TypstHighlight> &p_highlights,
                                      const QString &p_activeFile) {
-  if (!m_acceptHighlights || p_generation != m_generation || m_revision != document()->revision()) {
+  if (!m_acceptHighlights || p_generation != m_generation) {
     return;
   }
   m_blocks.clear();
@@ -148,7 +149,7 @@ void TypstHighlighter::refreshTheme(const TextEditorConfig &p_config) {
 void TypstHighlighter::highlightBlock(const QString &p_text) {
   const auto block = currentBlock();
   auto data = TextBlockData::get(block);
-  if (m_acceptHighlights && m_revision == document()->revision()) {
+  if (m_acceptHighlights) {
     const auto ranges = m_blocks.constFind(block.blockNumber());
     if (ranges != m_blocks.constEnd()) {
       for (const auto &range : ranges.value()) {

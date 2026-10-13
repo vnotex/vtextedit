@@ -20,10 +20,12 @@
 #include <QScrollBar>
 #include <QSet>
 #include <QSignalSpy>
+#include <QSyntaxHighlighter>
 #include <QTemporaryDir>
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
+#include <QTextLayout>
 #include <QToolButton>
 #include <QtEndian>
 
@@ -365,6 +367,41 @@ QJsonArray importOverlay(const QString &p_value) {
 bool writeFixture(const QString &p_path, const QByteArray &p_content) {
   QFile file(p_path);
   return file.open(QIODevice::WriteOnly) && file.write(p_content) == p_content.size();
+}
+
+QTextCharFormat syntaxFormatAt(QTextDocument *p_document, int p_position) {
+  QTextCharFormat format;
+  if (p_position < 0 || p_position >= p_document->characterCount() - 1)
+    return format;
+  const auto block = p_document->findBlock(p_position);
+  if (!block.isValid() || !block.layout())
+    return format;
+  const int offset = p_position - block.position();
+  for (const auto &range : block.layout()->formats()) {
+    if (offset >= range.start && offset - range.start < range.length)
+      format.merge(range.format);
+  }
+  return format;
+}
+
+bool writeSyntaxTheme(const QString &p_path, const QString &p_name,
+                      const QString &p_stringColor) {
+  const QJsonObject styles{
+      {QStringLiteral("Normal"), QJsonObject{{QStringLiteral("text-color"), "#202020"}}},
+      {QStringLiteral("Keyword"), QJsonObject{{QStringLiteral("text-color"), "#0033aa"},
+                                             {QStringLiteral("bold"), true}}},
+      {QStringLiteral("Comment"), QJsonObject{{QStringLiteral("text-color"), "#557755"}}},
+      {QStringLiteral("Float"), QJsonObject{{QStringLiteral("text-color"), "#aa5500"}}},
+      {QStringLiteral("String"), QJsonObject{{QStringLiteral("text-color"), p_stringColor}}},
+      {QStringLiteral("Function"), QJsonObject{{QStringLiteral("text-color"), "#663399"}}},
+      {QStringLiteral("VerbatimString"), QJsonObject{{QStringLiteral("text-color"), "#886600"}}},
+      {QStringLiteral("SpecialString"), QJsonObject{{QStringLiteral("text-color"), "#007777"}}},
+      {QStringLiteral("Operator"), QJsonObject{{QStringLiteral("text-color"), "#555555"}}}};
+  const QJsonObject theme{
+      {QStringLiteral("metadata"), QJsonObject{{QStringLiteral("name"), p_name},
+                                              {QStringLiteral("revision"), 1}}},
+      {QStringLiteral("text-styles"), styles}};
+  return writeFixture(p_path, QJsonDocument(theme).toJson());
 }
 
 QString splitSource() {
@@ -965,7 +1002,7 @@ void TestTypstEditor::supersededCompileCannotPublish() {
   QVERIFY2(waitUntil([&]() { return published.count() == 1; }),
            qPrintable(fixture.editor.compileMessage()));
   const QStringList obsoleteInputs{shortSource(QStringLiteral("Obsolete successful output.")),
-                                   QStringLiteral("#let obsolete = (")};
+                                   shortSource(QStringLiteral("#let obsolete = ("))};
   for (int round = 0; round < obsoleteInputs.size(); ++round) {
     int compilingEvents = 0;
     int readyEvents = 0;
@@ -998,6 +1035,16 @@ void TestTypstEditor::supersededCompileCannotPublish() {
     QVERIFY(replacedInFlight);
     QCOMPARE(readyEvents, 1);
     QCOMPARE(fixture.editor.document()->toPlainText(), newest);
+    const int plainPosition = newest.indexOf(output);
+    QVERIFY(plainPosition >= 0);
+    QVERIFY(!syntaxFormatAt(fixture.editor.document(), plainPosition)
+                 .hasProperty(QTextFormat::ForegroundBrush));
+    auto *highlighter = fixture.editor.document()->findChild<QSyntaxHighlighter *>();
+    QVERIFY(highlighter);
+    highlighter->rehighlight();
+    QCoreApplication::processEvents();
+    QVERIFY(!syntaxFormatAt(fixture.editor.document(), plainPosition)
+                 .hasProperty(QTextFormat::ForegroundBrush));
     QCOMPARE(fixture.selectPage().trimmed(), output);
     fixture.clearSelection();
     for (const auto &notification : diagnostics)
@@ -1005,6 +1052,184 @@ void TestTypstEditor::supersededCompileCannotPublish() {
     QCOMPARE(fixture.editor.compileStatus(), VTypstEditor::CompileStatus::Ready);
     QCOMPARE(published.count(), round + 2);
   }
+}
+
+void TestTypstEditor::syntaxHighlightsSurviveRehighlightAndThemeChanges() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto lightPath = root.filePath(QStringLiteral("light.theme"));
+  QVERIFY(writeSyntaxTheme(lightPath, QStringLiteral("TypstTestLight"), QStringLiteral("#aa2233")));
+  auto config = editorConfig(root.path());
+  config->m_textEditorConfig->m_syntaxTheme = lightPath;
+  const auto source = QStringLiteral("// comment\n= Heading\n#let value = 42\n"
+                                     "#let label = \"string\"\n#text(\"call\")\n"
+                                     "*strong* _emph_ `raw`\n$ x^2 $\nplain\n");
+  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::SideBySidePreview, config);
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  auto *document = fixture.editor.document();
+  const int stringPosition = source.indexOf(QStringLiteral("string"));
+  const int commentPosition = source.indexOf(QStringLiteral("comment"));
+  const int numberPosition = source.indexOf(QStringLiteral("42"));
+  const int functionPosition = source.indexOf(QStringLiteral("text("));
+  const int headingPosition = source.indexOf(QStringLiteral("Heading"));
+  const int strongPosition = source.indexOf(QStringLiteral("strong"));
+  const int emphPosition = source.indexOf(QStringLiteral("emph"));
+  const int mathPosition = source.indexOf(QLatin1Char('$'));
+  const int plainPosition = source.indexOf(QStringLiteral("plain"));
+  QVERIFY(stringPosition >= 0 && commentPosition >= 0 && numberPosition >= 0 &&
+          functionPosition >= 0 && headingPosition >= 0 && strongPosition >= 0 &&
+          emphPosition >= 0 && mathPosition >= 0 && plainPosition >= 0);
+  QCOMPARE(syntaxFormatAt(document, stringPosition).foreground().color(), QColor("#aa2233"));
+  QCOMPARE(syntaxFormatAt(document, commentPosition).foreground().color(), QColor("#557755"));
+  QCOMPARE(syntaxFormatAt(document, numberPosition).foreground().color(), QColor("#aa5500"));
+  QCOMPARE(syntaxFormatAt(document, functionPosition).foreground().color(), QColor("#663399"));
+  QCOMPARE(syntaxFormatAt(document, headingPosition).fontWeight(), int(QFont::Bold));
+  QCOMPARE(syntaxFormatAt(document, strongPosition).fontWeight(), int(QFont::Bold));
+  QVERIFY(syntaxFormatAt(document, emphPosition).fontItalic());
+  QCOMPARE(syntaxFormatAt(document, mathPosition).foreground().color(), QColor("#007777"));
+  QVERIFY(!syntaxFormatAt(document, plainPosition).hasProperty(QTextFormat::ForegroundBrush));
+
+  auto *highlighter = document->findChild<QSyntaxHighlighter *>();
+  QVERIFY(highlighter);
+  auto selection = fixture.edit()->textCursor();
+  selection.setPosition(stringPosition + 6);
+  selection.setPosition(stringPosition, QTextCursor::KeepAnchor);
+  fixture.edit()->setTextCursor(selection);
+  const auto originalText = document->toPlainText();
+  const int anchor = selection.anchor();
+  const int position = selection.position();
+  const bool modified = document->isModified();
+  const int undoSteps = document->availableUndoSteps();
+  QSignalSpy changes(document, &QTextDocument::contentsChange);
+  for (int repeat = 0; repeat < 2; ++repeat) {
+    highlighter->rehighlight();
+    QCoreApplication::processEvents();
+    QCOMPARE(syntaxFormatAt(document, stringPosition).foreground().color(), QColor("#aa2233"));
+    QCOMPARE(syntaxFormatAt(document, commentPosition).foreground().color(), QColor("#557755"));
+  }
+  QTextCursor cursor(document);
+  cursor.beginEditBlock();
+  cursor.endEditBlock();
+  highlighter->rehighlight();
+  QCoreApplication::processEvents();
+  QCOMPARE(syntaxFormatAt(document, stringPosition).foreground().color(), QColor("#aa2233"));
+  QCOMPARE(syntaxFormatAt(document, commentPosition).foreground().color(), QColor("#557755"));
+
+  const auto darkPath = root.filePath(QStringLiteral("dark.theme"));
+  QVERIFY(writeSyntaxTheme(darkPath, QStringLiteral("TypstTestDark"), QStringLiteral("#ff8899")));
+  auto darkConfig = editorConfig(root.path());
+  darkConfig->m_textEditorConfig->m_syntaxTheme = darkPath;
+  fixture.editor.setConfig(darkConfig);
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  QVERIFY(waitUntil([&]() {
+    return syntaxFormatAt(document, stringPosition).foreground().color() == QColor("#ff8899");
+  }));
+  highlighter->rehighlight();
+  QCoreApplication::processEvents();
+  QCOMPARE(syntaxFormatAt(document, stringPosition).foreground().color(), QColor("#ff8899"));
+  QCOMPARE(syntaxFormatAt(document, commentPosition).foreground().color(), QColor("#557755"));
+  for (const int delta : {1, -1}) {
+    fixture.editor.getTextEditor()->zoom(delta);
+    QCoreApplication::processEvents();
+    QCOMPARE(syntaxFormatAt(document, stringPosition).foreground().color(), QColor("#ff8899"));
+    QCOMPARE(syntaxFormatAt(document, commentPosition).foreground().color(), QColor("#557755"));
+  }
+  QCOMPARE(document->toPlainText(), originalText);
+  QCOMPARE(fixture.edit()->textCursor().anchor(), anchor);
+  QCOMPARE(fixture.edit()->textCursor().position(), position);
+  QCOMPARE(document->isModified(), modified);
+  QCOMPARE(document->availableUndoSteps(), undoSteps);
+  QCOMPARE(textChangeCount(changes), 0);
+}
+
+void TestTypstEditor::syntaxHighlightsFollowEditsAndErrors() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto themePath = root.filePath(QStringLiteral("syntax.theme"));
+  QVERIFY(writeSyntaxTheme(themePath, QStringLiteral("TypstTestEdits"), QStringLiteral("#aa2233")));
+  auto config = editorConfig(root.path());
+  config->m_textEditorConfig->m_syntaxTheme = themePath;
+  const auto suffix = QStringLiteral("\U0001F680") + QStringLiteral(" #text(\"before\")\nplain\n");
+  const auto source = QStringLiteral("/* first\nsecond */\n") + suffix;
+  const auto uncommented = QStringLiteral(" first\nsecond \n") + suffix;
+  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::SideBySidePreview, config);
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  auto *document = fixture.editor.document();
+  const int firstPosition = source.indexOf(QStringLiteral("first"));
+  const int secondPosition = source.indexOf(QStringLiteral("second"));
+  const int stringPosition = source.indexOf(QStringLiteral("before"));
+  const int closingPosition = source.indexOf(QStringLiteral("*/"));
+  const int shiftedSecond = uncommented.indexOf(QStringLiteral("second"));
+  const int shiftedString = uncommented.indexOf(QStringLiteral("before"));
+  QVERIFY(firstPosition >= 0 && secondPosition >= 0 && stringPosition >= 0 &&
+          closingPosition >= 0 && shiftedSecond >= 0 && shiftedString >= 0);
+  QCOMPARE(syntaxFormatAt(document, firstPosition).foreground().color(), QColor("#557755"));
+  QCOMPARE(syntaxFormatAt(document, secondPosition).foreground().color(), QColor("#557755"));
+  QCOMPARE(syntaxFormatAt(document, stringPosition).foreground().color(), QColor("#aa2233"));
+
+  QTextCursor cursor(document);
+  cursor.beginEditBlock();
+  cursor.setPosition(closingPosition);
+  cursor.setPosition(closingPosition + 2, QTextCursor::KeepAnchor);
+  cursor.removeSelectedText();
+  cursor.setPosition(0);
+  cursor.setPosition(2, QTextCursor::KeepAnchor);
+  cursor.removeSelectedText();
+  cursor.endEditBlock();
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  QCOMPARE(document->toPlainText(), uncommented);
+  QVERIFY(syntaxFormatAt(document, shiftedSecond).foreground().color() != QColor("#557755"));
+  QCOMPARE(syntaxFormatAt(document, shiftedString).foreground().color(), QColor("#aa2233"));
+
+  document->undo();
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  QCOMPARE(document->toPlainText(), source);
+  QCOMPARE(syntaxFormatAt(document, firstPosition).foreground().color(), QColor("#557755"));
+  QCOMPARE(syntaxFormatAt(document, secondPosition).foreground().color(), QColor("#557755"));
+  QCOMPARE(syntaxFormatAt(document, stringPosition).foreground().color(), QColor("#aa2233"));
+  document->redo();
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  QCOMPARE(document->toPlainText(), uncommented);
+  QVERIFY(syntaxFormatAt(document, shiftedSecond).foreground().color() != QColor("#557755"));
+  QCOMPARE(syntaxFormatAt(document, shiftedString).foreground().color(), QColor("#aa2233"));
+
+  const auto incomplete = QStringLiteral("// retained comment\n#let label = \"still colored\"\n"
+                                         "#let broken = (");
+  cursor.beginEditBlock();
+  cursor.select(QTextCursor::Document);
+  cursor.insertText(incomplete);
+  cursor.endEditBlock();
+  QVERIFY2(waitUntil([&]() {
+             return fixture.editor.compileStatus() == VTypstEditor::CompileStatus::Error;
+           }),
+           qPrintable(fixture.editor.compileMessage()));
+  QCOMPARE(document->toPlainText(), incomplete);
+  const int retainedPosition = incomplete.indexOf(QStringLiteral("retained comment"));
+  const int stillColoredPosition = incomplete.indexOf(QStringLiteral("still colored"));
+  QVERIFY(retainedPosition >= 0 && stillColoredPosition >= 0);
+  QCOMPARE(syntaxFormatAt(document, retainedPosition).foreground().color(), QColor("#557755"));
+  QCOMPARE(syntaxFormatAt(document, stillColoredPosition).foreground().color(), QColor("#aa2233"));
+
+  cursor.beginEditBlock();
+  cursor.select(QTextCursor::Document);
+  cursor.removeSelectedText();
+  cursor.endEditBlock();
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  QVERIFY(document->toPlainText().isEmpty());
+  for (auto block = document->begin(); block.isValid(); block = block.next()) {
+    for (const auto &range : block.layout()->formats())
+      QVERIFY(range.length == 0 || range.format.isEmpty());
+  }
+
+  cursor.beginEditBlock();
+  cursor.select(QTextCursor::Document);
+  cursor.insertText(source);
+  cursor.endEditBlock();
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  QCOMPARE(document->toPlainText(), source);
+  QCOMPARE(syntaxFormatAt(document, firstPosition).foreground().color(), QColor("#557755"));
+  QCOMPARE(syntaxFormatAt(document, secondPosition).foreground().color(), QColor("#557755"));
+  QCOMPARE(syntaxFormatAt(document, stringPosition).foreground().color(), QColor("#aa2233"));
 }
 
 void TestTypstEditor::pdfBudgetFailurePreservesOutputAndRecovers() {
