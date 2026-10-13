@@ -19,6 +19,11 @@
   built with pinned Rust 1.99.0, Typst 0.15.1 and Cargo.lock. Qt 5 remains supported
   with Typst disabled; enabling Typst on Qt 5 is a configuration error. Package downloads
   are opt-in; enabled distributions must deploy the helper, Qt Pdf and dependency notices.
+- Add `typst-syntax-styles` to vtextedit themes: Typst parser kinds accept literal formats
+  or `@markdown-syntax-styles:NAME` references to the same theme. Typst source highlighting
+  now uses `m_theme`, not `m_syntaxTheme`; custom themes must add the new section to style
+  Typst syntax. Explicit font sizes follow zoom, and explicit false decoration flags are
+  honored by theme format conversion. Compiled output and KSyntax code highlighting are unchanged.
 - Add the dedicated `VTypstEditorDemo` target, starting Typst without flags. The existing
   `VTextEditDemo --typst` entry remains available; both accept optional `--typst-file`.
 

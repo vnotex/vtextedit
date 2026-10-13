@@ -163,6 +163,9 @@ public:
 
   const QSharedPointer<QVector<Format>> &markdownSyntaxStyles() const;
 
+  // Lowercase Typst parser kinds, with Markdown references resolved at load time.
+  const QMap<QString, Format> &typstSyntaxStyles() const;
+
   static QSharedPointer<Theme> createThemeFromFile(const QString &p_filePath);
 
   static QSharedPointer<Theme> createThemeFromContent(const QString &p_jsonContent);
@@ -177,6 +180,8 @@ private:
   void loadMarkdownEditorStyles(const QJsonObject &p_obj);
 
   void loadMarkdownSyntaxStyles(const QJsonObject &p_obj);
+
+  void loadTypstSyntaxStyles(const QJsonObject &p_obj);
 
   Format loadStyleFormat(const QJsonObject &p_obj);
 
@@ -194,6 +199,8 @@ private:
   QMap<EditorStyle, Format> m_markdownEditorStyles;
 
   QSharedPointer<QVector<Format>> m_markdownSyntaxStyles;
+
+  QMap<QString, Format> m_typstSyntaxStyles;
 };
 } // namespace vte
 

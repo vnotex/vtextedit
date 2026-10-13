@@ -23,7 +23,7 @@ public:
   void setHighlights(quint64 p_generation, const QVector<TypstHighlight> &p_highlights,
                      const QString &p_activeFile);
   void invalidate();
-  void refreshTheme(const TextEditorConfig &p_config);
+  void refreshTheme(const TextEditorConfig &p_config, int p_zoomDelta = 0);
 
 signals:
   void highlightingUpdated();

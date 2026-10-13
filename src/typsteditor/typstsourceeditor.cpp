@@ -63,7 +63,7 @@ TypstHighlighter *TypstSourceEditor::typstHighlighter() const {
 
 void TypstSourceEditor::applyConfig(const QSharedPointer<TextEditorConfig> &p_config) {
   VTextEditor::setConfig(p_config ? p_config : QSharedPointer<TextEditorConfig>::create());
-  typstHighlighter()->refreshTheme(getConfig());
+  typstHighlighter()->refreshTheme(getConfig(), editorFontPointSize() - baseEditorFontPointSize());
   refreshGeometry();
 }
 
@@ -97,7 +97,8 @@ bool TypstSourceEditor::eventFilter(QObject *p_object, QEvent *p_event) {
   if (p_object == m_textEdit && m_highlighter &&
       (p_event->type() == QEvent::FontChange || p_event->type() == QEvent::PaletteChange ||
        p_event->type() == QEvent::StyleChange)) {
-    typstHighlighter()->refreshTheme(getConfig());
+    typstHighlighter()->refreshTheme(getConfig(),
+                                      editorFontPointSize() - baseEditorFontPointSize());
     m_geometryTimer.start(0);
   }
   return VTextEditor::eventFilter(p_object, p_event);

@@ -103,6 +103,57 @@ configuration override (useful for configuration subdirectories or bundles). Dep
 helper with your application or set an explicit path; do not rely on a developer Cargo
 cache. Installing the targets does not by itself bundle all Qt/native dependencies.
 
+### Typst source highlighting themes
+
+Typst elements use `TypstEditorConfig::m_textEditorConfig->m_theme`, the same vtextedit
+JSON theme as the Markdown editor. Add `typst-syntax-styles` alongside
+`markdown-syntax-styles`. Each entry is either a format object or a reference to an
+explicitly defined Markdown style in that same file:
+
+```json
+{
+  "metadata": {"type": "vtextedit", "name": "Shared"},
+  "markdown-syntax-styles": {
+    "H1": {"text-color": "#222222", "font-size": 17, "bold": true},
+    "STRONG": {"bold": true},
+    "EMPH": {"italic": true}
+  },
+  "typst-syntax-styles": {
+    "heading": "@markdown-syntax-styles:H1",
+    "strong": "@markdown-syntax-styles:STRONG",
+    "emph": "@markdown-syntax-styles:EMPH",
+    "keyword": {"text-color": "#0057ae", "bold": true},
+    "string": {"text-color": "#bf0303"}
+  }
+}
+```
+
+This is a partial theme example; keep your existing `editor-styles` and other sections.
+Typst keys are lowercase parser kinds: `comment`, `punctuation`, `escape`, `strong`,
+`emph`, `link`, `raw`, `label`, `ref`, `heading`, `listmarker`, `listterm`,
+`mathdelimiter`, `mathoperator`, `mathgroupingparens`, `keyword`, `operator`, `number`,
+`string`, `function`, `interpolated`, and `error`. The parser currently has one `heading`
+kind for all levels, one `listmarker` kind for list markers, and one `raw` kind for inline
+and block raw text.
+
+References use the exact, case-sensitive `@markdown-syntax-styles:NAME` spelling and
+resolve when the theme is loaded. The target must be a known Markdown style with a
+format object in the same file. References cannot chain or add property overrides;
+use a literal object instead. Missing entries, invalid values, and unresolved references
+add no syntax formatting. An empty object explicitly uses the base `editor-styles.Text`
+format. Custom themes without the section therefore leave Typst syntax unstyled; the
+bundled default theme supplies mappings and Typst-specific colors.
+
+Formats support the existing foreground/background colors, font family, point size,
+bold, italic, underline, and strike-through properties. Explicit `false` disables a
+decoration; unspecified properties inherit the base text format. Explicit syntax font
+sizes follow editor zoom (minimum 2 points); unspecified sizes inherit the editor font.
+Load the theme with `Theme::createThemeFromFile()`, assign it to `m_textEditorConfig->m_theme`,
+and apply it through `VTypstEditor::setConfig()`.
+
+`m_syntaxTheme` remains the KSyntaxHighlighting theme for code highlighting elsewhere;
+it no longer controls Typst elements. Source themes do not change the compiled PDF.
+
 ### Host API and project identity
 
 Link your host against the enabled `VTextEdit` target; it publishes the

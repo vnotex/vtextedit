@@ -40,19 +40,19 @@ QTextCharFormat Format::toTextCharFormat() const {
   }
 
   if (m_hasBold) {
-    tcf.setFontWeight(QFont::Bold);
+    tcf.setFontWeight(m_bold ? QFont::Bold : QFont::Normal);
   }
 
   if (m_hasItalic) {
-    tcf.setFontItalic(true);
+    tcf.setFontItalic(m_italic);
   }
 
   if (m_hasUnderline) {
-    tcf.setFontUnderline(true);
+    tcf.setFontUnderline(m_underline);
   }
 
   if (m_hasStrikeThrough) {
-    tcf.setFontStrikeOut(true);
+    tcf.setFontStrikeOut(m_strikeThrough);
   }
 
   return tcf;
@@ -108,6 +108,8 @@ void Theme::load(const QJsonObject &p_obj) {
   loadMarkdownEditorStyles(p_obj);
 
   loadMarkdownSyntaxStyles(p_obj);
+
+  loadTypstSyntaxStyles(p_obj);
 }
 
 void Theme::loadMetadata(const QJsonObject &p_obj) {
@@ -251,6 +253,31 @@ void Theme::loadMarkdownSyntaxStyles(const QJsonObject &p_obj) {
   }
 }
 
+void Theme::loadTypstSyntaxStyles(const QJsonObject &p_obj) {
+  const auto obj = p_obj.value(QStringLiteral("typst-syntax-styles")).toObject();
+  const auto markdown = p_obj.value(QStringLiteral("markdown-syntax-styles")).toObject();
+  const auto metaEnum = QMetaEnum::fromType<MarkdownSyntaxStyle>();
+  const auto prefix = QStringLiteral("@markdown-syntax-styles:");
+  for (auto it = obj.constBegin(); it != obj.constEnd(); ++it) {
+    if (it.value().isObject()) {
+      m_typstSyntaxStyles.insert(it.key(), loadStyleFormat(it.value().toObject()));
+    } else if (it.value().isString()) {
+      const auto reference = it.value().toString();
+      if (!reference.startsWith(prefix)) {
+        continue;
+      }
+      const auto name = reference.mid(prefix.size());
+      const int style = metaEnum.keyToValue(name.toLatin1().constData());
+      // The Markdown vector also contains empty formats for omitted keys.
+      // Only an explicitly authored object is a reference target.
+      if (style >= 0 && style < MaxMarkdownSyntaxStyle && markdown.value(name).isObject() &&
+          m_markdownSyntaxStyles) {
+        m_typstSyntaxStyles.insert(it.key(), m_markdownSyntaxStyles->at(style));
+      }
+    }
+  }
+}
+
 const QString &Theme::name() const { return m_name; }
 
 Format &Theme::editorStyle(EditorStyle p_style) {
@@ -270,3 +297,5 @@ const QMap<Theme::EditorStyle, Format> &Theme::markdownEditorStyles() const {
 const QSharedPointer<QVector<Format>> &Theme::markdownSyntaxStyles() const {
   return m_markdownSyntaxStyles;
 }
+
+const QMap<QString, Format> &Theme::typstSyntaxStyles() const { return m_typstSyntaxStyles; }

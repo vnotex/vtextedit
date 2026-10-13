@@ -17,6 +17,10 @@ private slots:
 
   void testListItemDecorationStyles();
 
+  void testTypstSyntaxStyles();
+
+  void testTypstInvalidReferences();
+
   void cleanupTestCase();
 };
 } // namespace tests

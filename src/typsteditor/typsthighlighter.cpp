@@ -2,13 +2,9 @@
 
 #include <QTextBlock>
 #include <QTextDocument>
-#include <Repository>
-#include <Theme>
 
 #include <spellcheck/spellcheckhighlighthelper.h>
 #include <texteditor/blockspellcheckdata.h>
-#include <texteditor/ksyntaxhighlighterwrapper.h>
-#include <utils/utils.h>
 #include <vtextedit/textblockdata.h>
 #include <vtextedit/texteditorconfig.h>
 #include <vtextedit/theme.h>
@@ -68,7 +64,7 @@ void TypstHighlighter::setHighlights(quint64 p_generation,
     const auto &source = highlight.m_source;
     const QString kind = highlight.m_kind.toLower();
     if (source.m_file != p_activeFile || source.m_end <= source.m_start ||
-        !boundary(source.m_start) || !boundary(source.m_end) || !m_formats.contains(kind)) {
+        !boundary(source.m_start) || !boundary(source.m_end)) {
       continue;
     }
     for (auto block = doc->findBlock(source.m_start);
@@ -85,64 +81,21 @@ void TypstHighlighter::setHighlights(quint64 p_generation,
   emit highlightingUpdated();
 }
 
-void TypstHighlighter::refreshTheme(const TextEditorConfig &p_config) {
-  using SyntaxTheme = KSyntaxHighlighting::Theme;
-  KSyntaxHighlighterWrapper::Initialize({});
-  auto repository = KSyntaxHighlighterWrapper::repository();
-  SyntaxTheme syntaxTheme;
-  if (!p_config.m_syntaxTheme.isEmpty()) {
-    syntaxTheme = Utils::isFilePath(p_config.m_syntaxTheme)
-                      ? repository->themeFromFile(p_config.m_syntaxTheme)
-                      : repository->theme(p_config.m_syntaxTheme);
-  }
-  if (!syntaxTheme.isValid()) {
-    syntaxTheme = repository->defaultTheme();
-  }
+void TypstHighlighter::refreshTheme(const TextEditorConfig &p_config, int p_zoomDelta) {
   const auto theme = p_config.m_theme ? p_config.m_theme : TextEditorConfig::defaultTheme();
   QTextCharFormat base = theme->editorStyle(Theme::Text).toTextCharFormat();
-  // Inherit editor geometry: absolute syntax font sizes would defeat zoom.
+  // Unspecified sizes inherit the editor font; explicit sizes follow its zoom.
   base.clearProperty(QTextFormat::FontPointSize);
   m_formats.clear();
-  const auto add = [this, &syntaxTheme, &base](const char *p_kind, SyntaxTheme::TextStyle p_style) {
+  const auto &styles = theme->typstSyntaxStyles();
+  for (auto it = styles.constBegin(); it != styles.constEnd(); ++it) {
     QTextCharFormat format = base;
-    if (syntaxTheme.textColor(p_style)) {
-      format.setForeground(QColor(syntaxTheme.textColor(p_style)));
+    format.merge(it.value().toTextCharFormat());
+    if (it.value().m_fontPointSize > 0) {
+      format.setFontPointSize(qMax(2, it.value().m_fontPointSize + p_zoomDelta));
     }
-    if (syntaxTheme.backgroundColor(p_style)) {
-      format.setBackground(QColor(syntaxTheme.backgroundColor(p_style)));
-    }
-    format.setFontWeight(syntaxTheme.isBold(p_style) ? QFont::Bold : QFont::Normal);
-    format.setFontItalic(syntaxTheme.isItalic(p_style));
-    format.setFontUnderline(syntaxTheme.isUnderline(p_style));
-    format.setFontStrikeOut(syntaxTheme.isStrikeThrough(p_style));
-    m_formats.insert(QString::fromLatin1(p_kind), format);
-  };
-  add("comment", SyntaxTheme::Comment);
-  add("punctuation", SyntaxTheme::Operator);
-  add("escape", SyntaxTheme::SpecialChar);
-  add("strong", SyntaxTheme::Normal);
-  add("emph", SyntaxTheme::Normal);
-  add("link", SyntaxTheme::Annotation);
-  add("raw", SyntaxTheme::VerbatimString);
-  add("label", SyntaxTheme::Attribute);
-  add("ref", SyntaxTheme::Annotation);
-  add("heading", SyntaxTheme::Keyword);
-  add("listmarker", SyntaxTheme::Operator);
-  add("listterm", SyntaxTheme::Attribute);
-  add("mathdelimiter", SyntaxTheme::SpecialString);
-  add("mathoperator", SyntaxTheme::Operator);
-  add("mathgroupingparens", SyntaxTheme::Operator);
-  add("keyword", SyntaxTheme::Keyword);
-  add("operator", SyntaxTheme::Operator);
-  add("number", SyntaxTheme::Float);
-  add("string", SyntaxTheme::String);
-  add("function", SyntaxTheme::Function);
-  add("interpolated", SyntaxTheme::Variable);
-  add("error", SyntaxTheme::Error);
-  m_formats[QStringLiteral("strong")].setFontWeight(QFont::Bold);
-  m_formats[QStringLiteral("emph")].setFontItalic(true);
-  m_formats[QStringLiteral("heading")].setFontWeight(QFont::Bold);
-  m_formats[QStringLiteral("link")].setFontUnderline(true);
+    m_formats.insert(it.key(), format);
+  }
   m_refreshTimer.start(0);
 }
 
@@ -153,7 +106,10 @@ void TypstHighlighter::highlightBlock(const QString &p_text) {
     const auto ranges = m_blocks.constFind(block.blockNumber());
     if (ranges != m_blocks.constEnd()) {
       for (const auto &range : ranges.value()) {
-        setFormat(range.m_start, range.m_length, m_formats.value(range.m_kind));
+        const auto format = m_formats.constFind(range.m_kind);
+        if (format != m_formats.constEnd()) {
+          setFormat(range.m_start, range.m_length, format.value());
+        }
       }
     }
   }

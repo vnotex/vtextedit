@@ -384,23 +384,36 @@ QTextCharFormat syntaxFormatAt(QTextDocument *p_document, int p_position) {
   return format;
 }
 
-bool writeSyntaxTheme(const QString &p_path, const QString &p_name,
-                      const QString &p_stringColor) {
-  const QJsonObject styles{
-      {QStringLiteral("Normal"), QJsonObject{{QStringLiteral("text-color"), "#202020"}}},
-      {QStringLiteral("Keyword"), QJsonObject{{QStringLiteral("text-color"), "#0033aa"},
-                                             {QStringLiteral("bold"), true}}},
-      {QStringLiteral("Comment"), QJsonObject{{QStringLiteral("text-color"), "#557755"}}},
-      {QStringLiteral("Float"), QJsonObject{{QStringLiteral("text-color"), "#aa5500"}}},
-      {QStringLiteral("String"), QJsonObject{{QStringLiteral("text-color"), p_stringColor}}},
-      {QStringLiteral("Function"), QJsonObject{{QStringLiteral("text-color"), "#663399"}}},
-      {QStringLiteral("VerbatimString"), QJsonObject{{QStringLiteral("text-color"), "#886600"}}},
-      {QStringLiteral("SpecialString"), QJsonObject{{QStringLiteral("text-color"), "#007777"}}},
-      {QStringLiteral("Operator"), QJsonObject{{QStringLiteral("text-color"), "#555555"}}}};
-  const QJsonObject theme{
-      {QStringLiteral("metadata"), QJsonObject{{QStringLiteral("name"), p_name},
-                                              {QStringLiteral("revision"), 1}}},
-      {QStringLiteral("text-styles"), styles}};
+bool writeTypstTheme(const QString &p_path, const QString &p_stringColor,
+                     bool p_decorated = true) {
+  auto theme = QJsonDocument::fromJson(QStringLiteral(R"({
+    "metadata": {"type": "vtextedit", "name": "TypstTest"},
+    "editor-styles": {"Text": {"font-size": 11}},
+    "markdown-syntax-styles": {
+      "COMMENT": {"text-color": "#557755"},
+      "H1": {"text-color": "#0033aa", "font-size": 19, "bold": %2},
+      "STRONG": {"bold": %2},
+      "EMPH": {"italic": %2}
+    },
+    "typst-syntax-styles": {
+      "comment": "@markdown-syntax-styles:COMMENT",
+      "heading": "@markdown-syntax-styles:H1",
+      "strong": "@markdown-syntax-styles:STRONG",
+      "emph": "@markdown-syntax-styles:EMPH",
+      "keyword": {"text-color": "#0033aa", "bold": %2},
+      "number": {"text-color": "#aa5500"},
+      "string": {"text-color": "%1", "background-color": "#ffeeee", "font-size": 13,
+                 "font-family": "Consolas", "underline": %2, "strike-through": %2},
+      "function": {"text-color": "#663399"},
+      "mathdelimiter": {"text-color": "#007777"}
+    }
+  })").arg(p_stringColor, p_decorated ? QStringLiteral("true") : QStringLiteral("false"))
+                   .toUtf8()).object();
+  if (!p_decorated) {
+    auto styles = theme.value(QStringLiteral("typst-syntax-styles")).toObject();
+    styles.insert(QStringLiteral("raw"), QJsonObject{{QStringLiteral("text-color"), "#886600"}});
+    theme.insert(QStringLiteral("typst-syntax-styles"), styles);
+  }
   return writeFixture(p_path, QJsonDocument(theme).toJson());
 }
 
@@ -1103,9 +1116,11 @@ void TestTypstEditor::syntaxHighlightsSurviveRehighlightAndThemeChanges() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
   const auto lightPath = root.filePath(QStringLiteral("light.theme"));
-  QVERIFY(writeSyntaxTheme(lightPath, QStringLiteral("TypstTestLight"), QStringLiteral("#aa2233")));
+  QVERIFY(writeTypstTheme(lightPath, QStringLiteral("#aa2233")));
   auto config = editorConfig(root.path());
-  config->m_textEditorConfig->m_syntaxTheme = lightPath;
+  config->m_textEditorConfig->m_theme = Theme::createThemeFromFile(lightPath);
+  QVERIFY(config->m_textEditorConfig->m_theme);
+  config->m_textEditorConfig->m_syntaxTheme = QStringLiteral("Breeze Dark");
   const auto source = QStringLiteral("// comment\n= Heading\n#let value = 42\n"
                                      "#let label = \"string\"\n#text(\"call\")\n"
                                      "*strong* _emph_ `raw`\n$ x^2 $\nplain\n");
@@ -1120,6 +1135,7 @@ void TestTypstEditor::syntaxHighlightsSurviveRehighlightAndThemeChanges() {
   const int strongPosition = source.indexOf(QStringLiteral("strong"));
   const int emphPosition = source.indexOf(QStringLiteral("emph"));
   const int mathPosition = source.indexOf(QLatin1Char('$'));
+  const int rawPosition = source.indexOf(QStringLiteral("raw"));
   const int plainPosition = source.indexOf(QStringLiteral("plain"));
   QVERIFY(stringPosition >= 0 && commentPosition >= 0 && numberPosition >= 0 &&
           functionPosition >= 0 && headingPosition >= 0 && strongPosition >= 0 &&
@@ -1132,6 +1148,13 @@ void TestTypstEditor::syntaxHighlightsSurviveRehighlightAndThemeChanges() {
   QCOMPARE(syntaxFormatAt(document, strongPosition).fontWeight(), int(QFont::Bold));
   QVERIFY(syntaxFormatAt(document, emphPosition).fontItalic());
   QCOMPARE(syntaxFormatAt(document, mathPosition).foreground().color(), QColor("#007777"));
+  QCOMPARE(syntaxFormatAt(document, headingPosition).fontPointSize(), 19.0);
+  QCOMPARE(syntaxFormatAt(document, stringPosition).fontPointSize(), 13.0);
+  QCOMPARE(syntaxFormatAt(document, stringPosition).fontFamily(), QStringLiteral("Consolas"));
+  QCOMPARE(syntaxFormatAt(document, stringPosition).background().color(), QColor("#ffeeee"));
+  QVERIFY(syntaxFormatAt(document, stringPosition).fontUnderline());
+  QVERIFY(syntaxFormatAt(document, stringPosition).fontStrikeOut());
+  QVERIFY(!syntaxFormatAt(document, rawPosition).hasProperty(QTextFormat::ForegroundBrush));
   QVERIFY(!syntaxFormatAt(document, plainPosition).hasProperty(QTextFormat::ForegroundBrush));
 
   auto *highlighter = document->findChild<QSyntaxHighlighter *>();
@@ -1161,9 +1184,10 @@ void TestTypstEditor::syntaxHighlightsSurviveRehighlightAndThemeChanges() {
   QCOMPARE(syntaxFormatAt(document, commentPosition).foreground().color(), QColor("#557755"));
 
   const auto darkPath = root.filePath(QStringLiteral("dark.theme"));
-  QVERIFY(writeSyntaxTheme(darkPath, QStringLiteral("TypstTestDark"), QStringLiteral("#ff8899")));
+  QVERIFY(writeTypstTheme(darkPath, QStringLiteral("#ff8899"), false));
   auto darkConfig = editorConfig(root.path());
-  darkConfig->m_textEditorConfig->m_syntaxTheme = darkPath;
+  darkConfig->m_textEditorConfig->m_theme = Theme::createThemeFromFile(darkPath);
+  QVERIFY(darkConfig->m_textEditorConfig->m_theme);
   fixture.editor.setConfig(darkConfig);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
   QVERIFY(waitUntil([&]() {
@@ -1173,12 +1197,38 @@ void TestTypstEditor::syntaxHighlightsSurviveRehighlightAndThemeChanges() {
   QCoreApplication::processEvents();
   QCOMPARE(syntaxFormatAt(document, stringPosition).foreground().color(), QColor("#ff8899"));
   QCOMPARE(syntaxFormatAt(document, commentPosition).foreground().color(), QColor("#557755"));
-  for (const int delta : {1, -1}) {
+  QCOMPARE(syntaxFormatAt(document, rawPosition).foreground().color(), QColor("#886600"));
+  QCOMPARE(syntaxFormatAt(document, headingPosition).fontWeight(), int(QFont::Normal));
+  QCOMPARE(syntaxFormatAt(document, strongPosition).fontWeight(), int(QFont::Normal));
+  QVERIFY(!syntaxFormatAt(document, emphPosition).fontItalic());
+  QVERIFY(!syntaxFormatAt(document, stringPosition).fontUnderline());
+  QVERIFY(!syntaxFormatAt(document, stringPosition).fontStrikeOut());
+  // KSyntaxHighlighting theme changes must not affect Typst elements.
+  darkConfig->m_textEditorConfig->m_syntaxTheme = QStringLiteral("Breeze Dark");
+  fixture.editor.setConfig(darkConfig);
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  QCOMPARE(syntaxFormatAt(document, stringPosition).foreground().color(), QColor("#ff8899"));
+  for (const int delta : {1, -1, 0}) {
     fixture.editor.getTextEditor()->zoom(delta);
     QCoreApplication::processEvents();
     QCOMPARE(syntaxFormatAt(document, stringPosition).foreground().color(), QColor("#ff8899"));
     QCOMPARE(syntaxFormatAt(document, commentPosition).foreground().color(), QColor("#557755"));
+    QCOMPARE(syntaxFormatAt(document, headingPosition).fontPointSize(), 19.0 + delta);
+    QCOMPARE(syntaxFormatAt(document, stringPosition).fontPointSize(), 13.0 + delta);
+    QVERIFY(!syntaxFormatAt(document, commentPosition).hasProperty(QTextFormat::FontPointSize));
   }
+  // Dropping the section removes formatting; restoring it needs no source mutation.
+  auto unstyled = editorConfig(root.path());
+  unstyled->m_textEditorConfig->m_theme = Theme::createThemeFromContent(QStringLiteral(
+      R"({"metadata": {"type": "vtextedit"}, "editor-styles": {"Text": {"font-size": 11}}})"));
+  fixture.editor.setConfig(unstyled);
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  QVERIFY(syntaxFormatAt(document, stringPosition).isEmpty());
+  QVERIFY(syntaxFormatAt(document, headingPosition).isEmpty());
+  fixture.editor.setConfig(darkConfig);
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  QCOMPARE(syntaxFormatAt(document, stringPosition).foreground().color(), QColor("#ff8899"));
+  QCOMPARE(syntaxFormatAt(document, rawPosition).foreground().color(), QColor("#886600"));
   QCOMPARE(document->toPlainText(), originalText);
   QCOMPARE(fixture.edit()->textCursor().anchor(), anchor);
   QCOMPARE(fixture.edit()->textCursor().position(), position);
@@ -1191,9 +1241,10 @@ void TestTypstEditor::syntaxHighlightsFollowEditsAndErrors() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
   const auto themePath = root.filePath(QStringLiteral("syntax.theme"));
-  QVERIFY(writeSyntaxTheme(themePath, QStringLiteral("TypstTestEdits"), QStringLiteral("#aa2233")));
+  QVERIFY(writeTypstTheme(themePath, QStringLiteral("#aa2233")));
   auto config = editorConfig(root.path());
-  config->m_textEditorConfig->m_syntaxTheme = themePath;
+  config->m_textEditorConfig->m_theme = Theme::createThemeFromFile(themePath);
+  QVERIFY(config->m_textEditorConfig->m_theme);
   const auto suffix = QStringLiteral("\U0001F680") + QStringLiteral(" #text(\"before\")\nplain\n");
   const auto source = QStringLiteral("/* first\nsecond */\n") + suffix;
   const auto uncommented = QStringLiteral(" first\nsecond \n") + suffix;

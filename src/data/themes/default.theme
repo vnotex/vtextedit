@@ -194,5 +194,29 @@
             "text-color" : "#d33682",
             "background-color" : "#e0e0e0"
         }
-   }
+   },
+    "typst-syntax-styles" : {
+        "comment" : "@markdown-syntax-styles:COMMENT",
+        "punctuation" : {"text-color" : "#555555"},
+        "escape" : "@markdown-syntax-styles:HTML_ENTITY",
+        "strong" : "@markdown-syntax-styles:STRONG",
+        "emph" : "@markdown-syntax-styles:EMPH",
+        "link" : "@markdown-syntax-styles:LINK",
+        "raw" : "@markdown-syntax-styles:CODE",
+        "label" : {"text-color" : "#826200"},
+        "ref" : "@markdown-syntax-styles:REFERENCE",
+        "heading" : "@markdown-syntax-styles:H1",
+        "listmarker" : "@markdown-syntax-styles:LIST_BULLET",
+        "listterm" : {"text-color" : "#826200", "bold" : true},
+        "mathdelimiter" : "@markdown-syntax-styles:INLINEEQUATION",
+        "mathoperator" : {"text-color" : "#00897b"},
+        "mathgroupingparens" : {"text-color" : "#00897b"},
+        "keyword" : {"text-color" : "#0057ae", "bold" : true},
+        "operator" : {"text-color" : "#555555"},
+        "number" : {"text-color" : "#b08000"},
+        "string" : {"text-color" : "#bf0303"},
+        "function" : {"text-color" : "#644a9b"},
+        "interpolated" : {"text-color" : "#0057ae"},
+        "error" : {"text-color" : "#bf0303", "underline" : true}
+    }
 }
