@@ -2,6 +2,7 @@
 
 #include <QTextBlock>
 #include <QTextDocument>
+#include <algorithm>
 
 #include <spellcheck/spellcheckhighlighthelper.h>
 #include <texteditor/blockspellcheckdata.h>
@@ -12,38 +13,67 @@
 using namespace vte;
 
 TypstHighlighter::TypstHighlighter(QTextDocument *p_document, const TextEditorConfig &p_config)
-    : VSyntaxHighlighter(p_document) {
+    : VSyntaxHighlighter(nullptr) {
+  setParent(p_document);
   m_refreshTimer.setSingleShot(true);
   connect(&m_refreshTimer, &QTimer::timeout, this, [this]() {
     rehighlight();
     emit highlightingUpdated();
   });
+  // Map before Qt rehighlights the changed blocks, not on a later full refresh.
   connect(p_document, &QTextDocument::contentsChange, this,
-          [this](int, int p_removed, int p_added) {
+          [this](int p_position, int p_removed, int p_added) {
             if (p_removed || p_added) {
-              invalidate();
+              m_acceptHighlights = false;
+              mapRanges(p_position, p_removed, p_added);
             }
           });
+  setDocument(p_document);
   refreshTheme(p_config);
 }
 
 void TypstHighlighter::setGeneration(quint64 p_generation) {
-  // Qt rehighlighting advances the document revision without changing source.
-  // Only source edits and compiler generations invalidate parser ranges.
-  if (m_generation != p_generation) {
-    invalidate();
-  }
+  // Freshness gates incoming results, not the last displayed formatting.
   m_generation = p_generation;
   m_acceptHighlights = p_generation != 0;
 }
 
 void TypstHighlighter::invalidate() {
   m_acceptHighlights = false;
-  if (!m_blocks.isEmpty()) {
-    m_blocks.clear();
+  if (!m_ranges.isEmpty()) {
+    m_ranges.clear();
     // Never re-enter the document's contentsChange/layout stack.
     m_refreshTimer.start(0);
   }
+}
+
+void TypstHighlighter::mapRanges(int p_position, int p_removed, int p_added) {
+  const int removedEnd = p_position + p_removed;
+  const int delta = p_added - p_removed;
+  int count = 0;
+  int maxEnd = 0;
+  for (int i = 0; i < m_ranges.size(); ++i) {
+    auto &range = m_ranges[i];
+    if (p_removed && p_position <= range.m_start && removedEnd >= range.m_end)
+      continue;
+    if (range.m_end > p_position) {
+      if (range.m_start >= removedEnd) {
+        range.m_start += delta;
+        range.m_end += delta;
+      } else {
+        range.m_start = qMin(range.m_start, p_position);
+        range.m_end = qMax(p_position + p_added, range.m_end + delta);
+      }
+    }
+    if (range.m_end <= range.m_start)
+      continue;
+    maxEnd = qMax(maxEnd, range.m_end);
+    range.m_maxEnd = maxEnd;
+    if (count != i)
+      m_ranges[count] = std::move(range);
+    ++count;
+  }
+  m_ranges.resize(count);
 }
 
 void TypstHighlighter::setHighlights(quint64 p_generation,
@@ -52,7 +82,8 @@ void TypstHighlighter::setHighlights(quint64 p_generation,
   if (!m_acceptHighlights || p_generation != m_generation) {
     return;
   }
-  m_blocks.clear();
+  m_ranges.clear();
+  m_ranges.reserve(p_highlights.size());
   auto doc = document();
   const int limit = doc->characterCount() - 1;
   const auto boundary = [doc, limit](int p_pos) {
@@ -67,14 +98,14 @@ void TypstHighlighter::setHighlights(quint64 p_generation,
         !boundary(source.m_start) || !boundary(source.m_end)) {
       continue;
     }
-    for (auto block = doc->findBlock(source.m_start);
-         block.isValid() && block.position() < source.m_end; block = block.next()) {
-      const int start = qMax(source.m_start, block.position());
-      const int end = qMin(source.m_end, block.position() + block.length() - 1);
-      if (end > start) {
-        m_blocks[block.blockNumber()].append({start - block.position(), end - start, kind});
-      }
-    }
+    m_ranges.append({source.m_start, source.m_end, 0, kind});
+  }
+  std::stable_sort(m_ranges.begin(), m_ranges.end(),
+                   [](const Range &p_a, const Range &p_b) { return p_a.m_start < p_b.m_start; });
+  int maxEnd = 0;
+  for (auto &range : m_ranges) {
+    maxEnd = qMax(maxEnd, range.m_end);
+    range.m_maxEnd = maxEnd;
   }
   m_refreshTimer.stop();
   rehighlight();
@@ -102,15 +133,19 @@ void TypstHighlighter::refreshTheme(const TextEditorConfig &p_config, int p_zoom
 void TypstHighlighter::highlightBlock(const QString &p_text) {
   const auto block = currentBlock();
   auto data = TextBlockData::get(block);
-  if (m_acceptHighlights) {
-    const auto ranges = m_blocks.constFind(block.blockNumber());
-    if (ranges != m_blocks.constEnd()) {
-      for (const auto &range : ranges.value()) {
-        const auto format = m_formats.constFind(range.m_kind);
-        if (format != m_formats.constEnd()) {
-          setFormat(range.m_start, range.m_length, format.value());
-        }
-      }
+  const int blockStart = block.position();
+  const int blockEnd = blockStart + p_text.size();
+  auto range = std::upper_bound(m_ranges.constBegin(), m_ranges.constEnd(), blockStart,
+                                [](int p_start, const Range &p_range) {
+                                  return p_start < p_range.m_maxEnd;
+                                });
+  for (; range != m_ranges.constEnd() && range->m_start < blockEnd; ++range) {
+    const int start = qMax(blockStart, range->m_start);
+    const int end = qMin(blockEnd, range->m_end);
+    if (start < end) {
+      const auto format = m_formats.constFind(range->m_kind);
+      if (format != m_formats.constEnd())
+        setFormat(start - blockStart, end - start, format.value());
     }
   }
   if (!p_text.isEmpty() && m_spellCheckEnabled &&

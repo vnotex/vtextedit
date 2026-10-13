@@ -148,8 +148,6 @@ public:
                      });
     QObject::connect(bridge, &TypstCompilerBridge::generationChanged, q,
                      [this](quint64 p_epoch, quint64 p_generation) {
-                       host->clear();
-                       source->typstHighlighter()->invalidate();
                        source->typstHighlighter()->setGeneration(p_generation);
                        pane->setCurrentGeneration(p_epoch, p_generation);
                        pdfDelivered = 0;
@@ -442,6 +440,11 @@ void VTypstEditor::setConfig(const QSharedPointer<TypstEditorConfig> &p_config) 
   if (!p_config) {
     return;
   }
+  if (d->config->m_projectRoot != QDir(p_config->m_projectRoot).absolutePath() ||
+      d->config->m_mainFile != normalizedFile(p_config->m_mainFile)) {
+    d->host->clear();
+    d->source->typstHighlighter()->invalidate();
+  }
   d->config = QSharedPointer<TypstEditorConfig>::create(*p_config);
   d->normalizeConfig();
   d->source->applyConfig(d->config->m_textEditorConfig);
@@ -452,8 +455,14 @@ void VTypstEditor::setConfig(const QSharedPointer<TypstEditorConfig> &p_config) 
 }
 
 void VTypstEditor::setProject(const QString &p_root, const QString &p_mainFile) {
-  d->config->m_projectRoot = QDir(p_root).absolutePath();
-  d->config->m_mainFile = normalizedFile(p_mainFile);
+  const auto root = QDir(p_root).absolutePath();
+  const auto mainFile = normalizedFile(p_mainFile);
+  if (d->config->m_projectRoot != root || d->config->m_mainFile != mainFile) {
+    d->host->clear();
+    d->source->typstHighlighter()->invalidate();
+  }
+  d->config->m_projectRoot = root;
+  d->config->m_mainFile = mainFile;
   d->updateInput();
 }
 
@@ -467,6 +476,7 @@ void VTypstEditor::setActiveFile(const QString &p_file) {
   d->overlays.insert(d->activeFile, document()->toPlainText());
   d->activeFile = file;
   d->host->setActiveFile(file);
+  d->source->typstHighlighter()->invalidate();
   d->updateInput();
 }
 

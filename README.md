@@ -220,7 +220,12 @@ without wrapping; block evaluations and split-page fragments within an evaluatio
 vertically. There are no buttons, labels or nested scrolling.
 Nested figure/table ownership avoids redundant cards. Unmapped/generated/imported objects
 remain in the page preview rather than being attached to guessed active-source offsets.
-Stale in-place cards are removed when input changes.
+While edits are being parsed, the last syntax highlighting and rendered in-place cards
+stay visible. Their source ranges follow insertions and deletions, including line changes;
+only spans deleted or replaced in full lose their cached display. Current parser results
+replace the provisional highlighting, and successful compilation replaces the cards.
+Compilation errors retain the last rendered cards. Changing the active file or project
+identity clears source-attached cached state rather than applying it to another file.
 
 Both PDF modes use Qt Pdf text extraction for **page-local** drag selection, Copy,
 Select page text, search, zoom/fit and links. A drag is clamped to its owning page;

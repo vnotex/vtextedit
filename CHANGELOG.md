@@ -29,6 +29,10 @@
 
 ### Behavior changes
 
+- Typst edits retain the last syntax highlighting and rendered in-place previews while
+  parsing/compilation is pending instead of clearing the document on every keystroke.
+  Cached source ranges follow edits; deleted/replaced spans and file/project identity
+  changes clear the affected state. Failed compilation keeps last-good preview cards.
 - Typst inline previews align to their source span's start, including in exclusive bands
   and wrapped continuations. Rows fit the remaining wrapped-line width; in no-wrap mode,
   their full source-aligned extent is reachable through the editor's horizontal scrollbar.

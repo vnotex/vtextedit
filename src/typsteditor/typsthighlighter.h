@@ -12,8 +12,8 @@ class TextEditorConfig;
 
 // Formatting consumes only the asynchronous official-parser result. Block user
 // data belongs to the shared editor/layout/spell-check infrastructure.
-// Source edits and compiler-generation changes invalidate ranges; rehighlighting,
-// theme refreshes and zoom preserve them without modifying source or undo history.
+// Source edits map the last parser ranges until current results replace them.
+// Rehighlighting, theme refreshes and zoom never modify source or undo history.
 class TypstHighlighter : public VSyntaxHighlighter {
   Q_OBJECT
 public:
@@ -34,12 +34,16 @@ protected:
 private:
   struct Range {
     int m_start = 0;
-    int m_length = 0;
+    int m_end = 0;
+    int m_maxEnd = 0;
     QString m_kind;
   };
 
+  void mapRanges(int p_position, int p_removed, int p_added);
+
   QHash<QString, QTextCharFormat> m_formats;
-  QHash<int, QVector<Range>> m_blocks;
+  // Source ordered, with prefix maximum ends for nested-range overlap lookup.
+  QVector<Range> m_ranges;
   QTimer m_refreshTimer;
   quint64 m_generation = 0;
   bool m_acceptHighlights = false;

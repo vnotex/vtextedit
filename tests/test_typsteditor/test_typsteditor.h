@@ -19,6 +19,10 @@ private slots:
   void supersededCompileCannotPublish();
   void syntaxHighlightsSurviveRehighlightAndThemeChanges();
   void syntaxHighlightsFollowEditsAndErrors();
+  void lazyHighlightsFollowPendingEdits();
+  void lazyPreviewsFollowPendingEdits();
+  void lazyStateClearsOnReplacement_data();
+  void lazyStateClearsOnReplacement();
   void pdfBudgetFailurePreservesOutputAndRecovers();
   void repeatedCloseDuringPendingOutput();
 };

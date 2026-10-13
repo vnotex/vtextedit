@@ -30,6 +30,7 @@
 #include <QtEndian>
 
 #include <cmath>
+#include <algorithm>
 #include <functional>
 #include <memory>
 
@@ -1395,6 +1396,226 @@ void TestTypstEditor::syntaxHighlightsSurviveRehighlightAndThemeChanges() {
   QCOMPARE(document->isModified(), modified);
   QCOMPARE(document->availableUndoSteps(), undoSteps);
   QCOMPARE(textChangeCount(changes), 0);
+}
+
+void TestTypstEditor::lazyHighlightsFollowPendingEdits() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto themePath = root.filePath(QStringLiteral("syntax.theme"));
+  QVERIFY(writeTypstTheme(themePath, QStringLiteral("#aa2233")));
+  auto config = editorConfig(root.path());
+  config->m_textEditorConfig->m_theme = Theme::createThemeFromFile(themePath);
+  const auto source = QStringLiteral("/* first\nsecond */\n#let label = \"string\"\nplain\n");
+  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::InPlacePreview, config);
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  config->m_debounceMs = 60000;
+  fixture.editor.setConfig(config);
+  auto *document = fixture.editor.document();
+  auto *highlighter = document->findChild<QSyntaxHighlighter *>();
+  QVERIFY(highlighter);
+  const auto checkFormats = [&]() {
+    const auto text = document->toPlainText();
+    QCOMPARE(fixture.editor.compileStatus(), VTypstEditor::CompileStatus::Compiling);
+    QCOMPARE(syntaxFormatAt(document, text.indexOf(QStringLiteral("first"))).foreground().color(),
+             QColor("#557755"));
+    QCOMPARE(syntaxFormatAt(document, text.indexOf(QStringLiteral("second"))).foreground().color(),
+             QColor("#557755"));
+    QCOMPARE(syntaxFormatAt(document, text.indexOf(QStringLiteral("string"))).foreground().color(),
+             QColor("#aa2233"));
+    QVERIFY(syntaxFormatAt(document, text.indexOf(QStringLiteral("plain"))).isEmpty());
+  };
+  QCoreApplication::processEvents();
+  checkFormats();
+  QTextCursor cursor(document);
+  cursor.setPosition(source.indexOf(QStringLiteral("string")));
+  fixture.edit()->setTextCursor(cursor);
+  QTest::keyClicks(fixture.edit(), "x");
+  QCoreApplication::processEvents();
+  checkFormats();
+  QCOMPARE(syntaxFormatAt(document, cursor.position()).foreground().color(), QColor("#aa2233"));
+  document->undo();
+  QCoreApplication::processEvents();
+  checkFormats();
+  document->redo();
+  QCoreApplication::processEvents();
+  checkFormats();
+
+  cursor.setPosition(0);
+  cursor.insertText(QStringLiteral("\U0001F680\n"));
+  QCoreApplication::processEvents();
+  checkFormats();
+  QVERIFY(syntaxFormatAt(document, 0).isEmpty());
+  cursor.setPosition(document->toPlainText().indexOf(QStringLiteral("second")));
+  cursor.insertText(QStringLiteral("\n"));
+  QCoreApplication::processEvents();
+  checkFormats();
+  cursor.deletePreviousChar();
+  QCoreApplication::processEvents();
+  checkFormats();
+  highlighter->rehighlight();
+  checkFormats();
+
+  const auto darkPath = root.filePath(QStringLiteral("dark.theme"));
+  QVERIFY(writeTypstTheme(darkPath, QStringLiteral("#ff8899")));
+  auto dark = QSharedPointer<TypstEditorConfig>::create(*config);
+  dark->m_textEditorConfig = QSharedPointer<TextEditorConfig>::create(*config->m_textEditorConfig);
+  dark->m_textEditorConfig->m_theme = Theme::createThemeFromFile(darkPath);
+  fixture.editor.setConfig(dark);
+  QCoreApplication::processEvents();
+  QCOMPARE(syntaxFormatAt(document, document->toPlainText().indexOf(QStringLiteral("string")))
+               .foreground().color(), QColor("#ff8899"));
+
+  cursor.setPosition(document->toPlainText().indexOf(QStringLiteral("/*")));
+  cursor.deleteChar();
+  cursor.deleteChar();
+  QCoreApplication::processEvents();
+  // Old comment semantics remain until the official parser replaces them.
+  const int second = document->toPlainText().indexOf(QStringLiteral("second"));
+  QCOMPARE(syntaxFormatAt(document, second).foreground().color(), QColor("#557755"));
+  fixture.editor.retryCompilation();
+  QVERIFY(waitUntil([&]() {
+    return fixture.editor.compileStatus() != VTypstEditor::CompileStatus::Compiling;
+  }));
+  QVERIFY(syntaxFormatAt(document, second).foreground().color() != QColor("#557755"));
+}
+
+void TestTypstEditor::lazyPreviewsFollowPendingEdits() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  auto config = editorConfig(root.path());
+  const auto source = QStringLiteral("#set text(fill: red, size: 24pt)\nBefore\n"
+                                     "$x^2$\nBetween\n$ y^2 $\nAfter");
+  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::InPlacePreview, config);
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  const auto cards = [&]() {
+    auto result = fixture.editor.findChildren<QWidget *>(QStringLiteral("typstPreviewCard"));
+    std::sort(result.begin(), result.end(), [](QWidget *p_a, QWidget *p_b) {
+      return p_a->y() < p_b->y();
+    });
+    return result;
+  };
+  QVERIFY(waitUntil([&]() {
+    const auto found = cards();
+    return found.size() == 2 && coloredPixels(widgetImage(found[0]), true) > 20 &&
+           coloredPixels(widgetImage(found[1]), true) > 20;
+  }));
+  config->m_debounceMs = 60000;
+  fixture.editor.setConfig(config);
+  QCoreApplication::processEvents();
+  QPointer<QWidget> first = cards().value(0);
+  QPointer<QWidget> second = cards().value(1);
+  QVERIFY(first && second);
+  const auto firstImage = widgetImage(first);
+  const auto secondImage = widgetImage(second);
+  auto *document = fixture.editor.document();
+  auto cursor = document->find(QStringLiteral("red"));
+  cursor.insertText(QStringLiteral("rgb(\"#0000ff\")"));
+  cursor.setPosition(document->toPlainText().indexOf(QStringLiteral("$x")));
+  cursor.insertText(QStringLiteral("\U0001F680\n\n"));
+  cursor.setPosition(document->toPlainText().indexOf(QStringLiteral("x^2")) + 1);
+  fixture.edit()->setTextCursor(cursor);
+  QTest::keyClicks(fixture.edit(), "x");
+  QCoreApplication::processEvents();
+  QCOMPARE(fixture.editor.compileStatus(), VTypstEditor::CompileStatus::Compiling);
+  QVERIFY(first && first->isVisible() && second && second->isVisible());
+  QCOMPARE(widgetImage(first), firstImage);
+  QCOMPARE(widgetImage(second), secondImage);
+  cursor.setPosition(document->toPlainText().indexOf(QStringLiteral("$xx")));
+  QVERIFY(first->geometry().bottom() < fixture.edit()->cursorRect(cursor).top());
+  cursor.setPosition(document->toPlainText().indexOf(QStringLiteral("$ y")));
+  QVERIFY(second->geometry().top() > fixture.edit()->cursorRect(cursor).bottom());
+  cursor.setPosition(document->toPlainText().indexOf(QStringLiteral("After")));
+  QVERIFY(second->geometry().bottom() < fixture.edit()->cursorRect(cursor).top());
+  const int undoSteps = document->availableUndoSteps();
+  document->undo();
+  QCoreApplication::processEvents();
+  QVERIFY(first && second);
+  QCOMPARE(widgetImage(first), firstImage);
+  QCOMPARE(widgetImage(second), secondImage);
+  document->redo();
+  QCoreApplication::processEvents();
+  QCOMPARE(document->availableUndoSteps(), undoSteps);
+
+  cursor = document->find(QStringLiteral("$xx^2$"));
+  QVERIFY(!cursor.isNull());
+  cursor.removeSelectedText();
+  QCoreApplication::processEvents();
+  QVERIFY(first.isNull());
+  QVERIFY(second && second->isVisible());
+  // Removing the first reservation changes fractional raster placement, not output.
+  QVERIFY(coloredPixels(widgetImage(second), true) > 20);
+  QCOMPARE(coloredPixels(widgetImage(second), false), 0);
+  QCOMPARE(cards().size(), 1);
+  cursor.movePosition(QTextCursor::End);
+  cursor.insertText(QStringLiteral("\n#let broken = ("));
+  fixture.editor.retryCompilation();
+  QVERIFY(waitUntil([&]() {
+    return fixture.editor.compileStatus() == VTypstEditor::CompileStatus::Error;
+  }));
+  QVERIFY(waitUntil([&]() {
+    const auto found = cards();
+    return found.size() == 1 && found[0]->isVisible() &&
+           coloredPixels(widgetImage(found[0]), true) > 20 &&
+           coloredPixels(widgetImage(found[0]), false) == 0;
+  }));
+  cursor = document->find(QStringLiteral("#let broken = ("));
+  QVERIFY(!cursor.isNull());
+  cursor.removeSelectedText();
+  fixture.editor.retryCompilation();
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  QVERIFY(waitUntil([&]() {
+    const auto found = cards();
+    return found.size() == 1 && coloredPixels(widgetImage(found[0]), false) > 20 &&
+           coloredPixels(widgetImage(found[0]), true) == 0;
+  }));
+}
+
+void TestTypstEditor::lazyStateClearsOnReplacement_data() {
+  QTest::addColumn<int>("replacement");
+  QTest::newRow("buffer") << 0;
+  QTest::newRow("active-file") << 1;
+  QTest::newRow("project") << 2;
+  QTest::newRow("config-project") << 3;
+}
+
+void TestTypstEditor::lazyStateClearsOnReplacement() {
+  QFETCH(int, replacement);
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  auto config = editorConfig(root.path());
+  EditorFixture fixture(root.path(), QStringLiteral("// comment\n$ x^2 $\n"),
+                        VTypstEditor::Mode::InPlacePreview, config);
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  QVERIFY(waitUntil([&]() {
+    return fixture.editor.findChild<QWidget *>(QStringLiteral("typstPreviewCard"));
+  }));
+  config->m_debounceMs = 60000;
+  fixture.editor.setConfig(config);
+  // Reapplying the same identity must not clear the pending display.
+  fixture.editor.setProject(root.path(), QStringLiteral("main.typ"));
+  QCoreApplication::processEvents();
+  QVERIFY(fixture.editor.findChild<QWidget *>(QStringLiteral("typstPreviewCard")));
+  QVERIFY(!syntaxFormatAt(fixture.editor.document(), 3).isEmpty());
+  switch (replacement) {
+  case 0:
+    fixture.editor.setFileOverlay(QStringLiteral("main.typ"), QStringLiteral("plain new text"));
+    break;
+  case 1:
+    fixture.editor.setActiveFile(QStringLiteral("other.typ"));
+    break;
+  case 2:
+    fixture.editor.setProject(root.path(), QStringLiteral("other.typ"));
+    break;
+  case 3:
+    config->m_projectRoot = root.filePath(QStringLiteral("different"));
+    fixture.editor.setConfig(config);
+    break;
+  }
+  QCoreApplication::processEvents();
+  QVERIFY(!fixture.editor.findChild<QWidget *>(QStringLiteral("typstPreviewCard")));
+  auto *document = fixture.editor.document();
+  for (int position = 0; position < document->characterCount() - 1; ++position)
+    QVERIFY(syntaxFormatAt(document, position).isEmpty());
 }
 
 void TestTypstEditor::syntaxHighlightsFollowEditsAndErrors() {

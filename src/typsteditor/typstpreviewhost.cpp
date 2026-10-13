@@ -461,6 +461,8 @@ public:
       available = qMax<qreal>(1, available);
       const qreal dpiScale = m_edit->logicalDpiX() / 72.0;
       for (auto &item : m_items) {
+        if (!item.m_source.isValid())
+          continue;
         const auto &first = item.m_occurrences.first();
         TextDocumentLayout::WidgetPreviewSpec spec;
         spec.m_id = item.m_id;
@@ -714,10 +716,37 @@ TypstPreviewHost::TypstPreviewHost(TypstSourceEditor *p_editor, const TypstEdito
     d->m_geometryDirty = true;
     d->schedule();
   });
-  connect(d->m_doc, &QTextDocument::contentsChange, this, [this](int, int p_removed, int p_added) {
-    if (p_removed || p_added)
-      clear();
-  });
+  connect(d->m_doc, &QTextDocument::contentsChange, this,
+          [this](int p_position, int p_removed, int p_added) {
+            if ((!p_removed && !p_added) || d->m_items.isEmpty())
+              return;
+            const int removedEnd = p_position + p_removed;
+            const int delta = p_added - p_removed;
+            for (auto &item : d->m_items) {
+              auto &source = item.m_source;
+              if (!source.isValid())
+                continue;
+              if (p_removed && p_position <= source.m_start && removedEnd >= source.m_end) {
+                // Keep slots stable: live cards hold pointers into their item.
+                delete item.m_widget.data();
+                source = {};
+                continue;
+              }
+              if (source.m_end > p_position) {
+                if (source.m_start >= removedEnd) {
+                  source.m_start += delta;
+                  source.m_end += delta;
+                } else {
+                  source.m_start = qMin(source.m_start, p_position);
+                  source.m_end = qMax(p_position + p_added, source.m_end + delta);
+                }
+              }
+            }
+            // Remap reservations only when the document/layout stack is idle.
+            // Surviving widgets and their page images remain available meanwhile.
+            d->m_publish = true;
+            d->schedule();
+          });
   connect(d->m_edit->verticalScrollBar(), &QScrollBar::valueChanged, this, [this]() {
     // A deliberate scroll supersedes an anchor saved before deferred work.
     if (!d->m_draining && !d->m_layout->isBusy() && !d->m_restoreAnchor)
@@ -850,8 +879,15 @@ void TypstPreviewHost::applyConfig(const TypstEditorConfig &p_config) {
   // Config changes are explicit rerender demand, including recovery after a
   // previous resource limit failure. Existing in-flight transport is bounded.
   d->m_failed.clear();
-  d->m_images.clear();
-  d->m_bytes = 0;
+  for (auto it = d->m_images.begin(); it != d->m_images.end();) {
+    if (qint64(it->m_image.width()) * it->m_image.height() > d->m_maxPixels) {
+      d->m_bytes -= qint64(it->m_image.bytesPerLine()) * it->m_image.height();
+      it = d->m_images.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  d->evict();
   for (int index : d->m_visible)
     d->m_recreate.insert(index);
   d->m_publish = true;
