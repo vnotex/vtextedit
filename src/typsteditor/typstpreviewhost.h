@@ -17,16 +17,20 @@ public:
                    QObject *p_parent = nullptr);
   ~TypstPreviewHost() Q_DECL_OVERRIDE;
 
+  void setCurrentGeneration(quint64 p_epoch, quint64 p_generation);
   void setSnapshot(const TypstSnapshot &p_snapshot);
   void clear();
   void setEnabled(bool p_enabled);
   // A null image is a terminal failure for this request, not an automatic retry.
-  void setPageImage(quint64 p_snapshot, int p_page, qreal p_scale, const QImage &p_image);
+  void setPageImage(quint64 p_epoch, quint64 p_snapshot, int p_page, qreal p_scale,
+                    const QImage &p_image);
+  void cancelRaster(quint64 p_epoch, quint64 p_snapshot, int p_page, qreal p_scale);
   void setActiveFile(const QString &p_file);
   void applyConfig(const TypstEditorConfig &p_config);
 
 signals:
-  void rasterRequested(quint64 p_snapshot, int p_page, qreal p_scale);
+  void rasterRequested(quint64 p_epoch, quint64 p_snapshot, int p_page, qreal p_scale);
+  void errorOccurred(const QString &p_message);
 
 protected:
   bool eventFilter(QObject *p_object, QEvent *p_event) Q_DECL_OVERRIDE;

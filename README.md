@@ -223,9 +223,14 @@ remain in the page preview rather than being attached to guessed active-source o
 While edits are being parsed, the last syntax highlighting and rendered in-place cards
 stay visible. Their source ranges follow insertions and deletions, including line changes;
 only spans deleted or replaced in full lose their cached display. Current parser results
-replace the provisional highlighting, and successful compilation replaces the cards.
-Compilation errors retain the last rendered cards. Changing the active file or project
-identity clears source-attached cached state rather than applying it to another file.
+replace the provisional highlighting. A compiled preview is staged until all its visible
+page fragments have rendered, then its geometry and images replace the old cards together.
+Superseded raster requests are cancellations, not “Preview unavailable” failures; continuous
+typing keeps the last-good output through both compilation and rasterization. Compilation
+or rendering failures retain that output. Displayed and pending images share the bounded
+in-place cache budget; lowering configured limits may evict images to honor the new limits.
+Changing the active file or project identity clears source-attached cached state rather
+than applying it to another file.
 
 Both PDF modes use Qt Pdf text extraction for **page-local** drag selection, Copy,
 Select page text, search, zoom/fit and links. A drag is clamped to its owning page;

@@ -28,7 +28,7 @@ public:
   void retry();
   void setDisplayedSnapshot(const TypstSnapshot &p_snapshot);
   void requestPdf(quint64 p_snapshot);
-  void requestRaster(quint64 p_snapshot, int p_page, qreal p_scale);
+  void requestRaster(quint64 p_epoch, quint64 p_snapshot, int p_page, qreal p_scale);
   void sourceToOutput(const QString &p_file, int p_offset);
   void outputToSource(quint64 p_snapshot, int p_page, const QPointF &p_point);
   quint64 epoch() const { return m_epoch; }
@@ -43,8 +43,11 @@ signals:
   void diagnosticsReady(const QVector<vte::TypstDiagnostic> &p_diagnostics);
   void snapshotReady(const vte::TypstSnapshot &p_snapshot);
   void pdfReady(const vte::TypstSnapshot &p_snapshot, const QByteArray &p_pdf);
-  // A null image completes a failed raster request; consumers must not retry the same input.
-  void pageImageReady(quint64 p_snapshot, int p_page, qreal p_scale, const QImage &p_image);
+  // Each admitted raster completes once: a ready image (null on failure), or cancellation.
+  void pageImageReady(quint64 p_epoch, quint64 p_snapshot, int p_page, qreal p_scale,
+                      const QImage &p_image);
+  // Superseded inputs are not failures and must not be retried against their old snapshot.
+  void rasterCancelled(quint64 p_epoch, quint64 p_snapshot, int p_page, qreal p_scale);
   void outputLocationReady(quint64 p_snapshot, int p_page, const QPointF &p_point);
   void sourceLocationReady(const QString &p_file, int p_start, int p_end);
   void externalLinkRequested(const QUrl &p_url);
@@ -53,7 +56,7 @@ signals:
 private:
   void invalidate();
   void start();
-  void stop();
+  void stop(bool p_failure = false);
   void pump();
   void send(QJsonObject p_header);
   void enqueue(QJsonObject p_header);
@@ -61,7 +64,7 @@ private:
   void handleReply(const QJsonObject &p_header, QByteArray p_payload);
   void fail(const QString &p_message, bool p_unavailable = false);
   void finishRequest();
-  void failRaster(const QJsonObject &p_request);
+  void completeRaster(const QJsonObject &p_request, bool p_cancelled);
   void updateDependencies(const QJsonArray &p_dependencies);
   QJsonObject configuration() const;
   QJsonArray retained(bool p_forCompile) const;

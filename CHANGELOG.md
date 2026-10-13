@@ -33,6 +33,10 @@
   parsing/compilation is pending instead of clearing the document on every keystroke.
   Cached source ranges follow edits; deleted/replaced spans and file/project identity
   changes clear the affected state. Failed compilation keeps last-good preview cards.
+- Typst in-place previews now keep the last-good snapshot until all visible replacement
+  page fragments are rendered. Rapid edits cancel superseded raster requests without
+  showing “Preview unavailable”; snapshot geometry and cached images switch together
+  within the existing memory budget, including across compiler restarts.
 - Typst inline previews align to their source span's start, including in exclusive bands
   and wrapped continuations. Rows fit the remaining wrapped-line width; in no-wrap mode,
   their full source-aligned extent is reachable through the editor's horizontal scrollbar.

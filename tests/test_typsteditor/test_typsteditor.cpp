@@ -13,6 +13,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMetaMethod>
 #include <QPdfDocument>
 #include <QPdfSelection>
 #include <QPointer>
@@ -349,6 +350,51 @@ int coloredPixels(const QImage &p_image, bool p_red, QRect *p_bounds = nullptr) 
     }
   }
   return count;
+}
+
+bool observeRasters(QObject *p_editor, TypstRasterObserver *p_observer) {
+  QObject *host = nullptr;
+  QObject *bridge = nullptr;
+  for (auto *child : p_editor->findChildren<QObject *>()) {
+    if (child->metaObject()->indexOfSignal("rasterRequested(quint64,quint64,int,qreal)") >= 0)
+      host = child;
+    if (child->metaObject()->indexOfSignal("rasterCancelled(quint64,quint64,int,qreal)") >= 0)
+      bridge = child;
+  }
+  const auto connectSignal = [p_observer](QObject *p_sender, const char *p_signature) {
+    if (!p_sender)
+      return false;
+    const auto *senderMeta = p_sender->metaObject();
+    const auto *observerMeta = p_observer->metaObject();
+    const int signal = senderMeta->indexOfSignal(p_signature);
+    const int slot = observerMeta->indexOfSlot(p_signature);
+    return signal >= 0 && slot >= 0 &&
+           QObject::connect(p_sender, senderMeta->method(signal), p_observer,
+                            observerMeta->method(slot), Qt::DirectConnection);
+  };
+  // Construction already connected the bridge directly to the host. Our direct
+  // observer therefore edits after the real request is sent, before its reply.
+  return connectSignal(host, "rasterRequested(quint64,quint64,int,qreal)") &&
+         connectSignal(bridge, "rasterCancelled(quint64,quint64,int,qreal)") &&
+         connectSignal(bridge, "pageImageReady(quint64,quint64,int,qreal,QImage)");
+}
+
+QList<QImage> previewImages(VTypstEditor &p_editor) {
+  auto cards = p_editor.findChildren<QWidget *>(QStringLiteral("typstPreviewCard"));
+  std::sort(cards.begin(), cards.end(), [](QWidget *p_a, QWidget *p_b) {
+    return p_a->y() == p_b->y() ? p_a->x() < p_b->x() : p_a->y() < p_b->y();
+  });
+  QList<QImage> images;
+  for (auto *card : cards) {
+    if (card->isVisible())
+      images.append(widgetImage(card));
+  }
+  return images;
+}
+
+bool previewHasOnlyColor(const QList<QImage> &p_images, bool p_red) {
+  return p_images.size() == 1 && coloredPixels(p_images.front(), p_red) > 20 &&
+         coloredPixels(p_images.front(), !p_red) == 0;
 }
 
 int inkPixels(const QImage &p_image, const QRect &p_rect) {
@@ -1568,6 +1614,219 @@ void TestTypstEditor::lazyPreviewsFollowPendingEdits() {
     return found.size() == 1 && coloredPixels(widgetImage(found[0]), false) > 20 &&
            coloredPixels(widgetImage(found[0]), true) == 0;
   }));
+}
+
+void TestTypstEditor::rasterHandoffRetainsLastGoodWhileTyping() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  auto source = splitSource();
+  source.replace(QStringLiteral("fill: red"), QStringLiteral("fill: red, size: 14pt"));
+  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::InPlacePreview);
+  fixture.edit()->setLineWrapMode(QTextEdit::NoWrap);
+  TypstRasterObserver observer;
+  QVERIFY(observeRasters(&fixture.editor, &observer));
+  QSet<int> baselinePages;
+  observer.completed = [&](quint64, quint64, int p_page, qreal, const QImage &p_image) {
+    if (!p_image.isNull())
+      baselinePages.insert(p_page);
+  };
+  QVERIFY2(waitUntil([&]() {
+    return baselinePages.size() >= 2 && previewHasOnlyColor(previewImages(fixture.editor), true);
+  }), qPrintable(fixture.editor.compileMessage()));
+  const auto lastGood = previewImages(fixture.editor);
+  auto *document = fixture.editor.document();
+  document->setModified(false);
+  QSignalSpy changes(document, &QTextDocument::contentsChange);
+  QString expectedSource;
+  int expectedUndo = 0;
+  int expectedChanges = 0;
+  int enters = 0;
+  int cancellations = 0;
+  int obsoleteRequests = 0;
+  bool retained = true;
+  bool failedRaster = false;
+  bool watching = true;
+  QSet<quint64> intercepted;
+  QSet<int> acceptedPages;
+  observer.requested = [&](quint64, quint64 p_snapshot, int p_page, qreal) {
+    if (!watching)
+      return;
+    retained = retained && previewImages(fixture.editor) == lastGood;
+    if (intercepted.contains(p_snapshot)) {
+      ++obsoleteRequests;
+      return;
+    }
+    if (enters < 3) {
+      intercepted.insert(p_snapshot);
+      ++enters;
+      QTest::keyClick(fixture.edit(), Qt::Key_Return);
+      expectedSource += QLatin1Char('\n');
+      expectedUndo = document->availableUndoSteps();
+      expectedChanges = textChangeCount(changes);
+      retained = retained && previewImages(fixture.editor) == lastGood;
+    } else {
+      acceptedPages.insert(p_page);
+    }
+  };
+  observer.cancelled = [&](quint64, quint64 p_snapshot, int, qreal) {
+    if (intercepted.contains(p_snapshot)) {
+      ++cancellations;
+      retained = retained && previewImages(fixture.editor) == lastGood;
+    }
+  };
+  observer.completed = [&](quint64, quint64, int, qreal, const QImage &p_image) {
+    failedRaster = failedRaster || p_image.isNull();
+  };
+  auto cursor = document->find(QStringLiteral("red"));
+  QVERIFY(!cursor.isNull());
+  cursor.insertText(QStringLiteral("rgb(\"#0000ff\")"));
+  cursor = document->find(QStringLiteral("x &= 1"));
+  QVERIFY(!cursor.isNull());
+  cursor.insertText(QStringLiteral("omega^2 + y^2 &= 1"));
+  cursor.movePosition(QTextCursor::End);
+  fixture.edit()->setTextCursor(cursor);
+  fixture.edit()->setFocus();
+  expectedSource = document->toPlainText();
+  QVERIFY2(waitUntil([&]() {
+    return enters == 3 && previewHasOnlyColor(previewImages(fixture.editor), false);
+  }), qPrintable(fixture.editor.compileMessage()));
+  watching = false;
+  QVERIFY2(retained, "An arriving or partially rasterized snapshot replaced the last-good pixels");
+  QCOMPARE(intercepted.size(), 3);
+  QCOMPARE(cancellations, 3);
+  QCOMPARE(obsoleteRequests, 0);
+  QVERIFY(!failedRaster);
+  QVERIFY2(acceptedPages.size() >= 2, "The accepted preview must require multiple visible pages");
+  const auto accepted = previewImages(fixture.editor);
+  QRect oldBounds, newBounds;
+  QVERIFY(coloredPixels(lastGood.front(), true, &oldBounds) > 20);
+  QVERIFY(coloredPixels(accepted.front(), false, &newBounds) > 20);
+  QVERIFY2(newBounds.width() > oldBounds.width() + 10, "The new glyph must use its new crop geometry");
+  QCOMPARE(document->toPlainText(), expectedSource);
+  QCOMPARE(document->availableUndoSteps(), expectedUndo);
+  QCOMPARE(textChangeCount(changes), expectedChanges);
+  QVERIFY(document->isModified());
+  QCOMPARE(fixture.edit()->textCursor().position(), expectedSource.size());
+  QCOMPARE(fixture.edit()->textCursor().anchor(), expectedSource.size());
+}
+
+void TestTypstEditor::rasterHandoffTransitions_data() {
+  QTest::addColumn<int>("transition");
+  QTest::newRow("replace-source") << 0;
+  QTest::newRow("change-file-identity") << 1;
+  QTest::newRow("side-by-side-and-back") << 2;
+  QTest::newRow("restart-with-reused-snapshot-id") << 3;
+}
+
+void TestTypstEditor::rasterHandoffTransitions() {
+  QFETCH(int, transition);
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto source = shortSource(QStringLiteral("#set text(fill: red, size: 24pt)\n$ x $\nAfter"));
+  const auto replacement = shortSource(QStringLiteral(
+      "#set text(fill: rgb(\"#0000ff\"), size: 24pt)\n$ Omega^3 + Omega^2 + Omega $\nAfter"));
+  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::InPlacePreview);
+  TypstRasterObserver observer;
+  QVERIFY(observeRasters(&fixture.editor, &observer));
+  quint64 baselineEpoch = 0;
+  quint64 baselineSnapshot = 0;
+  observer.requested = [&](quint64 p_epoch, quint64 p_snapshot, int, qreal) {
+    baselineEpoch = p_epoch;
+    baselineSnapshot = p_snapshot;
+  };
+  QVERIFY2(waitUntil([&]() {
+    return baselineSnapshot && previewHasOnlyColor(previewImages(fixture.editor), true);
+  }), qPrintable(fixture.editor.compileMessage()));
+  const auto lastGood = previewImages(fixture.editor);
+  auto *document = fixture.editor.document();
+  const auto *paneMeta = fixture.pane()->metaObject();
+  QSignalSpy published(fixture.pane(),
+                       paneMeta->method(paneMeta->indexOfSignal("snapshotPublished(quint64)")));
+  QVERIFY(published.isValid());
+  QSignalSpy changes(document, &QTextDocument::contentsChange);
+  bool armed = true;
+  bool retained = true;
+  bool cleared = false;
+  bool reusedId = false;
+  int expectedUndo = 0;
+  int expectedChanges = 0;
+  int expectedPosition = 0;
+  int expectedAnchor = 0;
+  QString expectedSource;
+  observer.requested = [&](quint64 p_epoch, quint64 p_snapshot, int, qreal) {
+    if (!armed) {
+      if (transition == 3) {
+        retained = retained && previewImages(fixture.editor) == lastGood;
+        reusedId = reusedId || (p_epoch > baselineEpoch && p_snapshot == baselineSnapshot);
+      }
+      return;
+    }
+    armed = false;
+    retained = previewImages(fixture.editor) == lastGood;
+    switch (transition) {
+    case 0:
+      fixture.editor.setFileOverlay(QStringLiteral("main.typ"), QStringLiteral("Plain replacement."));
+      cleared = previewImages(fixture.editor).isEmpty();
+      break;
+    case 1:
+      fixture.editor.setProject(root.path(), QStringLiteral("other.typ"));
+      fixture.editor.setActiveFile(QStringLiteral("other.typ"));
+      fixture.editor.setFileOverlay(QStringLiteral("other.typ"), replacement);
+      cleared = previewImages(fixture.editor).isEmpty();
+      break;
+    case 2:
+      fixture.editor.setMode(VTypstEditor::Mode::SideBySidePreview);
+      cleared = previewImages(fixture.editor).isEmpty();
+      break;
+    case 3:
+      fixture.editor.retryCompilation();
+      retained = retained && previewImages(fixture.editor) == lastGood;
+      break;
+    }
+    expectedSource = document->toPlainText();
+    expectedUndo = document->availableUndoSteps();
+    expectedChanges = textChangeCount(changes);
+    expectedPosition = fixture.edit()->textCursor().position();
+    expectedAnchor = fixture.edit()->textCursor().anchor();
+  };
+  auto cursor = document->find(QStringLiteral("red"));
+  QVERIFY(!cursor.isNull());
+  cursor.insertText(QStringLiteral("rgb(\"#0000ff\")"));
+  // Edit the equation, not the 'x' in the preceding text rule.
+  cursor.setPosition(document->toPlainText().indexOf(QStringLiteral("$ x")) + 2);
+  cursor.movePosition(QTextCursor::NextCharacter, QTextCursor::KeepAnchor);
+  cursor.insertText(QStringLiteral("z^3 + y^2"));
+  fixture.edit()->setTextCursor(cursor);
+  QVERIFY2(waitUntil([&]() { return !armed; }), qPrintable(fixture.editor.compileMessage()));
+  QVERIFY2(retained, "The pending raster discarded the previous preview before the transition");
+  if (transition != 3)
+    QVERIFY(cleared);
+  if (transition == 0) {
+    QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+    QVERIFY(previewImages(fixture.editor).isEmpty());
+  } else {
+    if (transition == 2) {
+      QVERIFY2(waitUntil([&]() { return !published.isEmpty(); }),
+               qPrintable(fixture.editor.compileMessage()));
+      QCOMPARE(fixture.editor.mode(), VTypstEditor::Mode::SideBySidePreview);
+      QVERIFY(previewImages(fixture.editor).isEmpty());
+      fixture.editor.setMode(VTypstEditor::Mode::InPlacePreview);
+    }
+    QVERIFY2(waitUntil([&]() {
+      return previewHasOnlyColor(previewImages(fixture.editor), false);
+    }), qPrintable(fixture.editor.compileMessage()));
+    if (transition == 1)
+      QCOMPARE(fixture.editor.activeFile(), QStringLiteral("other.typ"));
+    if (transition == 3) {
+      QVERIFY2(reusedId, "Retry must exercise a new helper epoch reusing its first snapshot ID");
+      QVERIFY(retained);
+    }
+  }
+  QCOMPARE(document->toPlainText(), expectedSource);
+  QCOMPARE(document->availableUndoSteps(), expectedUndo);
+  QCOMPARE(textChangeCount(changes), expectedChanges);
+  QCOMPARE(fixture.edit()->textCursor().position(), expectedPosition);
+  QCOMPARE(fixture.edit()->textCursor().anchor(), expectedAnchor);
 }
 
 void TestTypstEditor::lazyStateClearsOnReplacement_data() {

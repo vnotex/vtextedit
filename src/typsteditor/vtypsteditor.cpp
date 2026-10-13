@@ -148,6 +148,7 @@ public:
                      });
     QObject::connect(bridge, &TypstCompilerBridge::generationChanged, q,
                      [this](quint64 p_epoch, quint64 p_generation) {
+                       host->setCurrentGeneration(p_epoch, p_generation);
                        source->typstHighlighter()->setGeneration(p_generation);
                        pane->setCurrentGeneration(p_epoch, p_generation);
                        pdfDelivered = 0;
@@ -244,6 +245,8 @@ public:
                      &TypstCompilerBridge::requestRaster);
     QObject::connect(bridge, &TypstCompilerBridge::pageImageReady, host,
                      &TypstPreviewHost::setPageImage);
+    QObject::connect(bridge, &TypstCompilerBridge::rasterCancelled, host,
+                     &TypstPreviewHost::cancelRaster);
     QObject::connect(pane, &TypstPreviewPane::sourceLocationRequested, bridge,
                      &TypstCompilerBridge::outputToSource);
     QObject::connect(bridge, &TypstCompilerBridge::sourceLocationReady, q,
@@ -258,6 +261,8 @@ public:
                      &VTypstEditor::externalLinkRequested);
     QObject::connect(bridge, &TypstCompilerBridge::externalLinkRequested, q,
                      &VTypstEditor::externalLinkRequested);
+    QObject::connect(host, &TypstPreviewHost::errorOccurred, q,
+                     [this](const QString &p_error) { setStatus(CompileStatus::Error, p_error); });
     QObject::connect(pane, &TypstPreviewPane::errorOccurred, q,
                      [this](const QString &p_error) { setStatus(CompileStatus::Error, p_error); });
     QObject::connect(bridge, &TypstCompilerBridge::operationFailed, q,

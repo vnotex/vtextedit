@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <memory>
 
 #include "typstsourceeditor.h"
 #include <markdowneditor/textdocumentlayout.h>
@@ -164,6 +165,19 @@ QVector<Part> partsFor(const QVector<TypstPreviewOccurrence> &p_occurrences, qre
   return parts;
 }
 
+void appendPartNeeds(const QVector<Part> &p_parts, const QRectF &p_clip,
+                     QHash<int, qreal> &p_needs, qreal p_dpr) {
+  auto part = std::lower_bound(p_parts.constBegin(), p_parts.constEnd(), p_clip.top(),
+                               [](const Part &p_part, qreal p_top) {
+                                 return p_part.m_maxBottom < p_top;
+                               });
+  for (; part != p_parts.constEnd() && part->m_imageRect.top() <= p_clip.bottom(); ++part) {
+    if (part->m_region && part->m_imageRect.intersects(p_clip))
+      p_needs[part->m_region->m_page] =
+          qMax(p_needs.value(part->m_region->m_page), part->m_scale * p_dpr);
+  }
+}
+
 // One viewport-sized widget paints the visible slice of a reservation. Parts
 // reference item-owned records; the host destroys widgets before rebuilding items.
 class PreviewCard : public QWidget {
@@ -193,16 +207,7 @@ public:
   }
 
   void appendNeeds(QHash<int, qreal> &p_needs, qreal p_dpr) const {
-    const QRectF clip = QRectF(rect()).translated(m_contentOffset);
-    for (int i = firstPart(clip.top()); i < m_parts.size(); ++i) {
-      const auto &part = m_parts[i];
-      if (part.m_imageRect.top() > clip.bottom())
-        break;
-      if (part.m_region && part.m_imageRect.intersects(clip)) {
-        p_needs[part.m_region->m_page] =
-            qMax(p_needs.value(part.m_region->m_page), part.m_scale * p_dpr);
-      }
-    }
+    appendPartNeeds(m_parts, QRectF(rect()).translated(m_contentOffset), p_needs, p_dpr);
   }
 
   std::function<const PageImage *(int)> m_pageImage;
@@ -299,6 +304,26 @@ public:
     qreal m_top = 0;
     qreal m_maxBottom = 0;
   };
+  struct Frame {
+    ~Frame() { destroyWidgets(); }
+    void destroyWidgets() {
+      for (auto &item : m_items)
+        delete item.m_widget.data();
+      m_visible.clear();
+      m_recreate.clear();
+    }
+    TypstSnapshot m_snapshot;
+    QVector<Item> m_items;
+    QVector<Geometry> m_geometry;
+    QVector<TextDocumentLayout::WidgetPreviewSpec> m_specs;
+    QSet<int> m_visible;
+    QSet<int> m_recreate;
+    QHash<int, PageImage> m_images;
+    QHash<int, qreal> m_needs;
+    QHash<int, qreal> m_failed;
+    qint64 m_bytes = 0;
+    bool m_cancelled = false;
+  };
   struct Anchor {
     QTextCursor m_cursor;
     int m_y = 0;
@@ -306,7 +331,7 @@ public:
 
   Private(TypstPreviewHost *p_host, TypstSourceEditor *p_editor, const TypstEditorConfig &p_config)
       : q(p_host), m_edit(p_editor->getTextEdit()), m_doc(p_editor->document()),
-        m_layout(p_editor->typstLayout()),
+        m_layout(p_editor->typstLayout()), m_displayed(new Frame),
         m_maxHeight(qBound<qreal>(80, p_config.m_previewMaxHeight, 100000)),
         m_budget(qMax<qint64>(4, p_config.m_maxCacheBytes / 4)),
         m_maxPixels(qMax(1, p_config.m_maxRasterPixels)) {
@@ -314,16 +339,13 @@ public:
     QObject::connect(&m_timer, &QTimer::timeout, q, [this]() { drain(); });
   }
 
-  ~Private() { destroyWidgets(); }
-
-  void destroyWidgets() {
-    for (auto &item : m_items)
-      delete item.m_widget.data();
-    m_visible.clear();
+  bool current(const Frame &p_frame) const {
+    return p_frame.m_snapshot && p_frame.m_snapshot->m_epoch == m_epoch &&
+           p_frame.m_snapshot->m_generation == m_generation && !p_frame.m_cancelled;
   }
 
   void schedule() {
-    if (m_draining)
+    if (m_draining || m_measuring)
       return;
     if (m_layout->isBusy()) {
       m_layout->requestIdleNotification();
@@ -347,11 +369,10 @@ public:
     }
   }
 
-  void restoreAnchor() {
-    m_restoreAnchor = false;
-    if (m_anchor.m_cursor.isNull())
+  void restoreAnchor(const Anchor &p_anchor) {
+    if (p_anchor.m_cursor.isNull())
       return;
-    auto cursor = m_anchor.m_cursor;
+    auto cursor = p_anchor.m_cursor;
     auto block = cursor.block();
     if (!block.isVisible()) {
       while (block.isValid() && !block.isVisible())
@@ -360,7 +381,7 @@ public:
         block = m_doc->begin();
       cursor.setPosition(block.position());
     }
-    const qint64 delta = qint64(m_edit->cursorRect(cursor).top()) - m_anchor.m_y;
+    const qint64 delta = qint64(m_edit->cursorRect(cursor).top()) - p_anchor.m_y;
     auto bar = m_edit->verticalScrollBar();
     bar->setValue(
         int(qBound(qint64(bar->minimum()), bar->value() + delta, qint64(bar->maximum()))));
@@ -378,14 +399,11 @@ public:
     return !split(p_source.m_start) && !split(p_source.m_end);
   }
 
-  void buildItems() {
-    destroyWidgets();
-    m_items.clear();
-    m_geometry.clear();
-    if (!m_snapshot)
+  void buildItems(Frame &p_frame) {
+    if (!p_frame.m_snapshot)
       return;
     QVector<TypstPreviewOccurrence> candidates;
-    for (const auto &record : m_snapshot->m_previews) {
+    for (const auto &record : p_frame.m_snapshot->m_previews) {
       if (!validSource(record.m_source) || !record.m_id ||
           (record.m_kind != QLatin1String("figure") && record.m_kind != QLatin1String("table") &&
            record.m_kind != QLatin1String("image") && record.m_kind != QLatin1String("equation")))
@@ -394,10 +412,10 @@ public:
       occurrence.m_regions.clear();
       if (record.m_status == QLatin1String("ready")) {
         for (const auto &region : record.m_regions) {
-          if (region.m_page < 0 || region.m_page >= m_snapshot->m_pages.size() ||
+          if (region.m_page < 0 || region.m_page >= p_frame.m_snapshot->m_pages.size() ||
               !validRect(region.m_rect))
             continue;
-          const QRectF page(QPointF(), m_snapshot->m_pages[region.m_page]);
+          const QRectF page(QPointF(), p_frame.m_snapshot->m_pages[region.m_page]);
           if (!validRect(page))
             continue;
           const QRectF rect = region.m_rect.intersected(page);
@@ -422,7 +440,7 @@ public:
     for (const auto &occurrence : candidates) {
       auto next = accepted.lowerBound(occurrence.m_source.m_start);
       if (next != accepted.end() && next.key() == occurrence.m_source.m_start) {
-        auto &item = m_items[next.value()];
+        auto &item = p_frame.m_items[next.value()];
         const auto &first = item.m_occurrences.first();
         if (item.m_source.m_end == occurrence.m_source.m_end && first.m_kind == occurrence.m_kind &&
             first.m_block == occurrence.m_block) {
@@ -435,24 +453,25 @@ public:
       if (next != accepted.begin()) {
         auto previous = next;
         --previous;
-        if (m_items[previous.value()].m_source.m_end > occurrence.m_source.m_start)
+        if (p_frame.m_items[previous.value()].m_source.m_end > occurrence.m_source.m_start)
           continue;
       }
       Item item;
       item.m_id = occurrence.m_id;
       item.m_source = occurrence.m_source;
       item.m_occurrences.append(occurrence);
-      accepted.insert(item.m_source.m_start, m_items.size());
-      m_items.append(item);
+      accepted.insert(item.m_source.m_start, p_frame.m_items.size());
+      p_frame.m_items.append(item);
     }
-    std::sort(m_items.begin(), m_items.end(),
+    std::sort(p_frame.m_items.begin(), p_frame.m_items.end(),
               [](const Item &a, const Item &b) { return a.m_source.m_start < b.m_source.m_start; });
   }
 
-  void publish() {
-    QVector<TextDocumentLayout::WidgetPreviewSpec> specs;
-    if (m_enabled && m_snapshot) {
-      specs.reserve(m_items.size());
+  void buildSpecs(Frame &p_frame) {
+    auto &specs = p_frame.m_specs;
+    specs.clear();
+    if (m_enabled && p_frame.m_snapshot) {
+      specs.reserve(p_frame.m_items.size());
       const qreal contentWidth = m_layout->availableContentWidth();
       const bool wrapped = m_doc->defaultTextOption().wrapMode() != QTextOption::NoWrap;
       qreal available = contentWidth;
@@ -460,7 +479,7 @@ public:
         available = m_edit->viewport()->width() - 2 * m_doc->documentMargin();
       available = qMax<qreal>(1, available);
       const qreal dpiScale = m_edit->logicalDpiX() / 72.0;
-      for (auto &item : m_items) {
+      for (auto &item : p_frame.m_items) {
         if (!item.m_source.isValid())
           continue;
         const auto &first = item.m_occurrences.first();
@@ -492,94 +511,120 @@ public:
         specs.append(spec);
       }
     }
-    m_layout->setWidgetPreviews(specs);
   }
 
-  void rebuildGeometry() {
-    m_geometry.clear();
-    for (int i = 0; i < m_items.size(); ++i) {
-      auto &item = m_items[i];
+  void rebuildGeometry(Frame &p_frame) {
+    p_frame.m_geometry.clear();
+    for (int i = 0; i < p_frame.m_items.size(); ++i) {
+      auto &item = p_frame.m_items[i];
       item.m_rect = m_enabled ? m_layout->widgetPreviewRect(item.m_id) : QRectF();
       // The shared layout reserves a source span or an exclusive line band;
       // the inline image card itself needs only its measured content width.
       if (item.m_preferredWidth > 0)
         item.m_rect.setWidth(qMin(item.m_rect.width(), item.m_preferredWidth));
       if (!item.m_rect.isEmpty())
-        m_geometry.append({i, item.m_rect.top(), item.m_rect.bottom()});
+        p_frame.m_geometry.append({i, item.m_rect.top(), item.m_rect.bottom()});
     }
-    std::sort(m_geometry.begin(), m_geometry.end(),
+    std::sort(p_frame.m_geometry.begin(), p_frame.m_geometry.end(),
               [](const Geometry &a, const Geometry &b) { return a.m_top < b.m_top; });
     qreal bottom = 0;
-    for (auto &entry : m_geometry) {
+    for (auto &entry : p_frame.m_geometry) {
       bottom = qMax(bottom, entry.m_maxBottom);
       entry.m_maxBottom = bottom;
     }
   }
 
-  PreviewCard *createWidget(int p_index) {
-    auto &item = m_items[p_index];
-    auto widget = new PreviewCard(m_edit->viewport(), &item.m_occurrences, m_maxHeight);
-    widget->setFont(m_edit->font());
-    widget->setPalette(m_edit->palette());
-    widget->m_pageImage = [this](int p_page) -> const PageImage * {
-      auto image = m_images.find(p_page);
-      if (image == m_images.end())
-        return nullptr;
-      image->m_use = ++m_use;
-      return &image.value();
-    };
-    widget->m_failed = [this](int p_page) { return m_failed.contains(p_page); };
-    return widget;
+  template<typename Visitor>
+  void visitVisible(Frame &p_frame, Visitor p_visit) {
+    auto viewport = m_edit->viewport();
+    if (!m_enabled || !p_frame.m_snapshot || !viewport->isVisible())
+      return;
+    const QPoint offset(m_edit->horizontalScrollBar()->value(),
+                        m_edit->verticalScrollBar()->value());
+    const QRect view = viewport->rect().translated(offset);
+    const auto first =
+        std::lower_bound(p_frame.m_geometry.constBegin(), p_frame.m_geometry.constEnd(), view.top(),
+                         [](const Geometry &p_entry, qreal p_y) {
+                           return p_entry.m_maxBottom < p_y;
+                         });
+    for (auto it = first; it != p_frame.m_geometry.constEnd() && it->m_top <= view.bottom(); ++it) {
+      auto &item = p_frame.m_items[it->m_item];
+      if (!item.m_rect.intersects(view))
+        continue;
+      const QRectF full = item.m_rect.translated(-offset);
+      // Clip before integer conversion, including on multi-page reservations.
+      const QRect target = full.intersected(QRectF(viewport->rect())).toAlignedRect();
+      p_visit(it->m_item, item, target, full);
+    }
   }
 
   void visibleWidgets() {
+    auto &frame = *m_displayed;
     QSet<int> visible;
-    m_needs.clear();
-    auto viewport = m_edit->viewport();
-    if (m_enabled && m_snapshot && viewport->isVisible()) {
-      const QPoint offset(m_edit->horizontalScrollBar()->value(),
-                          m_edit->verticalScrollBar()->value());
-      const QRect view = viewport->rect().translated(offset);
-      const auto first =
-          std::lower_bound(m_geometry.constBegin(), m_geometry.constEnd(), view.top(),
-                           [](const Geometry &entry, qreal y) { return entry.m_maxBottom < y; });
-      for (auto it = first; it != m_geometry.constEnd() && it->m_top <= view.bottom(); ++it) {
-        auto &item = m_items[it->m_item];
-        if (!item.m_rect.intersects(view))
-          continue;
-        if (!item.m_widget)
-          item.m_widget = createWidget(it->m_item);
-        auto widget = item.m_widget.data();
-        const QRectF full = item.m_rect.translated(-offset);
-        // Intersect before integer conversion: the sequence may be much taller
-        // than a QWidget, but its painted surface never exceeds the viewport.
-        const QRect target = full.intersected(QRectF(viewport->rect())).toAlignedRect();
-        if (widget->geometry() != target)
-          widget->setGeometry(target);
-        widget->setContentGeometry(full.width(), QPointF(target.topLeft()) - full.topLeft());
-        widget->show();
-        widget->appendNeeds(m_needs, viewport->devicePixelRatioF());
-        visible.insert(it->m_item);
+    frame.m_needs.clear();
+    visitVisible(frame, [&](int p_index, Item &p_item, const QRect &p_target, const QRectF &p_full) {
+      if (!p_item.m_widget) {
+        auto widget = new PreviewCard(m_edit->viewport(), &p_item.m_occurrences, m_maxHeight);
+        widget->setFont(m_edit->font());
+        widget->setPalette(m_edit->palette());
+        widget->m_pageImage = [this](int p_page) -> const PageImage * {
+          auto image = m_displayed->m_images.find(p_page);
+          if (image == m_displayed->m_images.end())
+            return nullptr;
+          image->m_use = ++m_use;
+          return &image.value();
+        };
+        widget->m_failed = [this](int p_page) { return m_displayed->m_failed.contains(p_page); };
+        p_item.m_widget = widget;
       }
+      auto widget = p_item.m_widget.data();
+      if (widget->geometry() != p_target)
+        widget->setGeometry(p_target);
+      widget->setContentGeometry(p_full.width(), QPointF(p_target.topLeft()) - p_full.topLeft());
+      widget->show();
+      widget->appendNeeds(frame.m_needs, m_edit->viewport()->devicePixelRatioF());
+      visible.insert(p_index);
+    });
+    for (int index : frame.m_visible) {
+      if (!visible.contains(index) && index < frame.m_items.size())
+        delete frame.m_items[index].m_widget.data();
     }
-    for (int index : m_visible) {
-      if (!visible.contains(index) && index < m_items.size())
-        delete m_items[index].m_widget.data();
-    }
-    m_visible = visible;
-    constrainNeeds();
+    frame.m_visible = std::move(visible);
+    constrainNeeds(frame);
   }
 
-  void constrainNeeds() {
+  void pendingNeeds() {
+    auto &frame = *m_pending;
+    frame.m_needs.clear();
+    visitVisible(frame, [&](int, Item &p_item, const QRect &p_target, const QRectF &p_full) {
+      QSizeF size;
+      const auto parts = partsFor(p_item.m_occurrences, p_full.width(),
+                                  m_edit->logicalDpiX() / 72.0, m_maxHeight, m_edit->font(), &size);
+      const QRectF clip(QPointF(p_target.topLeft()) - p_full.topLeft(), p_target.size());
+      appendPartNeeds(parts, clip, frame.m_needs, m_edit->viewport()->devicePixelRatioF());
+    });
+    constrainNeeds(frame);
+  }
+
+  qint64 cacheBudget(const Frame &p_frame) const {
+    // Reserve room for a replacement without evicting the displayed pages.
+    if (m_budget >= 8)
+      return m_budget / 2;
+    return &p_frame == m_pending.get() && m_displayed->m_bytes ? 0 : m_budget;
+  }
+
+  void constrainNeeds(Frame &p_frame) {
     const qreal pixels =
-        std::floor(qMin<qreal>(m_maxPixels, m_budget / (4.0 * qMax(1, int(m_needs.size())))));
-    for (auto it = m_needs.begin(); it != m_needs.end(); ++it) {
+        std::floor(qMin<qreal>(m_maxPixels, cacheBudget(p_frame) / (4.0 * qMax(1, int(p_frame.m_needs.size())))));
+    for (auto it = p_frame.m_needs.begin(); it != p_frame.m_needs.end(); ++it) {
       if (pixels < 1) {
         it.value() = 0;
-        m_failed.insert(it.key(), 0);
+        if (!p_frame.m_failed.contains(it.key()))
+          m_errorPending = true;
+        p_frame.m_failed.insert(it.key(), 0);
         continue;
       }
-      const auto page = m_snapshot->m_pages[it.key()];
+      const auto page = p_frame.m_snapshot->m_pages[it.key()];
       const qreal longSide = qMax(page.width(), page.height());
       const qreal ratio = qMin(page.width(), page.height()) / longSide;
       // Solve (longPixels + 1) * (shortPixels + 1) <= the share of
@@ -593,48 +638,116 @@ public:
     }
   }
 
-  void evict(qint64 p_incoming = 0, int p_replace = -1) {
-    auto replaced = m_images.find(p_replace);
-    if (replaced != m_images.end()) {
-      m_bytes -= qint64(replaced->m_image.bytesPerLine()) * replaced->m_image.height();
-      m_images.erase(replaced);
+  void evict(Frame &p_frame, qint64 p_incoming = 0, int p_replace = -1) {
+    auto replaced = p_frame.m_images.find(p_replace);
+    if (replaced != p_frame.m_images.end()) {
+      p_frame.m_bytes -= qint64(replaced->m_image.bytesPerLine()) * replaced->m_image.height();
+      p_frame.m_images.erase(replaced);
     }
-    while (!m_images.isEmpty() && m_bytes + p_incoming > m_budget) {
-      auto oldest = m_images.begin();
-      for (auto it = m_images.begin(); it != m_images.end(); ++it) {
-        if ((!m_needs.contains(it.key()) && m_needs.contains(oldest.key())) ||
-            (m_needs.contains(it.key()) == m_needs.contains(oldest.key()) &&
+    while (!p_frame.m_images.isEmpty() && p_frame.m_bytes + p_incoming > cacheBudget(p_frame)) {
+      auto oldest = p_frame.m_images.begin();
+      for (auto it = p_frame.m_images.begin(); it != p_frame.m_images.end(); ++it) {
+        if ((!p_frame.m_needs.contains(it.key()) && p_frame.m_needs.contains(oldest.key())) ||
+            (p_frame.m_needs.contains(it.key()) == p_frame.m_needs.contains(oldest.key()) &&
              it->m_use < oldest->m_use))
           oldest = it;
       }
-      m_bytes -= qint64(oldest->m_image.bytesPerLine()) * oldest->m_image.height();
-      m_images.erase(oldest);
+      p_frame.m_bytes -= qint64(oldest->m_image.bytesPerLine()) * oldest->m_image.height();
+      p_frame.m_images.erase(oldest);
     }
   }
 
+  bool pendingReady() const {
+    if (!m_pending || !current(*m_pending))
+      return false;
+    for (auto it = m_pending->m_needs.constBegin(); it != m_pending->m_needs.constEnd(); ++it) {
+      const auto image = m_pending->m_images.constFind(it.key());
+      if (image != m_pending->m_images.constEnd() && image->m_scale >= it.value() * 0.999)
+        continue;
+      // Initial rendering may show a real failure. Never replace last-good pixels with it.
+      if (m_displayed->m_images.isEmpty() && m_pending->m_failed.contains(it.key()) &&
+          qFuzzyCompare(m_pending->m_failed.value(it.key()), it.value()))
+        continue;
+      return false;
+    }
+    return true;
+  }
+
+  void measurePending() {
+    const auto anchor = captureAnchor();
+    const int horizontal = m_edit->horizontalScrollBar()->value();
+    m_measuring = true;
+    m_pendingViewDirty = false;
+    // Geometry comes from the same layout as the displayed cards, not source-position
+    // guesses. No events or pending widgets are dispatched in this temporary pass.
+    buildSpecs(*m_pending);
+    auto width = m_edit->viewport()->width();
+    m_layout->setWidgetPreviews(m_pending->m_specs);
+    if (width != m_edit->viewport()->width()) {
+      buildSpecs(*m_pending);
+      m_layout->setWidgetPreviews(m_pending->m_specs);
+    }
+    restoreAnchor(anchor);
+    m_edit->horizontalScrollBar()->setValue(horizontal);
+    rebuildGeometry(*m_pending);
+    pendingNeeds();
+    if (pendingReady()) {
+      // Reservations, source mapping and their own page images change together.
+      m_displayed = std::move(m_pending);
+      m_geometryDirty = false;
+    } else {
+      // Every non-publishing path restores the old reservations before any paint.
+      m_layout->setWidgetPreviews(m_displayed->m_specs);
+      restoreAnchor(anchor);
+      m_edit->horizontalScrollBar()->setValue(horizontal);
+    }
+    m_measuring = false;
+  }
+
   void requestImage() {
-    if (m_inFlight || !m_snapshot)
+    if (m_inFlight || !m_enabled || !m_edit->viewport()->isVisible())
       return;
-    // Iteration is page ordered, making scheduling deterministic as well as coalesced.
-    auto pages = m_needs.keys();
+    auto &frame = m_pending ? *m_pending : *m_displayed;
+    if (!current(frame))
+      return;
+    auto pages = frame.m_needs.keys();
     std::sort(pages.begin(), pages.end());
     for (int page : pages) {
-      const qreal scale = m_needs.value(page);
+      const qreal scale = frame.m_needs.value(page);
       if (!(scale > 0) || !std::isfinite(scale))
         continue;
-      const auto image = m_images.constFind(page);
-      if (image != m_images.constEnd() && image->m_scale >= scale * 0.999)
+      const auto image = frame.m_images.constFind(page);
+      if (image != frame.m_images.constEnd() && image->m_scale >= scale * 0.999)
         continue;
-      if (m_failed.contains(page) && qFuzzyCompare(m_failed.value(page), scale))
+      if (frame.m_failed.contains(page) && qFuzzyCompare(frame.m_failed.value(page), scale))
         continue;
-      m_failed.remove(page);
+      frame.m_failed.remove(page);
       m_inFlight = true;
-      m_requestSnapshot = m_snapshot->m_id;
+      m_requestEpoch = frame.m_snapshot->m_epoch;
+      m_requestSnapshot = frame.m_snapshot->m_id;
       m_requestPage = page;
       m_requestScale = scale;
-      emit q->rasterRequested(m_requestSnapshot, page, scale);
+      emit q->rasterRequested(m_requestEpoch, m_requestSnapshot, page, scale);
       return;
     }
+  }
+
+  bool finishRequest(quint64 p_epoch, quint64 p_snapshot, int p_page, qreal p_scale) {
+    if (!m_inFlight || p_epoch != m_requestEpoch || p_snapshot != m_requestSnapshot ||
+        p_page != m_requestPage || !qFuzzyCompare(p_scale, m_requestScale))
+      return false;
+    m_inFlight = false;
+    schedule();
+    return true;
+  }
+
+  Frame *frameFor(quint64 p_epoch, quint64 p_snapshot) const {
+    for (auto frame : {m_pending.get(), m_displayed.get()}) {
+      if (frame && frame->m_snapshot && frame->m_snapshot->m_epoch == p_epoch &&
+          frame->m_snapshot->m_id == p_snapshot)
+        return frame;
+    }
+    return nullptr;
   }
 
   void drain() {
@@ -643,33 +756,41 @@ public:
       return;
     }
     m_draining = true;
-    for (int index : m_recreate) {
-      if (index < m_items.size())
-        delete m_items[index].m_widget.data();
+    for (int index : m_displayed->m_recreate) {
+      if (index < m_displayed->m_items.size())
+        delete m_displayed->m_items[index].m_widget.data();
     }
-    m_recreate.clear();
+    m_displayed->m_recreate.clear();
     if (m_publish) {
       m_publish = false;
       if (!m_restoreAnchor)
         preserveAnchor();
-      publish();
+      buildSpecs(*m_displayed);
+      m_layout->setWidgetPreviews(m_displayed->m_specs);
       m_geometryDirty = true;
     }
     if (m_geometryDirty) {
-      rebuildGeometry();
+      rebuildGeometry(*m_displayed);
       m_geometryDirty = false;
+      m_pendingViewDirty = true;
     }
-    if (m_restoreAnchor)
-      restoreAnchor();
+    if (m_restoreAnchor) {
+      m_restoreAnchor = false;
+      restoreAnchor(m_anchor);
+    }
+    if (m_pending && m_enabled && m_edit->viewport()->isVisible() &&
+        (m_pendingViewDirty || pendingReady()))
+      measurePending();
     visibleWidgets();
     m_lastAnchor = captureAnchor();
     m_draining = false;
-    // A viewport resize caused by a newly visible editor scrollbar may have
-    // changed the width basis during publication. Settle that demand once;
-    // ordinary geometry notifications do not republish reservations.
-    if (m_publish || m_geometryDirty || !m_recreate.isEmpty())
+    if (m_publish || m_geometryDirty || !m_displayed->m_recreate.isEmpty())
       schedule();
     requestImage();
+    if (m_errorPending) {
+      m_errorPending = false;
+      emit q->errorOccurred(TypstPreviewHost::tr("Preview unavailable"));
+    }
   }
 
   TypstPreviewHost *q;
@@ -677,28 +798,27 @@ public:
   QTextDocument *m_doc;
   TextDocumentLayout *m_layout;
   QTimer m_timer;
-  TypstSnapshot m_snapshot;
+  std::unique_ptr<Frame> m_displayed;
+  std::unique_ptr<Frame> m_pending;
   QString m_activeFile;
-  QVector<Item> m_items;
-  QVector<Geometry> m_geometry;
-  QSet<int> m_visible;
-  QSet<int> m_recreate;
-  QHash<int, PageImage> m_images;
-  QHash<int, qreal> m_needs;
-  QHash<int, qreal> m_failed;
   Anchor m_anchor;
   Anchor m_lastAnchor;
   qreal m_maxHeight;
   qint64 m_budget;
-  qint64 m_bytes = 0;
   int m_maxPixels;
   quint64 m_use = 0;
+  quint64 m_epoch = 0;
+  quint64 m_generation = 0;
   bool m_enabled = true;
   bool m_draining = false;
+  bool m_measuring = false;
+  bool m_pendingViewDirty = false;
   bool m_publish = false;
   bool m_geometryDirty = false;
   bool m_restoreAnchor = false;
   bool m_inFlight = false;
+  bool m_errorPending = false;
+  quint64 m_requestEpoch = 0;
   quint64 m_requestSnapshot = 0;
   int m_requestPage = -1;
   qreal m_requestScale = 0;
@@ -709,20 +829,23 @@ TypstPreviewHost::TypstPreviewHost(TypstSourceEditor *p_editor, const TypstEdito
     : QObject(p_parent), d(new Private(this, p_editor, p_config)) {
   connect(d->m_layout, &TextDocumentLayout::becameIdle, this, [this]() {
     // This signal runs while the outermost layout pass is unwinding.
-    if (!d->m_timer.isActive())
+    if (!d->m_measuring && !d->m_timer.isActive())
       d->m_timer.start(0);
   });
   connect(d->m_layout, &TextDocumentLayout::widgetPreviewGeometryChanged, this, [this]() {
+    if (d->m_measuring)
+      return;
     d->m_geometryDirty = true;
     d->schedule();
   });
   connect(d->m_doc, &QTextDocument::contentsChange, this,
           [this](int p_position, int p_removed, int p_added) {
-            if ((!p_removed && !p_added) || d->m_items.isEmpty())
+            if (!p_removed && !p_added)
               return;
+            d->m_pending.reset();
             const int removedEnd = p_position + p_removed;
             const int delta = p_added - p_removed;
-            for (auto &item : d->m_items) {
+            for (auto &item : d->m_displayed->m_items) {
               auto &source = item.m_source;
               if (!source.isValid())
                 continue;
@@ -748,14 +871,24 @@ TypstPreviewHost::TypstPreviewHost(TypstSourceEditor *p_editor, const TypstEdito
             d->schedule();
           });
   connect(d->m_edit->verticalScrollBar(), &QScrollBar::valueChanged, this, [this]() {
+    if (d->m_measuring)
+      return;
+    d->m_pendingViewDirty = true;
     // A deliberate scroll supersedes an anchor saved before deferred work.
     if (!d->m_draining && !d->m_layout->isBusy() && !d->m_restoreAnchor)
       d->m_lastAnchor = d->captureAnchor();
     d->schedule();
   });
   connect(d->m_edit->horizontalScrollBar(), &QScrollBar::valueChanged, this,
-          [this]() { d->schedule(); });
+          [this]() {
+            if (d->m_measuring)
+              return;
+            d->m_pendingViewDirty = true;
+            d->schedule();
+          });
   connect(p_editor->getTextFolding(), &TextFolding::foldingRangesChanged, this, [this]() {
+    if (d->m_measuring)
+      return;
     if (!d->m_restoreAnchor) {
       d->m_anchor = d->m_lastAnchor;
       d->m_restoreAnchor = true;
@@ -776,53 +909,40 @@ TypstPreviewHost::~TypstPreviewHost() {
     d->m_layout->setWidgetPreviews({});
 }
 
+void TypstPreviewHost::setCurrentGeneration(quint64 p_epoch, quint64 p_generation) {
+  d->m_epoch = p_epoch;
+  d->m_generation = p_generation;
+  if (d->m_pending && !d->current(*d->m_pending))
+    d->m_pending.reset();
+  d->m_errorPending = false;
+  d->schedule();
+}
+
 void TypstPreviewHost::setSnapshot(const TypstSnapshot &p_snapshot) {
   if (!p_snapshot) {
     clear();
     return;
   }
-  if (d->m_snapshot && (p_snapshot->m_epoch < d->m_snapshot->m_epoch ||
-                        (p_snapshot->m_epoch == d->m_snapshot->m_epoch &&
-                         p_snapshot->m_generation < d->m_snapshot->m_generation)))
+  if (p_snapshot->m_epoch != d->m_epoch || p_snapshot->m_generation != d->m_generation ||
+      d->m_displayed->m_snapshot == p_snapshot ||
+      (d->m_pending && d->m_pending->m_snapshot == p_snapshot))
     return;
-  if (d->m_snapshot == p_snapshot)
-    return;
-  d->preserveAnchor();
-  d->destroyWidgets();
-  d->m_snapshot = p_snapshot;
   if (d->m_activeFile.isEmpty())
     d->m_activeFile = p_snapshot->m_activeFile;
-  d->m_images.clear();
-  d->m_failed.clear();
-  d->m_needs.clear();
-  d->m_recreate.clear();
-  d->m_bytes = 0;
-  d->m_inFlight = false;
-  d->buildItems();
-  d->m_publish = true;
+  d->m_pending.reset(new Private::Frame);
+  d->m_pending->m_snapshot = p_snapshot;
+  d->buildItems(*d->m_pending);
+  d->m_pendingViewDirty = true;
   d->schedule();
 }
 
 void TypstPreviewHost::clear() {
-  if (!d->m_snapshot && d->m_items.isEmpty())
-    return;
   d->preserveAnchor();
-  // Hiding these non-editing, non-focusable widgets cannot write back source.
-  // Reservations are removed only from the later idle drain.
-  for (auto &item : d->m_items)
-    if (item.m_widget)
-      item.m_widget->hide();
-  d->destroyWidgets();
-  d->m_items.clear();
-  d->m_geometry.clear();
-  d->m_recreate.clear();
-  d->m_snapshot.clear();
-  d->m_images.clear();
-  d->m_failed.clear();
-  d->m_needs.clear();
-  d->m_bytes = 0;
-  d->m_inFlight = false;
+  d->m_pending.reset();
+  d->m_displayed.reset(new Private::Frame);
+  // The outstanding request still completes through its epoch-qualified latch.
   d->m_publish = true;
+  d->m_errorPending = false;
   d->schedule();
 }
 
@@ -832,7 +952,8 @@ void TypstPreviewHost::setEnabled(bool p_enabled) {
   d->preserveAnchor();
   d->m_enabled = p_enabled;
   if (!p_enabled)
-    d->destroyWidgets();
+    d->m_displayed->destroyWidgets();
+  d->m_pendingViewDirty = true;
   d->m_publish = true;
   d->schedule();
 }
@@ -844,31 +965,42 @@ void TypstPreviewHost::setActiveFile(const QString &p_file) {
   d->m_activeFile = p_file;
 }
 
-void TypstPreviewHost::setPageImage(quint64 p_snapshot, int p_page, qreal p_scale,
-                                    const QImage &p_image) {
-  if (!d->m_inFlight || p_snapshot != d->m_requestSnapshot || p_page != d->m_requestPage ||
-      !qFuzzyCompare(p_scale, d->m_requestScale))
+void TypstPreviewHost::setPageImage(quint64 p_epoch, quint64 p_snapshot, int p_page,
+                                    qreal p_scale, const QImage &p_image) {
+  if (!d->finishRequest(p_epoch, p_snapshot, p_page, p_scale))
     return;
-  d->m_inFlight = false;
-  if (!d->m_snapshot || p_snapshot != d->m_snapshot->m_id)
+  auto frame = d->frameFor(p_epoch, p_snapshot);
+  if (!frame || !d->current(*frame))
     return;
   const qint64 bytes = qint64(p_image.bytesPerLine()) * p_image.height();
-  const auto pageSize = d->m_snapshot->m_pages[p_page];
-  if (p_image.isNull() || bytes > d->m_budget ||
+  const auto pageSize = frame->m_snapshot->m_pages[p_page];
+  if (p_image.isNull() || bytes > d->cacheBudget(*frame) ||
       qint64(p_image.width()) * p_image.height() > d->m_maxPixels ||
       p_image.width() > qMax(1, qCeil(pageSize.width() * p_scale)) ||
       p_image.height() > qMax(1, qCeil(pageSize.height() * p_scale))) {
-    d->m_failed.insert(p_page, p_scale);
+    frame->m_failed.insert(p_page, p_scale);
+    d->m_errorPending = true;
   } else {
-    d->evict(bytes, p_page);
-    d->m_images.insert(p_page, {p_image, p_scale, ++d->m_use});
-    d->m_bytes += bytes;
+    d->evict(*frame, bytes, p_page);
+    frame->m_images.insert(p_page, {p_image, p_scale, ++d->m_use});
+    frame->m_bytes += bytes;
   }
-  for (int index : d->m_visible) {
-    if (index < d->m_items.size() && d->m_items[index].m_widget)
-      d->m_items[index].m_widget->update();
+  for (int index : frame->m_visible) {
+    if (index < frame->m_items.size() && frame->m_items[index].m_widget)
+      frame->m_items[index].m_widget->update();
   }
-  d->schedule();
+}
+
+void TypstPreviewHost::cancelRaster(quint64 p_epoch, quint64 p_snapshot, int p_page,
+                                    qreal p_scale) {
+  if (!d->finishRequest(p_epoch, p_snapshot, p_page, p_scale))
+    return;
+  // Superseded transport is not a failed render and must never start a retry loop.
+  auto frame = d->frameFor(p_epoch, p_snapshot);
+  if (frame)
+    frame->m_cancelled = true;
+  if (frame == d->m_pending.get())
+    d->m_pending.reset();
 }
 
 void TypstPreviewHost::applyConfig(const TypstEditorConfig &p_config) {
@@ -876,26 +1008,29 @@ void TypstPreviewHost::applyConfig(const TypstEditorConfig &p_config) {
   d->m_maxHeight = qBound<qreal>(80, p_config.m_previewMaxHeight, 100000);
   d->m_budget = qMax<qint64>(4, p_config.m_maxCacheBytes / 4);
   d->m_maxPixels = qMax(1, p_config.m_maxRasterPixels);
-  // Config changes are explicit rerender demand, including recovery after a
-  // previous resource limit failure. Existing in-flight transport is bounded.
-  d->m_failed.clear();
-  for (auto it = d->m_images.begin(); it != d->m_images.end();) {
-    if (qint64(it->m_image.width()) * it->m_image.height() > d->m_maxPixels) {
-      d->m_bytes -= qint64(it->m_image.bytesPerLine()) * it->m_image.height();
-      it = d->m_images.erase(it);
-    } else {
-      ++it;
+  for (auto frame : {d->m_displayed.get(), d->m_pending.get()}) {
+    if (!frame)
+      continue;
+    frame->m_failed.clear();
+    for (auto it = frame->m_images.begin(); it != frame->m_images.end();) {
+      if (qint64(it->m_image.width()) * it->m_image.height() > d->m_maxPixels) {
+        frame->m_bytes -= qint64(it->m_image.bytesPerLine()) * it->m_image.height();
+        it = frame->m_images.erase(it);
+      } else {
+        ++it;
+      }
     }
+    d->evict(*frame);
+    for (int index : frame->m_visible)
+      frame->m_recreate.insert(index);
   }
-  d->evict();
-  for (int index : d->m_visible)
-    d->m_recreate.insert(index);
+  d->m_pendingViewDirty = true;
   d->m_publish = true;
   d->schedule();
 }
 
 bool TypstPreviewHost::eventFilter(QObject *p_object, QEvent *p_event) {
-  if (p_object == d->m_edit || p_object == d->m_edit->viewport()) {
+  if (!d->m_measuring && (p_object == d->m_edit || p_object == d->m_edit->viewport())) {
     switch (p_event->type()) {
     case QEvent::Resize:
     case QEvent::FontChange:
@@ -907,12 +1042,14 @@ bool TypstPreviewHost::eventFilter(QObject *p_object, QEvent *p_event) {
         d->m_restoreAnchor = true;
       }
       d->m_publish = true;
-      for (int index : d->m_visible)
-        d->m_recreate.insert(index);
+      for (int index : d->m_displayed->m_visible)
+        d->m_displayed->m_recreate.insert(index);
+      d->m_pendingViewDirty = true;
       d->schedule();
       break;
     case QEvent::Show:
     case QEvent::Hide:
+      d->m_pendingViewDirty = true;
       d->schedule();
       break;
     default:

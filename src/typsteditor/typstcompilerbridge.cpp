@@ -224,15 +224,16 @@ void TypstCompilerBridge::updateProject(const TypstEditorConfig &p_config,
 void TypstCompilerBridge::invalidate() {
   ++m_generation;
   m_latest.clear();
-  for (const auto &request : m_queue) {
-    failRaster(request);
-  }
+  auto queue = std::move(m_queue);
   m_queue.clear();
   m_failed = false;
   m_compilePending = true;
   m_compileDue = false;
-  emit generationChanged(m_epoch, m_generation);
   m_debounce.start(qMax(0, m_config.m_debounceMs));
+  emit generationChanged(m_epoch, m_generation);
+  for (const auto &request : queue) {
+    completeRaster(request, true);
+  }
 }
 
 void TypstCompilerBridge::retry() {
@@ -243,20 +244,25 @@ void TypstCompilerBridge::retry() {
   pump();
 }
 
-void TypstCompilerBridge::stop() {
+void TypstCompilerBridge::stop(bool p_failure) {
+  if (m_stopping) {
+    return;
+  }
   m_stopping = true;
   m_timeout.stop();
   m_debounce.stop();
+  const auto epoch = m_epoch;
+  const auto generation = m_generation;
+  const auto snapshot = m_latest ? m_latest->m_id : 0;
+  // Detach before emitting completions: their slots may enqueue or stop the bridge again.
+  auto request = std::move(m_request);
+  m_request = {};
+  auto queue = std::move(m_queue);
+  m_queue.clear();
   ++m_epoch;
   m_ready = false;
   m_displayed = 0;
   m_latest.clear();
-  failRaster(m_request);
-  m_request = {};
-  for (const auto &request : m_queue) {
-    failRaster(request);
-  }
-  m_queue.clear();
   if (m_process.state() != QProcess::NotRunning) {
     m_process.kill();
     m_process.waitForFinished(1000);
@@ -264,6 +270,17 @@ void TypstCompilerBridge::stop() {
   m_prefixRead = m_headerRead = m_payloadRead = 0;
   m_header.clear();
   m_payload.clear();
+  const auto complete = [this, p_failure, epoch, generation, snapshot](const QJsonObject &p_request) {
+    const bool current = identifier(p_request.value(QStringLiteral("epoch"))) == epoch &&
+                         identifier(p_request.value(QStringLiteral("generation"))) == generation &&
+                         snapshot &&
+                         identifier(p_request.value(QStringLiteral("snapshot"))) == snapshot;
+    completeRaster(p_request, !p_failure || !current);
+  };
+  complete(request);
+  for (const auto &queued : queue) {
+    complete(queued);
+  }
   m_stopping = false;
 }
 
@@ -348,15 +365,19 @@ void TypstCompilerBridge::pump() {
 
 void TypstCompilerBridge::send(QJsonObject p_header) {
   p_header.insert(QStringLiteral("v"), 1);
-  p_header.insert(QStringLiteral("epoch"), static_cast<double>(m_epoch));
-  p_header.insert(QStringLiteral("generation"), static_cast<double>(m_generation));
+  if (!p_header.contains(QStringLiteral("epoch"))) {
+    p_header.insert(QStringLiteral("epoch"), static_cast<double>(m_epoch));
+  }
+  if (!p_header.contains(QStringLiteral("generation"))) {
+    p_header.insert(QStringLiteral("generation"), static_cast<double>(m_generation));
+  }
   p_header.insert(QStringLiteral("request"), static_cast<double>(m_nextRequest++));
   const auto bytes = QJsonDocument(p_header).toJson(QJsonDocument::Compact);
+  m_request = std::move(p_header);
   if (bytes.size() > static_cast<int>(c_maxHeader)) {
     fail(tr("Typst project overlays exceed the protocol size limit."));
     return;
   }
-  m_request = std::move(p_header);
   char prefix[8];
   qToBigEndian<quint32>(static_cast<quint32>(bytes.size()), reinterpret_cast<uchar *>(prefix));
   qToBigEndian<quint32>(0, reinterpret_cast<uchar *>(prefix + 4));
@@ -368,15 +389,21 @@ void TypstCompilerBridge::send(QJsonObject p_header) {
 }
 
 void TypstCompilerBridge::enqueue(QJsonObject p_header) {
+  if (!p_header.contains(QStringLiteral("epoch"))) {
+    p_header.insert(QStringLiteral("epoch"), static_cast<double>(m_epoch));
+  }
+  p_header.insert(QStringLiteral("generation"), static_cast<double>(m_generation));
+  if (m_stopping) {
+    completeRaster(p_header, true);
+    return;
+  }
   if (m_failed) {
-    failRaster(p_header);
+    completeRaster(p_header, false);
     return;
   }
   const auto duplicate = [&p_header](const QJsonObject &p_other) {
     auto other = p_other;
     other.remove(QStringLiteral("v"));
-    other.remove(QStringLiteral("epoch"));
-    other.remove(QStringLiteral("generation"));
     other.remove(QStringLiteral("request"));
     return other == p_header;
   };
@@ -389,7 +416,7 @@ void TypstCompilerBridge::enqueue(QJsonObject p_header) {
     }
   }
   if (m_queue.size() >= 64) {
-    failRaster(p_header);
+    completeRaster(p_header, false);
     emit operationFailed(p_header.value(QStringLiteral("op")).toString(),
                          tr("Typst request queue is full."));
     return;
@@ -412,13 +439,19 @@ void TypstCompilerBridge::requestPdf(quint64 p_snapshot) {
   }
 }
 
-void TypstCompilerBridge::requestRaster(quint64 p_snapshot, int p_page, qreal p_scale) {
-  if (!m_latest || m_latest->m_id != p_snapshot || p_page < 0 ||
-      p_page >= m_latest->m_pages.size() || !std::isfinite(p_scale) || p_scale <= 0) {
-    emit pageImageReady(p_snapshot, p_page, p_scale, QImage());
+void TypstCompilerBridge::requestRaster(quint64 p_epoch, quint64 p_snapshot, int p_page,
+                                        qreal p_scale) {
+  if (p_epoch != m_epoch || !m_latest || m_latest->m_epoch != p_epoch ||
+      m_latest->m_id != p_snapshot) {
+    emit rasterCancelled(p_epoch, p_snapshot, p_page, p_scale);
+    return;
+  }
+  if (p_page < 0 || p_page >= m_latest->m_pages.size() || !std::isfinite(p_scale) || p_scale <= 0) {
+    emit pageImageReady(p_epoch, p_snapshot, p_page, p_scale, QImage());
     return;
   }
   enqueue({{QStringLiteral("op"), QStringLiteral("raster")},
+           {QStringLiteral("epoch"), static_cast<double>(p_epoch)},
            {QStringLiteral("snapshot"), static_cast<double>(p_snapshot)},
            {QStringLiteral("page"), p_page},
            {QStringLiteral("scale"), p_scale}});
@@ -536,7 +569,10 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
       fail(p_header.value(QStringLiteral("message")).toString(), true);
       return;
     }
-    failRaster(m_request);
+    auto request = std::move(m_request);
+    m_request = {};
+    m_timeout.stop();
+    completeRaster(request, !current);
     if (current) {
       updateDependencies(p_header.value(QStringLiteral("dependencies")).toArray());
       emit diagnosticsReady(diagnostics(p_header.value(QStringLiteral("diagnostics")).toArray()));
@@ -544,7 +580,7 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
       emit operationFailed(requested, message);
       emit stateChanged(State::Error, message);
     }
-    finishRequest();
+    pump();
     return;
   }
   if (operation == QStringLiteral("ready") && requested == QStringLiteral("initialize")) {
@@ -607,16 +643,24 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
       fail(tr("Typst helper returned invalid raster dimensions."));
       return;
     }
+    auto request = std::move(m_request);
+    m_request = {};
+    m_timeout.stop();
     if (current && m_latest && m_latest->m_id == id) {
       auto *storage = new QByteArray(std::move(p_payload));
       QImage image(
           reinterpret_cast<uchar *>(storage->data()), width, height, stride,
           QImage::Format_RGBA8888_Premultiplied,
           [](void *p_storage) { delete static_cast<QByteArray *>(p_storage); }, storage);
-      emit pageImageReady(id, page, scale, image);
+      emit pageImageReady(identifier(request.value(QStringLiteral("epoch"))),
+                          identifier(request.value(QStringLiteral("snapshot"))),
+                          integer(request.value(QStringLiteral("page"))),
+                          request.value(QStringLiteral("scale")).toDouble(), image);
     } else {
-      failRaster(m_request);
+      completeRaster(request, true);
     }
+    pump();
+    return;
   } else if (operation == QStringLiteral("sourceToOutput") && requested == operation) {
     if (current && m_latest) {
       const auto locations = p_header.value(QStringLiteral("locations")).toArray();
@@ -654,16 +698,22 @@ void TypstCompilerBridge::finishRequest() {
   pump();
 }
 
-void TypstCompilerBridge::failRaster(const QJsonObject &p_request) {
+void TypstCompilerBridge::completeRaster(const QJsonObject &p_request, bool p_cancelled) {
   if (p_request.value(QStringLiteral("op")) == QStringLiteral("raster")) {
-    emit pageImageReady(identifier(p_request.value(QStringLiteral("snapshot"))),
-                        integer(p_request.value(QStringLiteral("page"))),
-                        p_request.value(QStringLiteral("scale")).toDouble(), QImage());
+    const auto epoch = identifier(p_request.value(QStringLiteral("epoch")));
+    const auto snapshot = identifier(p_request.value(QStringLiteral("snapshot")));
+    const int page = integer(p_request.value(QStringLiteral("page")));
+    const qreal scale = p_request.value(QStringLiteral("scale")).toDouble();
+    if (p_cancelled) {
+      emit rasterCancelled(epoch, snapshot, page, scale);
+    } else {
+      emit pageImageReady(epoch, snapshot, page, scale, QImage());
+    }
   }
 }
 
 void TypstCompilerBridge::fail(const QString &p_message, bool p_unavailable) {
-  stop();
+  stop(true);
   m_failed = true;
   m_compilePending = false;
   m_compileDue = false;
