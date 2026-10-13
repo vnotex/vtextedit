@@ -80,12 +80,15 @@ struct PageLayout {
 struct RenderKey {
   int m_page = -1;
   QSize m_size;
-  qreal m_dpr = 1;
   QPdfDocumentRenderOptions m_options;
 
-  bool operator==(const RenderKey &p_other) const {
-    return m_page == p_other.m_page && m_size == p_other.m_size && m_dpr == p_other.m_dpr &&
-           m_options == p_other.m_options;
+  bool usableFor(const RenderKey &p_other) const {
+    return m_page == p_other.m_page && m_options == p_other.m_options;
+  }
+
+  bool adequateFor(const RenderKey &p_other) const {
+    return usableFor(p_other) && m_size.width() >= p_other.m_size.width() &&
+           m_size.height() >= p_other.m_size.height();
   }
 
   qint64 pixels() const { return qint64(m_size.width()) * m_size.height(); }
@@ -135,7 +138,6 @@ struct PdfSlot {
   QVector<CachedImage> m_images;
   RenderKey m_active;
   quint64 m_request = 0;
-  qint64 m_allowance = 0;
   bool m_initialized = false;
   bool m_obsolete = false;
   bool m_failed = false;
@@ -157,6 +159,7 @@ struct OwnedSelection {
 class vte::TypstPreviewPanePrivate {
 public:
   enum class ZoomMode { Custom, Width, Page };
+  enum class RenderPass { FirstPaint, Upgrade, Prefetch };
 
   TypstPreviewPanePrivate(TypstPreviewPane *p_q, const TypstEditorConfig &p_config)
       : q(p_q), m_maxPdfBytes(qMax(qint64(0), p_config.m_maxPdfBytes)),
@@ -291,39 +294,30 @@ public:
     return result;
   }
 
-  int imageIndex(const PdfSlot &p_slot, const RenderKey &p_key) const {
-    for (int i = 0; i < p_slot.m_images.size(); ++i) {
-      if (p_slot.m_images.at(i).m_key == p_key) {
-        return i;
-      }
-    }
-    return -1;
-  }
-
   int bestImageIndex(const PdfSlot &p_slot, int p_page) const {
     const RenderKey *wanted = nullptr;
     for (const auto &need : p_slot.m_needs) {
       if (need.m_key.m_page == p_page) {
         wanted = &need.m_key;
-        const int exact = imageIndex(p_slot, *wanted);
-        if (exact >= 0) {
-          return exact;
-        }
         break;
       }
     }
     int result = -1;
-    qreal best = std::numeric_limits<qreal>::max();
+    bool bestAdequate = false;
+    qint64 bestPixels = 0;
     for (int i = 0; i < p_slot.m_images.size(); ++i) {
-      const auto &image = p_slot.m_images.at(i);
-      if (image.m_key.m_page == p_page) {
-        const qreal difference =
-            wanted ? std::abs(std::log(qreal(image.m_key.pixels()) / wanted->pixels()))
-                   : -qreal(image.m_used);
-        if (difference < best) {
-          result = i;
-          best = difference;
-        }
+      const auto &key = p_slot.m_images.at(i).m_key;
+      if (key.m_page != p_page || (wanted && !key.usableFor(*wanted))) {
+        continue;
+      }
+      const bool adequate = wanted && key.adequateFor(*wanted);
+      const qint64 pixels = key.pixels();
+      if (result < 0 || (adequate && !bestAdequate) ||
+          (adequate == bestAdequate &&
+           (adequate ? pixels < bestPixels : pixels > bestPixels))) {
+        result = i;
+        bestAdequate = adequate;
+        bestPixels = pixels;
       }
     }
     return result;
@@ -340,24 +334,27 @@ public:
              bestImageIndex(p_slot, key.m_page) == p_index;
     }
     for (const auto &need : p_slot.m_needs) {
-      if (need.m_firstPaint && need.m_key == key) {
-        return true;
+      if (need.m_firstPaint && key.usableFor(need.m_key)) {
+        return bestImageIndex(p_slot, key.m_page) == p_index;
       }
     }
     return false;
   }
 
-  bool reserve(qint64 p_bytes, qint64 p_pixels) {
+  bool reserve(qint64 p_bytes, qint64 p_pixels, bool p_evict = true) {
     for (;;) {
       int entries = 0;
       for (auto slot : allSlots()) {
         if (slot) {
-          entries += slot->m_images.size();
+          entries += slot->m_images.size() + (slot->m_request ? 1 : 0);
         }
       }
       if (p_bytes <= m_maxBytes - usedBytes() && p_pixels <= m_maxPixels - imagePixels() &&
-          entries < MaximumCacheEntries) {
+          entries + (p_pixels > 0 ? 1 : 0) <= MaximumCacheEntries) {
         return true;
+      }
+      if (!p_evict) {
+        return false;
       }
       PdfSlot *oldestSlot = nullptr;
       int oldestIndex = -1;
@@ -550,7 +547,6 @@ public:
       if (slot && slot != m_retiring.get() && slot->m_resourceFailure && !slot->m_obsolete) {
         slot->m_failed = false;
         slot->m_resourceFailure = false;
-        slot->m_allowance = 0;
         m_error.clear();
       }
     }
@@ -586,7 +582,6 @@ public:
 
   bool makeNeeds(PdfSlot &p_slot) {
     p_slot.m_needs.clear();
-    p_slot.m_resolutionLimited = false;
     QVector<int> pages = visiblePages(p_slot.m_layout);
     if (pages.size() > MaximumVisiblePages) {
       fail(p_slot,
@@ -605,53 +600,24 @@ public:
         pages.append(previous);
       }
     }
-    const qint64 allowance =
-        qMin(qint64(m_maxPixels) / 3, qMax(qint64(0), m_maxBytes - pdfBytes()) / 12);
-    p_slot.m_allowance = p_slot.m_allowance ? qMin(p_slot.m_allowance, allowance) : allowance;
-    if (pages.isEmpty()) {
-      return true;
-    }
-    while (pages.size() > visibleCount && p_slot.m_allowance < pages.size()) {
-      pages.removeLast();
-    }
-    const qint64 perPage = p_slot.m_allowance / pages.size();
-    if (perPage < 1) {
-      fail(
-          p_slot,
-          TypstPreviewPane::tr("The PDF memory limit leaves no space for the visible page images."),
-          true);
-      return false;
-    }
     for (int i = 0; i < pages.size(); ++i) {
       const int page = pages.at(i);
       const QSizeF logical = p_slot.m_layout.m_pages.at(page).size();
       const qreal width = logical.width() * p_slot.m_layout.m_dpr;
       const qreal height = logical.height() * p_slot.m_layout.m_dpr;
-      qreal factor = qMin(qreal(1), qMin(MaximumRasterDimension / qMax(qreal(1), width),
-                                         MaximumRasterDimension / qMax(qreal(1), height)));
-      if (width * height * factor * factor > perPage) {
-        factor = qMin(factor, std::sqrt(qreal(perPage) / width / height));
-      }
+      const qreal factor =
+          qMin(qreal(1), qMin(MaximumRasterDimension / qMax(qreal(1), width),
+                             MaximumRasterDimension / qMax(qreal(1), height)));
       RenderNeed need;
       need.m_key.m_page = page;
-      need.m_key.m_dpr = p_slot.m_layout.m_dpr;
       const int pixelWidth = qBound(
-          1, static_cast<int>(std::floor(qMin(qreal(MaximumRasterDimension), width * factor))),
+          1, static_cast<int>(std::ceil(qMin(qreal(MaximumRasterDimension), width * factor))),
           MaximumRasterDimension);
       const int pixelHeight = qBound(
-          1, static_cast<int>(std::floor(qMin(qreal(MaximumRasterDimension), height * factor))),
+          1, static_cast<int>(std::ceil(qMin(qreal(MaximumRasterDimension), height * factor))),
           MaximumRasterDimension);
       need.m_key.m_size = QSize(pixelWidth, pixelHeight);
-      // Very thin pages may hit the minimum dimension before the area cap.
-      if (need.m_key.pixels() > perPage) {
-        if (pixelWidth >= pixelHeight) {
-          need.m_key.m_size.setWidth(static_cast<int>(qMax(qint64(1), perPage / pixelHeight)));
-        } else {
-          need.m_key.m_size.setHeight(static_cast<int>(qMax(qint64(1), perPage / pixelWidth)));
-        }
-      }
       need.m_firstPaint = i < visibleCount;
-      p_slot.m_resolutionLimited = p_slot.m_resolutionLimited || factor < 0.999;
       p_slot.m_needs.append(need);
     }
     return true;
@@ -798,52 +764,181 @@ public:
         }
       }
     }
-    // Visible pages win over look-ahead; Qt itself never receives a queue.
-    if (m_displayed) {
-      submit(*m_displayed, true);
+    // Missing visible pages precede upgrades in either live snapshot. Qt
+    // itself never receives a queue, and look-ahead uses only spare capacity.
+    for (auto slot : {m_displayed.get(), m_pending.get()}) {
+      if (slot) {
+        submit(*slot, RenderPass::FirstPaint);
+      }
     }
-    if (m_pending && !m_pending->m_obsolete) {
-      submit(*m_pending, true);
+    if (visibleNeedsSatisfied(false)) {
+      for (auto slot : {m_displayed.get(), m_pending.get()}) {
+        if (slot) {
+          submit(*slot, RenderPass::Upgrade);
+        }
+      }
     }
     tryPublish();
-    if (m_displayed) {
-      submit(*m_displayed, false);
+    if (visibleNeedsSatisfied(true)) {
+      for (auto slot : {m_displayed.get(), m_pending.get()}) {
+        if (slot) {
+          submit(*slot, RenderPass::Prefetch);
+        }
+      }
     }
-    if (m_pending && !m_pending->m_obsolete) {
-      submit(*m_pending, false);
+    for (auto slot : {m_displayed.get(), m_pending.get()}) {
+      if (slot) {
+        updateResolutionLimited(*slot);
+      }
     }
     notifyUpdate();
   }
 
-  void submit(PdfSlot &p_slot, bool p_visibleOnly) {
+  bool visibleNeedsSatisfied(bool p_ideal) const {
+    for (auto slot : {m_displayed.get(), m_pending.get()}) {
+      if (!slot || slot->m_obsolete || slot->m_failed) {
+        continue;
+      }
+      if (!slot->m_initialized) {
+        return false;
+      }
+      for (const auto &need : slot->m_needs) {
+        if (!need.m_firstPaint) {
+          continue;
+        }
+        const int index = bestImageIndex(*slot, need.m_key.m_page);
+        if (index < 0 || (p_ideal && !slot->m_images.at(index).m_key.adequateFor(need.m_key))) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  bool capacityWillBeReleased() const {
+    for (auto slot : allSlots()) {
+      if (!slot) {
+        continue;
+      }
+      if (slot == m_retiring.get() || slot->m_obsolete) {
+        return true;
+      }
+      if (!slot->m_request) {
+        continue;
+      }
+      bool visible = false;
+      for (const auto &need : slot->m_needs) {
+        if (need.m_firstPaint && slot->m_active.usableFor(need.m_key)) {
+          visible = true;
+          break;
+        }
+      }
+      // An offscreen result is disposable; a replacement releases the old
+      // same-page image after residency. A different visible first paint
+      // will stay pinned and is not a reason to defer a necessary fallback.
+      if (!visible || bestImageIndex(*slot, slot->m_active.m_page) >= 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  qint64 firstPaintBudget(const RenderKey &p_key) const {
+    const qint64 spare =
+        qMax(qint64(0), qMin(m_maxPixels - imagePixels(), (m_maxBytes - usedBytes()) / 4));
+    qint64 missingPixels = 0;
+    int missingPages = 0;
+    for (auto slot : {m_displayed.get(), m_pending.get()}) {
+      if (!slot || slot->m_obsolete || slot->m_failed || !slot->m_initialized) {
+        continue;
+      }
+      for (const auto &need : slot->m_needs) {
+        if (need.m_firstPaint && bestImageIndex(*slot, need.m_key.m_page) < 0 &&
+            !(slot->m_request && slot->m_active.usableFor(need.m_key))) {
+          ++missingPages;
+          missingPixels += need.m_key.pixels();
+        }
+      }
+    }
+    if (!missingPages || spare < missingPages) {
+      return 0;
+    }
+    // Leave at least one pixel for each remaining first paint, then divide
+    // the actual unreserved capacity proportionally to the ideal sizes.
+    return qMin(p_key.pixels(),
+                1 + static_cast<qint64>((spare - missingPages) *
+                                       (qreal(p_key.pixels()) / missingPixels)));
+  }
+
+  void updateResolutionLimited(PdfSlot &p_slot) {
+    p_slot.m_resolutionLimited = false;
+    for (const auto &need : p_slot.m_needs) {
+      if (!need.m_firstPaint) {
+        continue;
+      }
+      const int index = bestImageIndex(p_slot, need.m_key.m_page);
+      const QSize size = index < 0 ? need.m_key.m_size : p_slot.m_images.at(index).m_key.m_size;
+      const QSizeF desired =
+          p_slot.m_layout.m_pages.at(need.m_key.m_page).size() * p_slot.m_layout.m_dpr;
+      if (size.width() < desired.width() || size.height() < desired.height()) {
+        p_slot.m_resolutionLimited = true;
+        return;
+      }
+    }
+  }
+
+  void submit(PdfSlot &p_slot, RenderPass p_pass) {
     if (p_slot.m_request || p_slot.m_failed || p_slot.m_obsolete || !p_slot.m_initialized) {
       return;
     }
     for (const auto &need : p_slot.m_needs) {
-      if ((p_visibleOnly && !need.m_firstPaint) || imageIndex(p_slot, need.m_key) >= 0) {
+      if (need.m_firstPaint == (p_pass == RenderPass::Prefetch)) {
         continue;
       }
-      const qint64 pixels = need.m_key.pixels();
-      if (!reserve(pixels * 4, pixels)) {
-        if (need.m_firstPaint && !m_retiring && p_slot.m_allowance > p_slot.m_needs.size()) {
-          p_slot.m_allowance = qMax(qint64(p_slot.m_needs.size()), p_slot.m_allowance / 2);
-          m_needsDirty = true;
-          schedule();
-        } else if (need.m_firstPaint && !m_retiring && (!m_displayed || !m_displayed->m_request) &&
-                   (!m_pending || !m_pending->m_request)) {
+      const int index = bestImageIndex(p_slot, need.m_key.m_page);
+      if ((index >= 0 && p_slot.m_images.at(index).m_key.adequateFor(need.m_key)) ||
+          (p_pass == RenderPass::FirstPaint && index >= 0) ||
+          (p_pass == RenderPass::Upgrade && index < 0)) {
+        continue;
+      }
+      RenderKey key = need.m_key;
+      if (!reserve(key.pixels() * 4, key.pixels(), p_pass != RenderPass::Prefetch)) {
+        if (p_pass != RenderPass::FirstPaint) {
+          continue;
+        }
+        if (capacityWillBeReleased()) {
+          return;
+        }
+        const qint64 pixels = firstPaintBudget(key);
+        if (pixels > 0) {
+          const qreal factor = std::sqrt(qreal(pixels) / key.pixels());
+          const int width = qMax(1, static_cast<int>(std::floor(key.m_size.width() * factor)));
+          const int height = qMax(1, static_cast<int>(std::floor(key.m_size.height() * factor)));
+          key.m_size = QSize(width, height);
+          // At extreme aspect ratios the one-pixel short side can exceed
+          // the area budget. Clamp the long side without dropping below 1.
+          if (key.pixels() > pixels) {
+            if (width >= height) {
+              key.m_size.setWidth(static_cast<int>(qMax(qint64(1), pixels / height)));
+            } else {
+              key.m_size.setHeight(static_cast<int>(qMax(qint64(1), pixels / width)));
+            }
+          }
+        }
+        if (pixels < 1 || !reserve(key.pixels() * 4, key.pixels())) {
           fail(p_slot,
                TypstPreviewPane::tr(
                    "The PDF image cache is full. Increase the preview memory or pixel limit."),
                true);
+          return;
         }
-        return;
       }
-      p_slot.m_active = need.m_key;
-      p_slot.m_request = p_slot.m_renderer->requestPage(need.m_key.m_page, need.m_key.m_size,
-                                                        need.m_key.m_options);
+      p_slot.m_active = key;
+      p_slot.m_request =
+          p_slot.m_renderer->requestPage(key.m_page, key.m_size, key.m_options);
       if (!p_slot.m_request) {
         fail(p_slot, TypstPreviewPane::tr("Qt PDF could not schedule page %1 for rendering.")
-                         .arg(need.m_key.m_page + 1));
+                         .arg(key.m_page + 1));
       }
       return;
     }
@@ -867,7 +962,7 @@ public:
                  .arg(key.m_page + 1));
       } else {
         for (const auto &need : slot->m_needs) {
-          if (need.m_key == key && key.pixels() * 4 <= m_maxBytes - usedBytes() &&
+          if (key.usableFor(need.m_key) && key.pixels() * 4 <= m_maxBytes - usedBytes() &&
               key.pixels() <= m_maxPixels - imagePixels()) {
             CachedImage image;
             image.m_key = key;
@@ -875,6 +970,14 @@ public:
             image.m_request = p_request;
             image.m_used = ++m_clock;
             slot->m_images.append(std::move(image));
+            // The reservation covered both images at peak. Only now may
+            // the best resident variant replace its same-page fallback.
+            const int best = bestImageIndex(*slot, key.m_page);
+            for (int i = slot->m_images.size() - 1; i >= 0; --i) {
+              if (i != best && slot->m_images.at(i).m_key.usableFor(key)) {
+                slot->m_images.removeAt(i);
+              }
+            }
             break;
           }
         }
@@ -893,7 +996,7 @@ public:
       return;
     }
     for (const auto &need : m_pending->m_needs) {
-      if (need.m_firstPaint && imageIndex(*m_pending, need.m_key) < 0) {
+      if (need.m_firstPaint && bestImageIndex(*m_pending, need.m_key.m_page) < 0) {
         return;
       }
     }
@@ -916,6 +1019,9 @@ public:
     m_displayed->m_search->setSearchString(m_searchText);
     q->viewport()->update();
     notifyUpdate();
+    // Publication frees the old snapshot's images/PDF (or starts its
+    // retirement), so reconsider ideal upgrades without another view event.
+    schedule();
     emit q->snapshotPublished(m_displayed->m_snapshot->m_id);
   }
 
@@ -930,7 +1036,7 @@ public:
       return;
     }
     if (p_pdf.isEmpty() || p_pdf.size() > m_maxPdfBytes || p_pdf.size() >= m_maxBytes ||
-        m_maxPixels < 3) {
+        m_maxPixels <= 0) {
       report(TypstPreviewPane::tr(
           "The PDF preview is empty or exceeds the configured PDF, memory, or pixel limit."));
       return;
@@ -1199,7 +1305,6 @@ void TypstPreviewPane::applyConfig(const TypstEditorConfig &p_config) {
   }
   for (auto slot : m_d->allSlots()) {
     if (slot) {
-      slot->m_allowance = 0;
       if (slot->m_resourceFailure) {
         slot->m_failed = false;
         slot->m_resourceFailure = false;

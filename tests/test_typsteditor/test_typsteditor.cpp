@@ -14,8 +14,10 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMetaMethod>
+#include <QPainter>
 #include <QPdfDocument>
 #include <QPdfSelection>
+#include <QPixmap>
 #include <QPointer>
 #include <QProcess>
 #include <QScrollBar>
@@ -315,6 +317,107 @@ public:
   }
   VTypstEditor editor;
 };
+
+QString sharpPdfSource() {
+  return QStringLiteral(
+      "#set page(width: 360pt, height: 900pt, margin: (x: 28pt, y: 96pt))\n"
+      "#set text(size: 12pt, fill: red)\n"
+      "Sharp text: affine office minimum integral.\n\n"
+      "Fractions and roots remain crisp at screen resolution.\n\n"
+      "$ (a^2 + b^2)/(1 + sqrt(1 + x^2)) = sum_(k=1)^8 1/k^2 $\n\n"
+      "Fine strokes, curved letters, and mathematical symbols.\n"
+      "#pagebreak()\n"
+      "Offscreen neighbor: prefetch must not soften the visible page.\n"
+      "$ integral_0^1 x^2 dif x = 1/3 $");
+}
+
+std::unique_ptr<QSignalSpy> observePdfExports(QObject *p_editor) {
+  for (auto *child : p_editor->findChildren<QObject *>()) {
+    const auto *meta = child->metaObject();
+    for (int index = meta->methodOffset(); index < meta->methodCount(); ++index) {
+      const auto signal = meta->method(index);
+      if (signal.methodType() == QMetaMethod::Signal && signal.name() == "pdfReady" &&
+          signal.parameterCount() == 2 && signal.parameterTypes().at(1) == "QByteArray")
+        return std::make_unique<QSignalSpy>(child, signal);
+    }
+  }
+  return {};
+}
+
+bool fitFirstPdfPage(QAbstractScrollArea *p_pane) {
+  return QMetaObject::invokeMethod(p_pane, "fitWidth", Qt::DirectConnection) &&
+         QMetaObject::invokeMethod(p_pane, "goToPage", Qt::DirectConnection, Q_ARG(int, 0),
+                                   Q_ARG(QPointF, QPointF()));
+}
+
+QRectF firstPdfPageRect(QAbstractScrollArea *p_pane, const QSizeF &p_points) {
+  const qreal scale = p_pane->property("zoom").toDouble() *
+                      (qMax(qreal(1), qreal(p_pane->logicalDpiY())) / 72.0);
+  const QSizeF size = p_points * scale;
+  return QRectF(QPointF((p_pane->viewport()->width() - size.width()) / 2, 16), size);
+}
+
+QSize physicalPdfSize(const QRectF &p_page, qreal p_dpr) {
+  return QSize(int(std::ceil(p_page.width() * p_dpr)),
+               int(std::ceil(p_page.height() * p_dpr)));
+}
+
+QImage paintPdfOracle(Pdf &p_pdf, const QSize &p_rasterSize, const QRectF &p_page,
+                      const QImage &p_frame) {
+  const auto raster = p_pdf.document.render(0, p_rasterSize);
+  if (raster.isNull())
+    return {};
+  QImage reference(p_frame.size(), QImage::Format_RGB32);
+  reference.setDevicePixelRatio(p_frame.devicePixelRatio());
+  reference.fill(Qt::white);
+  QPainter painter(&reference);
+  painter.setRenderHint(QPainter::SmoothPixmapTransform);
+  painter.drawImage(p_page, raster, QRectF(raster.rect()));
+  return reference;
+}
+
+QRect pdfInkInterior(const QRectF &p_page, const QSizeF &p_points, const QImage &p_frame) {
+  const qreal scale = p_page.width() / p_points.width();
+  const qreal dpr = p_frame.devicePixelRatio();
+  // Text starts at 96pt. Ignore page edges and the transient top-left status banners,
+  // but retain normal letters, fractions, roots, and thin mathematical strokes.
+  const qreal top = qMax(qreal(96), p_page.top() + 84 * scale);
+  const QRectF interior(p_page.left() + 20 * scale, top, p_page.width() - 40 * scale,
+                        p_frame.height() / dpr - 16 - top);
+  return QRectF(interior.topLeft() * dpr, interior.size() * dpr).toAlignedRect()
+      .intersected(p_frame.rect());
+}
+
+struct PdfInkDifference {
+  qint64 pixels = 0;
+  qreal meanError = 255;
+};
+
+PdfInkDifference pdfInkDifference(const QImage &p_frame, const QImage &p_reference,
+                                 const QRect &p_interior) {
+  PdfInkDifference difference;
+  if (p_frame.isNull() || p_reference.isNull() || p_frame.size() != p_reference.size())
+    return difference;
+  const auto frame = p_frame.convertToFormat(QImage::Format_RGB32);
+  const auto reference = p_reference.convertToFormat(QImage::Format_RGB32);
+  qint64 error = 0;
+  for (int y = p_interior.top(); y <= p_interior.bottom(); ++y) {
+    const auto *actual = reinterpret_cast<const QRgb *>(frame.constScanLine(y));
+    const auto *expected = reinterpret_cast<const QRgb *>(reference.constScanLine(y));
+    for (int x = p_interior.left(); x <= p_interior.right(); ++x) {
+      if (qMin(qRed(actual[x]), qMin(qGreen(actual[x]), qBlue(actual[x]))) >= 245 &&
+          qMin(qRed(expected[x]), qMin(qGreen(expected[x]), qBlue(expected[x]))) >= 245)
+        continue;
+      ++difference.pixels;
+      error += qMax(qAbs(qRed(actual[x]) - qRed(expected[x])),
+                    qMax(qAbs(qGreen(actual[x]) - qGreen(expected[x])),
+                         qAbs(qBlue(actual[x]) - qBlue(expected[x]))));
+    }
+  }
+  if (difference.pixels)
+    difference.meanError = qreal(error) / difference.pixels;
+  return difference;
+}
 
 int textChangeCount(const QSignalSpy &p_changes) {
   int count = 0;
@@ -1966,6 +2069,182 @@ void TestTypstEditor::syntaxHighlightsFollowEditsAndErrors() {
   QCOMPARE(syntaxFormatAt(document, firstPosition).foreground().color(), QColor("#557755"));
   QCOMPARE(syntaxFormatAt(document, secondPosition).foreground().color(), QColor("#557755"));
   QCOMPARE(syntaxFormatAt(document, stringPosition).foreground().color(), QColor("#aa2233"));
+}
+
+void TestTypstEditor::pdfVisiblePagesStaySharpAndRecover_data() {
+  QTest::addColumn<bool>("sideBySide");
+  QTest::newRow("read") << false;
+  QTest::newRow("side-by-side") << true;
+}
+
+void TestTypstEditor::pdfVisiblePagesStaySharpAndRecover() {
+  QFETCH(bool, sideBySide);
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto mode = sideBySide ? VTypstEditor::Mode::SideBySidePreview : VTypstEditor::Mode::Read;
+  const auto source = sharpPdfSource();
+  auto config = editorConfig(root.path());
+  config->m_maxCacheBytes = 512 * 1024 * 1024;
+  config->m_maxRasterPixels = 16 * 1024 * 1024;
+  QSize viewportSize;
+  QSize physicalSize;
+  QSizeF pagePoints;
+  qreal dpr = 0;
+  qreal fittedZoom = 0;
+  {
+    // Measure a real, laid-out PDF before selecting the budget. Recreate the editor
+    // afterward so an unrestricted cached image cannot satisfy the sharpness test.
+    EditorFixture layout(root.path(), source, mode, config);
+    auto exports = observePdfExports(&layout.editor);
+    QVERIFY(exports && exports->isValid());
+    const auto *meta = layout.pane()->metaObject();
+    const int signal = meta->indexOfSignal("snapshotPublished(quint64)");
+    QVERIFY(signal >= 0);
+    QSignalSpy published(layout.pane(), meta->method(signal));
+    QVERIFY(published.isValid());
+    QVERIFY2(waitUntil([&]() { return published.count() == 1 && !exports->isEmpty(); }),
+             qPrintable(layout.editor.compileMessage()));
+    Pdf pdf(exports->last().at(1).toByteArray());
+    QVERIFY(!pdf.bytes.isEmpty());
+    QVERIFY(pdf.load());
+    QCOMPARE(pdf.document.pageCount(), 2);
+    pagePoints = pdf.size(0);
+    QCOMPARE(pdf.size(1), pagePoints);
+    QVERIFY(fitFirstPdfPage(layout.pane()));
+    viewportSize = layout.pane()->viewport()->size();
+    dpr = layout.pane()->viewport()->devicePixelRatioF();
+    fittedZoom = layout.pane()->property("zoom").toDouble();
+    const auto page = firstPdfPageRect(layout.pane(), pagePoints);
+    QVERIFY(qAbs(page.width() - (viewportSize.width() - 32)) < 0.001);
+    QVERIFY(page.intersects(QRectF(QPointF(), QSizeF(viewportSize))));
+    QVERIFY(page.bottom() + 16 > viewportSize.height());
+    QCOMPARE(layout.pane()->verticalScrollBar()->value(), 0);
+    physicalSize = physicalPdfSize(page, dpr);
+    QVERIFY(physicalSize.width() < 8192 && physicalSize.height() < 8192);
+  }
+  const qint64 pagePixels = qint64(std::ceil((viewportSize.width() - 32) * dpr)) *
+                            physicalSize.height();
+  // P is ONE visible page at physical resolution, not a share of visible+prefetch
+  // or displayed+pending+retiring slots. Bytes are deliberately non-binding.
+  const int pixelBudget = int(pagePixels * 3 / 2);
+  config->m_maxRasterPixels = pixelBudget;
+  QVERIFY(qint64(config->m_maxCacheBytes) > qint64(pixelBudget) * 4 + 32 * 1024 * 1024);
+  EditorFixture fixture(root.path(), source, mode, config);
+  auto *pane = fixture.pane();
+  QVERIFY(pane);
+  auto exports = observePdfExports(&fixture.editor);
+  QVERIFY(exports && exports->isValid());
+  TypstPdfObserver observer;
+  QList<QImage> publications;
+  observer.published = [&](quint64) { publications.append(pane->viewport()->grab().toImage()); };
+  const auto *paneMeta = pane->metaObject();
+  const int signal = paneMeta->indexOfSignal("snapshotPublished(quint64)");
+  const int slot = observer.metaObject()->indexOfSlot("snapshotPublished(quint64)");
+  QVERIFY(signal >= 0 && slot >= 0);
+  QVERIFY(QObject::connect(pane, paneMeta->method(signal), &observer,
+                           observer.metaObject()->method(slot), Qt::DirectConnection));
+  QSignalSpy published(pane, paneMeta->method(signal));
+  QVERIFY(published.isValid());
+  QVERIFY(fitFirstPdfPage(pane));
+  QVERIFY2(waitUntil([&]() { return publications.size() == 1 && !exports->isEmpty(); }),
+           qPrintable(fixture.editor.compileMessage()));
+  QCOMPARE(pane->viewport()->size(), viewportSize);
+  QCOMPARE(pane->viewport()->devicePixelRatioF(), dpr);
+  QCOMPARE(pane->property("zoom").toDouble(), fittedZoom);
+  QCOMPARE(pane->verticalScrollBar()->value(), 0);
+  QCOMPARE(pane->horizontalScrollBar()->value(), 0);
+  Pdf original(exports->last().at(1).toByteArray());
+  QVERIFY(original.load());
+  QCOMPARE(original.document.pageCount(), 2);
+  QCOMPARE(original.size(0), pagePoints);
+  const auto page = firstPdfPageRect(pane, pagePoints);
+  QCOMPARE(physicalPdfSize(page, dpr), physicalSize);
+  int currentPage = -1;
+  QVERIFY(QMetaObject::invokeMethod(pane, "currentPage", Qt::DirectConnection,
+                                    Q_RETURN_ARG(int, currentPage)));
+  QCOMPARE(currentPage, 0);
+  // With equal portrait pages and scroll offset zero, page 1 begins below the
+  // viewport. It is lookahead only and must not divide page 0's raster allowance.
+  QVERIFY(page.translated(0, page.height() + 16).top() > viewportSize.height());
+  const auto interior = pdfInkInterior(page, pagePoints, publications.front());
+  QVERIFY(!interior.isEmpty());
+  const auto fullOriginal = paintPdfOracle(original, physicalSize, page, publications.front());
+  QVERIFY(!fullOriginal.isNull());
+  constexpr qreal fullTolerance = 3;
+  const auto initial = pdfInkDifference(publications.front(), fullOriginal, interior);
+  QVERIFY2(initial.pixels > 200, "The oracle must compare meaningful text/math, not blank paper");
+  QVERIFY2(initial.meanError <= fullTolerance,
+           qPrintable(QStringLiteral("Initial visible page is softer than physical-resolution PDF: %1")
+                          .arg(initial.meanError)));
+  // Prove the metric rejects a plausible half-area raster instead of averaging
+  // its blurred edges away among the page's many white pixels.
+  const QSize halfAreaSize(qMax(1, int(std::floor(physicalSize.width() / std::sqrt(2.0)))),
+                           qMax(1, int(std::floor(physicalSize.height() / std::sqrt(2.0)))));
+  const auto halfOriginal = paintPdfOracle(original, halfAreaSize, page, publications.front());
+  QVERIFY(!halfOriginal.isNull());
+  QVERIFY(pdfInkDifference(halfOriginal, fullOriginal, interior).meanError > 2 * fullTolerance);
+
+  auto *document = fixture.editor.document();
+  document->setModified(false);
+  QSignalSpy changes(document, &QTextDocument::contentsChange);
+  const auto selected = fixture.selectPage();
+  QVERIFY(selected.contains(QStringLiteral("Sharp text")));
+  auto color = document->find(QStringLiteral("fill: red"));
+  QVERIFY(!color.isNull());
+  color.insertText(QStringLiteral("fill: rgb(\"#0000ff\")"));
+  auto sourceSelection = document->find(QStringLiteral("Sharp text"));
+  QVERIFY(!sourceSelection.isNull());
+  fixture.edit()->setTextCursor(sourceSelection);
+  const auto expectedSource = document->toPlainText();
+  const int expectedUndo = document->availableUndoSteps();
+  const int expectedChanges = textChangeCount(changes);
+  const int expectedPosition = sourceSelection.position();
+  const int expectedAnchor = sourceSelection.anchor();
+  const qreal expectedZoom = pane->property("zoom").toDouble();
+  QVERIFY2(waitUntil([&]() {
+    return exports->size() >= 2 && pane->property("hasPendingUpdate").toBool();
+  }), qPrintable(fixture.editor.compileMessage()));
+  Pdf replacement(exports->last().at(1).toByteArray());
+  QVERIFY(replacement.load());
+  QCOMPARE(replacement.document.pageCount(), 2);
+  QCOMPARE(replacement.size(0), pagePoints);
+  QCOMPARE(fixture.selected(), selected);
+  QCOMPARE(published.count(), 1);
+  // The old full-P image stays displayed while selection pins its snapshot.
+  const auto retained = pane->viewport()->grab().toImage().copy(interior);
+  QVERIFY(coloredPixels(retained, true) > 20);
+  QCOMPARE(coloredPixels(retained, false), 0);
+  const auto fullReplacement = paintPdfOracle(replacement, physicalSize, page, publications.front());
+  QVERIFY(!fullReplacement.isNull());
+  fixture.clearSelection();
+  QVERIFY2(waitUntil([&]() { return publications.size() == 2; }),
+           qPrintable(fixture.editor.compileMessage()));
+  const auto firstReplacement = publications.at(1).copy(interior);
+  QVERIFY(coloredPixels(firstReplacement, false) > 20);
+  QCOMPARE(coloredPixels(firstReplacement, true), 0);
+  const auto temporary = pdfInkDifference(publications.at(1), fullReplacement, interior);
+  QVERIFY2(temporary.meanError > 2 * fullTolerance,
+           "The publication frame must be a temporary fallback while old full-P output is pinned");
+
+  // No edit, zoom, configuration change, selection change, or explicit refresh
+  // follows publication: freeing the old snapshot must itself restore sharpness.
+  PdfInkDifference recovered;
+  QVERIFY2(waitUntil([&]() {
+    recovered = pdfInkDifference(pane->viewport()->grab().toImage(), fullReplacement, interior);
+    return recovered.pixels > 200 && recovered.meanError <= fullTolerance;
+  }, paintTimeout),
+           qPrintable(QStringLiteral("Published fallback never recovered physical resolution: %1")
+                          .arg(recovered.meanError)));
+  QCOMPARE(published.count(), 2);
+  QCOMPARE(fixture.selected(), QString());
+  QCOMPARE(pane->property("zoom").toDouble(), expectedZoom);
+  QCOMPARE(pane->viewport()->size(), viewportSize);
+  QCOMPARE(document->toPlainText(), expectedSource);
+  QCOMPARE(document->availableUndoSteps(), expectedUndo);
+  QCOMPARE(textChangeCount(changes), expectedChanges);
+  QCOMPARE(fixture.edit()->textCursor().position(), expectedPosition);
+  QCOMPARE(fixture.edit()->textCursor().anchor(), expectedAnchor);
+  QVERIFY(document->isModified());
 }
 
 void TestTypstEditor::pdfBudgetFailurePreservesOutputAndRecovers() {

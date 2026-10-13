@@ -240,6 +240,14 @@ text model. Active selection defers new output with an Update available indicati
 the selection is cleared, Update is chosen, or focus returns to source editing. Switching
 between read and side-by-side keeps the same pane and selection.
 
+Visible PDF pages request physical screen resolution at the current zoom and display DPI.
+Off-screen prefetch uses only spare capacity after visible pages are sharp; it does not
+lower their resolution. If retained output and in-flight work leave too little room for
+a full first paint, the new page can appear at reduced resolution and automatically
+sharpen when that memory is released. Existing pixels remain visible during upgrades.
+The byte/pixel limits and maximum raster dimensions still apply, including the temporary
+space needed for both the retained image and its replacement.
+
 PDF bytes are immutable, bounded in-memory buffers loaded through owned `QBuffer`s;
 previewing does not write temporary PDFs. Each PDF document retains its buffer until
 its renderer and document are retired. Compilation/export runs in the Rust helper;

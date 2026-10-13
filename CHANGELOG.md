@@ -29,6 +29,9 @@
 
 ### Behavior changes
 
+- Typst read and side-by-side PDF previews prioritize visible pages at physical screen
+  resolution before off-screen prefetch. Reduced first-paint images automatically upgrade
+  when old snapshots or render reservations release memory, without raising resource limits.
 - Typst edits retain the last syntax highlighting and rendered in-place previews while
   parsing/compilation is pending instead of clearing the document on every keystroke.
   Cached source ranges follow edits; deleted/replaced spans and file/project identity

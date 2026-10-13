@@ -30,6 +30,17 @@ public slots:
       completed(p_epoch, p_snapshot, p_page, p_scale, p_image);
   }
 };
+class TypstPdfObserver : public QObject {
+  Q_OBJECT
+public:
+  std::function<void(quint64)> published;
+
+public slots:
+  void snapshotPublished(quint64 p_snapshot) {
+    if (published)
+      published(p_snapshot);
+  }
+};
 class TestTypstEditor : public QObject {
   Q_OBJECT
 private slots:
@@ -52,6 +63,8 @@ private slots:
   void rasterHandoffTransitions_data();
   void rasterHandoffTransitions();
   void lazyStateClearsOnReplacement();
+  void pdfVisiblePagesStaySharpAndRecover_data();
+  void pdfVisiblePagesStaySharpAndRecover();
   void pdfBudgetFailurePreservesOutputAndRecovers();
   void repeatedCloseDuringPendingOutput();
 };
