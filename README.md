@@ -34,9 +34,11 @@ one source document, undo history and compiler session across three modes:
 | `Read` | Source hidden and input disabled; the same PDF fills the widget. |
 
 In-place previews have no panel background, navigation controls, title/page rows, or
-internal scrollbar. Repeated occurrences and page fragments are stacked in order;
-scrolling over them scrolls the source editor. Inline previews fit their rendered
-content instead of stretching across the block, using the existing layout reservations.
+internal scrollbar. Repeated inline occurrences appear left-to-right in evaluation order,
+in a content-sized row that scales down together if needed to fit the editor width.
+Block occurrences and page fragments within each occurrence remain vertically stacked.
+Scrolling over previews scrolls the source editor; existing layout reservations keep
+previews separate from their source and neighboring content.
 Clicking a preview does not select source or change modes. Authored backgrounds inside
 the compiled output remain intact.
 
@@ -211,8 +213,9 @@ tables and figures, including page backgrounds, clipping and surrounding overlap
 are not independently compiled formula strings or editable generated pixels. Source stays
 visible. Inline cards sit above their source line; when a short source span cannot fit
 the rendered content, the layout reserves an exclusive band above that line while the
-preview itself stays content-sized. All repeated evaluations and split-page fragments
-flow sequentially in the editor, without buttons, labels or nested scrolling.
+preview itself stays content-sized. Repeated inline evaluations share a horizontal row
+without wrapping; block evaluations and split-page fragments within an evaluation flow
+vertically. There are no buttons, labels or nested scrolling.
 Nested figure/table ownership avoids redundant cards. Unmapped/generated/imported objects
 remain in the page preview rather than being attached to guessed active-source offsets.
 Stale in-place cards are removed when input changes.

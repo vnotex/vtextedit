@@ -29,6 +29,9 @@
 
 ### Behavior changes
 
+- Repeated Typst inline preview occurrences now appear horizontally in evaluation order,
+  scaling together to fit the editor width. Block previews and page fragments within
+  each occurrence remain vertically stacked.
 - Shift+wheel scrolls horizontally in `VTextEditor` and `VMarkdownEditor`, including over
   the line-number gutter. Ordinary wheel scrolling and Ctrl+wheel handling are unchanged.
 - Long Markdown image/link/reference destinations and HTML image `src` values display

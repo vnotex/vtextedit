@@ -331,15 +331,20 @@ QImage widgetImage(QWidget *p_widget) {
   return image;
 }
 
-int coloredPixels(const QImage &p_image, bool p_red) {
+int coloredPixels(const QImage &p_image, bool p_red, QRect *p_bounds = nullptr) {
   int count = 0;
+  if (p_bounds)
+    *p_bounds = QRect();
   for (int y = 0; y < p_image.height(); ++y) {
     for (int x = 0; x < p_image.width(); ++x) {
       const auto color = p_image.pixelColor(x, y);
       if (color.alpha() > 128 && color.green() < 100 &&
           (p_red ? color.red() > 170 && color.blue() < 100
-                 : color.blue() > 170 && color.red() < 100))
+                 : color.blue() > 170 && color.red() < 100)) {
         ++count;
+        if (p_bounds)
+          *p_bounds |= QRect(x, y, 1, 1);
+      }
     }
   }
   return count;
@@ -975,13 +980,11 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
            }),
            qPrintable(fixture.editor.compileMessage()));
   const auto image = widgetImage(repeated());
-  const auto upper = image.copy(0, 0, image.width(), image.height() / 2);
-  const auto lower = image.copy(0, image.height() / 2, image.width(),
-                                 image.height() - image.height() / 2);
-  QVERIFY(coloredPixels(upper, true) > 10);
-  QCOMPARE(coloredPixels(upper, false), 0);
-  QVERIFY(coloredPixels(lower, false) > 10);
-  QCOMPARE(coloredPixels(lower, true), 0);
+  QRect redBounds, blueBounds;
+  QVERIFY(coloredPixels(image, true, &redBounds) > 10);
+  QVERIFY(coloredPixels(image, false, &blueBounds) > 10);
+  QVERIFY(redBounds.right() < blueBounds.left());
+  QVERIFY(redBounds.top() <= blueBounds.bottom() && blueBounds.top() <= redBounds.bottom());
   QVERIFY(inlineCard());
   QVERIFY(!repeated()->geometry().intersects(inlineCard()->geometry()));
   const int compactWidth = inlineCard()->width();
@@ -997,6 +1000,84 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
   }));
   QCOMPARE(inlineCard()->width(), compactWidth);
   QVERIFY(!repeated()->geometry().intersects(inlineCard()->geometry()));
+
+  // The combined natural row must shrink, not wrap or crop, in a narrow editor.
+  const auto wide = QStringLiteral("#set page(width: 3000pt, height: 300pt, margin: 10pt)\n"
+                                    "#set text(size: 32pt)\n"
+                                    "#for color in (rgb(\"#ff0000\"), rgb(\"#0000ff\")) { "
+                                    "text(fill: color)[$x+x+x+x+x+x+x+x+x+x$] }\nAfter");
+  fixture.edit()->setLineWrapMode(QTextEdit::NoWrap);
+  fixture.editor.setFileOverlay(QStringLiteral("main.typ"), wide);
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  QVERIFY(waitUntil([&]() {
+    return repeated() && coloredPixels(widgetImage(repeated()), false) > 10;
+  }));
+  const auto wideSize = repeated()->size();
+  const auto wideSelection = fixture.edit()->textCursor();
+  const auto wideUndo = fixture.editor.document()->availableUndoSteps();
+  const auto wideModified = fixture.editor.document()->isModified();
+  fixture.editor.resize(600, 650);
+  QVERIFY(waitUntil([&]() {
+    return repeated() && repeated()->width() < wideSize.width() &&
+           coloredPixels(widgetImage(repeated()), false) > 10;
+  }));
+  const auto narrowImage = widgetImage(repeated());
+  QVERIFY(coloredPixels(narrowImage, true, &redBounds) > 10);
+  QVERIFY(coloredPixels(narrowImage, false, &blueBounds) > 10);
+  QVERIFY(redBounds.right() < blueBounds.left());
+  QVERIFY(redBounds.top() <= blueBounds.bottom() && blueBounds.top() <= redBounds.bottom());
+  QVERIFY(repeated()->height() < wideSize.height());
+  QVERIFY(repeated()->width() <= fixture.edit()->viewport()->width());
+  QCOMPARE(fixture.editor.document()->toPlainText(), wide);
+  QCOMPARE(fixture.edit()->textCursor().anchor(), wideSelection.anchor());
+  QCOMPARE(fixture.edit()->textCursor().position(), wideSelection.position());
+  QCOMPARE(fixture.editor.document()->availableUndoSteps(), wideUndo);
+  QCOMPARE(fixture.editor.document()->isModified(), wideModified);
+
+  // Clip past the short right occurrence while the tall left one is still visible.
+  // Individual rectangle bottoms are not a searchable order in a horizontal row.
+  const auto unequal = QStringLiteral(
+      "#for (color, size) in ((rgb(\"#ff0000\"), 72pt), (rgb(\"#0000ff\"), 24pt)) { "
+      "text(fill: color, size: size)[$x$] }\n") + QStringLiteral("After\n").repeated(80);
+  fixture.editor.resize(1000, 650);
+  fixture.editor.setFileOverlay(QStringLiteral("main.typ"), unequal);
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  // Publication restores the previous viewport anchor asynchronously. Wait for
+  // the reservation before scrolling to the row that this case will clip.
+  QVERIFY(waitUntil([&]() {
+    const auto doc = fixture.editor.document();
+    return doc->documentLayout()->blockBoundingRect(doc->begin()).height() >
+           fixture.edit()->fontMetrics().height() * 2;
+  }));
+  fixture.edit()->moveCursor(QTextCursor::Start);
+  fixture.edit()->verticalScrollBar()->setValue(0);
+  QVERIFY(waitUntil([&]() {
+    return repeated() && coloredPixels(widgetImage(repeated()), false) > 10;
+  }));
+  const auto unequalImage = widgetImage(repeated());
+  QVERIFY(coloredPixels(unequalImage, true, &redBounds) > 10);
+  QVERIFY(coloredPixels(unequalImage, false, &blueBounds) > 10);
+  QVERIFY(redBounds.right() < blueBounds.left());
+  QVERIFY(redBounds.bottom() > blueBounds.bottom() + 4);
+  const auto clipSelection = fixture.edit()->textCursor();
+  const auto clipUndo = fixture.editor.document()->availableUndoSteps();
+  const auto clipModified = fixture.editor.document()->isModified();
+  auto *clipScroll = fixture.edit()->verticalScrollBar();
+  const int clipY = (redBounds.bottom() + blueBounds.bottom()) / 2;
+  const int clipValue = clipScroll->value() + repeated()->geometry().top() + clipY;
+  QVERIFY(clipValue <= clipScroll->maximum());
+  clipScroll->setValue(clipValue);
+  QVERIFY(waitUntil([&]() {
+    return repeated() && repeated()->geometry().top() == 0 &&
+           repeated()->height() < unequalImage.height() &&
+           coloredPixels(widgetImage(repeated()), false) == 0;
+  }));
+  QVERIFY(coloredPixels(widgetImage(repeated()), true) > 10);
+  QCOMPARE(fixture.editor.document()->toPlainText(), unequal);
+  QCOMPARE(fixture.edit()->textCursor().anchor(), clipSelection.anchor());
+  QCOMPARE(fixture.edit()->textCursor().position(), clipSelection.position());
+  QCOMPARE(fixture.editor.document()->availableUndoSteps(), clipUndo);
+  QCOMPARE(fixture.editor.document()->isModified(), clipModified);
 
   QString split = QStringLiteral("#set page(width: 100mm, height: 30mm, margin: 4mm)\n"
                                   "#set text(fill: red, size: 24pt)\n"

@@ -75,10 +75,15 @@ struct Part {
   const QString *m_status = nullptr;
   QRectF m_imageRect;
   qreal m_scale = 1;
+  qreal m_maxBottom = 0;
 };
 
+bool isInlinePreview(const TypstPreviewOccurrence &p_occurrence) {
+  return p_occurrence.m_kind == QLatin1String("equation") && !p_occurrence.m_block;
+}
+
 QVector<Part> partsFor(const QVector<TypstPreviewOccurrence> &p_occurrences, qreal p_width,
-                       qreal p_dpiScale, qreal p_maxHeight, const QFont &p_font, qreal *p_height,
+                       qreal p_dpiScale, qreal p_maxHeight, const QFont &p_font, QSizeF *p_size,
                        bool p_measureOnly = false) {
   QVector<Part> parts;
   if (!p_measureOnly) {
@@ -87,33 +92,75 @@ QVector<Part> partsFor(const QVector<TypstPreviewOccurrence> &p_occurrences, qre
       count += qMax<qsizetype>(1, occurrence.m_regions.size());
     parts.reserve(count);
   }
+  const bool inlinePreview = isInlinePreview(p_occurrences.first());
+  const qreal innerWidth = qMax<qreal>(1, p_width - 2 * c_padding);
+  qreal left = c_padding;
   qreal top = c_padding;
+  qreal height = c_padding;
   qreal statusHeight = 0;
+  bool hasFragments = false;
   for (const auto &occurrence : p_occurrences) {
+    qreal columnWidth = 0;
     if (occurrence.m_regions.isEmpty()) {
       if (!statusHeight)
         statusHeight = qCeil(QFontMetricsF(p_font).height());
+      columnWidth = inlinePreview
+                        ? QFontMetricsF(p_font).horizontalAdvance(statusLabel(occurrence.m_status))
+                        : innerWidth;
       if (!p_measureOnly) {
         parts.append({nullptr, &occurrence.m_status,
-                      QRectF(c_padding, top, qMax<qreal>(1, p_width - 2 * c_padding), statusHeight),
-                      1});
+                      QRectF(left, top, columnWidth, statusHeight), 1});
       }
       top += statusHeight + c_padding;
-      continue;
+    } else {
+      hasFragments |= occurrence.m_regions.size() > 1;
+      for (const auto &region : occurrence.m_regions) {
+        qreal scale = qMin(p_dpiScale, qMax<qreal>(1, p_maxHeight - 2 * c_padding) /
+                                          region.m_rect.height());
+        if (!inlinePreview)
+          scale = qMin(scale, innerWidth / region.m_rect.width());
+        const QRectF rect(left, top, region.m_rect.width() * scale,
+                          region.m_rect.height() * scale);
+        if (!p_measureOnly)
+          parts.append({&region, nullptr, rect, scale});
+        columnWidth = qMax(columnWidth, rect.width());
+        top += rect.height() + c_padding;
+      }
     }
-    for (const auto &region : occurrence.m_regions) {
-      const qreal scale =
-          qMin(p_dpiScale, qMin(qMax<qreal>(1, p_width - 2 * c_padding) / region.m_rect.width(),
-                                qMax<qreal>(1, p_maxHeight - 2 * c_padding) /
-                                    region.m_rect.height()));
-      const QRectF rect(c_padding, top, region.m_rect.width() * scale,
-                        region.m_rect.height() * scale);
-      if (!p_measureOnly)
-        parts.append({&region, nullptr, rect, scale});
-      top += rect.height() + c_padding;
+    height = qMax(height, top);
+    if (inlinePreview) {
+      // Each evaluation is a column; page fragments within it stay sequential.
+      left += columnWidth + c_padding;
+      top = c_padding;
     }
   }
-  *p_height = top;
+  *p_size = QSizeF(p_width, height);
+  if (inlinePreview) {
+    // Fit the whole row, including its gaps, without wrapping or upscaling.
+    const qreal fit = qMin<qreal>(1, innerWidth / qMax<qreal>(1, left - 2 * c_padding));
+    *p_size = QSizeF(qMin(p_width, (left - 2 * c_padding) * fit + 2 * c_padding),
+                     (height - 2 * c_padding) * fit + 2 * c_padding);
+    if (fit < 1) {
+      const QPointF padding(c_padding, c_padding);
+      for (auto &part : parts) {
+        part.m_imageRect = QRectF(padding + (part.m_imageRect.topLeft() - padding) * fit,
+                                  part.m_imageRect.size() * fit);
+        part.m_scale *= fit;
+      }
+    }
+    if (hasFragments && p_occurrences.size() > 1) {
+      std::stable_sort(parts.begin(), parts.end(), [](const Part &a, const Part &b) {
+        return a.m_imageRect.top() < b.m_imageRect.top();
+      });
+    }
+  }
+  // Neighboring columns can have different heights. Index their prefix maximum,
+  // not individual bottoms, so top clipping cannot skip a taller earlier part.
+  qreal maxBottom = 0;
+  for (auto &part : parts) {
+    maxBottom = qMax(maxBottom, part.m_imageRect.bottom());
+    part.m_maxBottom = maxBottom;
+  }
   return parts;
 }
 
@@ -136,8 +183,8 @@ public:
     const bool widthChanged = !qFuzzyCompare(m_contentWidth + 1, p_width + 1);
     if (widthChanged) {
       m_contentWidth = p_width;
-      qreal height = 0;
-      m_parts = partsFor(*m_occurrences, p_width, logicalDpiX() / 72.0, m_maxHeight, font(), &height);
+      QSizeF size;
+      m_parts = partsFor(*m_occurrences, p_width, logicalDpiX() / 72.0, m_maxHeight, font(), &size);
     }
     if (widthChanged || m_contentOffset != p_offset) {
       m_contentOffset = p_offset;
@@ -171,9 +218,16 @@ protected:
       const auto &imageRect = part.m_imageRect;
       if (imageRect.top() > clip.bottom())
         break;
+      if (!imageRect.intersects(clip))
+        continue;
       if (!part.m_region) {
+        painter.save();
+        painter.translate(imageRect.topLeft());
+        painter.scale(part.m_scale, part.m_scale);
         painter.setPen(palette().text().color());
-        painter.drawText(imageRect, Qt::AlignLeft | Qt::AlignVCenter, statusLabel(*part.m_status));
+        painter.drawText(QRectF(QPointF(), imageRect.size() / part.m_scale),
+                         Qt::AlignLeft | Qt::AlignVCenter, statusLabel(*part.m_status));
+        painter.restore();
         continue;
       }
       const PageImage *page = m_pageImage ? m_pageImage(part.m_region->m_page) : nullptr;
@@ -217,7 +271,7 @@ private:
   int firstPart(qreal p_top) const {
     return int(std::lower_bound(m_parts.constBegin(), m_parts.constEnd(), p_top,
                                 [](const Part &p_part, qreal p_y) {
-                                  return p_part.m_imageRect.bottom() < p_y;
+                                  return p_part.m_maxBottom < p_y;
                                 }) -
                m_parts.constBegin());
   }
@@ -411,31 +465,18 @@ public:
         spec.m_startPos = item.m_source.m_start;
         spec.m_endPos = item.m_source.m_end;
         spec.m_typeOrder = typeOrder(first.m_kind);
-        spec.m_placement = first.m_kind == QLatin1String("equation") && !first.m_block
-                               ? PreviewPlacement::InlineAboveLine
-                               : PreviewPlacement::BlockAfterSource;
-        spec.m_width = available;
+        spec.m_placement = isInlinePreview(first) ? PreviewPlacement::InlineAboveLine
+                                                  : PreviewPlacement::BlockAfterSource;
+        QSizeF size;
+        partsFor(item.m_occurrences, available, dpiScale, m_maxHeight, m_edit->font(), &size, true);
+        spec.m_width = size.width();
+        spec.m_height = size.height();
         item.m_preferredWidth = 0;
         if (spec.m_placement == PreviewPlacement::InlineAboveLine) {
-          qreal contentWidth = 0;
-          for (const auto &occurrence : item.m_occurrences) {
-            for (const auto &region : occurrence.m_regions) {
-              const qreal scale = qMin(dpiScale, qMax<qreal>(1, m_maxHeight - 2 * c_padding) /
-                                                    region.m_rect.height());
-              contentWidth = qMax(contentWidth, region.m_rect.width() * scale);
-            }
-            if (occurrence.m_regions.isEmpty()) {
-              contentWidth = qMax(contentWidth, QFontMetricsF(m_edit->font()).horizontalAdvance(
-                                                   statusLabel(occurrence.m_status)));
-            }
-          }
-          spec.m_width = qMin(available, contentWidth + 2 * c_padding);
           spec.m_fullWidth =
               spec.m_width > m_layout->inlinePlacementWidth(spec.m_startPos, spec.m_endPos);
           item.m_preferredWidth = spec.m_width;
         }
-        partsFor(item.m_occurrences, spec.m_width, dpiScale, m_maxHeight, m_edit->font(),
-                 &spec.m_height, true);
         specs.append(spec);
       }
     }
