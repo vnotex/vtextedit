@@ -29,6 +29,10 @@
 
 ### Behavior changes
 
+- Move Typst mode/status/retry and PDF toolbar controls from `VTypstEditor` into both demos.
+  Hosts can build their own controls through public PDF search, zoom, page navigation and
+  pending-update APIs/signals. The widget retains its source/preview area and diagnostics;
+  mode changes preserve PDF selection when hiding the pane transfers focus to source.
 - Typst read and side-by-side PDF previews prioritize visible pages at physical screen
   resolution before off-screen prefetch. Reduced first-paint images automatically upgrade
   when old snapshots or render reservations release memory, without raising resource limits.

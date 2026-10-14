@@ -1005,14 +1005,14 @@ void TestTypstEditor::selectionDefersPublicationAcrossScrollAndModes() {
            qPrintable(fixture.editor.compileMessage()));
   const auto selected = fixture.selectPage();
   QCOMPARE(selected.trimmed(), QStringLiteral("Before update."));
-  QVERIFY(fixture.pane()->setProperty("zoom", 1.5));
+  fixture.editor.setPdfZoom(1.5);
   fixture.editor.setMode(VTypstEditor::Mode::Read);
   QCOMPARE(fixture.selected(), selected);
-  QCOMPARE(fixture.pane()->property("zoom").toDouble(), 1.5);
+  QCOMPARE(fixture.editor.pdfZoom(), 1.5);
   auto changed = pages;
   changed.replace(QStringLiteral("Before update."), QStringLiteral("After update."));
   fixture.editor.setFileOverlay(QStringLiteral("main.typ"), changed);
-  QVERIFY2(waitUntil([&]() { return fixture.pane()->property("hasPendingUpdate").toBool(); }),
+  QVERIFY2(waitUntil([&]() { return fixture.editor.hasPendingPdfUpdate(); }),
            qPrintable(fixture.editor.compileMessage()));
   QCOMPARE(published.count(), 1);
   QCOMPARE(fixture.selected(), selected);
@@ -1027,20 +1027,18 @@ void TestTypstEditor::selectionDefersPublicationAcrossScrollAndModes() {
   fixture.editor.setMode(VTypstEditor::Mode::SideBySidePreview);
   QCOMPARE(fixture.selected(), selected);
   QCOMPARE(published.count(), 1);
-  QVERIFY(QMetaObject::invokeMethod(fixture.pane(), "publishPending", Qt::DirectConnection));
+  fixture.editor.publishPendingPdfUpdate();
   QVERIFY2(waitUntil([&]() { return published.count() == 2; }),
            qPrintable(fixture.editor.compileMessage()));
   QVERIFY(fixture.selected().isEmpty());
-  QVERIFY(!fixture.pane()->property("hasPendingUpdate").toBool());
-  QCOMPARE(fixture.pane()->property("zoom").toDouble(), 1.5);
-  QVERIFY(QMetaObject::invokeMethod(fixture.pane(), "goToPage", Qt::DirectConnection, Q_ARG(int, 0),
-                                    Q_ARG(QPointF, QPointF())));
+  QVERIFY(!fixture.editor.hasPendingPdfUpdate());
+  QCOMPARE(fixture.editor.pdfZoom(), 1.5);
+  fixture.editor.goToPdfPage(0);
   QCOMPARE(fixture.selectPage().trimmed(), QStringLiteral("After update."));
   QTest::keyClick(fixture.pane(), Qt::Key_C, Qt::ControlModifier);
   QCOMPARE(QApplication::clipboard()->text().trimmed(), QStringLiteral("After update."));
   fixture.clearSelection();
-  QVERIFY(QMetaObject::invokeMethod(fixture.pane(), "goToPage", Qt::DirectConnection, Q_ARG(int, 2),
-                                    Q_ARG(QPointF, QPointF())));
+  fixture.editor.goToPdfPage(2);
   QCOMPARE(fixture.selectPage().trimmed(), QStringLiteral("Last page."));
 }
 
@@ -1135,12 +1133,14 @@ void TestTypstEditor::sideBySideScrollSync() {
   QCOMPARE(pdfBar->value(), mapped(sourceBar, pdfBar));
   fixture.editor.setMode(VTypstEditor::Mode::InPlacePreview);
   QCoreApplication::processEvents();
+  QCOMPARE(fixture.selected(), selectedPdf);
   const int hiddenPdf = pdfBar->value();
   sourceBar->setValue(0);
   QCOMPARE(pdfBar->value(), hiddenPdf);
   fixture.editor.setMode(VTypstEditor::Mode::SideBySidePreview);
   QCoreApplication::processEvents();
   QCOMPARE(pdfBar->value(), hiddenPdf);
+  QCOMPARE(fixture.selected(), selectedPdf);
 
   // A source range clamp on resize is layout, not an instruction to scroll PDF.
   sourceBar->setValue(sourceBar->maximum());

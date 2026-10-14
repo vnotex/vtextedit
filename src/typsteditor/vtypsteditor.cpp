@@ -10,20 +10,13 @@
 #include "typstpreviewpane.h"
 #include "typstsourceeditor.h"
 
-#include <QComboBox>
 #include <QDir>
-#include <QHBoxLayout>
-#include <QLabel>
-#include <QLineEdit>
 #include <QListWidget>
 #include <QScopedValueRollback>
 #include <QScrollBar>
-#include <QSignalBlocker>
-#include <QSpinBox>
 #include <QSplitter>
 #include <QTextDocument>
 #include <QTimer>
-#include <QToolButton>
 #include <QVBoxLayout>
 
 using namespace vte;
@@ -50,46 +43,6 @@ public:
     activeFile = config->m_mainFile;
     auto *layout = new QVBoxLayout(q);
     layout->setContentsMargins(0, 0, 0, 0);
-    auto *modeBar = new QHBoxLayout;
-    modeCombo = new QComboBox(q);
-    modeCombo->setObjectName(QStringLiteral("typstMode"));
-    modeCombo->addItem(VTypstEditor::tr("In-place preview"));
-    modeCombo->addItem(VTypstEditor::tr("Side-by-side preview"));
-    modeCombo->addItem(VTypstEditor::tr("Read"));
-    modeBar->addWidget(modeCombo);
-    statusLabel = new QLabel(q);
-    statusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    statusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
-    modeBar->addWidget(statusLabel, 1);
-    auto *retryButton = button(VTypstEditor::tr("Retry"), q);
-    modeBar->addWidget(retryButton);
-    layout->addLayout(modeBar);
-
-    pdfBar = new QWidget(q);
-    auto *pdfLayout = new QHBoxLayout(pdfBar);
-    pdfLayout->setContentsMargins(0, 0, 0, 0);
-    search = new QLineEdit(pdfBar);
-    search->setPlaceholderText(VTypstEditor::tr("Find in PDF"));
-    search->setClearButtonEnabled(true);
-    pdfLayout->addWidget(search, 1);
-    auto *previous = button(VTypstEditor::tr("Previous match"), pdfBar);
-    auto *next = button(VTypstEditor::tr("Next match"), pdfBar);
-    auto *zoomOut = button(VTypstEditor::tr("Zoom out"), pdfBar);
-    auto *zoomIn = button(VTypstEditor::tr("Zoom in"), pdfBar);
-    auto *width = button(VTypstEditor::tr("Fit width"), pdfBar);
-    auto *page = button(VTypstEditor::tr("Fit page"), pdfBar);
-    auto *cursor = button(VTypstEditor::tr("Show cursor in output"), pdfBar);
-    updateButton = button(VTypstEditor::tr("Update available"), pdfBar);
-    for (auto *item : {previous, next, zoomOut, zoomIn, width, page, cursor, updateButton}) {
-      pdfLayout->addWidget(item);
-    }
-    pageNumber = new QSpinBox(pdfBar);
-    pageNumber->setPrefix(VTypstEditor::tr("Page "));
-    pageNumber->setMinimum(1);
-    pageNumber->setMaximum(1);
-    pdfLayout->addWidget(pageNumber);
-    layout->addWidget(pdfBar);
-
     splitter = new QSplitter(Qt::Horizontal, q);
     source = new TypstSourceEditor(
         config->m_textEditorConfig,
@@ -107,8 +60,6 @@ public:
     diagnosticList->setMaximumHeight(120);
     layout->addWidget(diagnosticList);
     diagnosticList->hide();
-    updateButton->hide();
-    pdfBar->hide();
     pane->hide();
 
     bridge = new TypstCompilerBridge(q);
@@ -116,25 +67,8 @@ public:
     host->setActiveFile(activeFile);
     host->setEnabled(true);
 
-    QObject::connect(modeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), q,
-                     [this](int p_index) { q->setMode(static_cast<Mode>(p_index)); });
-    QObject::connect(retryButton, &QToolButton::clicked, q, &VTypstEditor::retryCompilation);
-    QObject::connect(search, &QLineEdit::textChanged, pane, &TypstPreviewPane::setSearchText);
-    QObject::connect(search, &QLineEdit::returnPressed, pane, [this]() { pane->findNext(); });
-    QObject::connect(previous, &QToolButton::clicked, pane, [this]() { pane->findNext(true); });
-    QObject::connect(next, &QToolButton::clicked, pane, [this]() { pane->findNext(); });
-    QObject::connect(zoomOut, &QToolButton::clicked, pane,
-                     [this]() { pane->setZoom(pane->zoom() / 1.2); });
-    QObject::connect(zoomIn, &QToolButton::clicked, pane,
-                     [this]() { pane->setZoom(pane->zoom() * 1.2); });
-    QObject::connect(width, &QToolButton::clicked, pane, &TypstPreviewPane::fitWidth);
-    QObject::connect(page, &QToolButton::clicked, pane, &TypstPreviewPane::fitPage);
-    QObject::connect(cursor, &QToolButton::clicked, q, &VTypstEditor::showOutputAtCursor);
-    QObject::connect(updateButton, &QToolButton::clicked, pane, &TypstPreviewPane::publishPending);
-    QObject::connect(pageNumber, QOverload<int>::of(&QSpinBox::valueChanged), pane,
-                     [this](int p_page) { pane->goToPage(p_page - 1); });
     QObject::connect(pane, &TypstPreviewPane::verticalScrollChanged, q, [this]() {
-      updatePageNumber();
+      emit q->pdfNavigationChanged();
       syncScroll(false);
     });
     auto *sourceScroll = source->getTextEdit()->verticalScrollBar();
@@ -159,10 +93,11 @@ public:
         cursorHighlightTimer.start();
       }
     });
-    QObject::connect(pane, &TypstPreviewPane::updateAvailableChanged, updateButton,
-                     &QWidget::setVisible);
+    QObject::connect(pane, &TypstPreviewPane::updateAvailableChanged, q,
+                     &VTypstEditor::pdfUpdateAvailableChanged);
     QObject::connect(source, &VTextEditor::focusIn, q, [this]() {
-      if (mode != Mode::Read) {
+      // Hiding the focused PDF pane transfers focus; a mode switch is not an edit gesture.
+      if (!changingMode && mode != Mode::Read) {
         pane->publishPending();
       }
     });
@@ -262,7 +197,7 @@ public:
                      });
     QObject::connect(pane, &TypstPreviewPane::snapshotPublished, q, [this](quint64 p_id) {
       bridge->setDisplayedSnapshot(pane->snapshot());
-      updatePageNumber();
+      emit q->pdfNavigationChanged();
       if (pendingNavigationSnapshot == p_id) {
         const QScopedValueRollback<bool> guard(syncingScroll, true);
         pane->goToPage(pendingNavigationPage, pendingNavigationPoint);
@@ -332,13 +267,6 @@ public:
     delete source;
   }
 
-  static QToolButton *button(const QString &p_text, QWidget *p_parent) {
-    auto *result = new QToolButton(p_parent);
-    result->setText(p_text);
-    result->setToolTip(p_text);
-    return result;
-  }
-
   void normalizeConfig() {
     config->m_projectRoot = QDir(config->m_projectRoot).absolutePath();
     config->m_mainFile = normalizedFile(config->m_mainFile);
@@ -356,8 +284,6 @@ public:
   void setStatus(CompileStatus p_status, const QString &p_message) {
     status = p_status;
     message = p_message;
-    statusLabel->setText(message);
-    statusLabel->setToolTip(message);
     emit q->compileStatusChanged(status, message);
   }
 
@@ -366,13 +292,6 @@ public:
     if (snapshot && pdfDelivered != snapshot->m_id) {
       bridge->requestPdf(snapshot->m_id);
     }
-  }
-
-  void updatePageNumber() {
-    const auto snapshot = pane->snapshot();
-    const QSignalBlocker blocker(pageNumber);
-    pageNumber->setMaximum(snapshot ? qMax(1, static_cast<int>(snapshot->m_pages.size())) : 1);
-    pageNumber->setValue(qMax(1, pane->currentPage() + 1));
   }
 
   void invalidateCursorHighlight() {
@@ -470,12 +389,6 @@ public:
   TypstPreviewHost *host = nullptr;
   TypstCompilerBridge *bridge = nullptr;
   QSplitter *splitter = nullptr;
-  QComboBox *modeCombo = nullptr;
-  QLabel *statusLabel = nullptr;
-  QWidget *pdfBar = nullptr;
-  QLineEdit *search = nullptr;
-  QSpinBox *pageNumber = nullptr;
-  QToolButton *updateButton = nullptr;
   QListWidget *diagnosticList = nullptr;
   QVector<TypstDiagnostic> diagnosticRecords;
   QStringList diagnosticMessages;
@@ -486,6 +399,7 @@ public:
   CompileStatus status = CompileStatus::Idle;
   QString message;
   bool readOnly = false;
+  bool changingMode = false;
   bool syncingScroll = false;
   bool sourceRangeChanging = false;
   QTimer cursorHighlightTimer;
@@ -511,6 +425,7 @@ void VTypstEditor::setMode(Mode p_mode) {
   if (p_mode == d->mode) {
     return;
   }
+  const QScopedValueRollback<bool> modeGuard(d->changingMode, true);
   const QScopedValueRollback<bool> guard(d->syncingScroll, true);
   if (d->mode == Mode::SideBySidePreview) {
     d->splitSizes = d->splitter->sizes();
@@ -518,13 +433,10 @@ void VTypstEditor::setMode(Mode p_mode) {
   d->invalidateCursorHighlight();
   d->cursorHighlightPending = false;
   d->mode = p_mode;
-  const QSignalBlocker blocker(d->modeCombo);
-  d->modeCombo->setCurrentIndex(static_cast<int>(p_mode));
   d->host->setEnabled(p_mode == Mode::InPlacePreview);
   d->source->setReadOnly(d->readOnly || p_mode == Mode::Read);
   d->source->setVisible(p_mode != Mode::Read);
   d->pane->setVisible(p_mode != Mode::InPlacePreview);
-  d->pdfBar->setVisible(p_mode != Mode::InPlacePreview);
   if (p_mode == Mode::SideBySidePreview) {
     d->splitter->setSizes(d->splitSizes.isEmpty() ? QList<int>{width() / 2, width() / 2}
                                                   : d->splitSizes);
@@ -620,3 +532,18 @@ void VTypstEditor::showOutputAtCursor() {
   d->cursorHighlightPending = false;
   d->bridge->sourceToOutput(d->activeFile, d->source->getTextEdit()->textCursor().position(), 0);
 }
+
+qreal VTypstEditor::pdfZoom() const { return d->pane->zoom(); }
+void VTypstEditor::setPdfZoom(qreal p_zoom) { d->pane->setZoom(p_zoom); }
+void VTypstEditor::fitPdfWidth() { d->pane->fitWidth(); }
+void VTypstEditor::fitPdfPage() { d->pane->fitPage(); }
+void VTypstEditor::setPdfSearchText(const QString &p_text) { d->pane->setSearchText(p_text); }
+void VTypstEditor::findNextPdfMatch(bool p_backwards) { d->pane->findNext(p_backwards); }
+int VTypstEditor::currentPdfPage() const { return d->pane->currentPage(); }
+int VTypstEditor::pdfPageCount() const {
+  const auto snapshot = d->pane->snapshot();
+  return snapshot ? static_cast<int>(snapshot->m_pages.size()) : 0;
+}
+void VTypstEditor::goToPdfPage(int p_page) { d->pane->goToPage(p_page); }
+bool VTypstEditor::hasPendingPdfUpdate() const { return d->pane->hasPendingUpdate(); }
+void VTypstEditor::publishPendingPdfUpdate() { d->pane->publishPending(); }

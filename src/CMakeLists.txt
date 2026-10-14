@@ -44,6 +44,7 @@ if (TARGET Qt${QT_DEFAULT_MAJOR_VERSION}::lupdate)
         COMMAND Qt${QT_DEFAULT_MAJOR_VERSION}::lupdate
                 -locations relative -no-obsolete -I ${CMAKE_CURRENT_SOURCE_DIR}/include
                 ${CMAKE_CURRENT_SOURCE_DIR}
+                ${CMAKE_CURRENT_SOURCE_DIR}/../demo/main.cpp
                 -ts ${TRANS_FILES}
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         COMMENT "Updating .ts translation catalogs"

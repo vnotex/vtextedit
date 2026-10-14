@@ -69,6 +69,25 @@ policy. Programmatic source updates remain possible while the source is hidden. 
 `getTextEditor()` for source editing, find/replace and input modes, and `document()` for
 the shared `QTextDocument`.
 
+`VTypstEditor` has no toolbar: it owns the source/preview area and diagnostic list.
+Both demo entry points build the mode/status/retry row and PDF controls in `demo/main.cpp`.
+Hosts can supply their own controls using `setMode()`, `compileStatusChanged`,
+`retryCompilation()` and `showOutputAtCursor()`, plus the public PDF API:
+
+* `pdfZoom()` / `setPdfZoom()`, `fitPdfWidth()` and `fitPdfPage()` control magnification.
+* `setPdfSearchText()` and `findNextPdfMatch(backwards)` search the displayed PDF.
+* `currentPdfPage()`, `pdfPageCount()` and `goToPdfPage()` use zero-based page indices;
+  before publication the current page is `-1` and the count is `0`. `pdfNavigationChanged`
+  notifies hosts after vertical navigation or PDF publication. Counts describe displayed
+  output, not an update still held behind a selection.
+* `hasPendingPdfUpdate()`, `pdfUpdateAvailableChanged` and `publishPendingPdfUpdate()`
+  let hosts offer an explicit update action without discarding a PDF selection on arrival.
+
+Seed controls from the getters before relying on signals; initialization may have already
+changed state. The demo keeps its PDF row hidden in in-place mode and blocks control signals
+while reflecting mode/page changes. Mode switches preserve PDF selection even when hiding
+the preview transfers focus to the source editor.
+
 ### Building and running
 
 `VTEXTEDIT_ENABLE_TYPST` defaults to **OFF**. Disabled builds do not build the helper or

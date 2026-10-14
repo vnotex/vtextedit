@@ -27,9 +27,15 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QHBoxLayout>
 #include <QKeyEvent>
+#include <QLabel>
+#include <QLineEdit>
+#include <QSignalBlocker>
+#include <QSpinBox>
 #include <QTextDocument>
 #include <QTimer>
+#include <QToolButton>
 #include <cstdio>
 #include <vtextedit/typsteditorconfig.h>
 #include <vtextedit/vtextedit.h>
@@ -181,13 +187,112 @@ static VTypstEditor *setupTypstEditor(QMainWindow *p_window, const QStringList &
     }
     contents = QString::fromUtf8(file.readAll());
   }
-  auto editor = new VTypstEditor(config, QSharedPointer<TextEditorParameters>::create(), p_window);
+  auto *central = new QWidget(p_window);
+  auto *layout = new QVBoxLayout(central);
+  layout->setContentsMargins(0, 0, 0, 0);
+  auto *editor = new VTypstEditor(config, QSharedPointer<TextEditorParameters>::create(), central);
+  const auto button = [](const QString &p_text, QWidget *p_parent) {
+    auto *result = new QToolButton(p_parent);
+    result->setText(p_text);
+    result->setToolTip(p_text);
+    return result;
+  };
+  // Retain the translation context used by these controls before they moved to the demo.
+  auto *modeBar = new QHBoxLayout;
+  auto *modeCombo = new QComboBox(central);
+  modeCombo->setObjectName(QStringLiteral("typstMode"));
+  modeCombo->addItem(vte::VTypstEditor::tr("In-place preview"));
+  modeCombo->addItem(vte::VTypstEditor::tr("Side-by-side preview"));
+  modeCombo->addItem(vte::VTypstEditor::tr("Read"));
+  modeBar->addWidget(modeCombo);
+  auto *statusLabel = new QLabel(central);
+  statusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  statusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+  modeBar->addWidget(statusLabel, 1);
+  auto *retryButton = button(vte::VTypstEditor::tr("Retry"), central);
+  modeBar->addWidget(retryButton);
+  layout->addLayout(modeBar);
+
+  auto *pdfBar = new QWidget(central);
+  auto *pdfLayout = new QHBoxLayout(pdfBar);
+  pdfLayout->setContentsMargins(0, 0, 0, 0);
+  auto *search = new QLineEdit(pdfBar);
+  search->setPlaceholderText(vte::VTypstEditor::tr("Find in PDF"));
+  search->setClearButtonEnabled(true);
+  pdfLayout->addWidget(search, 1);
+  auto *previous = button(vte::VTypstEditor::tr("Previous match"), pdfBar);
+  auto *next = button(vte::VTypstEditor::tr("Next match"), pdfBar);
+  auto *zoomOut = button(vte::VTypstEditor::tr("Zoom out"), pdfBar);
+  auto *zoomIn = button(vte::VTypstEditor::tr("Zoom in"), pdfBar);
+  auto *width = button(vte::VTypstEditor::tr("Fit width"), pdfBar);
+  auto *page = button(vte::VTypstEditor::tr("Fit page"), pdfBar);
+  auto *cursor = button(vte::VTypstEditor::tr("Show cursor in output"), pdfBar);
+  auto *updateButton = button(vte::VTypstEditor::tr("Update available"), pdfBar);
+  for (auto *item : {previous, next, zoomOut, zoomIn, width, page, cursor, updateButton}) {
+    pdfLayout->addWidget(item);
+  }
+  auto *pageNumber = new QSpinBox(pdfBar);
+  pageNumber->setPrefix(vte::VTypstEditor::tr("Page "));
+  pageNumber->setMinimum(1);
+  pageNumber->setMaximum(1);
+  pdfLayout->addWidget(pageNumber);
+  layout->addWidget(pdfBar);
+
+  layout->addWidget(editor, 1);
+
+  const auto updateMode = [modeCombo, pdfBar](VTypstEditor::Mode p_mode) {
+    const QSignalBlocker blocker(modeCombo);
+    modeCombo->setCurrentIndex(static_cast<int>(p_mode));
+    pdfBar->setVisible(p_mode != VTypstEditor::Mode::InPlacePreview);
+  };
+  QObject::connect(modeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), editor,
+                   [editor](int p_index) {
+                     editor->setMode(static_cast<VTypstEditor::Mode>(p_index));
+                   });
+  QObject::connect(editor, &VTypstEditor::modeChanged, central, updateMode);
+  updateMode(editor->mode());
+
+  const auto updateStatus = [statusLabel](VTypstEditor::CompileStatus, const QString &p_message) {
+    statusLabel->setText(p_message);
+    statusLabel->setToolTip(p_message);
+  };
+  QObject::connect(editor, &VTypstEditor::compileStatusChanged, statusLabel, updateStatus);
+  updateStatus(editor->compileStatus(), editor->compileMessage());
+  QObject::connect(retryButton, &QToolButton::clicked, editor, &VTypstEditor::retryCompilation);
+  QObject::connect(search, &QLineEdit::textChanged, editor, &VTypstEditor::setPdfSearchText);
+  QObject::connect(search, &QLineEdit::returnPressed, editor,
+                   [editor]() { editor->findNextPdfMatch(); });
+  QObject::connect(previous, &QToolButton::clicked, editor,
+                   [editor]() { editor->findNextPdfMatch(true); });
+  QObject::connect(next, &QToolButton::clicked, editor,
+                   [editor]() { editor->findNextPdfMatch(); });
+  QObject::connect(zoomOut, &QToolButton::clicked, editor,
+                   [editor]() { editor->setPdfZoom(editor->pdfZoom() / 1.2); });
+  QObject::connect(zoomIn, &QToolButton::clicked, editor,
+                   [editor]() { editor->setPdfZoom(editor->pdfZoom() * 1.2); });
+  QObject::connect(width, &QToolButton::clicked, editor, &VTypstEditor::fitPdfWidth);
+  QObject::connect(page, &QToolButton::clicked, editor, &VTypstEditor::fitPdfPage);
+  QObject::connect(cursor, &QToolButton::clicked, editor, &VTypstEditor::showOutputAtCursor);
+  QObject::connect(updateButton, &QToolButton::clicked, editor,
+                   &VTypstEditor::publishPendingPdfUpdate);
+  QObject::connect(editor, &VTypstEditor::pdfUpdateAvailableChanged, updateButton,
+                   &QWidget::setVisible);
+  updateButton->setVisible(editor->hasPendingPdfUpdate());
+  QObject::connect(pageNumber, QOverload<int>::of(&QSpinBox::valueChanged), editor,
+                   [editor](int p_page) { editor->goToPdfPage(p_page - 1); });
+  const auto updatePageNumber = [editor, pageNumber]() {
+    const QSignalBlocker blocker(pageNumber);
+    pageNumber->setMaximum(qMax(1, editor->pdfPageCount()));
+    pageNumber->setValue(qMax(1, editor->currentPdfPage() + 1));
+  };
+  QObject::connect(editor, &VTypstEditor::pdfNavigationChanged, pageNumber, updatePageNumber);
+  updatePageNumber();
   if (fileIndex < 0) {
     editor->setFileOverlay(QStringLiteral("lib.typ"), QStringLiteral("#let mass = 7\n"));
   }
   editor->getTextEditor()->setText(contents);
   editor->setMode(VTypstEditor::Mode::SideBySidePreview);
-  p_window->setCentralWidget(editor);
+  p_window->setCentralWidget(central);
   return editor;
 }
 
@@ -267,20 +372,17 @@ static void runTypstSmoke(VTypstEditor *p_editor, const QStringList &p_arguments
       state->modified = p_editor->document()->isModified();
       state->phase = 1;
     } else if (state->phase == 1) {
-      if (!pane->property("hasPendingUpdate").toBool()) {
+      if (!p_editor->hasPendingPdfUpdate()) {
         return;
       }
       if (!pane->property("selectedText").toString().contains(QStringLiteral("BEFORE smoke"))) {
         abort(QStringLiteral("Compilation cleared the displayed PDF selection"));
         return;
       }
-      if (!QMetaObject::invokeMethod(pane, "publishPending", Qt::DirectConnection)) {
-        abort(QStringLiteral("Explicit PDF update action is unavailable"));
-        return;
-      }
+      p_editor->publishPendingPdfUpdate();
       state->phase = 2;
     } else if (state->phase == 2) {
-      if (pane->property("hasPendingUpdate").toBool()) {
+      if (p_editor->hasPendingPdfUpdate()) {
         return;
       }
       key(Qt::Key_A);
@@ -289,7 +391,7 @@ static void runTypstSmoke(VTypstEditor *p_editor, const QStringList &p_arguments
         return;
       }
       if (!state->imagePrefix.isEmpty()) {
-        p_editor->grab().save(state->imagePrefix + QStringLiteral("-side.png"));
+        p_editor->window()->grab().save(state->imagePrefix + QStringLiteral("-side.png"));
       }
       p_editor->setMode(VTypstEditor::Mode::Read);
       if (!pane->property("selectedText").toString().contains(QStringLiteral("AFTER smoke"))) {
@@ -308,7 +410,7 @@ static void runTypstSmoke(VTypstEditor *p_editor, const QStringList &p_arguments
         return;
       }
       if (!state->imagePrefix.isEmpty()) {
-        p_editor->grab().save(state->imagePrefix + QStringLiteral("-inplace.png"));
+        p_editor->window()->grab().save(state->imagePrefix + QStringLiteral("-inplace.png"));
       }
       p_editor->document()->undo();
       if (!p_editor->document()->toPlainText().contains(QStringLiteral("BEFORE smoke"))) {

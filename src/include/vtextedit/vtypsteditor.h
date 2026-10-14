@@ -55,10 +55,27 @@ public:
   void retryCompilation();
   void showOutputAtCursor();
 
+  // Host-owned PDF controls; the preview pane remains internal to this widget.
+  qreal pdfZoom() const;
+  void setPdfZoom(qreal p_zoom);
+  void fitPdfWidth();
+  void fitPdfPage();
+  void setPdfSearchText(const QString &p_text);
+  void findNextPdfMatch(bool p_backwards = false);
+  // Displayed output only: zero-based page, or -1 with count 0 before publication.
+  int currentPdfPage() const;
+  int pdfPageCount() const;
+  void goToPdfPage(int p_page);
+  bool hasPendingPdfUpdate() const;
+  void publishPendingPdfUpdate();
+
 signals:
   void modeChanged(vte::VTypstEditor::Mode p_mode);
   void compileStatusChanged(vte::VTypstEditor::CompileStatus p_status, const QString &p_message);
   void diagnosticsChanged(const QStringList &p_diagnostics);
+  // Re-query currentPdfPage()/pdfPageCount() after scrolling or PDF publication.
+  void pdfNavigationChanged();
+  void pdfUpdateAvailableChanged(bool p_available);
   // Imported-file navigation is delegated to the host. Offsets are LF/UTF-16, half-open.
   void sourceLocationRequested(const QString &p_file, int p_start, int p_end);
   // The host applies its URL opening/security policy; the editor never launches URLs.
