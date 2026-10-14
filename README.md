@@ -44,7 +44,10 @@ force alignment. The next scroll uses the current ranges.
 Moving the source cursor in side-by-side mode also flashes an accent marker three times
 at the corresponding PDF location, using Typst's source mapping rather than scroll ratios.
 The first mapped location is revealed if off-screen; an already visible target does not
-move the preview. The marker does not change either selection, source history or focus.
+move the preview. Headings use their semantic document locations, so both cursor flashes
+and **Show cursor in output** target the actual heading, not a copy of its text in an
+outline. This also applies when the outline and heading share a page.
+The marker does not change either selection, source history or focus.
 Rapid cursor moves replace earlier requests. While the PDF is stale, highlighting waits
 for the current compilation to be published; leaving side-by-side mode cancels it.
 

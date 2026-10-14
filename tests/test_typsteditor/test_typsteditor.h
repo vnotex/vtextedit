@@ -55,6 +55,7 @@ private slots:
   void scrollSyncWithNonScrollableSource();
   void cursorLocationFlashesThreeTimes();
   void cursorHighlightFollowsLatestPublication();
+  void headingCursorTargetsTitleInsteadOfOutline();
   void inPlaceReservationsDoNotEditSource();
   void occurrencesAndSplitPartsRenderSequentially();
   void supersededCompileCannotPublish();

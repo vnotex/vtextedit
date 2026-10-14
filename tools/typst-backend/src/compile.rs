@@ -6,9 +6,10 @@ use std::sync::Arc;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use typst::diag::{Severity, SourceDiagnostic};
-use typst::introspection::PagedPosition;
+use typst::foundations::NativeElement;
+use typst::introspection::{Introspector, PagedPosition};
 use typst::layout::{Abs, Frame, FrameItem, Point, Sides, Transform};
-use typst::model::{Destination, Document};
+use typst::model::{Destination, Document, HeadingElem};
 use typst::syntax::{LinkedNode, Source};
 use typst::utils::Scalar;
 use typst::{World, WorldExt};
@@ -269,7 +270,7 @@ impl Session {
         let file = text(request, "file")?;
         let source = snapshot.world.source_named(file).ok_or("file is not part of the retained snapshot")?;
         let offset = byte_offset(&source, index(request, "offset")?).ok_or("source offset is out of range or splits a surrogate pair")?;
-        let locations: Vec<Value> = typst_ide::jump_from_cursor(&snapshot.document, &source, offset).into_iter()
+        let locations: Vec<Value> = source_locations(&snapshot.document, &source, offset).into_iter()
             .filter(|position| position.page.get() <= snapshot.document.pages().len())
             .map(|position| json!({"page":position.page.get() - 1, "x":position.point.x.to_pt(), "y":position.point.y.to_pt()})).collect();
         send(json!({"op":"sourceToOutput", "snapshot":snapshot_id, "locations":locations}), Arc::default())
@@ -297,6 +298,35 @@ impl Session {
             Some(typst_ide::Jump::Position(_)) | None => {},
         }
         send(reply, Arc::default())
+    }
+}
+
+fn source_locations(document: &PagedDocument, source: &Source, offset: usize) -> Vec<PagedPosition> {
+    // Outline entries reuse the heading body's glyph spans. Resolve the semantic
+    // heading instead: glyph lookup only returns the first match on each page.
+    let mut positions = Vec::new();
+    let mut best_range: Option<std::ops::Range<usize>> = None;
+    for heading in document.introspector().query(&HeadingElem::ELEM.select()).iter() {
+        let Some(node) = source.find(heading.span()) else { continue };
+        let range = node.range();
+        // Include a cursor at heading EOL, but prefer the next heading at an abutting start.
+        if offset < range.start || offset > range.end { continue; }
+        if let Some(best) = &best_range {
+            if range.start < best.start || (range.start == best.start && range.end > best.end) {
+                continue;
+            }
+        }
+        let Some(position) = heading.location().and_then(|loc| document.introspector().position(loc)) else { continue };
+        if best_range.as_ref() != Some(&range) {
+            positions.clear();
+            best_range = Some(range);
+        }
+        positions.push(position);
+    }
+    if positions.is_empty() {
+        typst_ide::jump_from_cursor(document, source, offset)
+    } else {
+        positions
     }
 }
 
@@ -523,6 +553,102 @@ mod tests {
         assert_eq!(locations[0]["page"], 0);
         query["snapshot"] = json!(MAX_ID);
         assert!(session.handle(&query, &mut |_, _| Ok(())).is_err());
+    }
+
+    #[test]
+    fn heading_navigation_targets_heading_not_outline() {
+        for (heading, marker) in [
+            ("= Target", "= Target"),
+            ("== *Target*", "=="),
+            ("#heading(level: 2)[Target]", "heading"),
+        ] {
+            let (mut session, config) = configured();
+            let text = format!("#set page(width:300pt,height:400pt,margin:20pt)\n#set heading(numbering: \"1.\")\n// 😀\n#outline()\n#pagebreak()\n{heading}\nBody text.");
+            let mut responses = Vec::new();
+            session.handle(&compile_request(&config, &text, json!([]), 1), &mut |v, _| { responses.push(v); Ok(()) }).unwrap();
+            let snapshot = responses[1]["snapshot"].as_u64().expect("heading compiles");
+            for byte in [text.rfind(marker).unwrap(), text.find("Target").unwrap() + 3, text.find("\nBody text.").unwrap()] {
+                let mut query = request("sourceToOutput"); query["snapshot"] = json!(snapshot);
+                query["file"] = json!("main.typ"); query["offset"] = json!(text[..byte].encode_utf16().count());
+                let mut reply = Value::Null;
+                session.handle(&query, &mut |v, _| { reply = v; Ok(()) }).unwrap();
+                assert_eq!(reply["locations"][0]["page"], 1, "{heading} at byte {byte}: {reply}");
+                assert!(reply["locations"][0]["y"].as_f64().unwrap() < 100.0);
+            }
+        }
+    }
+
+    #[test]
+    fn heading_navigation_ignores_same_page_outline_copies_in_either_order() {
+        for outline_first in [true, false] {
+            let (mut session, config) = configured();
+            let body = if outline_first {
+                "#outline()\n#v(80pt)\n= Target\nBody text."
+            } else {
+                "= Target\nBody text.\n#v(80pt)\n#outline()"
+            };
+            let text = format!("#set page(width:300pt,height:500pt,margin:20pt)\n{body}");
+            let mut responses = Vec::new();
+            session.handle(&compile_request(&config, &text, json!([]), 1), &mut |v, _| { responses.push(v); Ok(()) }).unwrap();
+            let snapshot = responses[1]["snapshot"].as_u64().expect("heading compiles");
+            assert_eq!(responses[1]["pages"].as_array().unwrap().len(), 1);
+            let mut query = request("sourceToOutput"); query["snapshot"] = json!(snapshot);
+            query["file"] = json!("main.typ"); query["offset"] = json!(text.find("Target").unwrap() + 2);
+            let mut reply = Value::Null;
+            session.handle(&query, &mut |v, _| { reply = v; Ok(()) }).unwrap();
+            let location = &reply["locations"][0];
+            assert_eq!(location["page"], 0);
+            let y = location["y"].as_f64().unwrap();
+            let links = responses[1]["links"].as_array().unwrap();
+            assert!(!links.is_empty(), "outline must contain heading links");
+            for link in links {
+                assert_eq!(link["targetPage"], 0);
+                let top = link["y"].as_f64().unwrap();
+                let bottom = top + link["height"].as_f64().unwrap();
+                assert!(if outline_first { y > bottom } else { y < top }, "{body}: {reply}, {link}");
+            }
+        }
+    }
+
+    #[test]
+    fn heading_navigation_uses_source_identity_not_title_text() {
+        let (mut session, config) = configured();
+        let main = "#set page(width:300pt,height:400pt,margin:20pt)\n#outline()\n#pagebreak()\n= Target\n#pagebreak()\n#include \"chapter.typ\"";
+        let chapter = "// 😀\n= Target\nChapter body.";
+        let mut compile = compile_request(&config, main, json!([]), 1);
+        compile["overlays"].as_array_mut().unwrap().push(json!({"file":"chapter.typ","text":chapter}));
+        let mut responses = Vec::new();
+        session.handle(&compile, &mut |v, _| { responses.push(v); Ok(()) }).unwrap();
+        let snapshot = responses[1]["snapshot"].as_u64().expect("headings compile");
+        for (file, text, page) in [("main.typ", main, 1), ("chapter.typ", chapter, 2)] {
+            let offset = text[..text.find("Target").unwrap() + 3].encode_utf16().count();
+            let mut query = request("sourceToOutput"); query["snapshot"] = json!(snapshot);
+            query["file"] = json!(file); query["offset"] = json!(offset);
+            let mut reply = Value::Null;
+            session.handle(&query, &mut |v, _| { reply = v; Ok(()) }).unwrap();
+            assert_eq!(reply["locations"][0]["page"], page, "{file}: {reply}");
+        }
+    }
+
+    #[test]
+    fn heading_navigation_prefers_inner_and_adjacent_heading_ranges() {
+        for body in ["#heading[Outer\n#heading[Inner]]", "#heading[Outer]#heading[Inner]"] {
+            let (mut session, config) = configured();
+            let text = format!("#set page(width:300pt,height:400pt,margin:20pt)\n{body}");
+            let mut responses = Vec::new();
+            session.handle(&compile_request(&config, &text, json!([]), 1), &mut |v, _| { responses.push(v); Ok(()) }).unwrap();
+            let snapshot = responses[1]["snapshot"].as_u64().expect("headings compile");
+            let mut ys = Vec::new();
+            for target in ["Outer", "heading[Inner]"] {
+                let mut query = request("sourceToOutput"); query["snapshot"] = json!(snapshot);
+                query["file"] = json!("main.typ"); query["offset"] = json!(text.find(target).unwrap());
+                let mut reply = Value::Null;
+                session.handle(&query, &mut |v, _| { reply = v; Ok(()) }).unwrap();
+                assert_eq!(reply["locations"][0]["page"], 0);
+                ys.push(reply["locations"][0]["y"].as_f64().unwrap());
+            }
+            assert!(ys[1] > ys[0], "inner/next heading must not target outer/previous: {body}: {ys:?}");
+        }
     }
 
     #[test]

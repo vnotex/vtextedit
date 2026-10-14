@@ -1336,6 +1336,46 @@ void TestTypstEditor::cursorHighlightFollowsLatestPublication() {
   QCOMPARE(fixture.editor.mode(), VTypstEditor::Mode::Read);
 }
 
+void TestTypstEditor::headingCursorTargetsTitleInsteadOfOutline() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto source = QStringLiteral(
+      "#set page(width: 320pt, height: 700pt, margin: 30pt)\n"
+      "#outline()\n#pagebreak()\n= Actual title\nBody below the title.");
+  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::SideBySidePreview);
+  auto *pane = fixture.pane();
+  QSignalSpy published(pane, SIGNAL(snapshotPublished(quint64)));
+  QVERIFY2(waitUntil([&]() { return published.count() == 1; }),
+           qPrintable(fixture.editor.compileMessage()));
+  auto *document = fixture.editor.document();
+  document->setModified(false);
+  const int undoSteps = document->availableUndoSteps();
+  QTextCursor cursor(document);
+  cursor.setPosition(source.indexOf(QStringLiteral("Actual title")) + 3);
+  fixture.edit()->setTextCursor(cursor);
+  int page = -1;
+  QVERIFY(waitUntil([&]() {
+    QMetaObject::invokeMethod(pane, "currentPage", Qt::DirectConnection, Q_RETURN_ARG(int, page));
+    return page == 1;
+  }, paintTimeout));
+  QVERIFY(fixture.selectPage().contains(QStringLiteral("Body below the title.")));
+
+  // Explicit navigation shares the same mapping, including a cursor at heading EOL.
+  QVERIFY(QMetaObject::invokeMethod(pane, "goToPage", Qt::DirectConnection, Q_ARG(int, 0),
+                                    Q_ARG(QPointF, QPointF())));
+  cursor.setPosition(source.indexOf(QStringLiteral("\nBody below")));
+  fixture.edit()->setTextCursor(cursor);
+  fixture.editor.showOutputAtCursor();
+  QVERIFY(waitUntil([&]() {
+    QMetaObject::invokeMethod(pane, "currentPage", Qt::DirectConnection, Q_RETURN_ARG(int, page));
+    return page == 1;
+  }, paintTimeout));
+  QCOMPARE(fixture.edit()->textCursor().position(), cursor.position());
+  QCOMPARE(document->toPlainText(), source);
+  QCOMPARE(document->availableUndoSteps(), undoSteps);
+  QVERIFY(!document->isModified());
+}
+
 void TestTypstEditor::inPlaceReservationsDoNotEditSource() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
