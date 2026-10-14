@@ -6,7 +6,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use typst::diag::{Severity, SourceDiagnostic};
-use typst::foundations::NativeElement;
+use typst::foundations::{NativeElement, StyleChain};
 use typst::introspection::{Introspector, PagedPosition};
 use typst::layout::{Abs, Frame, FrameItem, Point, Sides, Transform};
 use typst::model::{Destination, Document, HeadingElem};
@@ -57,7 +57,7 @@ impl Session {
             self.epoch = Some(epoch);
             self.world = Some(world);
             send(json!({"op":"ready", "version":1,
-                "capabilities":["pdf","raster","navigation","previews","highlights"]}), Arc::default())?;
+                "capabilities":["pdf","raster","navigation","previews","highlights","headings"]}), Arc::default())?;
             return Ok(false);
         }
         if self.epoch != Some(epoch) { return Err("session is not initialized for this epoch".into()); }
@@ -163,6 +163,7 @@ impl Session {
             }
             let previews = crate::preview::extract(world, &document)?;
             let links = extract_links(&document)?;
+            let headings = extract_headings(world, &document)?;
             // Semantic extraction may need additional source files. Validate the
             // complete frozen read set at the actual publication boundary.
             if let Some(error) = world.resource_error() { return Err(error); }
@@ -179,6 +180,7 @@ impl Session {
             reply["pages"] = Value::Array(pages);
             reply["previews"] = previews;
             reply["links"] = links;
+            reply["headings"] = headings;
             reply["dependencies"] = world.dependencies();
             // Serialization's bounded writer checks the full atomic metadata
             // before a finished slot becomes observable to the consumer.
@@ -425,6 +427,29 @@ fn unmapped_diagnostic(message: &str) -> Value {
     json!({"file":"", "start":-1, "end":-1, "severity":"error", "message":message})
 }
 
+fn extract_headings(world: &dyn World, document: &PagedDocument) -> Result<Value, String> {
+    let mut headings = Vec::new();
+    for elem in document.introspector().query(&HeadingElem::ELEM.select()).iter() {
+        let heading = elem.to_packed::<HeadingElem>().unwrap();
+        if !heading.outlined.get(StyleChain::default()) { continue; }
+        metadata_room(headings.len())?;
+        let level = i32::try_from(heading.resolve_level(StyleChain::default()).get())
+            .map_err(|_| "compiled heading level exceeds signed 32-bit protocol limit")?;
+        let mut value = elem.span().id().and_then(|id| {
+            world.range(elem.span()).and_then(|bytes| wire_range(world, id, bytes))
+        }).unwrap_or_else(|| json!({"file":"", "start":-1, "end":-1}));
+        for field in ["start", "end"] {
+            if value[field].as_i64().and_then(|offset| i32::try_from(offset).ok()).is_none() {
+                return Err("compiled heading source offset exceeds signed 32-bit protocol limit".into());
+            }
+        }
+        value["title"] = json!(heading.body.plain_text().as_str());
+        value["level"] = json!(level);
+        headings.push(value);
+    }
+    Ok(Value::Array(headings))
+}
+
 fn extract_links(document: &PagedDocument) -> Result<Value, String> {
     let mut links = Vec::new();
     for (page, original) in document.pages().iter().enumerate() {
@@ -508,6 +533,7 @@ mod tests {
         session.handle(&compile_request(&config, "#let x =", json!([first]), 2), &mut |v, _| { responses.push(v); Ok(()) }).unwrap();
         assert_eq!(responses.len(), 2);
         assert!(responses[1].get("snapshot").is_none());
+        assert!(responses[1].get("headings").is_none());
         assert!(responses[1]["diagnostics"].as_array().unwrap().iter().any(|d| d["severity"] == "error"));
         assert_eq!(session.snapshots.len(), 1);
         assert!(session.snapshots.contains_key(&first));
@@ -553,6 +579,78 @@ mod tests {
         assert_eq!(locations[0]["page"], 0);
         query["snapshot"] = json!(MAX_ID);
         assert!(session.handle(&query, &mut |_, _| Ok(())).is_err());
+    }
+
+    #[test]
+    fn headings_use_evaluated_titles_and_outline_visibility() {
+        let (mut session, config) = configured();
+        let text = r#"#set heading(numbering: "1.")
+= *Bold* #("evaluated") _title_
+#heading(outlined: false, bookmarked: true)[Hidden]
+#heading(outlined: true, bookmarked: false)[Visible]
+#[
+#set heading(outlined: false, bookmarked: true)
+= Hidden by style
+]
+#set heading(offset: 6)
+== Deep
+#heading[]"#;
+        let mut responses = Vec::new();
+        session.handle(&compile_request(&config, text, json!([]), 1), &mut |v, _| { responses.push(v); Ok(()) }).unwrap();
+        assert!(responses[1]["snapshot"].as_u64().is_some(), "{:?}", responses);
+        let headings = responses[1]["headings"].as_array().unwrap();
+        let titles: Vec<_> = headings.iter().map(|heading| heading["title"].as_str().unwrap()).collect();
+        let levels: Vec<_> = headings.iter().map(|heading| heading["level"].as_i64().unwrap()).collect();
+        assert_eq!(titles, ["Bold evaluated title", "Visible", "Deep", ""]);
+        assert_eq!(levels, [1, 1, 8, 7]);
+    }
+
+    #[test]
+    fn headings_preserve_generated_import_order_and_utf16_ranges() {
+        let (mut session, config) = configured();
+        let main = "// 😀\n= Before\n#import \"parts/chapter.typ\": chapter\n#for _ in range(2) { chapter }\n= After";
+        let chapter = "// 😀\n#let chapter = [\n== *Imported* 😀\n]";
+        let mut compile = compile_request(&config, main, json!([]), 1);
+        compile["overlays"].as_array_mut().unwrap().push(json!({"file":"parts/chapter.typ","text":chapter}));
+        let mut responses = Vec::new();
+        session.handle(&compile, &mut |v, _| { responses.push(v); Ok(()) }).unwrap();
+        assert!(responses[1]["snapshot"].as_u64().is_some(), "{:?}", responses);
+        let headings = responses[1]["headings"].as_array().unwrap();
+        assert_eq!(headings.len(), 4);
+        for (heading, (file, source, span, title, level)) in headings.iter().zip([
+            ("main.typ", main, "= Before", "Before", 1),
+            ("parts/chapter.typ", chapter, "== *Imported* 😀", "Imported 😀", 2),
+            ("parts/chapter.typ", chapter, "== *Imported* 😀", "Imported 😀", 2),
+            ("main.typ", main, "= After", "After", 1),
+        ]) {
+            let byte = source.find(span).unwrap();
+            let start = source[..byte].encode_utf16().count();
+            let end = start + span.encode_utf16().count();
+            assert_eq!(*heading, json!({"file":file, "start":start, "end":end, "title":title, "level":level}));
+        }
+        assert_eq!(headings[1], headings[2], "repeated source spans remain separate occurrences");
+    }
+
+    #[test]
+    fn successful_compile_without_headings_publishes_empty_array() {
+        let (mut session, config) = configured();
+        let mut responses = Vec::new();
+        session.handle(&compile_request(&config, "Body text.", json!([]), 1), &mut |v, _| { responses.push(v); Ok(()) }).unwrap();
+        assert!(responses[1]["snapshot"].as_u64().is_some(), "{:?}", responses);
+        assert_eq!(responses[1]["headings"], json!([]));
+    }
+
+    #[test]
+    fn unrepresentable_heading_level_rejects_snapshot() {
+        let (mut session, config) = configured();
+        // No numbering or outline: Typst need not allocate a counter at this depth.
+        let text = "#heading(level: 2147483648, numbering: none)[Too deep]";
+        let mut responses = Vec::new();
+        let error = session.handle(&compile_request(&config, text, json!([]), 1), &mut |v, _| { responses.push(v); Ok(()) }).unwrap_err();
+        assert!(error.contains("heading level exceeds signed 32-bit"), "{error}");
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0]["op"], "parsed");
+        assert!(session.snapshots.is_empty());
     }
 
     #[test]

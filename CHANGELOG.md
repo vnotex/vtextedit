@@ -26,6 +26,11 @@
   honored by theme format conversion. Compiled output and KSyntax code highlighting are unchanged.
 - Add the dedicated `VTypstEditorDemo` target, starting Typst without flags. The existing
   `VTextEditDemo --typst` entry remains available; both accept optional `--typst-file`.
+- Add `VTypstEditor::getHeadings()`, `headingsUpdated` and `TypstHeadingInfo`, following
+  the Markdown editor's flat heading-list convention. Compiled outlines include imported
+  and generated headings with evaluated titles, resolved levels and LF/UTF-16 source ranges;
+  `outlined: false` entries are excluded. Input/compiler invalidation clears stale outlines.
+  Requires the matching compiler helper with the new `headings` capability.
 
 ### Behavior changes
 

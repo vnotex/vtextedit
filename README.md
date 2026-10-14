@@ -88,6 +88,40 @@ changed state. The demo keeps its PDF row hidden in in-place mode and blocks con
 while reflecting mode/page changes. Mode switches preserve PDF selection even when hiding
 the preview transfers focus to the source editor.
 
+### Document outline
+
+`VTypstEditor::getHeadings()` returns a `const QVector<TypstHeadingInfo> &`.
+`headingsUpdated(const QVector<TypstHeadingInfo> &)` publishes each accepted compiled
+outline, following `VMarkdownEditor`'s flat heading-list convention. Copy the vector to
+retain it across updates; the getter's reference is borrowed until the next update.
+
+Entries are in evaluated document order across the **whole main document**, including
+imports and generated occurrences, regardless of the active source file or preview mode.
+Each entry has:
+
+* `m_title`: evaluated body plain text, without automatic heading numbering. Empty
+  titles are retained.
+* `m_level`: resolved positive nesting level, including Typst offsets and levels above six.
+* `m_file`, `m_startPos`, `m_endPos`: source identity and half-open LF/UTF-16 offsets within
+  that file. Paths are project-relative with `/` separators, or `@package` paths.
+  Unmappable headings remain in the list with an empty file and `-1` offsets. Generated
+  occurrences may share a source span; they are not deduplicated.
+
+The list honors Typst's `outlined` property, not the PDF-only `bookmarked` property.
+It is not a scan of literal `=` lines and does not contain copies of headings rendered
+inside `#outline()`.
+
+The getter is empty before the first successful compilation. Source/overlay/project changes,
+active-file changes, dependency invalidation and compiler resets clear stale ranges immediately;
+a nonempty list being cleared emits an empty update. Failed compilation leaves it empty.
+A successful heading-free document also emits an empty update. Listen to `headingsUpdated`
+for publication, rather than assuming `compileStatusChanged(Ready)` runs afterward.
+Mode changes alone preserve the outline, and a PDF selection delaying preview publication
+does not delay the current outline. Retrieval never edits source or undo history.
+
+Deploy the updated compiler helper with the library: it must advertise the `headings`
+capability; an older helper is rejected explicitly.
+
 ### Building and running
 
 `VTEXTEDIT_ENABLE_TYPST` defaults to **OFF**. Disabled builds do not build the helper or

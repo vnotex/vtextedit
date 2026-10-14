@@ -157,6 +157,34 @@ TypstSnapshot snapshotFromJson(const QJsonObject &p_header) {
     }
     result->m_links.append(link);
   }
+  const auto headingsValue = p_header.value(QStringLiteral("headings"));
+  if (!headingsValue.isArray()) {
+    return {};
+  }
+  const auto headings = headingsValue.toArray();
+  result->m_headings.reserve(headings.size());
+  for (const auto &value : headings) {
+    const auto object = value.toObject();
+    const auto range = sourceRange(object);
+    const int level = integer(object.value(QStringLiteral("level")));
+    if (!object.value(QStringLiteral("title")).isString() ||
+        !object.value(QStringLiteral("file")).isString() || level < 1 ||
+        !object.value(QStringLiteral("start")).isDouble() ||
+        !object.value(QStringLiteral("end")).isDouble() ||
+        (range.m_file.isEmpty()
+             ? (object.value(QStringLiteral("start")).toDouble() != -1 ||
+                object.value(QStringLiteral("end")).toDouble() != -1)
+             : !range.isValid())) {
+      return {};
+    }
+    TypstHeadingInfo heading;
+    heading.m_startPos = range.m_start;
+    heading.m_endPos = range.m_end;
+    heading.m_level = level;
+    heading.m_title = object.value(QStringLiteral("title")).toString();
+    heading.m_file = range.m_file;
+    result->m_headings.append(std::move(heading));
+  }
   result->m_highlights = highlights(p_header.value(QStringLiteral("highlights")).toArray());
   result->m_diagnostics = diagnostics(p_header.value(QStringLiteral("diagnostics")).toArray());
   for (const auto &value : p_header.value(QStringLiteral("dependencies")).toArray()) {
@@ -595,7 +623,7 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
   }
   if (operation == QStringLiteral("ready") && requested == QStringLiteral("initialize")) {
     const auto capabilities = p_header.value(QStringLiteral("capabilities")).toArray();
-    for (const auto &required : {"pdf", "raster", "navigation", "previews", "highlights"}) {
+    for (const auto &required : {"pdf", "raster", "navigation", "previews", "highlights", "headings"}) {
       if (!capabilities.contains(QString::fromLatin1(required))) {
         fail(tr("Typst helper is incompatible: missing %1.").arg(QString::fromLatin1(required)));
         return;
@@ -615,14 +643,23 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
       emit highlightsReady(m_generation,
                            highlights(p_header.value(QStringLiteral("highlights")).toArray()),
                            m_activeFile);
+      // Diagnostics/highlight consumers may edit the source synchronously.
+      if (!isCurrent(p_header)) {
+        finishRequest();
+        return;
+      }
       if (p_header.contains(QStringLiteral("snapshot"))) {
         m_latest = snapshotFromJson(p_header);
         if (!m_latest) {
           fail(tr("Typst helper returned invalid compiled geometry."));
           return;
         }
+        const auto snapshot = m_latest;
         emit stateChanged(State::Ready, tr("Typst preview is up to date."));
-        emit snapshotReady(m_latest);
+        // Ready consumers can also invalidate this result before publication.
+        if (isCurrent(p_header) && m_latest == snapshot) {
+          emit snapshotReady(snapshot);
+        }
       } else {
         emit stateChanged(State::Error, messages.isEmpty() ? tr("Typst compilation failed.")
                                                            : messages.first().m_message);

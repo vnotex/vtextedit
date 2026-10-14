@@ -3,10 +3,12 @@
 
 #include <vtextedit/vtextedit_export.h>
 
+#include <QMetaType>
 #include <QScopedPointer>
 #include <QSharedPointer>
 #include <QStringList>
 #include <QUrl>
+#include <QVector>
 #include <QWidget>
 
 class QTextDocument;
@@ -15,6 +17,19 @@ namespace vte {
 class TypstEditorConfig;
 class VTextEditor;
 struct TextEditorParameters;
+
+// One evaluated, outlined heading; field names follow md::HeadingInfo.
+struct TypstHeadingInfo {
+  // Half-open LF/UTF-16 offsets within m_file, or -1/-1 when unmappable.
+  int m_startPos = -1;
+  int m_endPos = -1;
+  // Resolved Typst nesting level, starting at one (not limited to six).
+  int m_level = -1;
+  // Plain text of the evaluated body, without generated numbering.
+  QString m_title;
+  // Project-relative slash path, or @package path; empty when unmappable.
+  QString m_file;
+};
 
 // One source document and compiler session, independent of the presentation mode.
 class VTEXTEDIT_EXPORT VTypstEditor : public QWidget {
@@ -52,6 +67,10 @@ public:
   CompileStatus compileStatus() const;
   QString compileMessage() const;
   QStringList diagnostics() const;
+  // Whole compiled main document, in document order, excluding outlined:false.
+  // Empty until a successful compile and immediately on input/compiler invalidation.
+  // Borrowed until the next update; copy the QVector to retain a snapshot.
+  const QVector<TypstHeadingInfo> &getHeadings() const;
   void retryCompilation();
   void showOutputAtCursor();
 
@@ -73,6 +92,8 @@ signals:
   void modeChanged(vte::VTypstEditor::Mode p_mode);
   void compileStatusChanged(vte::VTypstEditor::CompileStatus p_status, const QString &p_message);
   void diagnosticsChanged(const QStringList &p_diagnostics);
+  // Complete accepted outline, or empty when a nonempty outline is invalidated.
+  void headingsUpdated(const QVector<vte::TypstHeadingInfo> &p_headings);
   // Re-query currentPdfPage()/pdfPageCount() after scrolling or PDF publication.
   void pdfNavigationChanged();
   void pdfUpdateAvailableChanged(bool p_available);
@@ -87,5 +108,7 @@ private:
 };
 
 } // namespace vte
+
+Q_DECLARE_METATYPE(vte::TypstHeadingInfo)
 
 #endif // VTEXTEDIT_VTYPSTEDITOR_H

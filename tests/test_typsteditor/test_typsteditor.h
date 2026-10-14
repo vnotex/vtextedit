@@ -47,6 +47,10 @@ private slots:
   void overlaysDiagnosticsAndSnapshotRetention();
   void unicodeNavigationPdfPointsAndRasterLimits();
   void repeatedAndSplitOutputRecords();
+  void outlineIncludesEvaluatedHeadingsAndUnicodeRanges();
+  void outlineInvalidationFailureAndRecovery();
+  void outlineScopeAndModesPreserveSource();
+  void supersededCompileCannotPublishOutline();
   void modesPreserveSourceUndoAndSelection();
   void hiddenSourceAndImportChangesReachPdf();
   void diagnosticsPreserveLastGoodOutput();

@@ -1,6 +1,8 @@
 #ifndef VTE_TYPSTCOMPILEDSNAPSHOT_H
 #define VTE_TYPSTCOMPILEDSNAPSHOT_H
 
+#include <vtextedit/vtypsteditor.h>
+
 #include <QMetaType>
 #include <QPointF>
 #include <QRectF>
@@ -61,6 +63,7 @@ struct TypstCompiledSnapshot {
   QVector<QSizeF> m_pages;
   QVector<TypstPreviewOccurrence> m_previews;
   QVector<TypstLink> m_links;
+  QVector<TypstHeadingInfo> m_headings;
   QVector<TypstDiagnostic> m_diagnostics;
   QVector<TypstHighlight> m_highlights;
   QStringList m_dependencies;

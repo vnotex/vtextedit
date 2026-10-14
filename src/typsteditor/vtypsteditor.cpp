@@ -109,12 +109,21 @@ public:
                      });
     QObject::connect(bridge, &TypstCompilerBridge::generationChanged, q,
                      [this](quint64 p_epoch, quint64 p_generation) {
+                       const bool hadHeadings =
+                           outlineSnapshot && !outlineSnapshot->m_headings.isEmpty();
+                       outlineSnapshot.clear();
                        invalidateCursorHighlight();
                        host->setCurrentGeneration(p_epoch, p_generation);
                        source->typstHighlighter()->setGeneration(p_generation);
                        pane->setCurrentGeneration(p_epoch, p_generation);
                        pdfDelivered = 0;
                        pendingNavigationSnapshot = 0;
+                       if (hadHeadings) {
+                         emit q->headingsUpdated({});
+                         if (p_epoch != bridge->epoch() || p_generation != bridge->generation()) {
+                           return;
+                         }
+                       }
                        setStatus(CompileStatus::Compiling,
                                  VTypstEditor::tr("Preview is stale; compiling changes…"));
                      });
@@ -169,7 +178,10 @@ public:
                        }
                      });
     QObject::connect(
-        bridge, &TypstCompilerBridge::snapshotReady, q, [this](const TypstSnapshot &p_snapshot) {
+        bridge, &TypstCompilerBridge::snapshotReady, q, [this](TypstSnapshot p_snapshot) {
+          if (!p_snapshot || p_snapshot != bridge->latestSnapshot()) {
+            return;
+          }
           if (mode == Mode::InPlacePreview) {
             host->setSnapshot(p_snapshot);
           } else {
@@ -188,6 +200,10 @@ public:
                       VTypstEditor::tr(
                           "Preview ready; %1 generated or imported objects remain in page output.")
                           .arg(detached));
+          }
+          if (p_snapshot == bridge->latestSnapshot()) {
+            outlineSnapshot = p_snapshot;
+            emit q->headingsUpdated(p_snapshot->m_headings);
           }
         });
     QObject::connect(bridge, &TypstCompilerBridge::pdfReady, q,
@@ -388,6 +404,7 @@ public:
   TypstPreviewPane *pane = nullptr;
   TypstPreviewHost *host = nullptr;
   TypstCompilerBridge *bridge = nullptr;
+  TypstSnapshot outlineSnapshot;
   QSplitter *splitter = nullptr;
   QListWidget *diagnosticList = nullptr;
   QVector<TypstDiagnostic> diagnosticRecords;
@@ -526,6 +543,10 @@ void VTypstEditor::removeFileOverlay(const QString &p_file) {
 VTypstEditor::CompileStatus VTypstEditor::compileStatus() const { return d->status; }
 QString VTypstEditor::compileMessage() const { return d->message; }
 QStringList VTypstEditor::diagnostics() const { return d->diagnosticMessages; }
+const QVector<TypstHeadingInfo> &VTypstEditor::getHeadings() const {
+  static const QVector<TypstHeadingInfo> empty;
+  return d->outlineSnapshot ? d->outlineSnapshot->m_headings : empty;
+}
 void VTypstEditor::retryCompilation() { d->bridge->retry(); }
 void VTypstEditor::showOutputAtCursor() {
   d->invalidateCursorHighlight();
