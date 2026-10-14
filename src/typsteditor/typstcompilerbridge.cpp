@@ -457,12 +457,22 @@ void TypstCompilerBridge::requestRaster(quint64 p_epoch, quint64 p_snapshot, int
            {QStringLiteral("scale"), p_scale}});
 }
 
-void TypstCompilerBridge::sourceToOutput(const QString &p_file, int p_offset) {
+void TypstCompilerBridge::sourceToOutput(const QString &p_file, int p_offset,
+                                        quint64 p_cursorRequest) {
   if (m_latest && p_offset >= 0) {
+    if (p_cursorRequest) {
+      // Keep at most the newest queued cursor request, without dropping explicit navigation.
+      for (int i = m_queue.size() - 1; i >= 0; --i) {
+        if (identifier(m_queue.at(i).value(QStringLiteral("cursorRequest")))) {
+          m_queue.removeAt(i);
+        }
+      }
+    }
     enqueue({{QStringLiteral("op"), QStringLiteral("sourceToOutput")},
              {QStringLiteral("snapshot"), static_cast<double>(m_latest->m_id)},
              {QStringLiteral("file"), p_file},
-             {QStringLiteral("offset"), p_offset}});
+             {QStringLiteral("offset"), p_offset},
+             {QStringLiteral("cursorRequest"), static_cast<double>(p_cursorRequest)}});
   }
 }
 
@@ -664,14 +674,23 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
   } else if (operation == QStringLiteral("sourceToOutput") && requested == operation) {
     if (current && m_latest) {
       const auto locations = p_header.value(QStringLiteral("locations")).toArray();
+      int page = -1;
+      QPointF point;
       if (!locations.isEmpty()) {
         const auto location = locations.first().toObject();
-        const int page = integer(location.value(QStringLiteral("page")));
-        const QPointF point(location.value(QStringLiteral("x")).toDouble(),
-                            location.value(QStringLiteral("y")).toDouble());
-        if (page >= 0 && page < m_latest->m_pages.size() && finitePoint(point)) {
-          emit outputLocationReady(m_latest->m_id, page, point);
+        page = integer(location.value(QStringLiteral("page")));
+        point = QPointF(location.value(QStringLiteral("x")).toDouble(),
+                        location.value(QStringLiteral("y")).toDouble());
+        if (page < 0 || page >= m_latest->m_pages.size() || !finitePoint(point)) {
+          page = -1;
         }
+      }
+      // The helper echoes protocol identity, not this caller-local metadata.
+      const auto cursorRequest = identifier(m_request.value(QStringLiteral("cursorRequest")));
+      if (cursorRequest) {
+        emit cursorLocationReady(cursorRequest, m_latest->m_id, page, point);
+      } else if (page >= 0) {
+        emit outputLocationReady(m_latest->m_id, page, point);
       }
     }
   } else if (operation == QStringLiteral("outputToSource") && requested == operation) {

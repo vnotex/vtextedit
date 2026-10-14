@@ -53,6 +53,8 @@ private slots:
   void selectionDefersPublicationAcrossScrollAndModes();
   void sideBySideScrollSync();
   void scrollSyncWithNonScrollableSource();
+  void cursorLocationFlashesThreeTimes();
+  void cursorHighlightFollowsLatestPublication();
   void inPlaceReservationsDoNotEditSource();
   void occurrencesAndSplitPartsRenderSequentially();
   void supersededCompileCannotPublish();

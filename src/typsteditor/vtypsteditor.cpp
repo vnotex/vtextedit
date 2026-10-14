@@ -148,6 +148,17 @@ public:
         QTimer::singleShot(0, q, [this]() { sourceRangeChanging = false; });
       }
     });
+    cursorHighlightTimer.setSingleShot(true);
+    cursorHighlightTimer.setInterval(120);
+    QObject::connect(&cursorHighlightTimer, &QTimer::timeout, q,
+                     [this]() { requestCursorHighlight(); });
+    QObject::connect(source->getTextEdit(), &QTextEdit::cursorPositionChanged, q, [this]() {
+      invalidateCursorHighlight();
+      cursorHighlightPending = mode == Mode::SideBySidePreview && !syncingScroll;
+      if (cursorHighlightPending) {
+        cursorHighlightTimer.start();
+      }
+    });
     QObject::connect(pane, &TypstPreviewPane::updateAvailableChanged, updateButton,
                      &QWidget::setVisible);
     QObject::connect(source, &VTextEditor::focusIn, q, [this]() {
@@ -163,6 +174,7 @@ public:
                      });
     QObject::connect(bridge, &TypstCompilerBridge::generationChanged, q,
                      [this](quint64 p_epoch, quint64 p_generation) {
+                       invalidateCursorHighlight();
                        host->setCurrentGeneration(p_epoch, p_generation);
                        source->typstHighlighter()->setGeneration(p_generation);
                        pane->setCurrentGeneration(p_epoch, p_generation);
@@ -256,6 +268,9 @@ public:
         pane->goToPage(pendingNavigationPage, pendingNavigationPoint);
         pendingNavigationSnapshot = 0;
       }
+      if (cursorHighlightPending) {
+        cursorHighlightTimer.start();
+      }
     });
     QObject::connect(host, &TypstPreviewHost::rasterRequested, bridge,
                      &TypstCompilerBridge::requestRaster);
@@ -273,6 +288,21 @@ public:
                      [this](quint64 p_id, int p_page, const QPointF &p_point) {
                        navigateOutput(p_id, p_page, p_point);
                      });
+    QObject::connect(bridge, &TypstCompilerBridge::cursorLocationReady, q,
+                     [this](quint64 p_request, quint64 p_snapshot, int p_page,
+                            const QPointF &p_point) {
+                       if (p_request != cursorHighlightRequest ||
+                           mode != Mode::SideBySidePreview) {
+                         return;
+                       }
+                       const auto snapshot = currentDisplayedSnapshot();
+                       if (!snapshot || snapshot->m_id != p_snapshot) {
+                         return;
+                       }
+                       cursorHighlightPending = false;
+                       const QScopedValueRollback<bool> guard(syncingScroll, true);
+                       pane->flashSourceLocation(p_snapshot, p_page, p_point);
+                     });
     QObject::connect(pane, &TypstPreviewPane::externalLinkRequested, q,
                      &VTypstEditor::externalLinkRequested);
     QObject::connect(bridge, &TypstCompilerBridge::externalLinkRequested, q,
@@ -289,9 +319,11 @@ public:
   }
 
   ~Private() {
+    cursorHighlightTimer.stop();
     QObject::disconnect(bridge, nullptr, q, nullptr);
     QObject::disconnect(pane, nullptr, q, nullptr);
     QObject::disconnect(source, nullptr, q, nullptr);
+    QObject::disconnect(source->getTextEdit(), nullptr, q, nullptr);
     QObject::disconnect(source->getTextEdit()->verticalScrollBar(), nullptr, q, nullptr);
     // Stop the producer, then source reservations, before either underlying document dies.
     delete bridge;
@@ -341,6 +373,33 @@ public:
     const QSignalBlocker blocker(pageNumber);
     pageNumber->setMaximum(snapshot ? qMax(1, static_cast<int>(snapshot->m_pages.size())) : 1);
     pageNumber->setValue(qMax(1, pane->currentPage() + 1));
+  }
+
+  void invalidateCursorHighlight() {
+    ++cursorHighlightRequest;
+    cursorHighlightTimer.stop();
+    pane->clearSourceHighlight();
+  }
+
+  TypstSnapshot currentDisplayedSnapshot() const {
+    const auto latest = bridge->latestSnapshot();
+    const auto displayed = pane->snapshot();
+    return latest && displayed && latest->m_epoch == bridge->epoch() &&
+                   latest->m_generation == bridge->generation() &&
+                   displayed->m_epoch == latest->m_epoch &&
+                   displayed->m_generation == latest->m_generation && displayed->m_id == latest->m_id
+               ? displayed
+               : TypstSnapshot();
+  }
+
+  void requestCursorHighlight() {
+    if (!cursorHighlightPending || mode != Mode::SideBySidePreview ||
+        !currentDisplayedSnapshot()) {
+      return;
+    }
+    // Keep pending until a current reply arrives; compilation may invalidate this request.
+    bridge->sourceToOutput(activeFile, source->getTextEdit()->textCursor().position(),
+                           cursorHighlightRequest);
   }
 
   void syncScroll(bool p_fromSource) {
@@ -429,6 +488,9 @@ public:
   bool readOnly = false;
   bool syncingScroll = false;
   bool sourceRangeChanging = false;
+  QTimer cursorHighlightTimer;
+  quint64 cursorHighlightRequest = 0;
+  bool cursorHighlightPending = false;
   quint64 pdfDelivered = 0;
   quint64 pendingNavigationSnapshot = 0;
   int pendingNavigationPage = 0;
@@ -453,6 +515,8 @@ void VTypstEditor::setMode(Mode p_mode) {
   if (d->mode == Mode::SideBySidePreview) {
     d->splitSizes = d->splitter->sizes();
   }
+  d->invalidateCursorHighlight();
+  d->cursorHighlightPending = false;
   d->mode = p_mode;
   const QSignalBlocker blocker(d->modeCombo);
   d->modeCombo->setCurrentIndex(static_cast<int>(p_mode));
@@ -552,5 +616,7 @@ QString VTypstEditor::compileMessage() const { return d->message; }
 QStringList VTypstEditor::diagnostics() const { return d->diagnosticMessages; }
 void VTypstEditor::retryCompilation() { d->bridge->retry(); }
 void VTypstEditor::showOutputAtCursor() {
-  d->bridge->sourceToOutput(d->activeFile, d->source->getTextEdit()->textCursor().position());
+  d->invalidateCursorHighlight();
+  d->cursorHighlightPending = false;
+  d->bridge->sourceToOutput(d->activeFile, d->source->getTextEdit()->textCursor().position(), 0);
 }

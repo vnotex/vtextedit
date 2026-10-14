@@ -41,6 +41,13 @@ is independent, and synchronization pauses when either side has no vertical scro
 Read and in-place modes remain independent; mode changes, zoom and PDF publication do not
 force alignment. The next scroll uses the current ranges.
 
+Moving the source cursor in side-by-side mode also flashes an accent marker three times
+at the corresponding PDF location, using Typst's source mapping rather than scroll ratios.
+The first mapped location is revealed if off-screen; an already visible target does not
+move the preview. The marker does not change either selection, source history or focus.
+Rapid cursor moves replace earlier requests. While the PDF is stale, highlighting waits
+for the current compilation to be published; leaving side-by-side mode cancels it.
+
 In-place previews have no panel background, navigation controls, title/page rows, or
 internal scrollbar. Repeated inline occurrences appear left-to-right in evaluation order,
 in a content-sized row aligned to the source span's start on its visual line. With wrapping,

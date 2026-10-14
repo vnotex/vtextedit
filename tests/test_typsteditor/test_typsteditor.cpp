@@ -1193,6 +1193,149 @@ void TestTypstEditor::scrollSyncWithNonScrollableSource() {
   QCOMPARE(fixture.editor.document()->toPlainText(), source);
 }
 
+void TestTypstEditor::cursorLocationFlashesThreeTimes() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto source = shortSource(QString::fromUtf8("// \xf0\x9f\x98\x80\nMapped cursor target."));
+  const int offset = source.indexOf(QStringLiteral("cursor")) + 2;
+  Helper helper(root.path());
+  QVERIFY2(helper.start(), qPrintable(helper.details()));
+  QVERIFY2(helper.compile(source), qPrintable(helper.details()));
+  const auto snapshot = helper.reply.header.value(QStringLiteral("snapshot"));
+  QVERIFY2(helper.request({{QStringLiteral("op"), QStringLiteral("sourceToOutput")},
+                           {QStringLiteral("snapshot"), snapshot},
+                           {QStringLiteral("file"), QStringLiteral("main.typ")},
+                           {QStringLiteral("offset"), offset}}), qPrintable(helper.details()));
+  const auto locations = helper.reply.header.value(QStringLiteral("locations")).toArray();
+  QVERIFY(!locations.isEmpty());
+  const auto location = locations.first().toObject();
+  QCOMPARE(location.value(QStringLiteral("page")).toInt(), 0);
+  const QPointF point(location.value(QStringLiteral("x")).toDouble(),
+                      location.value(QStringLiteral("y")).toDouble());
+
+  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::SideBySidePreview);
+  auto *pane = fixture.pane();
+  QSignalSpy published(pane, SIGNAL(snapshotPublished(quint64)));
+  QVERIFY2(waitUntil([&]() { return published.count() == 1; }),
+           qPrintable(fixture.editor.compileMessage()));
+  const auto selectedPdf = fixture.selectPage();
+  QVERIFY(selectedPdf.contains(QStringLiteral("Mapped cursor target.")));
+  const auto page = firstPdfPageRect(pane, QSizeF(240, 160));
+  const QPointF center = page.topLeft() + point * (page.width() / 240);
+  const QRect area = QRectF(center - QPointF(15, 15), QSizeF(30, 30)).toAlignedRect();
+  auto frame = [&]() { return widgetImage(pane->viewport()).copy(area); };
+  const auto baseline = frame();
+  auto *document = fixture.editor.document();
+  document->setModified(false);
+  const int undoSteps = document->availableUndoSteps();
+  const auto *focus = QApplication::focusWidget();
+  const int scroll = pane->verticalScrollBar()->value();
+  QTextCursor cursor(document);
+  cursor.setPosition(offset - 2);
+  cursor.setPosition(offset, QTextCursor::KeepAnchor);
+  fixture.edit()->setTextCursor(cursor);
+
+  // Observe the actual painted marker, not timer internals or a test-only property.
+  int pulses = 0;
+  int transitions = 0;
+  bool visible = false;
+  QElapsedTimer elapsed;
+  elapsed.start();
+  while (elapsed.elapsed() < 1800) {
+    QTest::qWait(20);
+    const bool nowVisible = frame() != baseline;
+    if (nowVisible != visible) {
+      ++transitions;
+      pulses += nowVisible ? 1 : 0;
+      visible = nowVisible;
+    }
+  }
+  QCOMPARE(pulses, 3);
+  QCOMPARE(transitions, 6);
+  QVERIFY(!visible);
+  QCOMPARE(pane->verticalScrollBar()->value(), scroll);
+  QCOMPARE(fixture.selected(), selectedPdf);
+  QCOMPARE(fixture.edit()->textCursor().position(), cursor.position());
+  QCOMPARE(fixture.edit()->textCursor().anchor(), cursor.anchor());
+  QCOMPARE(QApplication::focusWidget(), focus);
+  QCOMPARE(document->toPlainText(), source);
+  QCOMPARE(document->availableUndoSteps(), undoSteps);
+  QVERIFY(!document->isModified());
+}
+
+void TestTypstEditor::cursorHighlightFollowsLatestPublication() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto source = QStringLiteral(
+                          "#set page(width: 240pt, height: 700pt, margin: (x: 24pt, y: 100pt))\n") +
+                      QStringLiteral("// source padding\n").repeated(100) +
+                      QStringLiteral("First target.\n#pagebreak()\nLast target.");
+  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::SideBySidePreview);
+  auto *pane = fixture.pane();
+  QSignalSpy published(pane, SIGNAL(snapshotPublished(quint64)));
+  QVERIFY2(waitUntil([&]() { return published.count() == 1; }),
+           qPrintable(fixture.editor.compileMessage()));
+  const auto selected = fixture.selectPage();
+  QVERIFY(selected.contains(QStringLiteral("First target.")));
+  QTextCursor cursor(fixture.editor.document());
+  cursor.setPosition(source.indexOf(QStringLiteral("First target")) + 2);
+  fixture.edit()->setTextCursor(cursor);
+  cursor.setPosition(source.indexOf(QStringLiteral("Last target")) + 2);
+  fixture.edit()->setTextCursor(cursor);
+  // Leave the target off-screen deliberately. Its reveal must not scroll the source back.
+  pane->verticalScrollBar()->setValue(0);
+  const int sourceScroll = fixture.edit()->verticalScrollBar()->value();
+  int page = -1;
+  QVERIFY(waitUntil([&]() {
+    QMetaObject::invokeMethod(pane, "currentPage", Qt::DirectConnection, Q_RETURN_ARG(int, page));
+    return page == 1;
+  }, paintTimeout));
+  QCOMPARE(fixture.edit()->verticalScrollBar()->value(), sourceScroll);
+  QCOMPARE(fixture.edit()->textCursor().position(), cursor.position());
+  QCOMPARE(fixture.selected(), selected);
+
+  // Invalidate both the pulse and any mapping in flight. The selected PDF stays old.
+  QTextCursor append(fixture.editor.document());
+  append.movePosition(QTextCursor::End);
+  append.insertText(QStringLiteral("\n// recompile without changing page geometry"));
+  cursor.setPosition(source.indexOf(QStringLiteral("First target")) + 2);
+  fixture.edit()->setTextCursor(cursor);
+  QVERIFY(QMetaObject::invokeMethod(pane, "goToPage", Qt::DirectConnection, Q_ARG(int, 0),
+                                    Q_ARG(QPointF, QPointF())));
+  QVERIFY2(waitUntil([&]() { return pane->property("hasPendingUpdate").toBool(); }),
+           qPrintable(fixture.editor.compileMessage()));
+  QCOMPARE(published.count(), 1);
+  // Exclude the pending-update banner, but include the first target's marker area.
+  const QRect content(0, 100, pane->viewport()->width(), pane->viewport()->height() - 100);
+  const auto staleFrame = widgetImage(pane->viewport()).copy(content);
+  QTest::qWait(400);
+  QCOMPARE(widgetImage(pane->viewport()).copy(content), staleFrame);
+
+  // Publication resumes the still-pending cursor movement, rather than losing it at invalidate.
+  TypstPdfObserver observer;
+  QImage newFrame;
+  observer.published = [&](quint64) { newFrame = widgetImage(pane->viewport()); };
+  const auto *meta = pane->metaObject();
+  QVERIFY(QObject::connect(pane, meta->method(meta->indexOfSignal("snapshotPublished(quint64)")),
+                           &observer, observer.metaObject()->method(
+                               observer.metaObject()->indexOfSlot("snapshotPublished(quint64)"))));
+  fixture.clearSelection();
+  QVERIFY2(waitUntil([&]() { return published.count() == 2; }),
+           qPrintable(fixture.editor.compileMessage()));
+  QVERIFY(waitUntil([&]() {
+    return widgetImage(pane->viewport()).copy(content) != newFrame.copy(content);
+  }, paintTimeout));
+  QCOMPARE(fixture.edit()->textCursor().position(), cursor.position());
+
+  // Leaving side-by-side cancels a visible pulse; it must not restart in Read mode.
+  fixture.editor.setMode(VTypstEditor::Mode::Read);
+  QTest::qWait(300);
+  const auto readFrame = widgetImage(pane->viewport());
+  QTest::qWait(1000);
+  QCOMPARE(widgetImage(pane->viewport()), readFrame);
+  QCOMPARE(fixture.editor.mode(), VTypstEditor::Mode::Read);
+}
+
 void TestTypstEditor::inPlaceReservationsDoNotEditSource() {
   QTemporaryDir root;
   QVERIFY(root.isValid());

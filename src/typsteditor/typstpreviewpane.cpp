@@ -170,12 +170,21 @@ public:
                    : 1) {
     m_autoScroll.setInterval(30);
     QObject::connect(&m_autoScroll, &QTimer::timeout, q, [this]() { autoScroll(); });
+    m_sourceFlash.setInterval(200);
+    QObject::connect(&m_sourceFlash, &QTimer::timeout, q, [this]() {
+      if (--m_sourceFlashPhases == 0) {
+        q->clearSourceHighlight();
+      } else {
+        q->viewport()->update();
+      }
+    });
   }
 
   ~TypstPreviewPanePrivate() {
     m_closing = true;
     ++m_epoch;
     m_autoScroll.stop();
+    m_sourceFlash.stop();
     // Stop all callbacks before any join. Never close a document underneath
     // a worker, including during final destruction with a render in flight.
     for (auto slot : allSlots()) {
@@ -1010,6 +1019,7 @@ public:
     if (m_displayed) {
       retire(m_displayed);
     }
+    q->clearSourceHighlight();
     m_displayed = std::move(m_pending);
     clearSelection(false);
     m_searchIndex = -1;
@@ -1209,6 +1219,18 @@ public:
           }
         }
         painter.restore();
+        if (page == m_sourceFlashPage && m_sourceFlashPhases > 0 && m_sourceFlashPhases % 2 == 0) {
+          const QPointF center = rect.topLeft() + m_sourceFlashPoint * slot.m_layout.m_scale;
+          painter.save();
+          painter.setClipRect(rect);
+          painter.setRenderHint(QPainter::Antialiasing);
+          QColor color = q->palette().color(QPalette::Highlight);
+          painter.setPen(QPen(color, 2));
+          color.setAlpha(80);
+          painter.setBrush(color);
+          painter.drawEllipse(center, 12, 12);
+          painter.restore();
+        }
       }
     }
     QString status;
@@ -1270,6 +1292,10 @@ public:
   QPointF m_pressPosition;
   QPointF m_pointer;
   QTimer m_autoScroll;
+  QTimer m_sourceFlash;
+  int m_sourceFlashPhases = 0;
+  int m_sourceFlashPage = -1;
+  QPointF m_sourceFlashPoint;
   bool m_pressed = false;
   bool m_dragging = false;
   bool m_controlClick = false;
@@ -1337,6 +1363,7 @@ void TypstPreviewPane::applyConfig(const TypstEditorConfig &p_config) {
 }
 
 void TypstPreviewPane::setCurrentGeneration(quint64 p_epoch, quint64 p_generation) {
+  clearSourceHighlight();
   m_d->m_epoch = p_epoch;
   m_d->m_generation = p_generation;
   if (m_d->m_pending && !m_d->current(m_d->m_pending->m_snapshot)) {
@@ -1445,6 +1472,42 @@ void TypstPreviewPane::findNext(bool p_backwards) {
                            : (m_d->m_searchIndex + (p_backwards ? count - 1 : 1)) % count;
   const auto result = slot.m_search->resultAtIndex(m_d->m_searchIndex);
   goToPage(result.page(), result.location());
+}
+
+void TypstPreviewPane::clearSourceHighlight() {
+  const bool visible = m_d->m_sourceFlashPhases > 0 && m_d->m_sourceFlashPhases % 2 == 0;
+  m_d->m_sourceFlash.stop();
+  m_d->m_sourceFlashPhases = 0;
+  m_d->m_sourceFlashPage = -1;
+  if (visible) {
+    viewport()->update();
+  }
+}
+
+void TypstPreviewPane::flashSourceLocation(quint64 p_snapshot, int p_page,
+                                          const QPointF &p_point) {
+  clearSourceHighlight();
+  if (!m_d->m_displayed || !m_d->current(m_d->m_displayed->m_snapshot) ||
+      m_d->m_displayed->m_snapshot->m_id != p_snapshot || p_page < 0 ||
+      p_page >= m_d->m_displayed->m_pageSizes.size() || !finiteCoordinate(p_point.x()) ||
+      !finiteCoordinate(p_point.y())) {
+    return;
+  }
+  const auto &layout = m_d->m_displayed->m_layout;
+  const QRectF pagePoints(QPointF(), m_d->m_displayed->m_pageSizes.at(p_page));
+  if (!pagePoints.contains(p_point)) {
+    return;
+  }
+  const QPointF center = layout.m_pages.at(p_page).topLeft() + p_point * layout.m_scale;
+  if (!QRectF(viewport()->rect()).adjusted(16, 16, -16, -16)
+           .contains(center - layout.m_offset)) {
+    m_d->setOffset(center - QPointF(viewport()->width() / 2.0, viewport()->height() / 2.0));
+  }
+  m_d->m_sourceFlashPage = p_page;
+  m_d->m_sourceFlashPoint = p_point;
+  m_d->m_sourceFlashPhases = 6;
+  m_d->m_sourceFlash.start();
+  viewport()->update();
 }
 
 void TypstPreviewPane::goToPage(int p_page, const QPointF &p_point) {

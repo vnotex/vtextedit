@@ -31,6 +31,9 @@ public:
   bool hasSelection() const;
   bool hasPendingUpdate() const;
 
+  void flashSourceLocation(quint64 p_snapshot, int p_page, const QPointF &p_point);
+  void clearSourceHighlight();
+
 public Q_SLOTS:
   void publishPending();
   void clearSelection();

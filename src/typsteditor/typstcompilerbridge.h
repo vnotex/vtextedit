@@ -29,7 +29,8 @@ public:
   void setDisplayedSnapshot(const TypstSnapshot &p_snapshot);
   void requestPdf(quint64 p_snapshot);
   void requestRaster(quint64 p_epoch, quint64 p_snapshot, int p_page, qreal p_scale);
-  void sourceToOutput(const QString &p_file, int p_offset);
+  // Zero requests explicit navigation; nonzero identifies a replaceable cursor highlight.
+  void sourceToOutput(const QString &p_file, int p_offset, quint64 p_cursorRequest);
   void outputToSource(quint64 p_snapshot, int p_page, const QPointF &p_point);
   quint64 epoch() const { return m_epoch; }
   quint64 generation() const { return m_generation; }
@@ -49,6 +50,8 @@ signals:
   // Superseded inputs are not failures and must not be retried against their old snapshot.
   void rasterCancelled(quint64 p_epoch, quint64 p_snapshot, int p_page, qreal p_scale);
   void outputLocationReady(quint64 p_snapshot, int p_page, const QPointF &p_point);
+  void cursorLocationReady(quint64 p_cursorRequest, quint64 p_snapshot, int p_page,
+                           const QPointF &p_point);
   void sourceLocationReady(const QString &p_file, int p_start, int p_end);
   void externalLinkRequested(const QUrl &p_url);
   void operationFailed(const QString &p_operation, const QString &p_message);
