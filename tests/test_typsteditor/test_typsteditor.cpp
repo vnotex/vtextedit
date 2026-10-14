@@ -810,6 +810,146 @@ void TestTypstEditor::unicodeNavigationPdfPointsAndRasterLimits() {
   QCOMPARE(navigation.editor.document()->toPlainText(), source);
 }
 
+void TestTypstEditor::previewClickNavigatesSource() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto target = QStringLiteral("NavigationTarget");
+  const auto source =
+      QStringLiteral("#set page(width: 240pt, height: 700pt, margin: 24pt)\n") +
+      QString::fromUtf8("// non-BMP: \xf0\x9f\x98\x80\n") +
+      QStringLiteral("// source padding\n").repeated(80) +
+      QStringLiteral("First page.\n#pagebreak()\n") + target;
+  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::SideBySidePreview);
+  auto *pane = fixture.pane();
+  auto exports = observePdfExports(&fixture.editor);
+  QVERIFY(exports);
+  QSignalSpy published(pane, SIGNAL(snapshotPublished(quint64)));
+  QVERIFY2(waitUntil([&]() { return published.count() == 1; }),
+           qPrintable(fixture.editor.compileMessage()));
+  QVERIFY(!exports->isEmpty());
+  Pdf pdf(exports->last().at(1).toByteArray());
+  QVERIFY(pdf.load());
+  QCOMPARE(pdf.text(1), target);
+  const auto bounds = pdf.document.getAllText(1).boundingRectangle();
+  QVERIFY(!bounds.isEmpty());
+  auto *document = fixture.editor.document();
+  document->setModified(false);
+  const int undoSteps = document->availableUndoSteps();
+  const int start = source.indexOf(target);
+
+  for (const auto mode : {VTypstEditor::Mode::SideBySidePreview, VTypstEditor::Mode::Read}) {
+    fixture.editor.setMode(mode);
+    fixture.edit()->setTextCursor(QTextCursor(document));
+    QTest::qWait(100); // Let the mode's viewport geometry settle before fitting.
+    fixture.editor.fitPdfWidth();
+    fixture.editor.setPdfZoom(fixture.editor.pdfZoom() * 0.85);
+    fixture.editor.goToPdfPage(1);
+    const auto page = firstPdfPageRect(pane, pdf.size(1));
+    const QPoint click = (page.topLeft() + bounds.center() * (page.width() / pdf.size(1).width()))
+                             .toPoint();
+    QVERIFY(pane->viewport()->rect().contains(click));
+    QTest::mouseClick(pane->viewport(), Qt::LeftButton, Qt::NoModifier, click);
+    QVERIFY2(waitUntil([&]() {
+      const auto cursor = fixture.edit()->textCursor();
+      return cursor.position() >= start && cursor.position() <= start + target.size() &&
+             fixture.edit()->hasFocus();
+    }), qPrintable(fixture.editor.compileMessage()));
+    QCOMPARE(fixture.editor.mode(), VTypstEditor::Mode::SideBySidePreview);
+    QVERIFY(fixture.edit()->isVisible());
+    QVERIFY(!fixture.edit()->textCursor().hasSelection());
+    QVERIFY2(waitUntil([&]() {
+      return fixture.edit()->viewport()->rect().intersects(fixture.edit()->cursorRect());
+    }, 2000), qPrintable(QStringLiteral("mode=%1 cursorY=%2 viewportHeight=%3 scroll=%4/%5")
+                            .arg(int(mode)).arg(fixture.edit()->cursorRect().y())
+                            .arg(fixture.edit()->viewport()->height())
+                            .arg(fixture.edit()->verticalScrollBar()->value())
+                            .arg(fixture.edit()->verticalScrollBar()->maximum())));
+    QCOMPARE(document->toPlainText(), source);
+    QCOMPARE(document->availableUndoSteps(), undoSteps);
+    QVERIFY(!document->isModified());
+  }
+}
+
+void TestTypstEditor::previewClickPreservesSelectionLinksAndStaleOutput() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto target = QStringLiteral("Selection target.");
+  const auto source = shortSource(target + QStringLiteral(
+      "\n\n#link(\"https://example.org/\")[Visit link]"));
+  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::SideBySidePreview);
+  auto *pane = fixture.pane();
+  auto *viewport = pane->viewport();
+  auto exports = observePdfExports(&fixture.editor);
+  QVERIFY(exports);
+  QSignalSpy published(pane, SIGNAL(snapshotPublished(quint64)));
+  QSignalSpy urls(&fixture.editor, &VTypstEditor::externalLinkRequested);
+  QVERIFY2(waitUntil([&]() { return published.count() == 1; }),
+           qPrintable(fixture.editor.compileMessage()));
+  QVERIFY(!exports->isEmpty());
+  Pdf pdf(exports->last().at(1).toByteArray());
+  QVERIFY(pdf.load());
+  QVERIFY(fitFirstPdfPage(pane));
+  const auto page = firstPdfPageRect(pane, pdf.size(0));
+  const qreal scale = page.width() / pdf.size(0).width();
+  const auto point = [&](const QPointF &p_point) {
+    return (page.topLeft() + p_point * scale).toPoint();
+  };
+  const auto bounds = pdf.document.getSelectionAtIndex(0, 0, target.size()).boundingRectangle();
+  QVERIFY(!bounds.isEmpty());
+  const auto press = point(QPointF(bounds.left() - 1, bounds.center().y()));
+  const auto release = point(QPointF(bounds.right() + 1, bounds.center().y()));
+  QVERIFY((release - press).manhattanLength() >= QApplication::startDragDistance());
+  fixture.edit()->setTextCursor(QTextCursor(fixture.editor.document()));
+  QTest::mousePress(viewport, Qt::LeftButton, Qt::NoModifier, press);
+  QTest::mouseMove(viewport, release);
+  QTest::mouseRelease(viewport, Qt::LeftButton, Qt::NoModifier, release);
+  QCOMPARE(fixture.selected().trimmed(), target);
+  QTest::keyClick(pane, Qt::Key_C, Qt::ControlModifier);
+  QCOMPARE(QApplication::clipboard()->text().trimmed(), target);
+  QCOMPARE(fixture.edit()->textCursor().position(), 0);
+  fixture.clearSelection();
+
+  const int linkIndex = pdf.document.getAllText(0).text().indexOf(QStringLiteral("Visit link"));
+  QVERIFY(linkIndex >= 0);
+  const auto link = pdf.document.getSelectionAtIndex(0, linkIndex, 10).boundingRectangle();
+  QVERIFY(!link.isEmpty());
+  QTest::mouseClick(viewport, Qt::LeftButton, Qt::NoModifier, point(link.center()));
+  QCOMPARE(urls.count(), 1);
+  QCOMPARE(urls.first().first().toUrl(), QUrl(QStringLiteral("https://example.org/")));
+  QCOMPARE(fixture.edit()->textCursor().position(), 0);
+
+  QTest::mouseClick(viewport, Qt::LeftButton, Qt::NoModifier, QPoint(1, 1));
+  // Direct events avoid synthesizing a blocking context menu for the right-button check.
+  const QPointF click = point(bounds.center());
+  QMouseEvent rightPress(QEvent::MouseButtonPress, click, viewport->mapToGlobal(click.toPoint()),
+                        Qt::RightButton, Qt::RightButton, Qt::NoModifier);
+  QMouseEvent rightRelease(QEvent::MouseButtonRelease, click,
+                          viewport->mapToGlobal(click.toPoint()), Qt::RightButton,
+                          Qt::NoButton, Qt::NoModifier);
+  QCoreApplication::sendEvent(viewport, &rightPress);
+  QCoreApplication::sendEvent(viewport, &rightRelease);
+  QCOMPARE(fixture.edit()->textCursor().position(), 0);
+  QTest::mouseClick(viewport, Qt::LeftButton, Qt::ControlModifier, click.toPoint());
+  const int start = source.indexOf(target);
+  QVERIFY(waitUntil([&]() {
+    const int position = fixture.edit()->textCursor().position();
+    return position >= start && position <= start + target.size();
+  }));
+  QCOMPARE(fixture.editor.document()->toPlainText(), source);
+
+  fixture.editor.setFileOverlay(QStringLiteral("main.typ"), source + QStringLiteral("\n#let x = ("));
+  QVERIFY(waitUntil([&]() {
+    return fixture.editor.compileStatus() == VTypstEditor::CompileStatus::Error;
+  }));
+  QCOMPARE(published.count(), 1); // Last-good PDF remains displayed, but its mapping is stale.
+  const auto cursor = fixture.edit()->textCursor();
+  QSignalSpy navigation(pane, SIGNAL(sourceLocationRequested(quint64,int,QPointF)));
+  QTest::mouseClick(viewport, Qt::LeftButton, Qt::NoModifier, click.toPoint());
+  QCOMPARE(navigation.count(), 0);
+  QCOMPARE(fixture.edit()->textCursor().position(), cursor.position());
+  QCOMPARE(fixture.edit()->textCursor().anchor(), cursor.anchor());
+}
+
 void TestTypstEditor::repeatedAndSplitOutputRecords() {
   QTemporaryDir root;
   QVERIFY(root.isValid());

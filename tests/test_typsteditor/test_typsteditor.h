@@ -46,6 +46,8 @@ class TestTypstEditor : public QObject {
 private slots:
   void overlaysDiagnosticsAndSnapshotRetention();
   void unicodeNavigationPdfPointsAndRasterLimits();
+  void previewClickNavigatesSource();
+  void previewClickPreservesSelectionLinksAndStaleOutput();
   void repeatedAndSplitOutputRecords();
   void outlineIncludesEvaluatedHeadingsAndUnicodeRanges();
   void outlineInvalidationFailureAndRecovery();

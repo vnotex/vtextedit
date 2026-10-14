@@ -34,6 +34,10 @@
 
 ### Behavior changes
 
+- Clicking a Typst PDF preview element now focuses and reveals its compiler-mapped source
+  position without requiring Ctrl. Read mode opens the source alongside the preview; inactive
+  in-place cards no longer restore an old scroll position over that navigation. Drag selection,
+  link activation and stale-preview navigation protection are unchanged.
 - Move Typst mode/status/retry and PDF toolbar controls from `VTypstEditor` into both demos.
   Hosts can build their own controls through public PDF search, zoom, page navigation and
   pending-update APIs/signals. The widget retains its source/preview area and diagnostics;

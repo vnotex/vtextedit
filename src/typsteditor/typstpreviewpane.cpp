@@ -1631,7 +1631,9 @@ void TypstPreviewPane::mouseReleaseEvent(QMouseEvent *p_event) {
   m_d->m_pressed = false;
   m_d->m_dragging = false;
   m_d->m_autoScroll.stop();
-  if (click && m_d->m_controlClick) {
+  // Ordinary clicks navigate source; links and drag selection keep their own gestures.
+  if (click && m_d->hitPage(position) == page &&
+      (m_d->m_controlClick || m_d->m_pressedLink < 0)) {
     if (m_d->current(m_d->m_displayed->m_snapshot)) {
       emit sourceLocationRequested(m_d->m_displayed->m_snapshot->m_id, page, point);
     } else {

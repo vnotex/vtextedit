@@ -328,11 +328,16 @@ y down, with the original page order. Printer bleed is excluded from preview PDF
 geometry; this viewer is not a print-production export UI. Resizing/zooming does not
 change authored page settings or reflow the Typst document.
 
-`showOutputAtCursor()` and Ctrl-click on output use the displayed snapshot's compiler
-source mapping, which is not guaranteed to map every generated object to editable source.
-Stale-output source navigation is disabled. Imported-file navigation emits
-`sourceLocationRequested(file, start, end)` for the host to handle. External URLs emit
-`externalLinkRequested(url)`; the host decides whether/how to open them.
+Click an element in the PDF preview to move and focus the source cursor at its compiler-mapped
+position. In read mode, a successful active-file jump reveals the source in side-by-side mode.
+Dragging still selects PDF text, and ordinary clicks on links still follow their destinations.
+Ctrl-click remains available for explicit source navigation. In-place cards remain passive.
+
+`showOutputAtCursor()` and preview clicks use the displayed snapshot's compiler source mapping,
+which is not guaranteed to map every generated object to editable source. Stale-output source
+navigation is disabled. Imported-file navigation emits `sourceLocationRequested(file, start, end)`
+for the host to handle. External URLs emit `externalLinkRequested(url)`; the host decides
+whether/how to open them.
 
 ## License
 This project is licensed under [GNU LGPLv3](https://opensource.org/licenses/LGPL-3.0).

@@ -1030,7 +1030,9 @@ void TypstPreviewHost::applyConfig(const TypstEditorConfig &p_config) {
 }
 
 bool TypstPreviewHost::eventFilter(QObject *p_object, QEvent *p_event) {
-  if (!d->m_measuring && (p_object == d->m_edit || p_object == d->m_edit->viewport())) {
+  // Disabled cards must not restore a pre-navigation anchor when source is shown/resized.
+  if (d->m_enabled && !d->m_measuring &&
+      (p_object == d->m_edit || p_object == d->m_edit->viewport())) {
     switch (p_event->type()) {
     case QEvent::Resize:
     case QEvent::FontChange:
