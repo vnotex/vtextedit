@@ -530,6 +530,7 @@ public:
     if (offset == m_displayed->m_layout.m_offset) {
       return;
     }
+    const bool verticalChanged = offset.y() != m_displayed->m_layout.m_offset.y();
     m_displayed->m_layout.m_offset = offset;
     ++m_viewRevision;
     m_displayed->m_layout.m_revision = m_viewRevision;
@@ -540,6 +541,9 @@ public:
     m_needsDirty = true;
     schedule();
     q->viewport()->update();
+    if (verticalChanged) {
+      emit q->verticalScrollChanged();
+    }
   }
 
   void resumeResourceFailures() {
@@ -1449,6 +1453,7 @@ void TypstPreviewPane::goToPage(int p_page, const QPointF &p_point) {
     return;
   }
   auto &slot = *m_d->m_displayed;
+  const qreal previousY = slot.m_layout.m_offset.y();
   const QSizeF size = slot.m_pageSizes.at(p_page);
   const QPointF point(qBound(qreal(0), p_point.x(), size.width()),
                       qBound(qreal(0), p_point.y(), size.height()));
@@ -1457,6 +1462,9 @@ void TypstPreviewPane::goToPage(int p_page, const QPointF &p_point) {
   m_d->m_anchor.m_point = point;
   m_d->m_anchor.m_viewport = QPointF(PageMargin, PageMargin);
   m_d->viewChanged(true);
+  if (slot.m_layout.m_offset.y() != previousY) {
+    emit verticalScrollChanged();
+  }
 }
 
 int TypstPreviewPane::currentPage() const {

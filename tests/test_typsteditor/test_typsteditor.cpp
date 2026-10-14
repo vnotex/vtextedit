@@ -1044,6 +1044,155 @@ void TestTypstEditor::selectionDefersPublicationAcrossScrollAndModes() {
   QCOMPARE(fixture.selectPage().trimmed(), QStringLiteral("Last page."));
 }
 
+void TestTypstEditor::sideBySideScrollSync() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  QString source = QStringLiteral("#set page(width: 320pt, height: 440pt, margin: 20pt)\n");
+  for (int line = 0; line < 120; ++line) {
+    source += QStringLiteral("Line %1: scrolling keeps both views together.\n\n").arg(line);
+  }
+  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::SideBySidePreview);
+  auto *pane = fixture.pane();
+  auto *edit = fixture.edit();
+  auto *sourceBar = edit->verticalScrollBar();
+  auto *pdfBar = pane->verticalScrollBar();
+  QSignalSpy published(pane, SIGNAL(snapshotPublished(quint64)));
+  QVERIFY2(waitUntil([&]() { return published.count() == 1; }),
+           qPrintable(fixture.editor.compileMessage()));
+  QCoreApplication::processEvents();
+  QVERIFY(sourceBar->maximum() > 0);
+  QVERIFY(pdfBar->maximum() > 0);
+
+  QTextCursor cursor(fixture.editor.document());
+  cursor.setPosition(source.indexOf(QStringLiteral("Line 0")));
+  cursor.setPosition(cursor.position() + 6, QTextCursor::KeepAnchor);
+  edit->setTextCursor(cursor);
+  const auto selectedPdf = fixture.selectPage();
+  QVERIFY(selectedPdf.contains(QStringLiteral("Line 0")));
+  auto *document = fixture.editor.document();
+  document->setModified(false);
+  const int undoSteps = document->availableUndoSteps();
+  QSignalSpy changes(document, &QTextDocument::contentsChange);
+  const auto *focus = QApplication::focusWidget();
+  auto mapped = [](QScrollBar *p_from, QScrollBar *p_to) {
+    const qreal progress = qreal(p_from->value() - p_from->minimum()) /
+                           (p_from->maximum() - p_from->minimum());
+    return qRound(p_to->minimum() + progress * (p_to->maximum() - p_to->minimum()));
+  };
+
+  // Direct scrollbar moves cover dragging; the driver must not round-trip and drift.
+  const int sourceMiddle = sourceBar->maximum() / 3;
+  sourceBar->setValue(sourceMiddle);
+  QCOMPARE(pdfBar->value(), mapped(sourceBar, pdfBar));
+  QCOMPARE(sourceBar->value(), sourceMiddle);
+  const int pdfMiddle = pdfBar->maximum() * 2 / 3;
+  pdfBar->setValue(pdfMiddle);
+  QCOMPARE(sourceBar->value(), mapped(pdfBar, sourceBar));
+  QCOMPARE(pdfBar->value(), pdfMiddle);
+
+  // PDF keyboard navigation bypasses scrollbar signals internally.
+  QTest::keyClick(pane, Qt::Key_PageDown);
+  QVERIFY(pdfBar->value() > pdfMiddle);
+  QCOMPARE(sourceBar->value(), mapped(pdfBar, sourceBar));
+  sourceBar->setValue(sourceBar->maximum());
+  QCOMPARE(pdfBar->value(), pdfBar->maximum());
+  pdfBar->setValue(0);
+  QCOMPARE(sourceBar->value(), 0);
+
+  // Zoom and horizontal-only panning must not pull the source to a new position.
+  sourceBar->setValue(sourceMiddle);
+  QVERIFY(pane->setProperty("zoom", 2.0));
+  QCoreApplication::processEvents();
+  QCOMPARE(sourceBar->value(), sourceMiddle);
+  auto *horizontal = pane->horizontalScrollBar();
+  QVERIFY(horizontal->maximum() > 0);
+  horizontal->setValue(horizontal->value() == 0 ? horizontal->maximum() : 0);
+  QCOMPARE(sourceBar->value(), sourceMiddle);
+  QTest::keyClick(pane, Qt::Key_PageDown);
+  QCOMPARE(sourceBar->value(), mapped(pdfBar, sourceBar));
+  QVERIFY(QMetaObject::invokeMethod(pane, "goToPage", Qt::DirectConnection, Q_ARG(int, 0),
+                                    Q_ARG(QPointF, QPointF())));
+  QCOMPARE(sourceBar->value(), 0);
+  QCOMPARE(edit->textCursor().anchor(), cursor.anchor());
+  QCOMPARE(edit->textCursor().position(), cursor.position());
+  QCOMPARE(fixture.selected(), selectedPdf);
+  QCOMPARE(QApplication::focusWidget(), focus);
+  QCOMPARE(document->toPlainText(), source);
+  QCOMPARE(document->availableUndoSteps(), undoSteps);
+  QVERIFY(!document->isModified());
+  QCOMPARE(textChangeCount(changes), 0);
+
+  // Hidden panes stay independent, including asynchronous mode-switch layout.
+  fixture.editor.setMode(VTypstEditor::Mode::Read);
+  QCoreApplication::processEvents();
+  const int hiddenSource = sourceBar->value();
+  pdfBar->setValue(pdfBar->maximum());
+  QCOMPARE(sourceBar->value(), hiddenSource);
+  fixture.editor.setMode(VTypstEditor::Mode::SideBySidePreview);
+  QCoreApplication::processEvents();
+  QCOMPARE(sourceBar->value(), hiddenSource);
+  sourceBar->setValue(sourceBar->maximum() / 2);
+  QCOMPARE(pdfBar->value(), mapped(sourceBar, pdfBar));
+  fixture.editor.setMode(VTypstEditor::Mode::InPlacePreview);
+  QCoreApplication::processEvents();
+  const int hiddenPdf = pdfBar->value();
+  sourceBar->setValue(0);
+  QCOMPARE(pdfBar->value(), hiddenPdf);
+  fixture.editor.setMode(VTypstEditor::Mode::SideBySidePreview);
+  QCoreApplication::processEvents();
+  QCOMPARE(pdfBar->value(), hiddenPdf);
+
+  // A source range clamp on resize is layout, not an instruction to scroll PDF.
+  sourceBar->setValue(sourceBar->maximum());
+  const int beforeResize = pdfBar->value();
+  edit->resize(edit->width(), edit->height() + 120);
+  QCoreApplication::processEvents();
+  QCOMPARE(pdfBar->value(), beforeResize);
+  sourceBar->setValue(sourceBar->maximum() / 4);
+  QCOMPARE(pdfBar->value(), mapped(sourceBar, pdfBar));
+
+  // A selected old PDF remains usable while compilation produces a new range.
+  const int oldMaximum = pdfBar->maximum();
+  QTextCursor append(document);
+  append.movePosition(QTextCursor::End);
+  append.insertText(QStringLiteral("\n#pagebreak()\nAdditional page after recompilation."));
+  QVERIFY2(waitUntil([&]() { return pane->property("hasPendingUpdate").toBool(); }),
+           qPrintable(fixture.editor.compileMessage()));
+  QCOMPARE(published.count(), 1);
+  sourceBar->setValue(sourceBar->maximum() / 2);
+  QCOMPARE(pdfBar->value(), mapped(sourceBar, pdfBar));
+  QCOMPARE(fixture.selected(), selectedPdf);
+  const int beforePublication = sourceBar->value();
+  fixture.clearSelection();
+  QVERIFY2(waitUntil([&]() { return published.count() == 2; }),
+           qPrintable(fixture.editor.compileMessage()));
+  QCOMPARE(sourceBar->value(), beforePublication);
+  QVERIFY(pdfBar->maximum() > oldMaximum);
+  pdfBar->setValue(pdfBar->maximum());
+  QCOMPARE(sourceBar->value(), sourceBar->maximum());
+}
+
+void TestTypstEditor::scrollSyncWithNonScrollableSource() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto source = QStringLiteral("#set page(width: 320pt, height: 440pt)\n"
+                                     "First\n#pagebreak()\nSecond\n#pagebreak()\nThird");
+  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::SideBySidePreview);
+  QSignalSpy published(fixture.pane(), SIGNAL(snapshotPublished(quint64)));
+  QVERIFY2(waitUntil([&]() { return published.count() == 1; }),
+           qPrintable(fixture.editor.compileMessage()));
+  auto *sourceBar = fixture.edit()->verticalScrollBar();
+  auto *pdfBar = fixture.pane()->verticalScrollBar();
+  QCOMPARE(sourceBar->maximum(), 0);
+  QVERIFY(pdfBar->maximum() > 0);
+  QTest::keyClick(fixture.pane(), Qt::Key_PageDown);
+  QVERIFY(pdfBar->value() > 0);
+  QCOMPARE(sourceBar->value(), 0);
+  pdfBar->setValue(pdfBar->maximum());
+  QCOMPARE(pdfBar->value(), pdfBar->maximum());
+  QCOMPARE(fixture.editor.document()->toPlainText(), source);
+}
+
 void TestTypstEditor::inPlaceReservationsDoNotEditSource() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
@@ -2189,6 +2338,7 @@ void TestTypstEditor::pdfVisiblePagesStaySharpAndRecover() {
   QSignalSpy changes(document, &QTextDocument::contentsChange);
   const auto selected = fixture.selectPage();
   QVERIFY(selected.contains(QStringLiteral("Sharp text")));
+  const auto selectedFrame = pane->viewport()->grab().toImage().copy(interior);
   auto color = document->find(QStringLiteral("fill: red"));
   QVERIFY(!color.isNull());
   color.insertText(QStringLiteral("fill: rgb(\"#0000ff\")"));
@@ -2211,9 +2361,9 @@ void TestTypstEditor::pdfVisiblePagesStaySharpAndRecover() {
   QCOMPARE(fixture.selected(), selected);
   QCOMPARE(published.count(), 1);
   // The old full-P image stays displayed while selection pins its snapshot.
+  // Compare the selected frame: the platform's selection tint changes glyph colors.
   const auto retained = pane->viewport()->grab().toImage().copy(interior);
-  QVERIFY(coloredPixels(retained, true) > 20);
-  QCOMPARE(coloredPixels(retained, false), 0);
+  QCOMPARE(retained, selectedFrame);
   const auto fullReplacement = paintPdfOracle(replacement, physicalSize, page, publications.front());
   QVERIFY(!fullReplacement.isNull());
   fixture.clearSelection();

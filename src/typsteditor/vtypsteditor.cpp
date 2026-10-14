@@ -16,11 +16,13 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QScopedValueRollback>
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QTextDocument>
+#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -131,8 +133,21 @@ public:
     QObject::connect(updateButton, &QToolButton::clicked, pane, &TypstPreviewPane::publishPending);
     QObject::connect(pageNumber, QOverload<int>::of(&QSpinBox::valueChanged), pane,
                      [this](int p_page) { pane->goToPage(p_page - 1); });
-    QObject::connect(pane->verticalScrollBar(), &QScrollBar::valueChanged, q,
-                     [this]() { updatePageNumber(); });
+    QObject::connect(pane, &TypstPreviewPane::verticalScrollChanged, q, [this]() {
+      updatePageNumber();
+      syncScroll(false);
+    });
+    auto *sourceScroll = source->getTextEdit()->verticalScrollBar();
+    QObject::connect(sourceScroll, &QScrollBar::valueChanged, q,
+                     [this]() { syncScroll(true); });
+    QObject::connect(sourceScroll, &QScrollBar::rangeChanged, q, [this]() {
+      // Qt may clamp the value during deferred layout, including after a mode
+      // switch. Let the source's extra-tail scrollbar settle without moving PDF.
+      if (!sourceRangeChanging) {
+        sourceRangeChanging = true;
+        QTimer::singleShot(0, q, [this]() { sourceRangeChanging = false; });
+      }
+    });
     QObject::connect(pane, &TypstPreviewPane::updateAvailableChanged, updateButton,
                      &QWidget::setVisible);
     QObject::connect(source, &VTextEditor::focusIn, q, [this]() {
@@ -237,6 +252,7 @@ public:
       bridge->setDisplayedSnapshot(pane->snapshot());
       updatePageNumber();
       if (pendingNavigationSnapshot == p_id) {
+        const QScopedValueRollback<bool> guard(syncingScroll, true);
         pane->goToPage(pendingNavigationPage, pendingNavigationPoint);
         pendingNavigationSnapshot = 0;
       }
@@ -276,6 +292,7 @@ public:
     QObject::disconnect(bridge, nullptr, q, nullptr);
     QObject::disconnect(pane, nullptr, q, nullptr);
     QObject::disconnect(source, nullptr, q, nullptr);
+    QObject::disconnect(source->getTextEdit()->verticalScrollBar(), nullptr, q, nullptr);
     // Stop the producer, then source reservations, before either underlying document dies.
     delete bridge;
     delete host;
@@ -326,6 +343,26 @@ public:
     pageNumber->setValue(qMax(1, pane->currentPage() + 1));
   }
 
+  void syncScroll(bool p_fromSource) {
+    if (syncingScroll || sourceRangeChanging || mode != Mode::SideBySidePreview ||
+        !pane->snapshot()) {
+      return;
+    }
+    auto *from = source->getTextEdit()->verticalScrollBar();
+    auto *to = pane->verticalScrollBar();
+    if (!p_fromSource) {
+      qSwap(from, to);
+    }
+    const qreal fromRange = qreal(from->maximum()) - from->minimum();
+    const qreal toRange = qreal(to->maximum()) - to->minimum();
+    if (fromRange <= 0 || toRange <= 0) {
+      return;
+    }
+    const QScopedValueRollback<bool> guard(syncingScroll, true);
+    const qreal progress = (qreal(from->value()) - from->minimum()) / fromRange;
+    to->setValue(qRound(to->minimum() + progress * toRange));
+  }
+
   void navigateSource(const QString &p_file, int p_start, int p_end) {
     if (p_file != activeFile) {
       emit q->sourceLocationRequested(p_file, p_start, p_end);
@@ -335,6 +372,7 @@ public:
     if (p_start < 0 || p_end < p_start || p_end > length) {
       return;
     }
+    const QScopedValueRollback<bool> guard(syncingScroll, true);
     if (mode == Mode::Read) {
       q->setMode(Mode::SideBySidePreview);
     }
@@ -351,6 +389,7 @@ public:
     if (!latest || latest->m_id != p_snapshot) {
       return;
     }
+    const QScopedValueRollback<bool> guard(syncingScroll, true);
     if (mode == Mode::InPlacePreview) {
       q->setMode(Mode::SideBySidePreview);
     }
@@ -388,6 +427,8 @@ public:
   CompileStatus status = CompileStatus::Idle;
   QString message;
   bool readOnly = false;
+  bool syncingScroll = false;
+  bool sourceRangeChanging = false;
   quint64 pdfDelivered = 0;
   quint64 pendingNavigationSnapshot = 0;
   int pendingNavigationPage = 0;
@@ -408,6 +449,7 @@ void VTypstEditor::setMode(Mode p_mode) {
   if (p_mode == d->mode) {
     return;
   }
+  const QScopedValueRollback<bool> guard(d->syncingScroll, true);
   if (d->mode == Mode::SideBySidePreview) {
     d->splitSizes = d->splitter->sizes();
   }

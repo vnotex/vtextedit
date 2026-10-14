@@ -50,6 +50,8 @@ signals:
   void sourceLocationRequested(quint64 p_snapshot, int p_page, QPointF p_point);
   void externalLinkRequested(QUrl p_url);
   void selectionChanged();
+  // Actual vertical scrolling/navigation, not zoom, relayout or publication.
+  void verticalScrollChanged();
   void updateAvailableChanged(bool p_available);
   void snapshotPublished(quint64 p_snapshot);
   void errorOccurred(QString p_message);

@@ -51,6 +51,8 @@ private slots:
   void hiddenSourceAndImportChangesReachPdf();
   void diagnosticsPreserveLastGoodOutput();
   void selectionDefersPublicationAcrossScrollAndModes();
+  void sideBySideScrollSync();
+  void scrollSyncWithNonScrollableSource();
   void inPlaceReservationsDoNotEditSource();
   void occurrencesAndSplitPartsRenderSequentially();
   void supersededCompileCannotPublish();

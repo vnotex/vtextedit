@@ -33,6 +33,14 @@ one source document, undo history and compiler session across three modes:
 | `SideBySidePreview` | The same source beside a live, selectable PDF preview. |
 | `Read` | Source hidden and input disabled; the same PDF fills the widget. |
 
+Side-by-side mode synchronizes vertical scrolling in both directions, including PDF
+keyboard and page navigation. Synchronization uses relative scrollbar progress, not
+source-to-output mapping, so corresponding text may not line up in uneven layouts.
+It preserves the source cursor, selections, focus and undo history. Horizontal scrolling
+is independent, and synchronization pauses when either side has no vertical scroll range.
+Read and in-place modes remain independent; mode changes, zoom and PDF publication do not
+force alignment. The next scroll uses the current ranges.
+
 In-place previews have no panel background, navigation controls, title/page rows, or
 internal scrollbar. Repeated inline occurrences appear left-to-right in evaluation order,
 in a content-sized row aligned to the source span's start on its visual line. With wrapping,
