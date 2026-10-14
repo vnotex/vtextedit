@@ -20,7 +20,8 @@ class TypstCompilerBridge : public QObject {
   Q_OBJECT
 public:
   enum class State { Idle, Starting, Compiling, Ready, Error, Unavailable };
-  explicit TypstCompilerBridge(QObject *p_parent = nullptr);
+  enum class Mode { Preview, Export };
+  explicit TypstCompilerBridge(QObject *p_parent = nullptr, Mode p_mode = Mode::Preview);
   ~TypstCompilerBridge() Q_DECL_OVERRIDE;
 
   void updateProject(const TypstEditorConfig &p_config, const QString &p_activeFile,
@@ -29,6 +30,7 @@ public:
   void setDisplayedSnapshot(const TypstSnapshot &p_snapshot);
   void requestPdf(quint64 p_snapshot);
   void requestRaster(quint64 p_epoch, quint64 p_snapshot, int p_page, qreal p_scale);
+  void requestSvg(quint64 p_epoch, quint64 p_snapshot, int p_page);
   // Zero requests explicit navigation; nonzero identifies a replaceable cursor highlight.
   void sourceToOutput(const QString &p_file, int p_offset, quint64 p_cursorRequest);
   void outputToSource(quint64 p_snapshot, int p_page, const QPointF &p_point);
@@ -47,6 +49,8 @@ signals:
   // Each admitted raster completes once: a ready image (null on failure), or cancellation.
   void pageImageReady(quint64 p_epoch, quint64 p_snapshot, int p_page, qreal p_scale,
                       const QImage &p_image);
+  // Empty data completes a failed or cancelled SVG request.
+  void pageSvgReady(quint64 p_epoch, quint64 p_snapshot, int p_page, const QByteArray &p_svg);
   // Superseded inputs are not failures and must not be retried against their old snapshot.
   void rasterCancelled(quint64 p_epoch, quint64 p_snapshot, int p_page, qreal p_scale);
   void outputLocationReady(quint64 p_snapshot, int p_page, const QPointF &p_point);
@@ -73,6 +77,7 @@ private:
   QJsonArray retained(bool p_forCompile) const;
   bool isCurrent(const QJsonObject &p_header) const;
 
+  const Mode m_mode;
   TypstEditorConfig m_config;
   QString m_activeFile;
   QMap<QString, QString> m_overlays;

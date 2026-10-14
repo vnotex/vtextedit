@@ -44,6 +44,13 @@ public slots:
 class TestTypstEditor : public QObject {
   Q_OBJECT
 private slots:
+  void compilerGeometryAndScale();
+  void compilerUnicodeImportsAndNormalization();
+  void compilerAsyncFailureAndRecovery();
+  void compilerRejectsInvalidScaleAndPixelLimit_data();
+  void compilerRejectsInvalidScaleAndPixelLimit();
+  void compilerResultBudgetClearsPartialPages_data();
+  void compilerResultBudgetClearsPartialPages();
   void overlaysDiagnosticsAndSnapshotRetention();
   void unicodeNavigationPdfPointsAndRasterLimits();
   void previewClickNavigatesSource();

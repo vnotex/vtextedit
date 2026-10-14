@@ -122,6 +122,66 @@ does not delay the current outline. Retrieval never edits source or undo history
 Deploy the updated compiler helper with the library: it must advertise the `headings`
 capability; an older helper is rejected explicitly.
 
+### Compile text to SVG or bitmap
+
+With Typst enabled, `<vtextedit/typstcompiler.h>` exposes `vte::TypstCompiler`, an
+asynchronous compiler independent of `VTypstEditor`. A `QGuiApplication` and a running
+Qt event loop suffice; no editor widget is constructed. Create and use the compiler on
+the same thread, and keep it alive until `finished` is emitted.
+
+```cpp
+vte::TypstEditorConfig config;
+// Optional: config.m_projectRoot, m_mainFile, m_helperExecutable, m_fontPaths, ...
+vte::TypstCompiler compiler(config);
+QObject::connect(&compiler, &vte::TypstCompiler::finished,
+                 [](const vte::TypstCompiler::Result &result) {
+    if (!result.isSuccess()) {
+        qWarning() << result.m_error << result.m_diagnostics;
+        return;
+    }
+    for (int page = 0; page < result.m_bitmapPages.size(); ++page) {
+        if (!result.m_bitmapPages[page].save(QStringLiteral("page-%1.png").arg(page + 1)))
+            qWarning() << "Could not save page" << page + 1;
+    }
+});
+compiler.compileToBitmap(QStringLiteral(
+    "#set page(width: auto, height: auto, margin: 6pt)\n"
+    "$ integral_0^1 x^2 dif x = 1/3 $"), 2.0);
+// Continue running this thread's Qt event loop with compiler still alive.
+```
+
+* `compileToSvg(text)` produces UTF-8 SVG documents in `Result::m_svgPages`.
+  `compileToBitmap(text, pixelsPerPoint = 1.0)` produces native Typst RGBA `QImage`s
+  in `m_bitmapPages`. One entry per page, in document order; only the requested format
+  is populated. SVG is vector output, not an embedded raster. Bitmap scale 1 is 72 dpi;
+  scale 2 is 144 dpi. Scale must be finite and positive.
+* The source controls page size and background. Pages exclude printer bleed, but are
+  not automatically cropped or made transparent. The example uses auto-sized pages
+  for a formula; use `fill: none` in the page settings for transparency.
+* Each accepted call returns `true` and emits `finished(Result)` asynchronously once.
+  A busy instance returns `false` without queuing another job or emitting an extra
+  completion. `isCompiling()` is false in `finished`; a slot can submit the next job
+  immediately. Destruction cancels pending work without a completion.
+* Results own their data and can outlive the compiler or later jobs. An empty `m_error`
+  means success; `m_diagnostics` contains compilation warnings/errors with available
+  source file and LF/UTF-16 offsets. Any failure clears both page vectors, including
+  pages rendered before a later error. There is no partial-success result.
+* Constructor settings are copied. Text overlays `m_mainFile` in memory, with CR/CRLF
+  normalized to LF; disk source is never overwritten. An empty project root resolves
+  to the current directory at construction. Imports/assets, font/package paths,
+  download opt-in and helper discovery follow `TypstEditorConfig`. No editor overlays
+  are implicitly shared. File changes never trigger unsolicited export jobs; a
+  dependency change during compilation fails the job instead of retrying it.
+* `m_compileTimeoutMs` bounds each helper operation; `m_maxRasterPixels` bounds each
+  bitmap page. `m_maxCacheBytes` also bounds the sum of returned page bytes, and each
+  wire payload is at most 128 MiB. Helper cache limits apply separately, not as a
+  process-wide memory ceiling. Native SVG generation builds its string before checking
+  its size; oversized output is not copied, cached or transmitted. `m_maxPdfBytes`,
+  debounce and editor presentation settings do not control these exports.
+
+Deploy the matching `vtextedit-typst` helper with `svg` and `raster` capabilities.
+Export compilation skips highlighting, outlines and editor-only preview metadata.
+
 ### Building and running
 
 `VTEXTEDIT_ENABLE_TYPST` defaults to **OFF**. Disabled builds do not build the helper or

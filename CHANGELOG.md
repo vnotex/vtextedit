@@ -10,6 +10,10 @@
 
 ### Features
 
+- Add optional `TypstCompiler`: compile in-memory Typst text asynchronously to per-page
+  vector SVG or native RGBA `QImage` bitmaps without an editor widget. Supports bitmap
+  scaling, project imports and fonts, diagnostics, bounded all-or-nothing results and
+  safe sequential reuse. Requires the matching helper with `svg`/`raster` capabilities.
 - Add optional `VTypstEditor` and `TypstEditorConfig`: one source/undo history across
   in-place compiled cards, side-by-side selectable PDF and read modes, with unsaved
   project overlays, diagnostics and compiler-backed navigation. QWidget-only Qt Pdf

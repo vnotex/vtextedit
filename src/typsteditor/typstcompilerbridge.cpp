@@ -194,7 +194,8 @@ TypstSnapshot snapshotFromJson(const QJsonObject &p_header) {
 }
 } // namespace
 
-TypstCompilerBridge::TypstCompilerBridge(QObject *p_parent) : QObject(p_parent) {
+TypstCompilerBridge::TypstCompilerBridge(QObject *p_parent, Mode p_mode)
+    : QObject(p_parent), m_mode(p_mode) {
   m_debounce.setSingleShot(true);
   m_timeout.setSingleShot(true);
   connect(&m_debounce, &QTimer::timeout, this, [this]() {
@@ -257,7 +258,7 @@ void TypstCompilerBridge::invalidate() {
   m_failed = false;
   m_compilePending = true;
   m_compileDue = false;
-  m_debounce.start(qMax(0, m_config.m_debounceMs));
+  m_debounce.start(m_mode == Mode::Export ? 0 : qMax(0, m_config.m_debounceMs));
   emit generationChanged(m_epoch, m_generation);
   for (const auto &request : queue) {
     completeRaster(request, true);
@@ -378,6 +379,7 @@ void TypstCompilerBridge::pump() {
           {QStringLiteral("config"), configuration()},
           {QStringLiteral("activeFile"), m_activeFile},
           {QStringLiteral("overlays"), overlays},
+          {QStringLiteral("previewMetadata"), m_mode == Mode::Preview},
           {QStringLiteral("snapshots"), retained(true)}});
     emit stateChanged(State::Compiling, tr("Compiling Typst…"));
     return;
@@ -483,6 +485,18 @@ void TypstCompilerBridge::requestRaster(quint64 p_epoch, quint64 p_snapshot, int
            {QStringLiteral("snapshot"), static_cast<double>(p_snapshot)},
            {QStringLiteral("page"), p_page},
            {QStringLiteral("scale"), p_scale}});
+}
+
+void TypstCompilerBridge::requestSvg(quint64 p_epoch, quint64 p_snapshot, int p_page) {
+  if (p_epoch != m_epoch || !m_latest || m_latest->m_epoch != p_epoch ||
+      m_latest->m_id != p_snapshot || p_page < 0 || p_page >= m_latest->m_pages.size()) {
+    emit pageSvgReady(p_epoch, p_snapshot, p_page, QByteArray());
+    return;
+  }
+  enqueue({{QStringLiteral("op"), QStringLiteral("svg")},
+           {QStringLiteral("epoch"), static_cast<double>(p_epoch)},
+           {QStringLiteral("snapshot"), static_cast<double>(p_snapshot)},
+           {QStringLiteral("page"), p_page}});
 }
 
 void TypstCompilerBridge::sourceToOutput(const QString &p_file, int p_offset,
@@ -623,9 +637,14 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
   }
   if (operation == QStringLiteral("ready") && requested == QStringLiteral("initialize")) {
     const auto capabilities = p_header.value(QStringLiteral("capabilities")).toArray();
-    for (const auto &required : {"pdf", "raster", "navigation", "previews", "highlights", "headings"}) {
-      if (!capabilities.contains(QString::fromLatin1(required))) {
-        fail(tr("Typst helper is incompatible: missing %1.").arg(QString::fromLatin1(required)));
+    const auto requiredCapabilities = m_mode == Mode::Export
+                                          ? QStringList{QStringLiteral("svg"), QStringLiteral("raster")}
+                                          : QStringList{QStringLiteral("pdf"), QStringLiteral("raster"),
+                                                        QStringLiteral("navigation"), QStringLiteral("previews"),
+                                                        QStringLiteral("highlights"), QStringLiteral("headings")};
+    for (const auto &required : requiredCapabilities) {
+      if (!capabilities.contains(required)) {
+        fail(tr("Typst helper is incompatible: missing %1.").arg(required));
         return;
       }
     }
@@ -634,7 +653,12 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
     if (current) {
       updateDependencies(p_header.value(QStringLiteral("dependencies")).toArray());
       if (p_header.value(QStringLiteral("invalidated")).toBool()) {
-        invalidate();
+        if (m_mode == Mode::Export) {
+          emit diagnosticsReady(diagnostics(p_header.value(QStringLiteral("diagnostics")).toArray()));
+          emit stateChanged(State::Error, tr("Typst dependencies changed during compilation."));
+        } else {
+          invalidate();
+        }
         finishRequest();
         return;
       }
@@ -674,6 +698,21 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
         emit pdfReady(m_latest, p_payload);
       }
     }
+  } else if (operation == QStringLiteral("svg") && requested == operation) {
+    const auto id = identifier(p_header.value(QStringLiteral("snapshot")));
+    const int page = integer(p_header.value(QStringLiteral("page")));
+    if (id != identifier(m_request.value(QStringLiteral("snapshot"))) ||
+        page != integer(m_request.value(QStringLiteral("page"))) || p_payload.isEmpty()) {
+      fail(tr("Typst helper returned an invalid SVG page."));
+      return;
+    }
+    auto request = std::move(m_request);
+    m_request = {};
+    m_timeout.stop();
+    emit pageSvgReady(identifier(request.value(QStringLiteral("epoch"))), id, page,
+                      current && m_latest && m_latest->m_id == id ? p_payload : QByteArray());
+    pump();
+    return;
   } else if (operation == QStringLiteral("raster") && requested == operation) {
     const auto id = identifier(p_header.value(QStringLiteral("snapshot")));
     const int page = integer(p_header.value(QStringLiteral("page")));
@@ -755,7 +794,11 @@ void TypstCompilerBridge::finishRequest() {
 }
 
 void TypstCompilerBridge::completeRaster(const QJsonObject &p_request, bool p_cancelled) {
-  if (p_request.value(QStringLiteral("op")) == QStringLiteral("raster")) {
+  if (p_request.value(QStringLiteral("op")) == QStringLiteral("svg")) {
+    emit pageSvgReady(identifier(p_request.value(QStringLiteral("epoch"))),
+                      identifier(p_request.value(QStringLiteral("snapshot"))),
+                      integer(p_request.value(QStringLiteral("page"))), QByteArray());
+  } else if (p_request.value(QStringLiteral("op")) == QStringLiteral("raster")) {
     const auto epoch = identifier(p_request.value(QStringLiteral("epoch")));
     const auto snapshot = identifier(p_request.value(QStringLiteral("snapshot")));
     const int page = integer(p_request.value(QStringLiteral("page")));
@@ -778,6 +821,9 @@ void TypstCompilerBridge::fail(const QString &p_message, bool p_unavailable) {
 }
 
 void TypstCompilerBridge::updateDependencies(const QJsonArray &p_dependencies) {
+  if (m_mode == Mode::Export) {
+    return;
+  }
   const auto oldFiles = m_watcher.files();
   const auto oldDirectories = m_watcher.directories();
   if (!oldFiles.isEmpty()) {

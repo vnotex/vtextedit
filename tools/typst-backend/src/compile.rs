@@ -23,9 +23,9 @@ type SendReply<'a> = dyn FnMut(Value, Arc<Vec<u8>>) -> Result<(), String> + 'a;
 struct Snapshot { document: PagedDocument, world: FrozenWorld }
 
 #[derive(Clone, PartialEq, Eq)]
-enum CacheKey { Pdf(u64), Raster(u64, usize, u64) }
+enum CacheKey { Pdf(u64), Raster(u64, usize, u64), Svg(u64, usize) }
 impl CacheKey {
-    fn snapshot(&self) -> u64 { match *self { Self::Pdf(id) | Self::Raster(id, ..) => id } }
+    fn snapshot(&self) -> u64 { match *self { Self::Pdf(id) | Self::Raster(id, ..) | Self::Svg(id, ..) => id } }
 }
 struct CacheEntry { key: CacheKey, bytes: Arc<Vec<u8>> }
 
@@ -57,7 +57,7 @@ impl Session {
             self.epoch = Some(epoch);
             self.world = Some(world);
             send(json!({"op":"ready", "version":1,
-                "capabilities":["pdf","raster","navigation","previews","highlights","headings"]}), Arc::default())?;
+                "capabilities":["pdf","raster","svg","navigation","previews","highlights","headings"]}), Arc::default())?;
             return Ok(false);
         }
         if self.epoch != Some(epoch) { return Err("session is not initialized for this epoch".into()); }
@@ -74,6 +74,7 @@ impl Session {
             }
             "pdf" => self.pdf(request, send)?,
             "raster" => self.raster(request, send)?,
+            "svg" => self.svg(request, send)?,
             "sourceToOutput" => self.source_to_output(request, send)?,
             "outputToSource" => self.output_to_source(request, send)?,
             "shutdown" => return Ok(true),
@@ -102,6 +103,7 @@ impl Session {
         if generation < self.generation { return Err("compile generation moved backwards".into()); }
         let config = Config::deserialize(&request["config"]).map_err(|e| format!("invalid config: {e}"))?;
         let overlays = Vec::<Overlay>::deserialize(&request["overlays"]).map_err(|e| format!("invalid overlays: {e}"))?;
+        let preview_metadata = request["previewMetadata"] != Value::Bool(false);
         let active_file = text(request, "activeFile")?;
         let active = project_id(active_file)?;
         self.generation = generation;
@@ -113,6 +115,7 @@ impl Session {
         let mut highlights = Vec::new();
         let mut diagnostics = Vec::new();
         let parsed = (|| {
+            if !preview_metadata { return Ok(()); }
             if let Ok(source) = world.source(active) {
                 parse_metadata(world, &source, &mut highlights, &mut diagnostics)?;
             }
@@ -141,6 +144,11 @@ impl Session {
         };
         let mut reply = json!({"op":"compiled", "activeFile":active_file, "highlights":highlights,
             "diagnostics":diagnostics, "dependencies":world.dependencies()});
+        if !preview_metadata {
+            reply["previews"] = json!([]);
+            reply["links"] = json!([]);
+            reply["headings"] = json!([]);
+        }
         if let Some(error) = world.resource_error() { return Err(error); }
         if let Err(error) = world.check_dependencies() {
             reply["invalidated"] = json!(true);
@@ -161,9 +169,11 @@ impl Session {
                 }
                 pages.push(json!([width, height]));
             }
-            let previews = crate::preview::extract(world, &document)?;
-            let links = extract_links(&document)?;
-            let headings = extract_headings(world, &document)?;
+            let (previews, links, headings) = if preview_metadata {
+                (crate::preview::extract(world, &document)?, extract_links(&document)?, extract_headings(world, &document)?)
+            } else {
+                (json!([]), json!([]), json!([]))
+            };
             // Semantic extraction may need additional source files. Validate the
             // complete frozen read set at the actual publication boundary.
             if let Some(error) = world.resource_error() { return Err(error); }
@@ -240,6 +250,31 @@ impl Session {
             bytes
         };
         send(json!({"op":"pdf", "snapshot":snapshot_id}), bytes)
+    }
+
+    fn svg(&mut self, request: &Value, send: &mut SendReply<'_>) -> Result<(), String> {
+        let snapshot_id = id(request, "snapshot")?;
+        let page = index(request, "page")?;
+        let snapshot = self.snapshots.get(&snapshot_id).ok_or("unknown or released snapshot")?;
+        snapshot.document.pages().get(page).ok_or("page is out of range")?;
+        let limit = self.world.as_ref().unwrap().config.max_cache_bytes.min(MAX_BINARY);
+        let key = CacheKey::Svg(snapshot_id, page);
+        let bytes = if let Some(bytes) = self.cached(&key) {
+            if bytes.len() > limit { return Err("SVG exceeds the current resource limit".into()); }
+            bytes
+        } else {
+            self.trim_cache(limit);
+            let original = &self.snapshots[&snapshot_id].document.pages()[page];
+            let options = typst_svg::SvgOptions { render_bleed: false, pretty: false };
+            let svg = typst_svg::svg(original, &options);
+            // The native exporter owns its String and has no bounded writer API.
+            // Check before transferring its buffer without copying into the cache.
+            if svg.len() > limit { return Err("SVG exceeds maxCacheBytes or protocol resource limit".into()); }
+            let bytes = Arc::new(svg.into_bytes());
+            self.cache(key, bytes.clone());
+            bytes
+        };
+        send(json!({"op":"svg", "snapshot":snapshot_id, "page":page}), bytes)
     }
 
     fn raster(&mut self, request: &Value, send: &mut SendReply<'_>) -> Result<(), String> {
@@ -520,6 +555,58 @@ mod tests {
         request["activeFile"] = json!("main.typ"); request["generation"] = json!(generation);
         request["overlays"] = json!([{"file":"main.typ","text":text}]);
         request
+    }
+
+    #[test]
+    fn export_skips_preview_metadata_but_preserves_compilation_diagnostics() {
+        let (mut session, config) = configured();
+        // This heading exceeds preview metadata's level representation, not Typst's.
+        let mut compile = compile_request(&config, "#heading(level: 2147483648, numbering: none)[Export]", json!([]), 1);
+        compile["previewMetadata"] = json!(false);
+        let mut responses = Vec::new();
+        session.handle(&compile, &mut |v, _| { responses.push(v); Ok(()) }).unwrap();
+        assert!(responses[1]["snapshot"].as_u64().is_some());
+        assert_eq!(responses[0]["highlights"], json!([]));
+        for key in ["highlights", "previews", "links", "headings"] {
+            assert_eq!(responses[1][key], json!([]));
+        }
+        compile = compile_request(&config, "#let x =", json!([]), 2);
+        compile["previewMetadata"] = json!(false);
+        responses.clear();
+        session.handle(&compile, &mut |v, _| { responses.push(v); Ok(()) }).unwrap();
+        assert!(responses[1].get("snapshot").is_none());
+        assert!(responses[1]["diagnostics"].as_array().unwrap().iter().any(|d| d["severity"] == "error"));
+        for key in ["highlights", "previews", "links", "headings"] {
+            assert_eq!(responses[1][key], json!([]));
+        }
+    }
+
+    #[test]
+    fn svg_rejects_oversized_outputs_and_invalid_pages() {
+        let (mut session, config) = configured();
+        let mut responses = Vec::new();
+        let compile = compile_request(&config, "#set page(width:200pt,height:100pt,margin:0pt,bleed:12pt)\n#rect(width:20pt,height:10pt)", json!([]), 1);
+        session.handle(&compile, &mut |v, _| { responses.push(v); Ok(()) }).unwrap();
+        let snapshot = responses[1]["snapshot"].as_u64().unwrap();
+        let mut svg = request("svg"); svg["snapshot"] = json!(snapshot); svg["page"] = json!(0);
+        let mut first = Arc::<Vec<u8>>::default();
+        session.handle(&svg, &mut |v, bytes| {
+            assert_eq!(v, json!({"op":"svg", "snapshot":snapshot, "page":0}));
+            first = bytes;
+            Ok(())
+        }).unwrap();
+        session.world.as_mut().unwrap().config.max_cache_bytes = first.len() - 1;
+        assert!(session.handle(&svg, &mut |_, _| panic!("oversized cached SVG sent")).is_err());
+        session.trim_cache(0);
+        assert!(session.handle(&svg, &mut |_, _| panic!("oversized SVG sent")).is_err());
+        svg["page"] = json!(1);
+        assert!(session.handle(&svg, &mut |_, _| panic!("invalid page sent")).is_err());
+        svg["page"] = json!(0); svg["snapshot"] = json!(MAX_ID);
+        assert!(session.handle(&svg, &mut |_, _| panic!("invalid snapshot sent")).is_err());
+        let mut retain = request("retain"); retain["snapshots"] = json!([]);
+        session.handle(&retain, &mut |_, _| Ok(())).unwrap();
+        svg["snapshot"] = json!(snapshot);
+        assert!(session.handle(&svg, &mut |_, _| panic!("released snapshot sent")).is_err());
     }
 
     #[test]

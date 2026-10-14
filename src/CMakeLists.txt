@@ -169,9 +169,11 @@ add_library(VTextEdit SHARED
 if(VTEXTEDIT_ENABLE_TYPST)
     find_package(Qt6 REQUIRED COMPONENTS Pdf)
     target_sources(VTextEdit PRIVATE
+        include/vtextedit/typstcompiler.h
         include/vtextedit/typsteditorconfig.h
         include/vtextedit/vtypsteditor.h
         typsteditor/typstcompiledsnapshot.h
+        typsteditor/typstcompiler.cpp
         typsteditor/typstcompilerbridge.cpp typsteditor/typstcompilerbridge.h
         typsteditor/typsthighlighter.cpp typsteditor/typsthighlighter.h
         typsteditor/typstpreviewhost.cpp typsteditor/typstpreviewhost.h

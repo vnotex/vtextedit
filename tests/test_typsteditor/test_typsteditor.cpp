@@ -24,6 +24,7 @@
 #include <QSet>
 #include <QSignalSpy>
 #include <QSyntaxHighlighter>
+#include <QSvgRenderer>
 #include <QTemporaryDir>
 #include <QTextBlock>
 #include <QTextCursor>
@@ -36,7 +37,9 @@
 #include <algorithm>
 #include <functional>
 #include <memory>
+#include <limits>
 
+#include <vtextedit/typstcompiler.h>
 #include <vtextedit/typsteditorconfig.h>
 #include <vtextedit/vtextedit.h>
 #include <vtextedit/vtexteditor.h>
@@ -580,6 +583,294 @@ QString splitSource() {
       "Before\n$ x &= 1 \\ x &= 2 \\ x &= 3 \\ x &= 4 \\ x &= 5 \\ x &= 6 \\ x &= 7 $\nAfter");
 }
 } // namespace
+
+void TestTypstEditor::compilerGeometryAndScale() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  auto config = *editorConfig(root.path());
+  TypstCompiler compiler(config);
+  // Construction takes a copy: later caller changes must not change this compiler.
+  config.m_helperExecutable = root.filePath(QStringLiteral("missing-helper"));
+  config.m_maxRasterPixels = 1;
+  QSignalSpy completed(&compiler, &TypstCompiler::finished);
+  QVERIFY(completed.isValid());
+  const auto source = QStringLiteral(
+      "#set page(width: 120pt, height: 80pt, margin: 0pt, fill: white, bleed: 12pt)\n"
+      "#place(top + left, dx: 10pt, dy: 10pt)["
+      "#rect(width: 40pt, height: 20pt, fill: rgb(255, 0, 0), stroke: none)]\n"
+      "#pagebreak()\n"
+      "#place(top + left, dx: 60pt, dy: 40pt)["
+      "#rect(width: 40pt, height: 20pt, fill: rgb(0, 0, 255), stroke: none)]");
+
+  QVERIFY(!compiler.isCompiling());
+  QVERIFY(compiler.compileToSvg(source));
+  QCOMPARE(completed.count(), 0);
+  QVERIFY(compiler.isCompiling());
+  QVERIFY(waitUntil([&]() { return completed.count() == 1; }));
+  QVERIFY(!compiler.isCompiling());
+  const auto svg = qvariant_cast<TypstCompiler::Result>(completed.at(0).at(0));
+  QVERIFY2(svg.isSuccess(), qPrintable(svg.m_error));
+  QVERIFY(svg.m_bitmapPages.isEmpty());
+  QCOMPARE(svg.m_svgPages.size(), 2);
+  for (int page = 0; page < svg.m_svgPages.size(); ++page) {
+    QSvgRenderer renderer(svg.m_svgPages.at(page));
+    QVERIFY(renderer.isValid());
+    QCOMPARE(renderer.viewBoxF(), QRectF(0, 0, 120, 80));
+    QImage image(QSize(120, 80), QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+    QPainter painter(&image);
+    renderer.render(&painter);
+    painter.end();
+    QCOMPARE(image.pixelColor(20, 20), page == 0 ? QColor(Qt::red) : QColor(Qt::white));
+    QCOMPARE(image.pixelColor(70, 50), page == 1 ? QColor(Qt::blue) : QColor(Qt::white));
+    QCOMPARE(image.pixelColor(5, 5), QColor(Qt::white));
+  }
+
+  for (const qreal scale : {qreal(1), qreal(2)}) {
+    completed.clear();
+    QVERIFY(scale == 1 ? compiler.compileToBitmap(source)
+                       : compiler.compileToBitmap(source, scale));
+    QCOMPARE(completed.count(), 0);
+    QVERIFY(waitUntil([&]() { return completed.count() == 1; }));
+    const auto bitmap = qvariant_cast<TypstCompiler::Result>(completed.at(0).at(0));
+    QVERIFY2(bitmap.isSuccess(), qPrintable(bitmap.m_error));
+    QVERIFY(bitmap.m_svgPages.isEmpty());
+    QCOMPARE(bitmap.m_bitmapPages.size(), 2);
+    for (int page = 0; page < bitmap.m_bitmapPages.size(); ++page) {
+      const auto &image = bitmap.m_bitmapPages.at(page);
+      QCOMPARE(image.size(), QSize(int(120 * scale), int(80 * scale)));
+      QCOMPARE(image.pixelColor(int(20 * scale), int(20 * scale)),
+               page == 0 ? QColor(Qt::red) : QColor(Qt::white));
+      QCOMPARE(image.pixelColor(int(70 * scale), int(50 * scale)),
+               page == 1 ? QColor(Qt::blue) : QColor(Qt::white));
+      QCOMPARE(image.pixelColor(int(5 * scale), int(5 * scale)), QColor(Qt::white));
+    }
+    QVERIFY(!compiler.isCompiling());
+  }
+}
+
+void TestTypstEditor::compilerUnicodeImportsAndNormalization() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto mainPath = root.filePath(QStringLiteral("main.typ"));
+  const QByteArray diskMain("#let disk_source_must_not_be_compiled = (\r\n");
+  QVERIFY(writeFixture(mainPath, diskMain));
+  QVERIFY(writeFixture(root.filePath(QStringLiteral("chapter.typ")),
+                       QStringLiteral("#let words = [H\u00e9llo \u03ba\u03cc\u03c3\u03bc\u03b5 "
+                                      "\u041f\u0440\u0438\u0432\u0435\u0442]\n"
+                                      "#let formula = [$ integral_0^1 x^2 dif x = 1/3 $]\n")
+                           .toUtf8()));
+  const auto source = QStringLiteral(
+      "#set page(width: 300pt, height: 120pt, margin: 0pt, fill: white)\n"
+      "#import \"chapter.typ\": words, formula\n"
+      "#assert(not read(\"main.typ\").contains(\"\\r\"))\n"
+      "#place(top + left, dx: 10pt, dy: 10pt)[#text(fill: rgb(255, 0, 0))[#words]]\n"
+      "#place(top + left, dx: 10pt, dy: 65pt)[#text(fill: rgb(0, 0, 255))[#formula]]\n");
+  auto mixedNewlines = source;
+  mixedNewlines.replace(QStringLiteral("\n"), QStringLiteral("\r\n"));
+  mixedNewlines.replace(QStringLiteral("formula\r\n"), QStringLiteral("formula\r"));
+  QVERIFY(mixedNewlines.contains(QStringLiteral("\r\n")));
+  QVERIFY(mixedNewlines.contains(QStringLiteral("formula\r#assert")));
+
+  TypstCompiler compiler(*editorConfig(root.path()));
+  QSignalSpy completed(&compiler, &TypstCompiler::finished);
+  QVERIFY(compiler.compileToSvg(mixedNewlines));
+  QVERIFY(waitUntil([&]() { return completed.count() == 1; }));
+  const auto svg = qvariant_cast<TypstCompiler::Result>(completed.at(0).at(0));
+  QVERIFY2(svg.isSuccess(), qPrintable(svg.m_error));
+  QCOMPARE(svg.m_svgPages.size(), 1);
+  QVERIFY(svg.m_bitmapPages.isEmpty());
+  QSvgRenderer renderer(svg.m_svgPages.first());
+  QVERIFY(renderer.isValid());
+  QCOMPARE(renderer.viewBoxF(), QRectF(0, 0, 300, 120));
+  QImage rendered(QSize(300, 120), QImage::Format_ARGB32_Premultiplied);
+  rendered.fill(Qt::transparent);
+  QPainter painter(&rendered);
+  renderer.render(&painter);
+  painter.end();
+  QRect wordsBounds, formulaBounds;
+  QVERIFY(coloredPixels(rendered, true, &wordsBounds) > 40);
+  QVERIFY(coloredPixels(rendered, false, &formulaBounds) > 40);
+  QVERIFY(wordsBounds.bottom() < formulaBounds.top());
+
+  QVector<QImage> normalizedPages;
+  for (const auto &text : {source, mixedNewlines}) {
+    completed.clear();
+    QVERIFY(compiler.compileToBitmap(text));
+    QVERIFY(waitUntil([&]() { return completed.count() == 1; }));
+    const auto result = qvariant_cast<TypstCompiler::Result>(completed.at(0).at(0));
+    QVERIFY2(result.isSuccess(), qPrintable(result.m_error));
+    QVERIFY(result.m_svgPages.isEmpty());
+    QCOMPARE(result.m_bitmapPages.size(), 1);
+    const auto &image = result.m_bitmapPages.first();
+    QCOMPARE(image.size(), QSize(300, 120));
+    QVERIFY(coloredPixels(image, true, &wordsBounds) > 40);
+    QVERIFY(coloredPixels(image, false, &formulaBounds) > 40);
+    QVERIFY(wordsBounds.bottom() < formulaBounds.top());
+    if (normalizedPages.isEmpty())
+      normalizedPages = result.m_bitmapPages;
+    else
+      QCOMPARE(image, normalizedPages.first());
+  }
+  QFile mainFile(mainPath);
+  QVERIFY(mainFile.open(QIODevice::ReadOnly));
+  QCOMPARE(mainFile.readAll(), diskMain);
+}
+
+void TestTypstEditor::compilerAsyncFailureAndRecovery() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  TypstCompiler compiler(*editorConfig(root.path()));
+  QSignalSpy completed(&compiler, &TypstCompiler::finished);
+  bool returnedFromSubmit = false;
+  bool asynchronous = true;
+  bool idleAtCompletion = true;
+  bool resubmitted = false;
+  int callbackCount = 0;
+  connect(&compiler, &TypstCompiler::finished, &compiler,
+          [&](const TypstCompiler::Result &) {
+            asynchronous = asynchronous && returnedFromSubmit;
+            idleAtCompletion = idleAtCompletion && !compiler.isCompiling();
+            if (++callbackCount == 1)
+              resubmitted = compiler.compileToSvg(shortSource(QStringLiteral("Recovered $x^2$")));
+          });
+  QVERIFY(compiler.compileToBitmap(QStringLiteral("#let broken = (")));
+  QCOMPARE(completed.count(), 0);
+  QVERIFY(compiler.isCompiling());
+  QVERIFY(!compiler.compileToSvg(shortSource(QStringLiteral("Rejected SVG"))));
+  QVERIFY(!compiler.compileToBitmap(shortSource(QStringLiteral("Rejected bitmap"))));
+  QCOMPARE(completed.count(), 0);
+  returnedFromSubmit = true;
+  QVERIFY(waitUntil([&]() { return completed.count() == 2; }));
+  QVERIFY(asynchronous);
+  QVERIFY(idleAtCompletion);
+  QVERIFY(resubmitted);
+  QCOMPARE(callbackCount, 2);
+  const auto failure = qvariant_cast<TypstCompiler::Result>(completed.at(0).at(0));
+  QVERIFY(!failure.isSuccess());
+  QVERIFY(!failure.m_error.isEmpty());
+  QVERIFY(!failure.m_diagnostics.isEmpty());
+  QVERIFY(!failure.m_diagnostics.join(QLatin1Char('\n')).trimmed().isEmpty());
+  QVERIFY(failure.m_svgPages.isEmpty());
+  QVERIFY(failure.m_bitmapPages.isEmpty());
+  const auto recovered = qvariant_cast<TypstCompiler::Result>(completed.at(1).at(0));
+  QVERIFY2(recovered.isSuccess(), qPrintable(recovered.m_error));
+  QCOMPARE(recovered.m_svgPages.size(), 1);
+  QVERIFY(recovered.m_bitmapPages.isEmpty());
+  QVERIFY(!compiler.isCompiling());
+  QTest::qWait(100);
+  QCOMPARE(completed.count(), 2);
+  QCOMPARE(callbackCount, 2);
+}
+
+void TestTypstEditor::compilerRejectsInvalidScaleAndPixelLimit_data() {
+  QTest::addColumn<qreal>("scale");
+  QTest::addColumn<int>("pixelLimit");
+  QTest::newRow("nan") << std::numeric_limits<qreal>::quiet_NaN() << 4096;
+  QTest::newRow("positive-infinity") << std::numeric_limits<qreal>::infinity() << 4096;
+  QTest::newRow("negative-infinity") << -std::numeric_limits<qreal>::infinity() << 4096;
+  QTest::newRow("zero") << qreal(0) << 4096;
+  QTest::newRow("negative") << qreal(-1) << 4096;
+  QTest::newRow("pixel-limit") << qreal(1) << 4095;
+}
+
+void TestTypstEditor::compilerRejectsInvalidScaleAndPixelLimit() {
+  QFETCH(qreal, scale);
+  QFETCH(int, pixelLimit);
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  auto config = *editorConfig(root.path());
+  config.m_maxRasterPixels = pixelLimit;
+  TypstCompiler compiler(config);
+  QSignalSpy completed(&compiler, &TypstCompiler::finished);
+  const auto source = QStringLiteral(
+      "#set page(width: 64pt, height: 64pt, margin: 0pt)\n"
+      "#rect(width: 20pt, height: 20pt, fill: red)");
+  QVERIFY(compiler.compileToBitmap(source, scale));
+  QCOMPARE(completed.count(), 0);
+  QVERIFY(compiler.isCompiling());
+  QVERIFY(waitUntil([&]() { return completed.count() == 1; }));
+  const auto failure = qvariant_cast<TypstCompiler::Result>(completed.at(0).at(0));
+  QVERIFY(!failure.isSuccess());
+  QVERIFY(!failure.m_error.isEmpty());
+  QVERIFY(failure.m_svgPages.isEmpty());
+  QVERIFY(failure.m_bitmapPages.isEmpty());
+  QVERIFY(!compiler.isCompiling());
+  // A valid smaller raster proves that rejection did not poison the instance.
+  QVERIFY(compiler.compileToBitmap(source, 0.5));
+  QVERIFY(waitUntil([&]() { return completed.count() == 2; }));
+  const auto recovered = qvariant_cast<TypstCompiler::Result>(completed.at(1).at(0));
+  QVERIFY2(recovered.isSuccess(), qPrintable(recovered.m_error));
+  QCOMPARE(recovered.m_bitmapPages.size(), 1);
+  QCOMPARE(recovered.m_bitmapPages.first().size(), QSize(32, 32));
+  QVERIFY(recovered.m_svgPages.isEmpty());
+  QTest::qWait(100);
+  QCOMPARE(completed.count(), 2);
+}
+
+void TestTypstEditor::compilerResultBudgetClearsPartialPages_data() {
+  QTest::addColumn<bool>("bitmap");
+  QTest::newRow("svg") << false;
+  QTest::newRow("bitmap") << true;
+}
+
+void TestTypstEditor::compilerResultBudgetClearsPartialPages() {
+  QFETCH(bool, bitmap);
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto page = QStringLiteral(
+      "#for x in range(8) { for y in range(8) {\n"
+      "  place(top + left, dx: (x * 24 + 10) * 1pt, dy: (y * 24 + 10) * 1pt,\n"
+      "        rect(width: 12pt, height: 12pt, fill: rgb(255, 0, 0), stroke: none))\n"
+      "}}\n");
+  const auto singlePage =
+      QStringLiteral("#set page(width: 256pt, height: 256pt, margin: 0pt, fill: white)\n") + page;
+  const auto twoPages = singlePage + QStringLiteral("#pagebreak()\n") + page;
+  const auto submit = [bitmap](TypstCompiler &p_compiler, const QString &p_source) {
+    return bitmap ? p_compiler.compileToBitmap(p_source) : p_compiler.compileToSvg(p_source);
+  };
+  TypstCompiler baseline(*editorConfig(root.path()));
+  QSignalSpy baselineFinished(&baseline, &TypstCompiler::finished);
+  QVERIFY(submit(baseline, twoPages));
+  QVERIFY(waitUntil([&]() { return baselineFinished.count() == 1; }));
+  const auto reference = qvariant_cast<TypstCompiler::Result>(baselineFinished.at(0).at(0));
+  QVERIFY2(reference.isSuccess(), qPrintable(reference.m_error));
+  QCOMPARE(bitmap ? reference.m_bitmapPages.size() : reference.m_svgPages.size(), 2);
+  qint64 totalBytes = 0;
+  qint64 largestPage = 0;
+  for (int index = 0; index < 2; ++index) {
+    const qint64 bytes = bitmap ? reference.m_bitmapPages.at(index).sizeInBytes()
+                               : reference.m_svgPages.at(index).size();
+    totalBytes += bytes;
+    largestPage = qMax(largestPage, bytes);
+  }
+  auto config = *editorConfig(root.path());
+  config.m_maxCacheBytes = largestPage + (totalBytes - largestPage) / 2;
+  QVERIFY(config.m_maxCacheBytes > largestPage);
+  QVERIFY(config.m_maxCacheBytes < totalBytes);
+  QVERIFY(config.m_maxCacheBytes > twoPages.toUtf8().size());
+  TypstCompiler limited(config);
+  QSignalSpy completed(&limited, &TypstCompiler::finished);
+  // Every individual page fits. Only retaining the whole result exceeds the cap.
+  QVERIFY(submit(limited, singlePage));
+  QVERIFY(waitUntil([&]() { return completed.count() == 1; }));
+  const auto individual = qvariant_cast<TypstCompiler::Result>(completed.at(0).at(0));
+  QVERIFY2(individual.isSuccess(), qPrintable(individual.m_error));
+  QCOMPARE(bitmap ? individual.m_bitmapPages.size() : individual.m_svgPages.size(), 1);
+  QVERIFY(submit(limited, twoPages));
+  QVERIFY(waitUntil([&]() { return completed.count() == 2; }));
+  const auto failure = qvariant_cast<TypstCompiler::Result>(completed.at(1).at(0));
+  QVERIFY(!failure.isSuccess());
+  QVERIFY(!failure.m_error.isEmpty());
+  QVERIFY(failure.m_svgPages.isEmpty());
+  QVERIFY(failure.m_bitmapPages.isEmpty());
+  QVERIFY(!limited.isCompiling());
+  QVERIFY(submit(limited, singlePage));
+  QVERIFY(waitUntil([&]() { return completed.count() == 3; }));
+  const auto recovered = qvariant_cast<TypstCompiler::Result>(completed.at(2).at(0));
+  QVERIFY2(recovered.isSuccess(), qPrintable(recovered.m_error));
+  QCOMPARE(bitmap ? recovered.m_bitmapPages.size() : recovered.m_svgPages.size(), 1);
+}
 
 void TestTypstEditor::overlaysDiagnosticsAndSnapshotRetention() {
   QTemporaryDir root;
