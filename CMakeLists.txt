@@ -11,6 +11,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 include(GNUInstallDirs)
 set(QT_DEFAULT_MAJOR_VERSION 6 CACHE STRING "Qt version to use (5 or 6), defaults to 6")
 option(VTEXTEDIT_ENABLE_TYPST "Build the native Typst editor and compiler helper" OFF)
+option(VTEXTEDIT_BUILD_DEMOS "Build editor demo applications" ON)
 
 if(VTEXTEDIT_ENABLE_TYPST)
     if(NOT QT_DEFAULT_MAJOR_VERSION EQUAL 6)
@@ -22,14 +23,16 @@ endif()
 
 add_subdirectory(libs)
 add_subdirectory(src)
-add_subdirectory(demo)
-if(VTEXTEDIT_ENABLE_TYPST)
-    add_dependencies(VTextEditDemo vtextedit-typst)
-    add_dependencies(VTypstEditorDemo vtextedit-typst)
-    install(TARGETS VTextEditDemo VTypstEditorDemo
-        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-        BUNDLE DESTINATION .
-    )
+if(VTEXTEDIT_BUILD_DEMOS)
+    add_subdirectory(demo)
+    if(VTEXTEDIT_ENABLE_TYPST)
+        add_dependencies(VTextEditDemo vtextedit-typst)
+        add_dependencies(VTypstEditorDemo vtextedit-typst)
+        install(TARGETS VTextEditDemo VTypstEditorDemo
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+            BUNDLE DESTINATION .
+        )
+    endif()
 endif()
 enable_testing()
 add_subdirectory(tests)
