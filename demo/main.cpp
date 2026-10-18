@@ -201,10 +201,15 @@ static VTypstEditor *setupTypstEditor(QMainWindow *p_window, const QStringList &
   auto *modeBar = new QHBoxLayout;
   auto *modeCombo = new QComboBox(central);
   modeCombo->setObjectName(QStringLiteral("typstMode"));
-  modeCombo->addItem(vte::VTypstEditor::tr("In-place preview"));
-  modeCombo->addItem(vte::VTypstEditor::tr("Side-by-side preview"));
-  modeCombo->addItem(vte::VTypstEditor::tr("Read"));
+  modeCombo->addItem(vte::VTypstEditor::tr("Edit"), static_cast<int>(VTypstEditor::Mode::Edit));
+  modeCombo->addItem(vte::VTypstEditor::tr("Read"), static_cast<int>(VTypstEditor::Mode::Read));
   modeBar->addWidget(modeCombo);
+  auto *inplaceButton = button(vte::VTypstEditor::tr("In-place preview"), central);
+  inplaceButton->setCheckable(true);
+  auto *liveButton = button(vte::VTypstEditor::tr("Live preview"), central);
+  liveButton->setCheckable(true);
+  modeBar->addWidget(inplaceButton);
+  modeBar->addWidget(liveButton);
   auto *statusLabel = new QLabel(central);
   statusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
   statusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
@@ -240,18 +245,30 @@ static VTypstEditor *setupTypstEditor(QMainWindow *p_window, const QStringList &
 
   layout->addWidget(editor, 1);
 
-  const auto updateMode = [modeCombo, pdfBar](VTypstEditor::Mode p_mode) {
-    const QSignalBlocker blocker(modeCombo);
-    modeCombo->setCurrentIndex(static_cast<int>(p_mode));
-    pdfBar->setVisible(p_mode != VTypstEditor::Mode::InPlacePreview);
+  const auto updateMode = [editor, modeCombo, inplaceButton, liveButton, pdfBar]() {
+    const QSignalBlocker modeBlocker(modeCombo);
+    const QSignalBlocker inplaceBlocker(inplaceButton);
+    const QSignalBlocker liveBlocker(liveButton);
+    modeCombo->setCurrentIndex(modeCombo->findData(static_cast<int>(editor->mode())));
+    inplaceButton->setChecked(editor->isInplacePreviewEnabled());
+    liveButton->setChecked(editor->isLivePreviewEnabled());
+    const bool editing = editor->mode() == VTypstEditor::Mode::Edit;
+    inplaceButton->setVisible(editing);
+    liveButton->setVisible(editing);
+    pdfBar->setVisible(!editing || editor->isLivePreviewEnabled());
   };
   QObject::connect(modeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), editor,
-                   [editor](int p_index) {
-                     editor->setMode(static_cast<VTypstEditor::Mode>(p_index));
+                   [editor, modeCombo](int p_index) {
+                     editor->setMode(static_cast<VTypstEditor::Mode>(modeCombo->itemData(p_index).toInt()));
                    });
+  QObject::connect(inplaceButton, &QToolButton::toggled, editor,
+                   &VTypstEditor::setInplacePreviewEnabled);
+  QObject::connect(liveButton, &QToolButton::toggled, editor,
+                   &VTypstEditor::setLivePreviewEnabled);
   QObject::connect(editor, &VTypstEditor::modeChanged, central, updateMode);
-  updateMode(editor->mode());
-
+  QObject::connect(editor, &VTypstEditor::inplacePreviewEnabledChanged, central, updateMode);
+  QObject::connect(editor, &VTypstEditor::livePreviewEnabledChanged, central, updateMode);
+  updateMode();
   const auto updateStatus = [statusLabel](VTypstEditor::CompileStatus, const QString &p_message) {
     statusLabel->setText(p_message);
     statusLabel->setToolTip(p_message);
@@ -291,7 +308,9 @@ static VTypstEditor *setupTypstEditor(QMainWindow *p_window, const QStringList &
     editor->setFileOverlay(QStringLiteral("lib.typ"), QStringLiteral("#let mass = 7\n"));
   }
   editor->getTextEditor()->setText(contents);
-  editor->setMode(VTypstEditor::Mode::SideBySidePreview);
+  editor->setInplacePreviewEnabled(false);
+  editor->setLivePreviewEnabled(true);
+  editor->setMode(VTypstEditor::Mode::Edit);
   p_window->setCentralWidget(central);
   return editor;
 }
@@ -379,8 +398,28 @@ static void runTypstSmoke(VTypstEditor *p_editor, const QStringList &p_arguments
         abort(QStringLiteral("Compilation cleared the displayed PDF selection"));
         return;
       }
-      p_editor->publishPendingPdfUpdate();
-      state->phase = 2;
+      p_editor->setMode(VTypstEditor::Mode::Read);
+      state->settling.start();
+      state->phase = 4;
+    } else if (state->phase >= 4 && state->settling.elapsed() >= 250) {
+      if (!p_editor->hasPendingPdfUpdate() ||
+          !pane->property("selectedText").toString().contains(QStringLiteral("BEFORE smoke"))) {
+        abort(QStringLiteral("Preview transition published or discarded the selected pending PDF"));
+        return;
+      }
+      if (state->phase == 4) {
+        p_editor->setMode(VTypstEditor::Mode::Edit);
+        p_editor->setLivePreviewEnabled(false);
+        state->phase = 5;
+      } else if (state->phase == 5) {
+        p_editor->setInplacePreviewEnabled(true);
+        p_editor->setLivePreviewEnabled(true);
+        state->phase = 6;
+      } else {
+        p_editor->publishPendingPdfUpdate();
+        state->phase = 2;
+      }
+      state->settling.restart();
     } else if (state->phase == 2) {
       if (p_editor->hasPendingPdfUpdate()) {
         return;
@@ -398,10 +437,16 @@ static void runTypstSmoke(VTypstEditor *p_editor, const QStringList &p_arguments
         abort(QStringLiteral("Read mode discarded PDF selection"));
         return;
       }
-      p_editor->setMode(VTypstEditor::Mode::InPlacePreview);
+      p_editor->setLivePreviewEnabled(false);
+      p_editor->setInplacePreviewEnabled(true);
+      p_editor->setMode(VTypstEditor::Mode::Edit);
       state->settling.start();
       state->phase = 3;
     } else if (state->phase == 3 && state->settling.elapsed() >= 1500) {
+      if (!pane->property("selectedText").toString().contains(QStringLiteral("AFTER smoke"))) {
+        abort(QStringLiteral("Hiding live preview discarded PDF selection"));
+        return;
+      }
       const auto cursor = p_editor->getTextEditor()->getTextEdit()->textCursor();
       if (p_editor->document()->toPlainText() != state->after ||
           p_editor->document()->isModified() != state->modified ||
@@ -420,7 +465,7 @@ static void runTypstSmoke(VTypstEditor *p_editor, const QStringList &p_arguments
       timer->stop();
       std::fprintf(
           stdout,
-          "TYPST_WIDGET_SMOKE_OK selection copy deferred-update read side-by-side in-place undo\n");
+          "TYPST_WIDGET_SMOKE_OK selection copy deferred-update read live-toggle in-place combined undo\n");
       std::fflush(stdout);
       QCoreApplication::exit(0);
     }

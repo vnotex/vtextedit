@@ -25,21 +25,28 @@ elements are not interpreted. This is `color`-attribute support, not general CSS
 ## Typst editor (optional)
 
 `VTypstEditor` is additive: it contains a `VTextEditor`, not a Markdown editor, and uses
-one source document, undo history and compiler session across three modes:
+one source document, undo history and compiler session across two modes:
 
 | `VTypstEditor::Mode` | Presentation |
 | --- | --- |
-| `InPlacePreview` | Editable source with source-attached compiled output cards. |
-| `SideBySidePreview` | The same source beside a live, selectable PDF preview. |
-| `Read` | Source hidden and input disabled; the same PDF fills the widget. |
+| `Edit` | Editable source with independent in-place and live previews. |
+| `Read` | Source hidden and input disabled; the PDF fills the widget. |
+
+`setInplacePreviewEnabled(bool)` controls source-attached compiled output cards;
+`setLivePreviewEnabled(bool)` controls the side-by-side PDF in Edit. Either, both, or
+neither can be enabled. Their getters are `isInplacePreviewEnabled()` and
+`isLivePreviewEnabled()`, with corresponding `inplacePreviewEnabledChanged(bool)` and
+`livePreviewEnabledChanged(bool)` signals. The library starts in Edit with in-place on
+and live off. These runtime preferences survive Read and configuration changes; changing
+them in Read does not reveal source or hide the PDF. They are not persisted settings.
 
 Side-by-side mode synchronizes vertical scrolling in both directions, including PDF
 keyboard and page navigation. Synchronization uses relative scrollbar progress, not
 source-to-output mapping, so corresponding text may not line up in uneven layouts.
 It preserves the source cursor, selections, focus and undo history. Horizontal scrolling
 is independent, and synchronization pauses when either side has no vertical scroll range.
-Read and in-place modes remain independent; mode changes, zoom and PDF publication do not
-force alignment. The next scroll uses the current ranges.
+Synchronization is inactive in Read or with live preview off. Presentation changes,
+zoom and PDF publication do not force alignment. The next scroll uses the current ranges.
 
 Moving the source cursor in side-by-side mode also flashes an accent marker three times
 at the corresponding PDF location, using Typst's source mapping rather than scroll ratios.
@@ -49,7 +56,10 @@ and **Show cursor in output** target the actual heading, not a copy of its text 
 outline. This also applies when the outline and heading share a page.
 The marker does not change either selection, source history or focus.
 Rapid cursor moves replace earlier requests. While the PDF is stale, highlighting waits
-for the current compilation to be published; leaving side-by-side mode cancels it.
+for the current compilation to be published; leaving side-by-side editing cancels it.
+Read-mode PDF clicks reveal source in Edit without changing either preview preference.
+**Show cursor in output** enables Live Preview when needed in Edit, without changing
+in-place preview; in Read it keeps the PDF-only presentation.
 
 In-place previews have no panel background, navigation controls, title/page rows, or
 internal scrollbar. Repeated inline occurrences appear left-to-right in evaluation order,
@@ -62,7 +72,7 @@ previews separate from their source and neighboring content.
 Clicking a preview does not select source or change modes. Authored backgrounds inside
 the compiled output remain intact.
 
-Changing modes does not reload source, clear undo or mark the document modified.
+Changing modes or preview toggles does not reload source, clear undo or mark it modified.
 `setReadOnly()` records the host's explicit policy; `isReadOnly()` returns that policy.
 Effective source read-only is also true in `Read`, and leaving it restores the explicit
 policy. Programmatic source updates remain possible while the source is hidden. Use
@@ -82,11 +92,14 @@ Hosts can supply their own controls using `setMode()`, `compileStatusChanged`,
   output, not an update still held behind a selection.
 * `hasPendingPdfUpdate()`, `pdfUpdateAvailableChanged` and `publishPendingPdfUpdate()`
   let hosts offer an explicit update action without discarding a PDF selection on arrival.
+  In combined editing, cards can advance to the newest compilation while a selected PDF
+  retains the prior output until publication is accepted.
 
 Seed controls from the getters before relying on signals; initialization may have already
-changed state. The demo keeps its PDF row hidden in in-place mode and blocks control signals
-while reflecting mode/page changes. Mode switches preserve PDF selection even when hiding
-the preview transfers focus to the source editor.
+changed state. The demo exposes Edit/Read plus the two preview toggles, and shows PDF
+controls in Read or live Edit. It blocks control signals while reflecting native state.
+Modes and toggles preserve PDF selection even when hiding the preview transfers focus
+to the source editor.
 
 ### Document outline
 
@@ -309,7 +322,9 @@ auto editor = new vte::VTypstEditor(
 editor->setFileOverlay(QStringLiteral("lib.typ"), QStringLiteral("#let mass = 7\n"));
 editor->setFileOverlay(QStringLiteral("main.typ"),
     QStringLiteral("#import \"lib.typ\": mass\n$ E = #mass c^2 $\n"));
-editor->setMode(vte::VTypstEditor::Mode::SideBySidePreview);
+editor->setMode(vte::VTypstEditor::Mode::Edit);
+editor->setInplacePreviewEnabled(true);
+editor->setLivePreviewEnabled(true);
 ```
 
 `TypstEditorConfig` wraps `m_textEditorConfig` and provides helper/root/main-entry paths,

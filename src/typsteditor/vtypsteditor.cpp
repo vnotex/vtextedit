@@ -1,5 +1,6 @@
 #include <vtextedit/vtypsteditor.h>
 
+#include <markdowneditor/textdocumentlayout.h>
 #include <vtextedit/typsteditorconfig.h>
 #include <vtextedit/vtextedit.h>
 #include <vtextedit/vtexteditor.h>
@@ -65,7 +66,7 @@ public:
     bridge = new TypstCompilerBridge(q);
     host = new TypstPreviewHost(source, *config, q);
     host->setActiveFile(activeFile);
-    host->setEnabled(true);
+    host->setEnabled(isInplacePreviewActive());
 
     QObject::connect(pane, &TypstPreviewPane::verticalScrollChanged, q, [this]() {
       emit q->pdfNavigationChanged();
@@ -74,21 +75,19 @@ public:
     auto *sourceScroll = source->getTextEdit()->verticalScrollBar();
     QObject::connect(sourceScroll, &QScrollBar::valueChanged, q,
                      [this]() { syncScroll(true); });
-    QObject::connect(sourceScroll, &QScrollBar::rangeChanged, q, [this]() {
-      // Qt may clamp the value during deferred layout, including after a mode
-      // switch. Let the source's extra-tail scrollbar settle without moving PDF.
-      if (!sourceRangeChanging) {
-        sourceRangeChanging = true;
-        QTimer::singleShot(0, q, [this]() { sourceRangeChanging = false; });
-      }
-    });
+    QObject::connect(sourceScroll, &QScrollBar::rangeChanged, q,
+                     [this]() { deferScrollSync(); });
+    QObject::connect(pane->verticalScrollBar(), &QScrollBar::rangeChanged, q,
+                     [this]() { deferScrollSync(); });
+    QObject::connect(source->typstLayout(), &TextDocumentLayout::widgetPreviewGeometryChanged, q,
+                     [this]() { deferScrollSync(); });
     cursorHighlightTimer.setSingleShot(true);
     cursorHighlightTimer.setInterval(120);
     QObject::connect(&cursorHighlightTimer, &QTimer::timeout, q,
                      [this]() { requestCursorHighlight(); });
     QObject::connect(source->getTextEdit(), &QTextEdit::cursorPositionChanged, q, [this]() {
       invalidateCursorHighlight();
-      cursorHighlightPending = mode == Mode::SideBySidePreview && !syncingScroll;
+      cursorHighlightPending = isSideBySideActive() && !changingMode && !syncingScroll;
       if (cursorHighlightPending) {
         cursorHighlightTimer.start();
       }
@@ -96,8 +95,8 @@ public:
     QObject::connect(pane, &TypstPreviewPane::updateAvailableChanged, q,
                      &VTypstEditor::pdfUpdateAvailableChanged);
     QObject::connect(source, &VTextEditor::focusIn, q, [this]() {
-      // Hiding the focused PDF pane transfers focus; a mode switch is not an edit gesture.
-      if (!changingMode && mode != Mode::Read) {
+      // Hiding a focused preview transfers focus; presentation changes are not edit gestures.
+      if (!changingMode && mode == Mode::Edit) {
         pane->publishPending();
       }
     });
@@ -182,11 +181,10 @@ public:
           if (!p_snapshot || p_snapshot != bridge->latestSnapshot()) {
             return;
           }
-          if (mode == Mode::InPlacePreview) {
+          if (isInplacePreviewActive()) {
             host->setSnapshot(p_snapshot);
-          } else {
-            ensurePdf();
           }
+          ensurePdf();
           int detached = 0;
           for (const auto &preview : p_snapshot->m_previews) {
             if (!preview.m_source.isValid() || preview.m_source.m_file != activeFile ||
@@ -208,6 +206,7 @@ public:
         });
     QObject::connect(bridge, &TypstCompilerBridge::pdfReady, q,
                      [this](const TypstSnapshot &p_snapshot, const QByteArray &p_pdf) {
+                       // Receipt is independent of visibility and selection-deferred publication.
                        pdfDelivered = p_snapshot->m_id;
                        pane->setSnapshot(p_snapshot, p_pdf);
                      });
@@ -242,8 +241,7 @@ public:
     QObject::connect(bridge, &TypstCompilerBridge::cursorLocationReady, q,
                      [this](quint64 p_request, quint64 p_snapshot, int p_page,
                             const QPointF &p_point) {
-                       if (p_request != cursorHighlightRequest ||
-                           mode != Mode::SideBySidePreview) {
+                       if (p_request != cursorHighlightRequest || !isSideBySideActive()) {
                          return;
                        }
                        const auto snapshot = currentDisplayedSnapshot();
@@ -303,7 +301,83 @@ public:
     emit q->compileStatusChanged(status, message);
   }
 
+  bool isInplacePreviewActive() const { return mode == Mode::Edit && inplacePreviewEnabled; }
+  bool isPdfVisible() const { return mode == Mode::Read || livePreviewEnabled; }
+  bool isSideBySideActive() const { return mode == Mode::Edit && livePreviewEnabled; }
+
+  void deferScrollSync() {
+    // Layout and range changes may clamp or restore source/PDF scroll positions later this turn.
+    if (!scrollLayoutChanging) {
+      scrollLayoutChanging = true;
+      QTimer::singleShot(0, q, [this]() { scrollLayoutChanging = false; });
+    }
+  }
+
+  void setPresentation(Mode p_mode, bool p_inplace, bool p_live) {
+    const bool modeChanged = mode != p_mode;
+    const bool inplaceChanged = inplacePreviewEnabled != p_inplace;
+    const bool liveChanged = livePreviewEnabled != p_live;
+    if (!modeChanged && !inplaceChanged && !liveChanged) {
+      return;
+    }
+    const bool hadCards = isInplacePreviewActive();
+    const bool hadPdf = isPdfVisible();
+    const bool wasSideBySide = isSideBySideActive();
+    const QScopedValueRollback<bool> modeGuard(changingMode, true);
+    const QScopedValueRollback<bool> scrollGuard(syncingScroll, true);
+    mode = p_mode;
+    inplacePreviewEnabled = p_inplace;
+    livePreviewEnabled = p_live;
+
+    // Flag changes in Read only remember preferences; no layout, focus, or compiler work.
+    if (modeChanged || hadCards != isInplacePreviewActive() || hadPdf != isPdfVisible()) {
+      deferScrollSync();
+      if (wasSideBySide != isSideBySideActive()) {
+        if (wasSideBySide) {
+          splitSizes = splitter->sizes();
+        }
+        invalidateCursorHighlight();
+        cursorHighlightPending = false;
+      }
+      if (hadCards != isInplacePreviewActive()) {
+        host->setEnabled(isInplacePreviewActive());
+      }
+      if (modeChanged) {
+        source->setReadOnly(readOnly || mode == Mode::Read);
+        source->setVisible(mode == Mode::Edit);
+      }
+      if (hadPdf != isPdfVisible()) {
+        pane->setVisible(isPdfVisible());
+      }
+      if (!wasSideBySide && isSideBySideActive()) {
+        splitter->setSizes(splitSizes.isEmpty() ? QList<int>{q->width() / 2, q->width() / 2}
+                                               : splitSizes);
+      }
+      if (!hadCards && isInplacePreviewActive()) {
+        if (const auto snapshot = bridge->latestSnapshot()) {
+          host->setSnapshot(snapshot);
+        }
+      }
+      if (!hadPdf && isPdfVisible()) {
+        ensurePdf();
+      }
+    }
+    // Keep host-triggered focus changes inside the same pending-PDF/scroll guards.
+    if (modeChanged) {
+      emit q->modeChanged(mode);
+    }
+    if (inplaceChanged) {
+      emit q->inplacePreviewEnabledChanged(inplacePreviewEnabled);
+    }
+    if (liveChanged) {
+      emit q->livePreviewEnabledChanged(livePreviewEnabled);
+    }
+  }
+
   void ensurePdf() {
+    if (!isPdfVisible()) {
+      return;
+    }
     const auto snapshot = bridge->latestSnapshot();
     if (snapshot && pdfDelivered != snapshot->m_id) {
       bridge->requestPdf(snapshot->m_id);
@@ -328,8 +402,7 @@ public:
   }
 
   void requestCursorHighlight() {
-    if (!cursorHighlightPending || mode != Mode::SideBySidePreview ||
-        !currentDisplayedSnapshot()) {
+    if (!cursorHighlightPending || !isSideBySideActive() || !currentDisplayedSnapshot()) {
       return;
     }
     // Keep pending until a current reply arrives; compilation may invalidate this request.
@@ -338,8 +411,8 @@ public:
   }
 
   void syncScroll(bool p_fromSource) {
-    if (syncingScroll || sourceRangeChanging || mode != Mode::SideBySidePreview ||
-        !pane->snapshot()) {
+    if (changingMode || syncingScroll || scrollLayoutChanging || source->typstLayout()->isBusy() ||
+        !isSideBySideActive() || !source->isVisible() || !pane->isVisible() || !pane->snapshot()) {
       return;
     }
     auto *from = source->getTextEdit()->verticalScrollBar();
@@ -367,26 +440,25 @@ public:
       return;
     }
     const QScopedValueRollback<bool> guard(syncingScroll, true);
-    if (mode == Mode::Read) {
-      q->setMode(Mode::SideBySidePreview);
-    }
     QTextCursor cursor(source->document());
     cursor.setPosition(p_start);
     cursor.setPosition(p_end, QTextCursor::KeepAnchor);
     source->getTextEdit()->setTextCursor(cursor);
+    if (mode == Mode::Read) {
+      // Seed the viewport before enabling cards: their deferred layout preserves this anchor.
+      source->getTextEdit()->ensureCursorVisible();
+      q->setMode(Mode::Edit);
+    }
     source->getTextEdit()->ensureCursorVisible();
     source->getTextEdit()->setFocus();
   }
 
   void navigateOutput(quint64 p_snapshot, int p_page, const QPointF &p_point) {
     const auto latest = bridge->latestSnapshot();
-    if (!latest || latest->m_id != p_snapshot) {
+    if (!isPdfVisible() || !latest || latest->m_id != p_snapshot) {
       return;
     }
     const QScopedValueRollback<bool> guard(syncingScroll, true);
-    if (mode == Mode::InPlacePreview) {
-      q->setMode(Mode::SideBySidePreview);
-    }
     if (pane->snapshot() && pane->snapshot()->m_id == p_snapshot &&
         pane->snapshot()->m_epoch == latest->m_epoch) {
       pane->goToPage(p_page, p_point);
@@ -412,13 +484,15 @@ public:
   QMap<QString, QString> overlays;
   QString activeFile;
   QList<int> splitSizes;
-  Mode mode = Mode::InPlacePreview;
+  Mode mode = Mode::Edit;
+  bool inplacePreviewEnabled = true;
+  bool livePreviewEnabled = false;
   CompileStatus status = CompileStatus::Idle;
   QString message;
   bool readOnly = false;
   bool changingMode = false;
   bool syncingScroll = false;
-  bool sourceRangeChanging = false;
+  bool scrollLayoutChanging = false;
   QTimer cursorHighlightTimer;
   quint64 cursorHighlightRequest = 0;
   bool cursorHighlightPending = false;
@@ -439,33 +513,17 @@ QTextDocument *VTypstEditor::document() const { return d->source->document(); }
 VTypstEditor::Mode VTypstEditor::mode() const { return d->mode; }
 
 void VTypstEditor::setMode(Mode p_mode) {
-  if (p_mode == d->mode) {
-    return;
-  }
-  const QScopedValueRollback<bool> modeGuard(d->changingMode, true);
-  const QScopedValueRollback<bool> guard(d->syncingScroll, true);
-  if (d->mode == Mode::SideBySidePreview) {
-    d->splitSizes = d->splitter->sizes();
-  }
-  d->invalidateCursorHighlight();
-  d->cursorHighlightPending = false;
-  d->mode = p_mode;
-  d->host->setEnabled(p_mode == Mode::InPlacePreview);
-  d->source->setReadOnly(d->readOnly || p_mode == Mode::Read);
-  d->source->setVisible(p_mode != Mode::Read);
-  d->pane->setVisible(p_mode != Mode::InPlacePreview);
-  if (p_mode == Mode::SideBySidePreview) {
-    d->splitter->setSizes(d->splitSizes.isEmpty() ? QList<int>{width() / 2, width() / 2}
-                                                  : d->splitSizes);
-  }
-  if (p_mode == Mode::InPlacePreview) {
-    if (d->bridge->latestSnapshot()) {
-      d->host->setSnapshot(d->bridge->latestSnapshot());
-    }
-  } else {
-    d->ensurePdf();
-  }
-  emit modeChanged(p_mode);
+  d->setPresentation(p_mode, d->inplacePreviewEnabled, d->livePreviewEnabled);
+}
+
+bool VTypstEditor::isInplacePreviewEnabled() const { return d->inplacePreviewEnabled; }
+void VTypstEditor::setInplacePreviewEnabled(bool p_enabled) {
+  d->setPresentation(d->mode, p_enabled, d->livePreviewEnabled);
+}
+
+bool VTypstEditor::isLivePreviewEnabled() const { return d->livePreviewEnabled; }
+void VTypstEditor::setLivePreviewEnabled(bool p_enabled) {
+  d->setPresentation(d->mode, d->inplacePreviewEnabled, p_enabled);
 }
 
 bool VTypstEditor::isReadOnly() const { return d->readOnly; }
@@ -549,6 +607,9 @@ const QVector<TypstHeadingInfo> &VTypstEditor::getHeadings() const {
 }
 void VTypstEditor::retryCompilation() { d->bridge->retry(); }
 void VTypstEditor::showOutputAtCursor() {
+  if (d->mode == Mode::Edit && !d->livePreviewEnabled) {
+    setLivePreviewEnabled(true);
+  }
   d->invalidateCursorHighlight();
   d->cursorHighlightPending = false;
   d->bridge->sourceToOutput(d->activeFile, d->source->getTextEdit()->textCursor().position(), 0);

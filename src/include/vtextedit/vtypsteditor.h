@@ -35,7 +35,7 @@ struct TypstHeadingInfo {
 class VTEXTEDIT_EXPORT VTypstEditor : public QWidget {
   Q_OBJECT
 public:
-  enum class Mode { InPlacePreview, SideBySidePreview, Read };
+  enum class Mode { Edit, Read };
   Q_ENUM(Mode)
   enum class CompileStatus { Idle, Compiling, Ready, Error, Unavailable };
   Q_ENUM(CompileStatus)
@@ -49,6 +49,12 @@ public:
   QTextDocument *document() const;
   Mode mode() const;
   void setMode(Mode p_mode);
+  // Runtime preferences for Edit; Read remains PDF-only and remembers both flags.
+  // Defaults: Edit with in-place preview enabled and live PDF preview disabled.
+  bool isInplacePreviewEnabled() const;
+  void setInplacePreviewEnabled(bool p_enabled);
+  bool isLivePreviewEnabled() const;
+  void setLivePreviewEnabled(bool p_enabled);
   bool isReadOnly() const;
   void setReadOnly(bool p_readOnly);
 
@@ -90,6 +96,8 @@ public:
 
 signals:
   void modeChanged(vte::VTypstEditor::Mode p_mode);
+  void inplacePreviewEnabledChanged(bool p_enabled);
+  void livePreviewEnabledChanged(bool p_enabled);
   void compileStatusChanged(vte::VTypstEditor::CompileStatus p_status, const QString &p_message);
   void diagnosticsChanged(const QStringList &p_diagnostics);
   // Complete accepted outline, or empty when a nonempty outline is invalidated.

@@ -61,6 +61,9 @@ private slots:
   void outlineScopeAndModesPreserveSource();
   void supersededCompileCannotPublishOutline();
   void modesPreserveSourceUndoAndSelection();
+  void independentEditPreviews_data();
+  void independentEditPreviews();
+  void combinedPreviewsAdvanceWhilePdfSelectionIsDeferred();
   void hiddenSourceAndImportChangesReachPdf();
   void diagnosticsPreserveLastGoodOutput();
   void selectionDefersPublicationAcrossScrollAndModes();
