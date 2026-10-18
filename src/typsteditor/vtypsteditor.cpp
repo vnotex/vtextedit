@@ -94,6 +94,7 @@ public:
     });
     QObject::connect(pane, &TypstPreviewPane::updateAvailableChanged, q,
                      &VTypstEditor::pdfUpdateAvailableChanged);
+    QObject::connect(pane, &TypstPreviewPane::zoomChanged, q, &VTypstEditor::pdfZoomChanged);
     QObject::connect(source, &VTextEditor::focusIn, q, [this]() {
       // Hiding a focused preview transfers focus; presentation changes are not edit gestures.
       if (!changingMode && mode == Mode::Edit) {
@@ -624,6 +625,7 @@ void VTypstEditor::showOutputAtCursor() {
 }
 
 qreal VTypstEditor::pdfZoom() const { return d->pane->zoom(); }
+VTypstEditor::PdfZoomMode VTypstEditor::pdfZoomMode() const { return d->pane->zoomMode(); }
 void VTypstEditor::setPdfZoom(qreal p_zoom) { d->pane->setZoom(p_zoom); }
 void VTypstEditor::fitPdfWidth() { d->pane->fitWidth(); }
 void VTypstEditor::fitPdfPage() { d->pane->fitPage(); }

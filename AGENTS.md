@@ -361,6 +361,24 @@ Once written back as HTML a table **stays** HTML, even after every merge is spli
 is no in-editor route back to pipe syntax.
 
 
+## Typst PDF Camera State
+
+`VTypstEditor::PdfZoomMode` (`Custom`, `Width`, `Page`) is shared with the internal PDF pane.
+`pdfZoom()` and `pdfZoomMode()` expose its actual camera; `pdfZoomChanged(qreal, PdfZoomMode)`
+forwards native changes from setters, fit actions, Ctrl+wheel, context menus, relayout and PDF
+publication. A same-factor mode change notifies; an unchanged factor/mode pair does not.
+Notifications follow complete camera updates. Snapshot-driven notifications wait until the
+pane's render-slot service finishes, so synchronous consumers may change zoom or configuration.
+
+Fit choices made before any PDF is displayed remain selected and are applied when the first
+snapshot is published. `setConfig()` refreshes resource/theme settings without resetting the
+camera: `m_initialZoom` applies only during construction. Edit/Read and live-preview switches
+retain the mode; fit scales follow the resulting viewport size. PDF camera changes never zoom
+the source font or mutate source text, dirty state or undo history. Hosts should restore the
+camera before connecting persistence and store the mode explicitly rather than infer it from
+the numeric scale. Regression coverage: `pdfZoom*` and `pdfFitBeforePublication*` in
+`tests/test_typsteditor/`.
+
 ## Typst PDF Context Menu
 
 Read mode keeps Copy, Select page text, Clear selection, Fit width and Fit page only.

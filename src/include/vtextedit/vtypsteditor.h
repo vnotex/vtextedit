@@ -39,6 +39,8 @@ public:
   Q_ENUM(Mode)
   enum class CompileStatus { Idle, Compiling, Ready, Error, Unavailable };
   Q_ENUM(CompileStatus)
+  enum class PdfZoomMode { Custom, Width, Page };
+  Q_ENUM(PdfZoomMode)
 
   VTypstEditor(const QSharedPointer<TypstEditorConfig> &p_config,
                const QSharedPointer<TextEditorParameters> &p_parameters,
@@ -82,6 +84,7 @@ public:
 
   // Host-owned PDF controls; the preview pane remains internal to this widget.
   qreal pdfZoom() const;
+  PdfZoomMode pdfZoomMode() const;
   void setPdfZoom(qreal p_zoom);
   void fitPdfWidth();
   void fitPdfPage();
@@ -102,6 +105,8 @@ signals:
   void diagnosticsChanged(const QStringList &p_diagnostics);
   // Complete accepted outline, or empty when a nonempty outline is invalidated.
   void headingsUpdated(const QVector<vte::TypstHeadingInfo> &p_headings);
+  // Actual preview camera state, including fit-mode changes at the same scale.
+  void pdfZoomChanged(qreal p_zoom, vte::VTypstEditor::PdfZoomMode p_mode);
   // Re-query currentPdfPage()/pdfPageCount() after scrolling or PDF publication.
   void pdfNavigationChanged();
   void pdfUpdateAvailableChanged(bool p_available);

@@ -4,6 +4,8 @@
 #include <QAbstractScrollArea>
 #include <QScopedPointer>
 
+#include <vtextedit/vtypsteditor.h>
+
 #include "typstcompiledsnapshot.h"
 
 namespace vte {
@@ -43,6 +45,7 @@ public Q_SLOTS:
 
   void setZoom(qreal p_zoom);
   qreal zoom() const;
+  vte::VTypstEditor::PdfZoomMode zoomMode() const;
   void fitWidth();
   void fitPage();
   void setSearchText(const QString &p_text);
@@ -54,6 +57,7 @@ signals:
   void sourceLocationRequested(quint64 p_snapshot, int p_page, QPointF p_point);
   void externalLinkRequested(QUrl p_url);
   void selectionChanged();
+  void zoomChanged(qreal p_zoom, vte::VTypstEditor::PdfZoomMode p_mode);
   // Actual vertical scrolling/navigation, not zoom, relayout or publication.
   void verticalScrollChanged();
   void updateAvailableChanged(bool p_available);

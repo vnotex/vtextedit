@@ -18,6 +18,7 @@
 #include <QPdfSearchModel>
 #include <QPdfSelection>
 #include <QResizeEvent>
+#include <QScopedValueRollback>
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QTimer>
@@ -158,7 +159,7 @@ struct OwnedSelection {
 
 class vte::TypstPreviewPanePrivate {
 public:
-  enum class ZoomMode { Custom, Width, Page };
+  using ZoomMode = VTypstEditor::PdfZoomMode;
   enum class RenderPass { FirstPaint, Upgrade, Prefetch };
 
   TypstPreviewPanePrivate(TypstPreviewPane *p_q, const TypstEditorConfig &p_config)
@@ -168,7 +169,8 @@ public:
         m_background(p_config.m_pdfBackground),
         m_zoom(finiteCoordinate(p_config.m_initialZoom)
                    ? qBound(qreal(0.01), p_config.m_initialZoom, qreal(64))
-                   : 1) {
+                   : 1),
+        m_notifiedZoom(m_zoom) {
     m_autoScroll.setInterval(30);
     QObject::connect(&m_autoScroll, &QTimer::timeout, q, [this]() { autoScroll(); });
     m_sourceFlash.setInterval(200);
@@ -235,6 +237,9 @@ public:
     QTimer::singleShot(0, q, [this]() {
       m_scheduled = false;
       service();
+      // Publication must finish all render-slot work before a consumer can
+      // synchronously change the camera or its resource configuration.
+      notifyZoomChanged();
     });
   }
 
@@ -583,6 +588,15 @@ public:
     q->viewport()->update();
   }
 
+  void notifyZoomChanged() {
+    if (m_servicing || (m_notifiedZoom == m_zoom && m_notifiedZoomMode == m_zoomMode)) {
+      return;
+    }
+    m_notifiedZoom = m_zoom;
+    m_notifiedZoomMode = m_zoomMode;
+    emit q->zoomChanged(m_zoom, m_zoomMode);
+  }
+
   void changeZoom(ZoomMode p_mode, qreal p_zoom, const QPointF &p_position) {
     if (!finiteCoordinate(p_zoom) || p_zoom <= 0) {
       report(TypstPreviewPane::tr("The PDF zoom must be a positive finite number."));
@@ -592,6 +606,7 @@ public:
     m_zoomMode = p_mode;
     m_zoom = qBound(qreal(0.01), p_zoom, qreal(64));
     viewChanged(true);
+    notifyZoomChanged();
   }
 
   bool makeNeeds(PdfSlot &p_slot) {
@@ -742,6 +757,7 @@ public:
     if (m_closing) {
       return;
     }
+    const QScopedValueRollback<bool> guard(m_servicing, true);
     if (m_retiring && !m_retiring->m_request) {
       m_retiring.reset();
     }
@@ -1291,6 +1307,8 @@ public:
   ViewAnchor m_anchor;
   ZoomMode m_zoomMode = ZoomMode::Custom;
   qreal m_zoom;
+  ZoomMode m_notifiedZoomMode = ZoomMode::Custom;
+  qreal m_notifiedZoom;
   OwnedSelection m_selection;
   QString m_searchText;
   QString m_error;
@@ -1309,6 +1327,7 @@ public:
   bool m_dragging = false;
   bool m_controlClick = false;
   bool m_scheduled = false;
+  bool m_servicing = false;
   bool m_closing = false;
   bool m_needsDirty = true;
   bool m_settingScrollBars = false;
@@ -1448,6 +1467,8 @@ void TypstPreviewPane::setZoom(qreal p_zoom) {
 
 qreal TypstPreviewPane::zoom() const { return m_d->m_zoom; }
 
+VTypstEditor::PdfZoomMode TypstPreviewPane::zoomMode() const { return m_d->m_zoomMode; }
+
 void TypstPreviewPane::fitWidth() {
   m_d->changeZoom(TypstPreviewPanePrivate::ZoomMode::Width, m_d->m_zoom,
                   QPointF(viewport()->width() / 2.0, viewport()->height() / 2.0));
@@ -1543,6 +1564,7 @@ void TypstPreviewPane::goToPage(int p_page, const QPointF &p_point) {
   if (slot.m_layout.m_offset.y() != previousY) {
     emit verticalScrollChanged();
   }
+  m_d->notifyZoomChanged();
 }
 
 int TypstPreviewPane::currentPage() const {
@@ -1560,15 +1582,20 @@ bool TypstPreviewPane::event(QEvent *p_event) {
 #endif
               )) {
     m_d->viewChanged(true);
+    m_d->notifyZoomChanged();
   }
   return result;
 }
 
-void TypstPreviewPane::paintEvent(QPaintEvent *) { m_d->paint(); }
+void TypstPreviewPane::paintEvent(QPaintEvent *) {
+  m_d->paint();
+  m_d->notifyZoomChanged();
+}
 
 void TypstPreviewPane::resizeEvent(QResizeEvent *p_event) {
   QAbstractScrollArea::resizeEvent(p_event);
   m_d->viewChanged(true);
+  m_d->notifyZoomChanged();
 }
 
 void TypstPreviewPane::scrollContentsBy(int, int) {

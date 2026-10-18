@@ -61,6 +61,11 @@ private slots:
   void outlineScopeAndModesPreserveSource();
   void supersededCompileCannotPublishOutline();
   void modesPreserveSourceUndoAndSelection();
+  void pdfZoomModeNotifications();
+  void pdfFitBeforePublication_data();
+  void pdfFitBeforePublication();
+  void pdfZoomPublicationIsReentrant();
+  void pdfZoomWheelAndContextMenu();
   void independentEditPreviews_data();
   void independentEditPreviews();
   void combinedPreviewsAdvanceWhilePdfSelectionIsDeferred();

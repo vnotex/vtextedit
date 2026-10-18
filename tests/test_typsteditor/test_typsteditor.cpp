@@ -1,10 +1,12 @@
 #include "test_typsteditor.h"
 
+#include <QAction>
 #include <QAbstractScrollArea>
 #include <QAbstractTextDocumentLayout>
 #include <QApplication>
 #include <QBuffer>
 #include <QClipboard>
+#include <QContextMenuEvent>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -13,6 +15,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMenu>
 #include <QMetaMethod>
 #include <QPainter>
 #include <QPdfDocument>
@@ -30,6 +33,7 @@
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextLayout>
+#include <QTimer>
 #include <QWheelEvent>
 #include <QtEndian>
 
@@ -1864,6 +1868,311 @@ void TestTypstEditor::combinedPreviewsAdvanceWhilePdfSelectionIsDeferred() {
   }));
   QVERIFY(fixture.selectPage().contains(QStringLiteral("Updated")));
   QVERIFY(!fixture.selected().contains(QStringLiteral("Before")));
+}
+
+void TestTypstEditor::pdfZoomModeNotifications() {
+  using ZoomMode = VTypstEditor::PdfZoomMode;
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  auto config = editorConfig(root.path());
+  config->m_initialZoom = 1.25;
+  VTypstEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+  auto *pane = editor.findChild<QAbstractScrollArea *>(QStringLiteral("typstPdf"));
+  QVERIFY(pane);
+  QSignalSpy zooms(&editor, &VTypstEditor::pdfZoomChanged);
+  const auto *meta = pane->metaObject();
+  QSignalSpy nativeZooms(
+      pane, meta->method(meta->indexOfSignal("zoomChanged(qreal,vte::VTypstEditor::PdfZoomMode)")));
+  QVERIFY(zooms.isValid());
+  QVERIFY(nativeZooms.isValid());
+  auto *document = editor.document();
+  QSignalSpy changes(document, &QTextDocument::contentsChange);
+  const auto source = document->toPlainText();
+  const bool modified = document->isModified();
+  const int undoSteps = document->availableUndoSteps();
+  QCOMPARE(editor.pdfPageCount(), 0);
+  QCOMPARE(editor.pdfZoom(), qreal(1.25));
+  QCOMPARE(editor.pdfZoomMode(), ZoomMode::Custom);
+  editor.setPdfZoom(1.25);
+  QCOMPARE(zooms.count(), 0);
+  editor.fitPdfWidth();
+  QCOMPARE(editor.pdfZoomMode(), ZoomMode::Width);
+  QCOMPARE(zooms.count(), 1);
+  editor.fitPdfWidth();
+  QCOMPARE(zooms.count(), 1);
+  editor.fitPdfPage();
+  QCOMPARE(editor.pdfZoomMode(), ZoomMode::Page);
+  QCOMPARE(zooms.count(), 2);
+  editor.fitPdfPage();
+  QCOMPARE(zooms.count(), 2);
+  editor.setPdfZoom(editor.pdfZoom());
+  QCOMPARE(editor.pdfZoomMode(), ZoomMode::Custom);
+  QCOMPARE(zooms.count(), 3);
+  QCOMPARE(zooms.at(0).at(0).toReal(), qreal(1.25));
+  QCOMPARE(zooms.at(0).at(1).value<ZoomMode>(), ZoomMode::Width);
+  QCOMPARE(zooms.at(1).at(0).toReal(), qreal(1.25));
+  QCOMPARE(zooms.at(1).at(1).value<ZoomMode>(), ZoomMode::Page);
+  QCOMPARE(zooms.at(2).at(0).toReal(), qreal(1.25));
+  QCOMPARE(zooms.at(2).at(1).value<ZoomMode>(), ZoomMode::Custom);
+  QCOMPARE(nativeZooms.count(), zooms.count());
+  for (int i = 0; i < zooms.count(); ++i)
+    QCOMPARE(nativeZooms.at(i), zooms.at(i));
+
+  editor.setPdfZoom(0.875);
+  QCOMPARE(zooms.count(), 4);
+  config->m_initialZoom = 7;
+  editor.setConfig(config);
+  QCOMPARE(editor.pdfZoom(), qreal(0.875));
+  QCOMPARE(editor.pdfZoomMode(), ZoomMode::Custom);
+  QCOMPARE(zooms.count(), 4);
+  editor.fitPdfWidth();
+  editor.setConfig(config);
+  editor.setMode(VTypstEditor::Mode::Read);
+  editor.setMode(VTypstEditor::Mode::Edit);
+  QCOMPARE(editor.pdfZoom(), qreal(0.875));
+  QCOMPARE(editor.pdfZoomMode(), ZoomMode::Width);
+  QCOMPARE(zooms.count(), 5);
+  QCOMPARE(document->toPlainText(), source);
+  QCOMPARE(document->isModified(), modified);
+  QCOMPARE(document->availableUndoSteps(), undoSteps);
+  QCOMPARE(textChangeCount(changes), 0);
+}
+
+void TestTypstEditor::pdfFitBeforePublication_data() {
+  QTest::addColumn<bool>("fitWidth");
+  QTest::newRow("width") << true;
+  QTest::newRow("page") << false;
+}
+
+void TestTypstEditor::pdfFitBeforePublication() {
+  QFETCH(bool, fitWidth);
+  using ZoomMode = VTypstEditor::PdfZoomMode;
+  const auto mode = fitWidth ? ZoomMode::Width : ZoomMode::Page;
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto source = shortSource(QStringLiteral("Restored preview camera."));
+  EditorFixture fixture(root.path(), source);
+  auto *pane = fixture.pane();
+  QVERIFY(pane);
+  const auto *meta = pane->metaObject();
+  QSignalSpy published(pane, meta->method(meta->indexOfSignal("snapshotPublished(quint64)")));
+  QSignalSpy zooms(&fixture.editor, &VTypstEditor::pdfZoomChanged);
+  QVERIFY(published.isValid());
+  QVERIFY(zooms.isValid());
+  auto *document = fixture.editor.document();
+  document->setModified(false);
+  const int undoSteps = document->availableUndoSteps();
+  QSignalSpy changes(document, &QTextDocument::contentsChange);
+  QCOMPARE(fixture.editor.pdfPageCount(), 0);
+  if (fitWidth)
+    fixture.editor.fitPdfWidth();
+  else
+    fixture.editor.fitPdfPage();
+  QCOMPARE(fixture.editor.pdfZoomMode(), mode);
+  QCOMPARE(zooms.count(), 1);
+  QCOMPARE(zooms.first().at(0).toReal(), qreal(1));
+  QCOMPARE(zooms.first().at(1).value<ZoomMode>(), mode);
+  auto config = QSharedPointer<TypstEditorConfig>::create(fixture.editor.getConfig());
+  config->m_initialZoom = 7;
+  fixture.editor.setConfig(config);
+  QCOMPARE(fixture.editor.pdfZoomMode(), mode);
+  QCOMPARE(fixture.editor.pdfZoom(), qreal(1));
+  QCOMPARE(zooms.count(), 1);
+  auto fittedZoom = [&]() {
+    const qreal dpiScale = qMax(qreal(1), qreal(pane->logicalDpiY())) / 72.0;
+    const qreal width = qMax(qreal(1), qreal(pane->viewport()->width()) - 32) / 240;
+    const qreal height = qMax(qreal(1), qreal(pane->viewport()->height()) - 32) / 160;
+    return (fitWidth ? width : qMin(width, height)) / dpiScale;
+  };
+  QVERIFY2(waitUntil([&]() { return published.count() == 1; }),
+           qPrintable(fixture.editor.compileMessage()));
+  QCOMPARE(fixture.editor.pdfZoomMode(), mode);
+  QVERIFY(qFuzzyCompare(fixture.editor.pdfZoom(), fittedZoom()));
+  QCOMPARE(zooms.count(), 2);
+  QCOMPARE(zooms.last().at(0).toReal(), fixture.editor.pdfZoom());
+  QCOMPARE(zooms.last().at(1).value<ZoomMode>(), mode);
+
+  const qreal initialZoom = fixture.editor.pdfZoom();
+  zooms.clear();
+  fixture.editor.resize(820, 520);
+  QVERIFY(waitUntil([&]() { return !zooms.isEmpty(); }));
+  QVERIFY(!qFuzzyCompare(fixture.editor.pdfZoom(), initialZoom));
+  QVERIFY(qFuzzyCompare(fixture.editor.pdfZoom(), fittedZoom()));
+  QCOMPARE(fixture.editor.pdfZoomMode(), mode);
+  QCOMPARE(zooms.last().at(0).toReal(), fixture.editor.pdfZoom());
+  QCOMPARE(zooms.last().at(1).value<ZoomMode>(), mode);
+  QTest::qWait(100);
+  zooms.clear();
+  fixture.editor.resize(820, 520);
+  fixture.editor.setConfig(config);
+  fixture.editor.retryCompilation();
+  QVERIFY2(waitUntil([&]() { return published.count() == 2; }),
+           qPrintable(fixture.editor.compileMessage()));
+  QCOMPARE(zooms.count(), 0);
+  QCOMPARE(fixture.editor.pdfZoomMode(), mode);
+  QVERIFY(qFuzzyCompare(fixture.editor.pdfZoom(), fittedZoom()));
+  fixture.editor.setMode(VTypstEditor::Mode::Edit);
+  fixture.editor.setLivePreviewEnabled(true);
+  fixture.editor.setMode(VTypstEditor::Mode::Read);
+  QCoreApplication::processEvents();
+  QCOMPARE(fixture.editor.pdfZoomMode(), mode);
+  QVERIFY(qFuzzyCompare(fixture.editor.pdfZoom(), fittedZoom()));
+  QCOMPARE(document->toPlainText(), source);
+  QVERIFY(!document->isModified());
+  QCOMPARE(document->availableUndoSteps(), undoSteps);
+  QCOMPARE(textChangeCount(changes), 0);
+}
+
+void TestTypstEditor::pdfZoomPublicationIsReentrant() {
+  using ZoomMode = VTypstEditor::PdfZoomMode;
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto source = QStringLiteral(
+      "#import \"size.typ\": width, height\n"
+      "#set page(width: width, height: height, margin: 16pt)\n"
+      "Camera publication remains reentrant.");
+  EditorFixture fixture(root.path(), source);
+  fixture.editor.setFileOverlay(QStringLiteral("size.typ"),
+                                QStringLiteral("#let width = 240pt\n#let height = 160pt"));
+  auto *pane = fixture.pane();
+  QVERIFY(pane);
+  const auto *meta = pane->metaObject();
+  QSignalSpy published(pane, meta->method(meta->indexOfSignal("snapshotPublished(quint64)")));
+  QVERIFY(published.isValid());
+  fixture.editor.fitPdfWidth();
+  QVERIFY2(waitUntil([&]() { return published.count() == 1; }),
+           qPrintable(fixture.editor.compileMessage()));
+  const qreal initialZoom = fixture.editor.pdfZoom();
+  auto *document = fixture.editor.document();
+  document->setModified(false);
+  const int undoSteps = document->availableUndoSteps();
+  QSignalSpy changes(document, &QTextDocument::contentsChange);
+  QSignalSpy zooms(&fixture.editor, &VTypstEditor::pdfZoomChanged);
+  bool reentered = false;
+  const auto connection = connect(
+      &fixture.editor, &VTypstEditor::pdfZoomChanged, &fixture.editor,
+      [&](qreal p_zoom, ZoomMode p_mode) {
+        if (reentered || p_mode != ZoomMode::Width)
+          return;
+        reentered = true;
+        QCOMPARE(published.count(), 2);
+        QCOMPARE(fixture.editor.pdfPageCount(), 1);
+        QCOMPARE(fixture.editor.pdfZoomMode(), p_mode);
+        QCOMPARE(fixture.editor.pdfZoom(), p_zoom);
+        QVERIFY(qFuzzyCompare(p_zoom, initialZoom / 2));
+        fixture.editor.setPdfZoom(1.125);
+        auto config = QSharedPointer<TypstEditorConfig>::create(fixture.editor.getConfig());
+        config->m_initialZoom = 7;
+        fixture.editor.setConfig(config);
+      });
+  fixture.editor.setFileOverlay(QStringLiteral("size.typ"),
+                                QStringLiteral("#let width = 480pt\n#let height = 320pt"));
+  QVERIFY2(waitUntil([&]() { return published.count() == 2; }),
+           qPrintable(fixture.editor.compileMessage()));
+  QVERIFY(reentered);
+  QCOMPARE(zooms.count(), 2);
+  QCOMPARE(zooms.first().at(1).value<ZoomMode>(), ZoomMode::Width);
+  QCOMPARE(zooms.last().at(1).value<ZoomMode>(), ZoomMode::Custom);
+  QCOMPARE(zooms.last().at(0).toReal(), qreal(1.125));
+  QTest::qWait(100);
+  QCOMPARE(fixture.editor.pdfZoom(), qreal(1.125));
+  QCOMPARE(fixture.editor.pdfZoomMode(), ZoomMode::Custom);
+  QCOMPARE(zooms.count(), 2);
+  QObject::disconnect(connection);
+  QCOMPARE(fixture.selectPage().trimmed(), QStringLiteral("Camera publication remains reentrant."));
+  QCOMPARE(document->toPlainText(), source);
+  QVERIFY(!document->isModified());
+  QCOMPARE(document->availableUndoSteps(), undoSteps);
+  QCOMPARE(textChangeCount(changes), 0);
+}
+
+void TestTypstEditor::pdfZoomWheelAndContextMenu() {
+  using ZoomMode = VTypstEditor::PdfZoomMode;
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto source = shortSource(QStringLiteral("Native camera gestures."));
+  EditorFixture fixture(root.path(), source);
+  auto *pane = fixture.pane();
+  QVERIFY(pane);
+  QVERIFY2(waitUntil([&]() { return fixture.editor.pdfPageCount() == 1; }),
+           qPrintable(fixture.editor.compileMessage()));
+  auto *document = fixture.editor.document();
+  document->setModified(false);
+  const int undoSteps = document->availableUndoSteps();
+  const int sourceZoom = fixture.editor.getTextEditor()->zoomDelta();
+  QSignalSpy changes(document, &QTextDocument::contentsChange);
+  QSignalSpy zooms(&fixture.editor, &VTypstEditor::pdfZoomChanged);
+  fixture.editor.fitPdfPage();
+  const qreal fitted = fixture.editor.pdfZoom();
+  zooms.clear();
+  auto *viewport = pane->viewport();
+  const QPoint center = viewport->rect().center();
+  auto wheel = [&](int p_delta, Qt::KeyboardModifiers p_modifiers) {
+    QWheelEvent event(QPointF(center), QPointF(viewport->mapToGlobal(center)), QPoint(),
+                      QPoint(0, p_delta), Qt::NoButton, p_modifiers, Qt::NoScrollPhase, false);
+    QCoreApplication::sendEvent(viewport, &event);
+  };
+  wheel(120, Qt::ControlModifier);
+  QCOMPARE(fixture.editor.pdfZoomMode(), ZoomMode::Custom);
+  QVERIFY(qFuzzyCompare(fixture.editor.pdfZoom(), fitted * 1.2));
+  QCOMPARE(zooms.count(), 1);
+  QCOMPARE(zooms.last().at(1).value<ZoomMode>(), ZoomMode::Custom);
+  QCOMPARE(zooms.last().at(0).toReal(), fixture.editor.pdfZoom());
+  wheel(0, Qt::ControlModifier);
+  wheel(-120, Qt::NoModifier);
+  QCOMPARE(zooms.count(), 1);
+  QCOMPARE(fixture.editor.getTextEditor()->zoomDelta(), sourceZoom);
+
+  bool triggered = false;
+  QTimer::singleShot(0, pane, [&]() {
+    auto *menu = pane->findChild<QMenu *>();
+    if (!menu)
+      return;
+    const auto label = QCoreApplication::translate(pane->metaObject()->className(), "Fit width");
+    for (auto *action : menu->actions()) {
+      if (action->text() == label) {
+        triggered = true;
+        action->trigger();
+        break;
+      }
+    }
+    menu->close();
+  });
+  QContextMenuEvent contextMenu(QContextMenuEvent::Mouse, center, viewport->mapToGlobal(center));
+  QCoreApplication::sendEvent(viewport, &contextMenu);
+  QVERIFY(triggered);
+  QCOMPARE(fixture.editor.pdfZoomMode(), ZoomMode::Width);
+  QCOMPARE(zooms.count(), 2);
+  QCOMPARE(zooms.last().at(1).value<ZoomMode>(), ZoomMode::Width);
+  QCOMPARE(zooms.last().at(0).toReal(), fixture.editor.pdfZoom());
+
+  // Both fits are width-limited here: mode changes must still notify.
+  fixture.editor.resize(600, 900);
+  QCoreApplication::processEvents();
+  const qreal widthZoom = fixture.editor.pdfZoom();
+  zooms.clear();
+  fixture.editor.fitPdfPage();
+  QCOMPARE(fixture.editor.pdfZoom(), widthZoom);
+  QCOMPARE(fixture.editor.pdfZoomMode(), ZoomMode::Page);
+  QCOMPARE(zooms.count(), 1);
+  fixture.editor.setPdfZoom(widthZoom);
+  QCOMPARE(fixture.editor.pdfZoomMode(), ZoomMode::Custom);
+  QCOMPARE(zooms.count(), 2);
+  fixture.editor.setPdfZoom(widthZoom);
+  QCOMPARE(zooms.count(), 2);
+  fixture.editor.setMode(VTypstEditor::Mode::Edit);
+  fixture.editor.setLivePreviewEnabled(true);
+  fixture.editor.getTextEditor()->zoom(sourceZoom + 1);
+  fixture.editor.setMode(VTypstEditor::Mode::Read);
+  QCoreApplication::processEvents();
+  QCOMPARE(fixture.editor.pdfZoom(), widthZoom);
+  QCOMPARE(fixture.editor.pdfZoomMode(), ZoomMode::Custom);
+  QCOMPARE(zooms.count(), 2);
+  QCOMPARE(fixture.editor.getTextEditor()->zoomDelta(), sourceZoom + 1);
+  QCOMPARE(document->toPlainText(), source);
+  QVERIFY(!document->isModified());
+  QCOMPARE(document->availableUndoSteps(), undoSteps);
+  QCOMPARE(textChangeCount(changes), 0);
 }
 
 void TestTypstEditor::modesPreserveSourceUndoAndSelection() {
