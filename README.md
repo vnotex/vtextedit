@@ -57,7 +57,7 @@ outline. This also applies when the outline and heading share a page.
 The marker does not change either selection, source history or focus.
 Rapid cursor moves replace earlier requests. While the PDF is stale, highlighting waits
 for the current compilation to be published; leaving side-by-side editing cancels it.
-Read-mode PDF clicks reveal source in Edit without changing either preview preference.
+Read-mode PDF clicks keep the PDF-only presentation and do not navigate to source.
 **Show cursor in output** enables Live Preview when needed in Edit, without changing
 in-place preview; in Read it keeps the PDF-only presentation.
 
@@ -403,10 +403,11 @@ y down, with the original page order. Printer bleed is excluded from preview PDF
 geometry; this viewer is not a print-production export UI. Resizing/zooming does not
 change authored page settings or reflow the Typst document.
 
-Click an element in the PDF preview to move and focus the source cursor at its compiler-mapped
-position. In read mode, a successful active-file jump reveals the source in side-by-side mode.
+In Edit mode, click an element in the live PDF preview to move and focus the source cursor at
+its compiler-mapped position; Ctrl-click also navigates to source. In Read mode, neither gesture
+jumps to source or switches modes, including a mapping reply received after switching to Read.
 Dragging still selects PDF text, and ordinary clicks on links still follow their destinations.
-Ctrl-click remains available for explicit source navigation. In-place cards remain passive.
+In-place cards remain passive.
 
 `showOutputAtCursor()` and preview clicks use the displayed snapshot's compiler source mapping,
 which is not guaranteed to map every generated object to editable source. Stale-output source

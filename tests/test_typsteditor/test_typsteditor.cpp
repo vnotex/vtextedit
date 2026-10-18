@@ -1143,10 +1143,24 @@ void TestTypstEditor::previewClickNavigatesSource() {
   const int undoSteps = document->availableUndoSteps();
   const int start = source.indexOf(target);
 
-  for (int step = 0; step < 3; ++step) {
-    const auto mode = step == 0 ? VTypstEditor::Mode::Edit : VTypstEditor::Mode::Read;
+  std::unique_ptr<QSignalSpy> sourceReplies;
+  for (auto *child : fixture.editor.findChildren<QObject *>()) {
+    const auto *meta = child->metaObject();
+    const int index = meta->indexOfSignal("sourceLocationReady(QString,int,int)");
+    if (index >= 0) {
+      sourceReplies = std::make_unique<QSignalSpy>(child, meta->method(index));
+      break;
+    }
+  }
+  QVERIFY(sourceReplies);
+  QVERIFY(sourceReplies->isValid());
+  QSignalSpy importedSource(&fixture.editor, &VTypstEditor::sourceLocationRequested);
+
+  for (int step = 0; step < 5; ++step) {
+    const auto mode = step == 1 || step == 2 ? VTypstEditor::Mode::Read
+                                           : VTypstEditor::Mode::Edit;
     fixture.editor.setMode(mode);
-    fixture.editor.setInplacePreviewEnabled(step == 2);
+    fixture.editor.setInplacePreviewEnabled(step >= 2);
     fixture.editor.setLivePreviewEnabled(step != 2);
     fixture.edit()->setTextCursor(QTextCursor(document));
     QTest::qWait(100); // Let the mode's viewport geometry settle before fitting.
@@ -1157,16 +1171,41 @@ void TestTypstEditor::previewClickNavigatesSource() {
     const QPoint click = (page.topLeft() + bounds.center() * (page.width() / pdf.size(1).width()))
                              .toPoint();
     QVERIFY(pane->viewport()->rect().contains(click));
+    sourceReplies->clear();
     QTest::mouseClick(pane->viewport(), Qt::LeftButton, Qt::NoModifier, click);
+    if (mode == VTypstEditor::Mode::Read || step == 4) {
+      if (step == 4) {
+        // Observe a real Edit-click reply only after Read has hidden the source.
+        QVERIFY(sourceReplies->isEmpty());
+        fixture.editor.setMode(VTypstEditor::Mode::Read);
+        QVERIFY(waitUntil([&]() { return !sourceReplies->isEmpty(); }));
+      } else {
+        QTest::mouseClick(pane->viewport(), Qt::LeftButton, Qt::ControlModifier, click);
+        QTest::qWait(200);
+        QVERIFY(sourceReplies->isEmpty());
+      }
+      QCOMPARE(fixture.editor.mode(), VTypstEditor::Mode::Read);
+      QVERIFY(!fixture.edit()->isVisible());
+      QVERIFY(pane->isVisible());
+      QCOMPARE(fixture.edit()->textCursor().position(), 0);
+      QCOMPARE(fixture.edit()->textCursor().anchor(), 0);
+      QVERIFY(importedSource.isEmpty());
+      QCOMPARE(fixture.editor.isInplacePreviewEnabled(), step >= 2);
+      QCOMPARE(fixture.editor.isLivePreviewEnabled(), step != 2);
+      QCOMPARE(document->toPlainText(), source);
+      QCOMPARE(document->availableUndoSteps(), undoSteps);
+      QVERIFY(!document->isModified());
+      continue;
+    }
     QVERIFY2(waitUntil([&]() {
       const auto cursor = fixture.edit()->textCursor();
       return cursor.position() >= start && cursor.position() <= start + target.size() &&
              fixture.edit()->hasFocus();
     }), qPrintable(fixture.editor.compileMessage()));
     QCOMPARE(fixture.editor.mode(), VTypstEditor::Mode::Edit);
-    QCOMPARE(fixture.editor.isInplacePreviewEnabled(), step == 2);
+    QCOMPARE(fixture.editor.isInplacePreviewEnabled(), step >= 2);
     QCOMPARE(fixture.editor.isLivePreviewEnabled(), step != 2);
-    QCOMPARE(pane->isVisible(), step != 2);
+    QVERIFY(pane->isVisible());
     QVERIFY(fixture.edit()->isVisible());
     QVERIFY(!fixture.edit()->textCursor().hasSelection());
     QVERIFY2(waitUntil([&]() {

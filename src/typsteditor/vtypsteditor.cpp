@@ -228,11 +228,18 @@ public:
                      &TypstPreviewHost::setPageImage);
     QObject::connect(bridge, &TypstCompilerBridge::rasterCancelled, host,
                      &TypstPreviewHost::cancelRaster);
-    QObject::connect(pane, &TypstPreviewPane::sourceLocationRequested, bridge,
-                     &TypstCompilerBridge::outputToSource);
+    QObject::connect(pane, &TypstPreviewPane::sourceLocationRequested, q,
+                     [this](quint64 p_snapshot, int p_page, const QPointF &p_point) {
+                       if (mode == Mode::Edit) {
+                         bridge->outputToSource(p_snapshot, p_page, p_point);
+                       }
+                     });
     QObject::connect(bridge, &TypstCompilerBridge::sourceLocationReady, q,
                      [this](const QString &p_file, int p_start, int p_end) {
-                       navigateSource(p_file, p_start, p_end);
+                       // A preview click may finish mapping after switching to Read.
+                       if (mode == Mode::Edit) {
+                         navigateSource(p_file, p_start, p_end);
+                       }
                      });
     QObject::connect(bridge, &TypstCompilerBridge::outputLocationReady, q,
                      [this](quint64 p_id, int p_page, const QPointF &p_point) {
