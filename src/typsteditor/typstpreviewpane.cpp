@@ -165,6 +165,7 @@ public:
       : q(p_q), m_maxPdfBytes(qMax(qint64(0), p_config.m_maxPdfBytes)),
         m_maxBytes(qMax(qint64(0), p_config.m_maxCacheBytes)),
         m_maxPixels(qMax(0, p_config.m_maxRasterPixels)),
+        m_background(p_config.m_pdfBackground),
         m_zoom(finiteCoordinate(p_config.m_initialZoom)
                    ? qBound(qreal(0.01), p_config.m_initialZoom, qreal(64))
                    : 1) {
@@ -1168,7 +1169,11 @@ public:
     }
     QPainter painter(q->viewport());
     painter.setRenderHint(QPainter::SmoothPixmapTransform);
-    painter.fillRect(q->viewport()->rect(), q->palette().brush(QPalette::Dark));
+    if (m_background.isValid()) {
+      painter.fillRect(q->viewport()->rect(), m_background);
+    } else {
+      painter.fillRect(q->viewport()->rect(), q->palette().brush(QPalette::Dark));
+    }
     if (m_displayed) {
       auto &slot = *m_displayed;
       const auto pages = visiblePages(slot.m_layout);
@@ -1272,6 +1277,7 @@ public:
   qint64 m_maxPdfBytes;
   qint64 m_maxBytes;
   qint64 m_maxPixels;
+  QColor m_background;
   std::unique_ptr<PdfSlot> m_displayed;
   std::unique_ptr<PdfSlot> m_pending;
   std::unique_ptr<PdfSlot> m_retiring;
@@ -1334,6 +1340,7 @@ void TypstPreviewPane::applyConfig(const TypstEditorConfig &p_config) {
   m_d->m_maxPdfBytes = qMax(qint64(0), p_config.m_maxPdfBytes);
   m_d->m_maxBytes = qMax(qint64(0), p_config.m_maxCacheBytes);
   m_d->m_maxPixels = qMax(0, p_config.m_maxRasterPixels);
+  m_d->m_background = p_config.m_pdfBackground;
   if (m_d->m_queuedPdf.size() > m_d->m_maxPdfBytes) {
     m_d->m_queuedSnapshot.clear();
     m_d->m_queuedPdf.clear();

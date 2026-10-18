@@ -4,6 +4,7 @@
 #include <vtextedit/texteditorconfig.h>
 #include <vtextedit/vtextedit_export.h>
 
+#include <QColor>
 #include <QSharedPointer>
 #include <QStringList>
 
@@ -32,6 +33,8 @@ public:
   // sequential preview is not height-capped and scrolls with the source editor.
   qreal m_previewMaxHeight = 480;
   qreal m_initialZoom = 1.0;
+  // PDF canvas only, not page colors. Invalid uses the widget's QPalette::Dark brush.
+  QColor m_pdfBackground;
 };
 
 } // namespace vte
