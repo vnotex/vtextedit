@@ -361,6 +361,13 @@ Once written back as HTML a table **stays** HTML, even after every merge is spli
 is no in-editor route back to pipe syntax.
 
 
+## Typst PDF Context Menu
+
+Read mode keeps Copy, Select page text, Clear selection, Fit width and Fit page only.
+Update preview, manual zoom and search menu actions remain available in Edit/live preview;
+keyboard shortcuts and host PDF APIs are unchanged. The pane receives presentation mode
+before visibility changes, independently of source read-only state.
+
 ## Translation Catalogs
 
 `src/data/translations/` contains Simplified Chinese (`vtextedit_zh_CN`), Japanese

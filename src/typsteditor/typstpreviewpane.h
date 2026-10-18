@@ -21,6 +21,7 @@ public:
   explicit TypstPreviewPane(const TypstEditorConfig &p_config, QWidget *p_parent = nullptr);
   ~TypstPreviewPane() Q_DECL_OVERRIDE;
 
+  void setReadMode(bool p_readMode);
   void applyConfig(const TypstEditorConfig &p_config);
 
   void setCurrentGeneration(quint64 p_epoch, quint64 p_generation);

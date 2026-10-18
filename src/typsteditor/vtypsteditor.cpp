@@ -350,6 +350,7 @@ public:
         host->setEnabled(isInplacePreviewActive());
       }
       if (modeChanged) {
+        pane->setReadMode(mode == Mode::Read);
         source->setReadOnly(readOnly || mode == Mode::Read);
         source->setVisible(mode == Mode::Edit);
       }
