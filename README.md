@@ -24,6 +24,11 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
+On Windows, building either demo refreshes the adjacent `VTextEdit` DLL even when the
+executable does not need relinking. This prevents stale deployed DLLs from shadowing the
+current library. Qt runtime libraries and plugins still need the usual Qt Creator runtime
+environment or deployment.
+
 Set `CMAKE_PREFIX_PATH` to your Qt SDK if it is not discoverable. KSyntaxHighlighting is
 based on upstream **6.30.0** and remains the `VSyntaxHighlighting` CMake target. Its complete
 syntax catalog, including generated PHP/Twig/Jinja variants, and themes are embedded by

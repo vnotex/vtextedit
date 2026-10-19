@@ -22,8 +22,31 @@ if(VTEXTEDIT_ENABLE_TYPST)
     list(APPEND DEMO_TARGETS VTypstEditorDemo)
 endif()
 
+if(WIN32)
+    # Refresh the DLL even when the demo executable does not need relinking.
+    # One target serializes copies when both demos share a runtime directory.
+    set(DEMO_RUNTIME_COMMANDS)
+    foreach(DEMO_TARGET IN LISTS DEMO_TARGETS)
+        list(APPEND DEMO_RUNTIME_COMMANDS
+            COMMAND "${CMAKE_COMMAND}" -E make_directory
+                "$<TARGET_FILE_DIR:${DEMO_TARGET}>"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "$<TARGET_FILE:VTextEdit>"
+                "$<TARGET_FILE_DIR:${DEMO_TARGET}>"
+        )
+    endforeach()
+    add_custom_target(VTextEditDemoRuntime
+        ${DEMO_RUNTIME_COMMANDS}
+        DEPENDS VTextEdit
+        VERBATIM
+    )
+endif()
+
 set(SRC_FOLDER "../src")
 foreach(DEMO_TARGET IN LISTS DEMO_TARGETS)
+    if(WIN32)
+        add_dependencies(${DEMO_TARGET} VTextEditDemoRuntime)
+    endif()
     target_include_directories(${DEMO_TARGET} PRIVATE
         ${SRC_FOLDER}/include
     )

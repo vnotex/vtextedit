@@ -19,6 +19,9 @@
   generated public headers and correct static/shared exports.
 - Stage the configured Qt Core runtime beside the native Windows syntax indexer, fixing
   Qt Creator/MSVC Debug catalog generation when Qt's `bin` directory is absent from `PATH`.
+- Refresh the project DLL beside both Windows demo targets on every demo build, including
+  builds that do not relink the executable, so stale deployed libraries cannot mask native
+  code-block highlighting and other library updates.
 - Embed the current syntax catalog, including generated grammars, and remove the demo's
   obsolete XML copy. Custom syntax search paths and both public header include styles remain.
 - Preserve `Repository::themeFromFile()` as an eager snapshot, including rejection of
