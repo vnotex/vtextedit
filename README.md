@@ -27,14 +27,23 @@ ctest --test-dir build --output-on-failure
 Set `CMAKE_PREFIX_PATH` to your Qt SDK if it is not discoverable. KSyntaxHighlighting is
 based on upstream **6.30.0** and remains the `VSyntaxHighlighting` CMake target. Its complete
 syntax catalog, including generated PHP/Twig/Jinja variants, and themes are embedded by
-default; the demo no longer ships a separate XML catalog. Initialize the repository with
-`VTextEditor::addSyntaxCustomSearchPaths({})`, or pass host-specific search paths as before.
+default; the demo no longer ships a separate XML catalog. The shared repository initializes
+automatically on first use, so no setup call is needed for the embedded catalog. Register
+host-specific paths with `VTextEditor::addSyntaxCustomSearchPaths(paths)` before constructing
+editors; path registration retains its existing one-shot behavior.
 
 Theme names and file paths remain supported by `TextEditorConfig::m_syntaxTheme`.
 `Repository::themeFromFile()` loads a complete snapshot and rejects unreadable or malformed
 files. The existing `Default` theme name remains available; upstream `defaultTheme()` uses
-Breeze Light/Breeze Dark. The native code highlighter requires
-`MarkdownEditorConfig::m_webCodeBlockHighlighterEnabled = false`.
+Breeze Light/Breeze Dark. Markdown code blocks use native KSyntaxHighlighting by default
+(`MarkdownEditorConfig::m_webCodeBlockHighlighterEnabled = false`). Hosts supplying external
+highlighted HTML must explicitly set this flag to `true` before constructing the editor and
+provide the existing request/reply handler and token palette. Backend selection is made at
+construction; theme and palette updates remain available afterward.
+
+Native language tags retain filename-extension lookup: use `cpp`, `py`, `rs` and `js`,
+for example. The existing explicit aliases/exclusions are unchanged; `python` and `rust`
+are not mapped to `py` and `rs` automatically.
 
 Rebuild downstream consumers: the KF6 engine and corrected export boundary are not binary
 compatible with the old fork. VTextEdit's SOVERSION is now 9. Standalone dependency build

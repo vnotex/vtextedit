@@ -52,7 +52,9 @@ void KSyntaxHighlighterWrapper::Initialize(const QStringList &p_customDefinition
 }
 
 KSyntaxHighlighting::Repository *KSyntaxHighlighterWrapper::repository() {
-  Q_ASSERT(s_repository);
+  if (!s_repository) {
+    Initialize({});
+  }
   return s_repository;
 }
 

@@ -207,6 +207,8 @@ public:
 
   // Custom search paths for KSyntaxHighlighting Definition files.
   // Will search ./syntax and ./themes folder.
+  // Register before constructing editors: the shared repository initializes on first use.
+  // No explicit initialization is needed for the embedded catalog.
   static void addSyntaxCustomSearchPaths(const QStringList &p_paths);
 
 signals:

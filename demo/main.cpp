@@ -487,8 +487,6 @@ int main(int p_argc, char *p_argv[]) {
 
   setupSpellChecker();
 
-  VTextEditor::addSyntaxCustomSearchPaths({});
-
   if (app.arguments().contains(QStringLiteral("--richtext"))) {
     auto cleanup = setupRichTextEditor(&win);
 

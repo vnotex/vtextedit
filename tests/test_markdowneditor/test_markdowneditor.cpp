@@ -160,9 +160,6 @@ const QString c_highlightSource =
 const QColor c_staleHighlightColor(QStringLiteral("#ed00a8"));
 
 QSharedPointer<MarkdownEditorConfig> makeHighlightConfig(bool p_web = true) {
-  if (!p_web) {
-    VTextEditor::addSyntaxCustomSearchPaths({});
-  }
   auto config = makeConfig();
   config->m_webCodeBlockHighlighterEnabled = p_web;
   config->m_inplacePreviewSources = MarkdownEditorConfig::NoInplacePreview;
@@ -251,6 +248,46 @@ void waitForHighlight(Fixture &p_fixture) {
   QTRY_VERIFY_WITH_TIMEOUT(!completed.isEmpty(), 5000);
 }
 } // namespace
+
+void TestMarkdownEditor::testDefaultNativeHighlighting() {
+  QTemporaryDir dir;
+  QVERIFY(dir.isValid());
+  const QColor typeColor(QStringLiteral("#315cb7")), commentColor(QStringLiteral("#238151"));
+  const QString themePath = dir.filePath(QStringLiteral("native.theme"));
+  const QJsonObject json{
+      {QStringLiteral("metadata"),
+       QJsonObject{{QStringLiteral("name"), QStringLiteral("Default native test")},
+                   {QStringLiteral("revision"), 1}}},
+      {QStringLiteral("text-styles"),
+       QJsonObject{{QStringLiteral("Normal"),
+                    QJsonObject{{QStringLiteral("text-color"), QStringLiteral("#101010")}}},
+                   {QStringLiteral("DataType"),
+                    QJsonObject{{QStringLiteral("text-color"), typeColor.name()}}},
+                   {QStringLiteral("Comment"),
+                    QJsonObject{{QStringLiteral("text-color"), commentColor.name()}}}}}};
+  QFile file(themePath);
+  QVERIFY(file.open(QIODevice::WriteOnly));
+  const auto data = QJsonDocument(json).toJson();
+  QCOMPARE(file.write(data), qint64(data.size()));
+  file.close();
+
+  auto config = makeConfig();
+  config->m_textEditorConfig->m_syntaxTheme = themePath;
+  config->m_inplacePreviewSources = MarkdownEditorConfig::NoInplacePreview;
+  const QString source = QStringLiteral("```cpp\nint value = 1; /* comment\ncontinued */\n```\n");
+  // No repository setup or backend selection: exercise ordinary default construction.
+  Fixture fixture(source, 4, 0, config);
+  fixture.editor()->setSpellCheckEnabled(false);
+  const auto doc = fixture.editor()->document();
+  const bool modified = doc->isModified();
+  const int undoSteps = doc->availableUndoSteps(), redoSteps = doc->availableRedoSteps();
+  QTRY_COMPARE_WITH_TIMEOUT(highlightForeground(fixture, 1), typeColor, 5000);
+  QTRY_COMPARE_WITH_TIMEOUT(highlightForeground(fixture, 2), commentColor, 5000);
+  QCOMPARE(fixture.text(), source);
+  QCOMPARE(doc->isModified(), modified);
+  QCOMPARE(doc->availableUndoSteps(), undoSteps);
+  QCOMPARE(doc->availableRedoSteps(), redoSteps);
+}
 
 void TestMarkdownEditor::testHighlightPaletteRefreshPreservesState() {
   const QColor oldCode(QStringLiteral("#a32d21")), oldMath(QStringLiteral("#a16d13"));

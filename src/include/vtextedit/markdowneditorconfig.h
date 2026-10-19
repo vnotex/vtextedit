@@ -42,9 +42,9 @@ public:
   // Conceal only destinations longer than this many grapheme clusters.
   int m_concealLengthThreshold = 20;
 
-  // Whether use WebCodeBlockHighlighter or KSyntaxCodeBlockHighlighter for code
-  // block syntax highlight.
-  bool m_webCodeBlockHighlighterEnabled = true;
+  // Native KSyntaxHighlighting is the default for code blocks. Set true before
+  // constructing the editor to use the host-provided external/web highlighter.
+  bool m_webCodeBlockHighlighterEnabled = false;
 
   // Fold a foldable region as soon as it first gets a valid in-place preview,
   // painted or interactive. Only the initial state is decided, once per

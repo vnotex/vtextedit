@@ -8,6 +8,9 @@ namespace tests {
 class TestMarkdownEditor : public QObject {
   Q_OBJECT
 private slots:
+  // Keep first so a whole-suite run also covers cold repository initialization.
+  void testDefaultNativeHighlighting();
+
   void testShiftWheelScroll_data();
   void testShiftWheelScroll();
 

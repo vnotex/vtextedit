@@ -8,6 +8,10 @@
   requires C++20; public library headers require C++17. Qt 5 support is removed.
 - Replace the 2019 KSyntaxHighlighting engine with upstream 6.30.0. Rebuild downstream
   consumers against the new engine and export definitions; VTextEdit SOVERSION is 9.
+- Markdown code blocks now use native KSyntaxHighlighting by default. Hosts providing
+  external highlighted HTML must set `m_webCodeBlockHighlighterEnabled = true` before
+  constructing the editor. The embedded repository initializes automatically on first use;
+  register custom syntax/theme search paths before constructing editors.
 
 ### Features and compatibility
 
