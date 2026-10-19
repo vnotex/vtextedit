@@ -46,9 +46,26 @@ highlighted HTML must explicitly set this flag to `true` before constructing the
 provide the existing request/reply handler and token palette. Backend selection is made at
 construction; theme and palette updates remain available afterward.
 
-Native language tags retain filename-extension lookup: use `cpp`, `py`, `rs` and `js`,
-for example. The existing explicit aliases/exclusions are unchanged; `python` and `rust`
-are not mapped to `py` and `rs` automatically.
+Native language tags first use filename-extension lookup, preserving host extension
+overrides, then fall back to case-insensitive KSyntaxHighlighting language names and
+aliases. Both `py` / `python` and `rs` / `rust`, for example, select their bundled
+grammars. The existing explicit aliases/exclusions are unchanged.
+
+Diagram and typesetting code blocks support these tags:
+
+| Language | Native code-block tags |
+| --- | --- |
+| PlantUML | `plantuml`, `puml`, `pu` |
+| Mermaid | `mermaid`, `mmd` |
+| Flowchart.js | `flowchart`, `flow` |
+| Graphviz DOT | `graphviz`, `dot`, `gv` |
+| LaTeX | `latex`, `tex`, `ltx` |
+| Typst | `typst`, `typ` |
+| WaveDrom / WaveJSON | `wavedrom`, `wavejson` |
+
+`flowchart` means the Flowchart.js `node=>type` DSL, not Mermaid's flowchart syntax;
+use `mermaid` for the latter. These are native source-highlighting definitions, not
+new diagram renderers. Graphviz files also recognize the standard `.gv` extension.
 
 Rebuild downstream consumers: the KF6 engine and corrected export boundary are not binary
 compatible with the old fork. VTextEdit's SOVERSION is now 9. Standalone dependency build

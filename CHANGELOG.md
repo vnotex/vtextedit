@@ -24,6 +24,11 @@
   code-block highlighting and other library updates.
 - Embed the current syntax catalog, including generated grammars, and remove the demo's
   obsolete XML copy. Custom syntax search paths and both public header include styles remain.
+- Add native PlantUML, Flowchart.js (`flowchart` / `flow`) and WaveDrom / WaveJSON grammars.
+  Reuse the bundled Mermaid, Graphviz, LaTeX and Typst definitions; native language tags
+  now fall back to case-insensitive catalog names and aliases after extension lookup,
+  preserving host extension overrides. Mermaid flowcharts still use `mermaid` / `mmd`.
+  Recognize Graphviz's `.gv` extension alongside `.dot`; diagram rendering is unchanged.
 - Preserve `Repository::themeFromFile()` as an eager snapshot, including rejection of
   malformed files, and retain the named `Default` theme. Upstream default theme selection
   uses Breeze Light/Breeze Dark.

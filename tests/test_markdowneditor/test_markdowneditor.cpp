@@ -289,6 +289,126 @@ void TestMarkdownEditor::testDefaultNativeHighlighting() {
   QCOMPARE(doc->availableRedoSteps(), redoSteps);
 }
 
+void TestMarkdownEditor::testNativeSyntaxNameFallback() {
+  QTemporaryDir dir;
+  QVERIFY(dir.isValid());
+  const QString themePath = dir.filePath(QStringLiteral("names.theme"));
+  QFile themeFile(themePath);
+  QVERIFY(themeFile.open(QIODevice::WriteOnly));
+  const QByteArray theme = R"({"metadata":{"name":"Syntax names","revision":1},
+    "text-styles":{"Normal":{"text-color":"#101010"},
+                   "Keyword":{"text-color":"#315cb7"},
+                   "Comment":{"text-color":"#238151"}}})";
+  QCOMPARE(themeFile.write(theme), qint64(theme.size()));
+  themeFile.close();
+
+  auto config = makeHighlightConfig(false);
+  config->m_textEditorConfig->m_syntaxTheme = themePath;
+  // Typst has no *.typst extension. Uppercase *.C selects C++, not the language named C.
+  // The indented fence also exercises unindent before PlantUML's firstNonSpace comment.
+  const QString source = QStringLiteral(
+      "```typst\n// source\n```\n\n```C\nnamespace example {}\n```\n\n"
+      "  ```plantuml\n    ' actual comment\n  ```\n");
+  Fixture fixture(source, 11, 0, config);
+  fixture.editor()->setSpellCheckEnabled(false);
+  QTRY_COMPARE_WITH_TIMEOUT(highlightForeground(fixture, 1), QColor("#238151"), 5000);
+  QTRY_COMPARE_WITH_TIMEOUT(highlightForeground(fixture, 5), QColor("#315cb7"), 5000);
+  QTRY_COMPARE_WITH_TIMEOUT(highlightForeground(fixture, 9, 4), QColor("#238151"), 5000);
+  QCOMPARE(fixture.text(), source);
+}
+
+void TestMarkdownEditor::testDiagramSyntaxBoundaries_data() {
+  using ST = KSyntaxHighlighting::Theme;
+  QTest::addColumn<QString>("language");
+  QTest::addColumn<QString>("code");
+  QTest::addColumn<QList<int>>("lines");
+  QTest::addColumn<QStringList>("tokens");
+  QTest::addColumn<QList<int>>("styles");
+
+  QTest::newRow("plantuml-comments-and-strings")
+      << QStringLiteral("plantuml")
+      << QStringLiteral("participant \"Alice \\\"Admin\\\"\" as Alice\n"
+                        "Alice <--> Bob : class isn't /' a comment\n"
+                        "  ' actual comment\n/' block\ncomment '/ Alice -> Bob : resumed")
+      << QList<int>{0, 0, 1, 1, 2, 3, 4, 4}
+      << QStringList{"participant", "Admin", "<-->", "class", "actual", "block",
+                     "comment", "Alice"}
+      << QList<int>{ST::Keyword, ST::String, ST::Operator, ST::String, ST::Comment,
+                    ST::Comment, ST::Comment, ST::Variable};
+  QTest::newRow("plantuml-multiline-prose")
+      << QStringLiteral("plantuml")
+      << QStringLiteral("note right of Widget\n' class /' ordinary note text\nend note\n"
+                        "title\nclass isn't /' a comment\nend title\nclass Other\n"
+                        ":class isn't /' a comment\nstill ordinary prose;\nstop")
+      << QList<int>{1, 2, 4, 5, 6, 7, 8, 9}
+      << QStringList{"class", "end", "class", "end", "class", "class", "ordinary", "stop"}
+      << QList<int>{ST::String, ST::Keyword, ST::String, ST::Keyword, ST::Keyword,
+                    ST::String, ST::String, ST::ControlFlow};
+  QTest::newRow("flowchart-label-to-statement")
+      << QStringLiteral("flowchart")
+      << QStringLiteral("cond=>condition: operation yes\nstill parallel prose\n"
+                        "next=>operation: Next\ncontinued label\n"
+                        "cond(true@linear, right)->next\n"
+                        "next=>end: Finished|approved:>https://example.org/a->b\n"
+                        "cond@>next({\"stroke\":\"red})@>\",\"stroke-width\":6})")
+      << QList<int>{0, 0, 1, 2, 3, 4, 4, 4, 5, 5, 6, 6}
+      << QStringList{"condition", "operation", "parallel", "operation", "continued",
+                     "true", "linear", "right", "approved", "https", "stroke", "red"}
+      << QList<int>{ST::DataType, ST::String, ST::String, ST::DataType, ST::String,
+                    ST::Keyword, ST::String, ST::Keyword, ST::Attribute, ST::String,
+                    ST::DataType, ST::String};
+  QTest::newRow("wavedrom-keys-comments-and-nesting")
+      << QStringLiteral("wavedrom")
+      << QStringLiteral("{ signal: [\n['group', {name: 'clk', wave: \"p...\", phase: -0.5,}],\n"
+                        "], /* retained\ncomment */ \"config\": {hscale: 2, enabled: true,},\n"
+                        "head: {text: \"https://host/*literal*/ \\\"title\\\"\"},\n// line comment\n}")
+      << QList<int>{0, 1, 1, 1, 1, 2, 3, 3, 3, 3, 4, 5}
+      << QStringList{"signal", "group", "name", "p...", "-0.5", "retained", "comment",
+                     "config", "hscale", "true", "/*literal*/", "line comment"}
+      << QList<int>{ST::DataType, ST::String, ST::DataType, ST::String, ST::Float,
+                    ST::Comment, ST::Comment, ST::DataType, ST::DataType, ST::Constant,
+                    ST::String, ST::Comment};
+  QTest::newRow("wavedrom-unfinished-string-recovery")
+      << QStringLiteral("wavedrom")
+      << QStringLiteral("{name: 'unfinished\n, wave: \"p...\",\ntext: 'continued\\\n"
+                        "// literal',\nperiod: 2}")
+      << QList<int>{0, 1, 1, 3, 4}
+      << QStringList{"unfinished", "wave", "p...", "// literal", "period"}
+      << QList<int>{ST::String, ST::DataType, ST::String, ST::String, ST::DataType};
+}
+
+void TestMarkdownEditor::testDiagramSyntaxBoundaries() {
+  QFETCH(QString, language);
+  QFETCH(QString, code);
+  QFETCH(QList<int>, lines);
+  QFETCH(QStringList, tokens);
+  QFETCH(QList<int>, styles);
+  KSyntaxHighlighting::Repository repository;
+  const auto theme = repository.theme(QStringLiteral("Default"));
+  QVERIFY(theme.isValid());
+  auto config = makeHighlightConfig(false);
+  config->m_textEditorConfig->m_syntaxTheme = QStringLiteral("Default");
+  const QString source = QStringLiteral("```%1\n%2\n```\n").arg(language, code);
+  Fixture fixture(source, -1, 0, config);
+  fixture.editor()->setSpellCheckEnabled(false);
+  const auto doc = fixture.editor()->document();
+  const bool modified = doc->isModified();
+  const int undoSteps = doc->availableUndoSteps(), redoSteps = doc->availableRedoSteps();
+  const auto sourceLines = code.split(QLatin1Char('\n'));
+  for (int i = 0; i < tokens.size(); ++i) {
+    const int column = sourceLines.at(lines.at(i)).indexOf(tokens.at(i));
+    QVERIFY(column >= 0);
+    const QColor expected = QColor::fromRgb(
+        theme.textColor(static_cast<KSyntaxHighlighting::Theme::TextStyle>(styles.at(i))));
+    QTRY_COMPARE_WITH_TIMEOUT(highlightForeground(fixture, lines.at(i) + 1, column), expected,
+                             5000);
+  }
+  QCOMPARE(fixture.text(), source);
+  QCOMPARE(doc->isModified(), modified);
+  QCOMPARE(doc->availableUndoSteps(), undoSteps);
+  QCOMPARE(doc->availableRedoSteps(), redoSteps);
+}
+
 void TestMarkdownEditor::testHighlightPaletteRefreshPreservesState() {
   const QColor oldCode(QStringLiteral("#a32d21")), oldMath(QStringLiteral("#a16d13"));
   const QColor newCode(QStringLiteral("#238151")), newMath(QStringLiteral("#315cb7"));

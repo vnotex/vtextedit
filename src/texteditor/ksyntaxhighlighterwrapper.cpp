@@ -20,7 +20,9 @@ KSyntaxHighlighterWrapper::definitionForSyntax(const QString &p_syntax) {
   if (p_syntax.isEmpty()) {
     return definitionForFileName(QStringLiteral("vnotex"));
   } else {
-    return definitionForFileName(QStringLiteral("vnotex.") + p_syntax);
+    // Preserve extension-based overrides before resolving language names and aliases.
+    const auto definition = definitionForFileName(QStringLiteral("vnotex.") + p_syntax);
+    return definition.isValid() ? definition : repository()->definitionForName(p_syntax);
   }
 }
 

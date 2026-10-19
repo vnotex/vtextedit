@@ -10,6 +10,9 @@ class TestMarkdownEditor : public QObject {
 private slots:
   // Keep first so a whole-suite run also covers cold repository initialization.
   void testDefaultNativeHighlighting();
+  void testNativeSyntaxNameFallback();
+  void testDiagramSyntaxBoundaries_data();
+  void testDiagramSyntaxBoundaries();
 
   void testShiftWheelScroll_data();
   void testShiftWheelScroll();
