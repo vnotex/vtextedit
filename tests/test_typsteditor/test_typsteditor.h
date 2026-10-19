@@ -82,7 +82,7 @@ private slots:
   void supersededCompileCannotPublish();
   void syntaxHighlightsSurviveRehighlightAndThemeChanges();
   void syntaxHighlightsFollowEditsAndErrors();
-  void rawCodeHighlightsUseEditorTheme();
+  void rawCodeHighlightsUseSyntaxTheme();
   void rawCodeHighlightsFollowEditsAndErrors();
   void lazyHighlightsFollowPendingEdits();
   void lazyPreviewsFollowPendingEdits();

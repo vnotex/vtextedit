@@ -10,11 +10,14 @@
 
 ### Features
 
-- Highlight tagged Typst raw/code blocks in edit mode with the editor's Typst palette,
-  reusing the preview engine's built-in language grammars. Supports multiline and inline
-  snippets, including Typst markup/code/math, without evaluating document customizations.
-  Tokens retain authored source positions and remain available when evaluation fails;
-  theme changes and zoom preserve source, selection and undo history.
+- Highlight tagged Typst raw/code blocks with the selected syntax-highlighting theme,
+  retaining the editor's raw font, size and background. Preserve grammar/CST distinctions
+  for control flow, imports, types, built-ins, constants, literals and documentation;
+  syntax-theme decorations include explicit false resets. Reuse the preview engine's
+  built-in grammars for multiline/inline snippets, including Typst markup/code/math,
+  without evaluating document customizations. Tokens retain authored source positions
+  and remain available when evaluation fails; theme changes and zoom preserve source,
+  selection and undo history. Ordinary Typst styling still uses the editor theme.
 - Add optional `TypstCompiler`: compile in-memory Typst text asynchronously to per-page
   vector SVG or native RGBA `QImage` bitmaps without an editor widget. Supports bitmap
   scaling, project imports and fonts, diagnostics, bounded all-or-nothing results and
@@ -30,9 +33,10 @@
   are opt-in; enabled distributions must deploy the helper, Qt Pdf and dependency notices.
 - Add `typst-syntax-styles` to vtextedit themes: Typst parser kinds accept literal formats
   or `@markdown-syntax-styles:NAME` references to the same theme. Typst source highlighting
-  now uses `m_theme`, not `m_syntaxTheme`; custom themes must add the new section to style
-  Typst syntax. Explicit font sizes follow zoom, and explicit false decoration flags are
-  honored by theme format conversion. Compiled output and KSyntax code highlighting are unchanged.
+  uses `m_theme` for ordinary document tokens; custom editor themes must add the new
+  section to style those tokens. Explicit font sizes follow zoom, and explicit false
+  decoration flags are honored by theme format conversion. Compiled output and Markdown
+  KSyntax code highlighting are unchanged.
 - Add the dedicated `VTypstEditorDemo` target, starting Typst without flags. The existing
   `VTextEditDemo --typst` entry remains available; both accept optional `--typst-file`.
 - Add `VTypstEditor::getHeadings()`, `headingsUpdated` and `TypstHeadingInfo`, following

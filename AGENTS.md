@@ -371,17 +371,33 @@ Never evaluate document-defined languages/themes/syntaxes, scan fences separatel
 recursively highlight nested raw examples. Unknown/untagged/empty raw stays ordinary Raw;
 unfinished fences retain the official parser's Error styling.
 
-`parse_metadata` emits outer Raw before `raw.<tag>` tokens, through the existing UTF-16
+`parse_metadata` emits outer Raw before `raw.<kind>` tokens, through the existing UTF-16
 wire mapping and metadata budget. Parsed and compiled replies share the ranges even when
 evaluation fails; export's `previewMetadata: false` still bypasses them. Parser/scope or
 resource errors reject metadata rather than publishing a partial result.
 
-`TypstHighlighter::refreshTheme` caches Text + authored raw + authored token formats.
-Token properties override raw only when explicitly authored, including false decorations;
-size uses token, then raw, then inherited editor font, applying zoom once. `raw.<tag>` is
-internal, not a new theme key. Theme/zoom refresh and asynchronous range mapping must not
-change source, selection, dirty state or undo history. Coverage: inline Rust extractor tests,
-`raw_highlights_survive_evaluation_errors`, and the two `rawCodeHighlights*` editor slots.
+`RawKind` retains native Tag fallbacks plus control flow, import, data type, built-in,
+constant, decimal/base/float, character, verbatim/special string, documentation, attribute
+and preprocessor categories. Foreign classification uses preinterned scope prefixes,
+innermost first; only precise literal boundary scopes consult enclosing literal families.
+Do not infer built-ins/constants/types from names: Rust's ambiguous `storage.type.rust`
+remains Keyword. Typst snippets refine official CST tags (including associated Hash tokens)
+without changing ordinary document tags. Generic/unit-bearing `raw.number` remains distinct
+from `raw.decval` on the wire, but both use KSyntax's DecVal palette slot.
+
+`TypstHighlighter::refreshTheme` keeps ordinary Text + authored Typst formats. Embedded
+formats instead start with Text + authored raw, then use `TextEditorConfig::m_syntaxTheme`
+through the initialized shared KSyntax repository (file path or name; invalid/empty selects
+the default). Cache every supported wire kind even without a `typst-syntax-styles` section.
+Token foreground falls back to Normal, then raw; absent token background retains raw.
+Resolved syntax-theme booleans explicitly replace all four decorations, with semantic
+bold/italic/underline for markup. Never apply syntax editor/selection colors to the block.
+Raw alone owns embedded font/size, with positive size zoomed once and clamped to 2; otherwise
+size inherits the editor font. Ordinary token fonts/sizes never enter embedded formats.
+Theme/zoom refresh and asynchronous range mapping must not change source, selection, dirty
+state or undo history. Coverage: inline Rust extractor tests,
+`raw_highlights_survive_evaluation_errors`, `rawCodeHighlightsUseSyntaxTheme` and
+`rawCodeHighlightsFollowEditsAndErrors`.
 
 ## Typst PDF Camera State
 

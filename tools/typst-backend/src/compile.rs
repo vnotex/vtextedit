@@ -570,7 +570,7 @@ mod tests {
     #[test]
     fn raw_highlights_survive_evaluation_errors() {
         let (mut session, config) = configured();
-        let text = "é😀\n```rust\nfn main() {\n  let s = \"é😀\";\n  // comment\n}\n```\n#missing_name";
+        let text = "é😀\n```rust\n/// documentation\nfn main() {\n  let s = \"é😀\";\n  // comment\n  if true { let n = 42; let hex = 0xff; let f = 1.5; }\n}\n```\n#missing_name";
         let mut responses = Vec::new();
         session.handle(&compile_request(&config, text, json!([]), 1), &mut |v, _| {
             responses.push(v);
@@ -587,7 +587,10 @@ mod tests {
         let highlights = responses[0]["highlights"].as_array().unwrap();
         let outer = highlights.iter().position(|h| h["kind"] == "Raw").unwrap();
         for (token, kind) in [("fn", "raw.keyword"), ("let", "raw.keyword"),
-            ("\"é😀\"", "raw.string"), ("// comment", "raw.comment")] {
+            ("\"é😀\"", "raw.string"), ("// comment", "raw.comment"),
+            ("/// documentation", "raw.documentation"), ("if", "raw.controlflow"),
+            ("true", "raw.constant"), ("42", "raw.decval"), ("0xff", "raw.basen"),
+            ("1.5", "raw.float")] {
             let byte = text.find(token).unwrap();
             let start = text[..byte].encode_utf16().count();
             let end = start + token.encode_utf16().count();

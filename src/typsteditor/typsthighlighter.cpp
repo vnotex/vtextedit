@@ -1,11 +1,16 @@
 #include "typsthighlighter.h"
 
+#include <Repository>
+#include <Theme>
+
 #include <QTextBlock>
 #include <QTextDocument>
 #include <algorithm>
 
 #include <spellcheck/spellcheckhighlighthelper.h>
 #include <texteditor/blockspellcheckdata.h>
+#include <texteditor/ksyntaxhighlighterwrapper.h>
+#include <utils/utils.h>
 #include <vtextedit/textblockdata.h>
 #include <vtextedit/texteditorconfig.h>
 #include <vtextedit/theme.h>
@@ -126,6 +131,11 @@ void TypstHighlighter::refreshTheme(const TextEditorConfig &p_config, int p_zoom
     rawBase.merge(raw.value().toTextCharFormat());
     rawSize = raw.value().m_fontPointSize;
   }
+  if (rawSize > 0) {
+    rawBase.setFontPointSize(qMax(2, rawSize + p_zoomDelta));
+  } else {
+    rawBase.clearProperty(QTextFormat::FontPointSize);
+  }
   for (auto it = styles.constBegin(); it != styles.constEnd(); ++it) {
     const auto authored = it.value().toTextCharFormat();
     QTextCharFormat format = base;
@@ -134,15 +144,83 @@ void TypstHighlighter::refreshTheme(const TextEditorConfig &p_config, int p_zoom
       format.setFontPointSize(qMax(2, it.value().m_fontPointSize + p_zoomDelta));
     }
     m_formats.insert(it.key(), format);
+  }
 
-    // Merge authored properties, not the ordinary format's inherited Text values.
-    QTextCharFormat rawFormat = rawBase;
-    rawFormat.merge(authored);
-    const int size = it.value().m_fontPointSize > 0 ? it.value().m_fontPointSize : rawSize;
-    if (size > 0) {
-      rawFormat.setFontPointSize(qMax(2, size + p_zoomDelta));
+  KSyntaxHighlighterWrapper::Initialize({});
+  auto *repository = KSyntaxHighlighterWrapper::repository();
+  KSyntaxHighlighting::Theme syntaxTheme;
+  if (!p_config.m_syntaxTheme.isEmpty()) {
+    syntaxTheme = Utils::isFilePath(p_config.m_syntaxTheme)
+                      ? repository->themeFromFile(p_config.m_syntaxTheme)
+                      : repository->theme(p_config.m_syntaxTheme);
+  }
+  if (!syntaxTheme.isValid()) {
+    syntaxTheme = repository->defaultTheme();
+  }
+
+  using SyntaxTheme = KSyntaxHighlighting::Theme;
+  const struct {
+    QString m_kind;
+    SyntaxTheme::TextStyle m_style;
+    bool m_bold = false;
+    bool m_italic = false;
+    bool m_underline = false;
+  } tokenStyles[] = {
+      {QStringLiteral("raw.comment"), SyntaxTheme::Comment},
+      {QStringLiteral("raw.punctuation"), SyntaxTheme::Operator},
+      {QStringLiteral("raw.operator"), SyntaxTheme::Operator},
+      {QStringLiteral("raw.mathdelimiter"), SyntaxTheme::Operator},
+      {QStringLiteral("raw.mathoperator"), SyntaxTheme::Operator},
+      {QStringLiteral("raw.mathgroupingparens"), SyntaxTheme::Operator},
+      {QStringLiteral("raw.escape"), SyntaxTheme::SpecialChar},
+      {QStringLiteral("raw.keyword"), SyntaxTheme::Keyword},
+      {QStringLiteral("raw.number"), SyntaxTheme::DecVal},
+      {QStringLiteral("raw.string"), SyntaxTheme::String},
+      {QStringLiteral("raw.function"), SyntaxTheme::Function},
+      {QStringLiteral("raw.interpolated"), SyntaxTheme::Variable},
+      {QStringLiteral("raw.label"), SyntaxTheme::Variable},
+      {QStringLiteral("raw.ref"), SyntaxTheme::Variable},
+      {QStringLiteral("raw.error"), SyntaxTheme::Error},
+      {QStringLiteral("raw.strong"), SyntaxTheme::Normal, true},
+      {QStringLiteral("raw.emph"), SyntaxTheme::Normal, false, true},
+      {QStringLiteral("raw.heading"), SyntaxTheme::Function, true},
+      {QStringLiteral("raw.link"), SyntaxTheme::Others, false, false, true},
+      {QStringLiteral("raw.raw"), SyntaxTheme::Information},
+      {QStringLiteral("raw.listmarker"), SyntaxTheme::SpecialString},
+      {QStringLiteral("raw.listterm"), SyntaxTheme::Normal},
+      {QStringLiteral("raw.controlflow"), SyntaxTheme::ControlFlow},
+      {QStringLiteral("raw.import"), SyntaxTheme::Import},
+      {QStringLiteral("raw.datatype"), SyntaxTheme::DataType},
+      {QStringLiteral("raw.builtin"), SyntaxTheme::BuiltIn},
+      {QStringLiteral("raw.constant"), SyntaxTheme::Constant},
+      {QStringLiteral("raw.decval"), SyntaxTheme::DecVal},
+      {QStringLiteral("raw.basen"), SyntaxTheme::BaseN},
+      {QStringLiteral("raw.float"), SyntaxTheme::Float},
+      {QStringLiteral("raw.char"), SyntaxTheme::Char},
+      {QStringLiteral("raw.verbatimstring"), SyntaxTheme::VerbatimString},
+      {QStringLiteral("raw.specialstring"), SyntaxTheme::SpecialString},
+      {QStringLiteral("raw.documentation"), SyntaxTheme::Documentation},
+      {QStringLiteral("raw.attribute"), SyntaxTheme::Attribute},
+      {QStringLiteral("raw.preprocessor"), SyntaxTheme::Preprocessor},
+  };
+  const auto normalColor = syntaxTheme.textColor(SyntaxTheme::Normal);
+  for (const auto &token : tokenStyles) {
+    QTextCharFormat format = rawBase;
+    const auto foreground = syntaxTheme.textColor(token.m_style);
+    if (foreground || normalColor) {
+      format.setForeground(QColor::fromRgba(foreground ? foreground : normalColor));
     }
-    m_formats.insert(QStringLiteral("raw.") + it.key(), rawFormat);
+    const auto background = syntaxTheme.backgroundColor(token.m_style);
+    if (background) {
+      format.setBackground(QColor::fromRgba(background));
+    }
+    // Resolved syntax-theme booleans own decorations, including explicit false resets.
+    format.setFontWeight(syntaxTheme.isBold(token.m_style) || token.m_bold ? QFont::Bold
+                                                                           : QFont::Normal);
+    format.setFontItalic(syntaxTheme.isItalic(token.m_style) || token.m_italic);
+    format.setFontUnderline(syntaxTheme.isUnderline(token.m_style) || token.m_underline);
+    format.setFontStrikeOut(syntaxTheme.isStrikeThrough(token.m_style));
+    m_formats.insert(token.m_kind, format);
   }
   m_refreshTimer.start(0);
 }
