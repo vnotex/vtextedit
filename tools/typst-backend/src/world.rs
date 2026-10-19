@@ -9,10 +9,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use typst::diag::{FileError, FileResult};
-use typst::foundations::{Bytes, Datetime, Duration};
+use typst::foundations::{Bytes, Datetime, Duration, Smart};
+use typst::layout::PageElem;
 use typst::syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot};
-use typst::text::{Font, FontBook};
+use typst::text::{Font, FontBook, TextElem};
 use typst::utils::LazyHash;
+use typst::visualize::{Color, Paint};
 use typst::{Library, LibraryExt, World};
 use typst_kit::datetime::Time;
 use typst_kit::downloader::{Downloader, SystemDownloader};
@@ -29,6 +31,8 @@ pub struct Config {
     pub max_pdf_bytes: usize,
     pub max_raster_pixels: usize,
     pub max_cache_bytes: usize,
+    pub preview_background: Option<[u8; 4]>,
+    pub preview_foreground: Option<[u8; 4]>,
 }
 
 impl Default for Config {
@@ -38,11 +42,25 @@ impl Default for Config {
             font_paths: vec![], package_paths: vec![], allow_downloads: false,
             max_pdf_bytes: 64 * 1024 * 1024, max_raster_pixels: 16 * 1024 * 1024,
             max_cache_bytes: 256 * 1024 * 1024,
+            preview_background: None, preview_foreground: None,
         }
     }
 }
 
 impl Config {
+    fn library(&self) -> Arc<LazyHash<Library>> {
+        let mut library = Library::default();
+        // Library defaults sit below authored set/show rules without changing source spans.
+        if let Some([r, g, b, a]) = self.preview_background {
+            library.styles.set(PageElem::fill,
+                Smart::Custom(Some(Paint::Solid(Color::from_u8(r, g, b, a)))));
+        }
+        if let Some([r, g, b, a]) = self.preview_foreground {
+            library.styles.set(TextElem::fill, Paint::Solid(Color::from_u8(r, g, b, a)));
+        }
+        Arc::new(LazyHash::new(library))
+    }
+
     pub fn validate(mut self) -> Result<Self, String> {
         if !self.project_root.is_absolute() { return Err("projectRoot must be absolute".into()); }
         self.project_root = fs::canonicalize(&self.project_root)
@@ -150,8 +168,9 @@ impl ProjectWorld {
         let packages = SystemPackages::new(PolicyDownloader::new(config.allow_downloads, config.max_cache_bytes));
         let package_roots = package_roots(&config, &packages);
         let main = project_id(&config.main_file)?;
+        let library = config.library();
         let mut world = Self {
-            config, library: Arc::new(LazyHash::new(Library::default())),
+            config, library,
             fonts: Fonts::bundled(), font_dependencies: BTreeMap::new(), main,
             overlays: HashMap::new(), reads: Mutex::default(), packages, package_roots,
             time: Arc::new(Time::system()),
@@ -180,6 +199,11 @@ impl ProjectWorld {
         self.packages = SystemPackages::new(PolicyDownloader::new(config.allow_downloads, config.max_cache_bytes));
         self.package_roots = package_roots(&config, &self.packages);
         self.main = project_id(&config.main_file)?;
+        if self.config.preview_background != config.preview_background
+            || self.config.preview_foreground != config.preview_foreground
+        {
+            self.library = config.library();
+        }
         self.config = config;
         self.overlays = next;
         let reads = self.reads.get_mut().unwrap();

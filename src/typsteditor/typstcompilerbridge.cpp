@@ -171,10 +171,9 @@ TypstSnapshot snapshotFromJson(const QJsonObject &p_header) {
         !object.value(QStringLiteral("file")).isString() || level < 1 ||
         !object.value(QStringLiteral("start")).isDouble() ||
         !object.value(QStringLiteral("end")).isDouble() ||
-        (range.m_file.isEmpty()
-             ? (object.value(QStringLiteral("start")).toDouble() != -1 ||
-                object.value(QStringLiteral("end")).toDouble() != -1)
-             : !range.isValid())) {
+        (range.m_file.isEmpty() ? (object.value(QStringLiteral("start")).toDouble() != -1 ||
+                                   object.value(QStringLiteral("end")).toDouble() != -1)
+                                : !range.isValid())) {
       return {};
     }
     TypstHeadingInfo heading;
@@ -299,7 +298,8 @@ void TypstCompilerBridge::stop(bool p_failure) {
   m_prefixRead = m_headerRead = m_payloadRead = 0;
   m_header.clear();
   m_payload.clear();
-  const auto complete = [this, p_failure, epoch, generation, snapshot](const QJsonObject &p_request) {
+  const auto complete = [this, p_failure, epoch, generation,
+                         snapshot](const QJsonObject &p_request) {
     const bool current = identifier(p_request.value(QStringLiteral("epoch"))) == epoch &&
                          identifier(p_request.value(QStringLiteral("generation"))) == generation &&
                          snapshot &&
@@ -333,14 +333,26 @@ void TypstCompilerBridge::start() {
 }
 
 QJsonObject TypstCompilerBridge::configuration() const {
-  return {{QStringLiteral("projectRoot"), QDir(m_config.m_projectRoot).absolutePath()},
-          {QStringLiteral("mainFile"), m_config.m_mainFile},
-          {QStringLiteral("fontPaths"), QJsonArray::fromStringList(m_config.m_fontPaths)},
-          {QStringLiteral("packagePaths"), QJsonArray::fromStringList(m_config.m_packagePaths)},
-          {QStringLiteral("allowDownloads"), m_config.m_allowDownloads},
-          {QStringLiteral("maxPdfBytes"), static_cast<double>(m_config.m_maxPdfBytes)},
-          {QStringLiteral("maxRasterPixels"), m_config.m_maxRasterPixels},
-          {QStringLiteral("maxCacheBytes"), static_cast<double>(m_config.m_maxCacheBytes)}};
+  QJsonObject config{
+      {QStringLiteral("projectRoot"), QDir(m_config.m_projectRoot).absolutePath()},
+      {QStringLiteral("mainFile"), m_config.m_mainFile},
+      {QStringLiteral("fontPaths"), QJsonArray::fromStringList(m_config.m_fontPaths)},
+      {QStringLiteral("packagePaths"), QJsonArray::fromStringList(m_config.m_packagePaths)},
+      {QStringLiteral("allowDownloads"), m_config.m_allowDownloads},
+      {QStringLiteral("maxPdfBytes"), static_cast<double>(m_config.m_maxPdfBytes)},
+      {QStringLiteral("maxRasterPixels"), m_config.m_maxRasterPixels},
+      {QStringLiteral("maxCacheBytes"), static_cast<double>(m_config.m_maxCacheBytes)}};
+  if (m_mode == Mode::Preview && m_config.m_enableThemeStyleInPreview) {
+    const auto addColor = [&config](const QString &p_key, const QColor &p_color) {
+      if (p_color.isValid()) {
+        config.insert(p_key,
+                      QJsonArray{p_color.red(), p_color.green(), p_color.blue(), p_color.alpha()});
+      }
+    };
+    addColor(QStringLiteral("previewBackground"), m_config.m_pdfBackground);
+    addColor(QStringLiteral("previewForeground"), m_config.m_previewForeground);
+  }
+  return config;
 }
 
 QJsonArray TypstCompilerBridge::retained(bool p_forCompile) const {
@@ -500,7 +512,7 @@ void TypstCompilerBridge::requestSvg(quint64 p_epoch, quint64 p_snapshot, int p_
 }
 
 void TypstCompilerBridge::sourceToOutput(const QString &p_file, int p_offset,
-                                        quint64 p_cursorRequest) {
+                                         quint64 p_cursorRequest) {
   if (m_latest && p_offset >= 0) {
     if (p_cursorRequest) {
       // Keep at most the newest queued cursor request, without dropping explicit navigation.
@@ -637,11 +649,12 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
   }
   if (operation == QStringLiteral("ready") && requested == QStringLiteral("initialize")) {
     const auto capabilities = p_header.value(QStringLiteral("capabilities")).toArray();
-    const auto requiredCapabilities = m_mode == Mode::Export
-                                          ? QStringList{QStringLiteral("svg"), QStringLiteral("raster")}
-                                          : QStringList{QStringLiteral("pdf"), QStringLiteral("raster"),
-                                                        QStringLiteral("navigation"), QStringLiteral("previews"),
-                                                        QStringLiteral("highlights"), QStringLiteral("headings")};
+    const auto requiredCapabilities =
+        m_mode == Mode::Export
+            ? QStringList{QStringLiteral("svg"), QStringLiteral("raster")}
+            : QStringList{QStringLiteral("pdf"),        QStringLiteral("raster"),
+                          QStringLiteral("navigation"), QStringLiteral("previews"),
+                          QStringLiteral("highlights"), QStringLiteral("headings")};
     for (const auto &required : requiredCapabilities) {
       if (!capabilities.contains(required)) {
         fail(tr("Typst helper is incompatible: missing %1.").arg(required));
@@ -654,7 +667,8 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
       updateDependencies(p_header.value(QStringLiteral("dependencies")).toArray());
       if (p_header.value(QStringLiteral("invalidated")).toBool()) {
         if (m_mode == Mode::Export) {
-          emit diagnosticsReady(diagnostics(p_header.value(QStringLiteral("diagnostics")).toArray()));
+          emit diagnosticsReady(
+              diagnostics(p_header.value(QStringLiteral("diagnostics")).toArray()));
           emit stateChanged(State::Error, tr("Typst dependencies changed during compilation."));
         } else {
           invalidate();

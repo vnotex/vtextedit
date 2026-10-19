@@ -1,8 +1,8 @@
 #include "test_typsteditor.h"
 
-#include <QAction>
 #include <QAbstractScrollArea>
 #include <QAbstractTextDocumentLayout>
+#include <QAction>
 #include <QApplication>
 #include <QBuffer>
 #include <QClipboard>
@@ -26,8 +26,8 @@
 #include <QScrollBar>
 #include <QSet>
 #include <QSignalSpy>
-#include <QSyntaxHighlighter>
 #include <QSvgRenderer>
+#include <QSyntaxHighlighter>
 #include <QTemporaryDir>
 #include <QTextBlock>
 #include <QTextCursor>
@@ -37,11 +37,11 @@
 #include <QWheelEvent>
 #include <QtEndian>
 
-#include <cmath>
 #include <algorithm>
+#include <cmath>
 #include <functional>
-#include <memory>
 #include <limits>
+#include <memory>
 
 #include <vtextedit/typstcompiler.h>
 #include <vtextedit/typsteditorconfig.h>
@@ -293,8 +293,8 @@ class EditorFixture {
 public:
   explicit EditorFixture(const QString &p_root, const QString &p_source,
                          VTypstEditor::Mode p_mode = VTypstEditor::Mode::Read,
-                         QSharedPointer<TypstEditorConfig> p_config = {},
-                         bool p_inplace = true, bool p_live = false)
+                         QSharedPointer<TypstEditorConfig> p_config = {}, bool p_inplace = true,
+                         bool p_live = false)
       : editor(p_config ? p_config : editorConfig(p_root),
                QSharedPointer<TextEditorParameters>::create()) {
     editor.getTextEditor()->setSpellCheckEnabled(false);
@@ -329,16 +329,15 @@ public:
 };
 
 QString sharpPdfSource() {
-  return QStringLiteral(
-      "#set page(width: 360pt, height: 900pt, margin: (x: 28pt, y: 96pt))\n"
-      "#set text(size: 12pt, fill: red)\n"
-      "Sharp text: affine office minimum integral.\n\n"
-      "Fractions and roots remain crisp at screen resolution.\n\n"
-      "$ (a^2 + b^2)/(1 + sqrt(1 + x^2)) = sum_(k=1)^8 1/k^2 $\n\n"
-      "Fine strokes, curved letters, and mathematical symbols.\n"
-      "#pagebreak()\n"
-      "Offscreen neighbor: prefetch must not soften the visible page.\n"
-      "$ integral_0^1 x^2 dif x = 1/3 $");
+  return QStringLiteral("#set page(width: 360pt, height: 900pt, margin: (x: 28pt, y: 96pt))\n"
+                        "#set text(size: 12pt, fill: red)\n"
+                        "Sharp text: affine office minimum integral.\n\n"
+                        "Fractions and roots remain crisp at screen resolution.\n\n"
+                        "$ (a^2 + b^2)/(1 + sqrt(1 + x^2)) = sum_(k=1)^8 1/k^2 $\n\n"
+                        "Fine strokes, curved letters, and mathematical symbols.\n"
+                        "#pagebreak()\n"
+                        "Offscreen neighbor: prefetch must not soften the visible page.\n"
+                        "$ integral_0^1 x^2 dif x = 1/3 $");
 }
 
 std::unique_ptr<QSignalSpy> observePdfExports(QObject *p_editor) {
@@ -361,15 +360,14 @@ bool fitFirstPdfPage(QAbstractScrollArea *p_pane) {
 }
 
 QRectF firstPdfPageRect(QAbstractScrollArea *p_pane, const QSizeF &p_points) {
-  const qreal scale = p_pane->property("zoom").toDouble() *
-                      (qMax(qreal(1), qreal(p_pane->logicalDpiY())) / 72.0);
+  const qreal scale =
+      p_pane->property("zoom").toDouble() * (qMax(qreal(1), qreal(p_pane->logicalDpiY())) / 72.0);
   const QSizeF size = p_points * scale;
   return QRectF(QPointF((p_pane->viewport()->width() - size.width()) / 2, 16), size);
 }
 
 QSize physicalPdfSize(const QRectF &p_page, qreal p_dpr) {
-  return QSize(int(std::ceil(p_page.width() * p_dpr)),
-               int(std::ceil(p_page.height() * p_dpr)));
+  return QSize(int(std::ceil(p_page.width() * p_dpr)), int(std::ceil(p_page.height() * p_dpr)));
 }
 
 QImage paintPdfOracle(Pdf &p_pdf, const QSize &p_rasterSize, const QRectF &p_page,
@@ -394,7 +392,8 @@ QRect pdfInkInterior(const QRectF &p_page, const QSizeF &p_points, const QImage 
   const qreal top = qMax(qreal(96), p_page.top() + 84 * scale);
   const QRectF interior(p_page.left() + 20 * scale, top, p_page.width() - 40 * scale,
                         p_frame.height() / dpr - 16 - top);
-  return QRectF(interior.topLeft() * dpr, interior.size() * dpr).toAlignedRect()
+  return QRectF(interior.topLeft() * dpr, interior.size() * dpr)
+      .toAlignedRect()
       .intersected(p_frame.rect());
 }
 
@@ -404,7 +403,7 @@ struct PdfInkDifference {
 };
 
 PdfInkDifference pdfInkDifference(const QImage &p_frame, const QImage &p_reference,
-                                 const QRect &p_interior) {
+                                  const QRect &p_interior) {
   PdfInkDifference difference;
   if (p_frame.isNull() || p_reference.isNull() || p_frame.size() != p_reference.size())
     return difference;
@@ -444,6 +443,23 @@ QImage widgetImage(QWidget *p_widget) {
   image.fill(Qt::transparent);
   p_widget->render(&image);
   return image;
+}
+
+int pixelsWithColor(const QImage &p_image, const QColor &p_color) {
+  int count = 0;
+  for (int y = 0; y < p_image.height(); ++y) {
+    for (int x = 0; x < p_image.width(); ++x) {
+      const auto color = p_image.pixelColor(x, y);
+      // Typst's glyph rasterizer can leave nearly opaque ink one channel step short.
+      if (std::abs(color.red() - p_color.red()) <= 3 &&
+          std::abs(color.green() - p_color.green()) <= 3 &&
+          std::abs(color.blue() - p_color.blue()) <= 3 &&
+          std::abs(color.alpha() - p_color.alpha()) <= 3) {
+        ++count;
+      }
+    }
+  }
+  return count;
 }
 
 int coloredPixels(const QImage &p_image, bool p_red, QRect *p_bounds = nullptr) {
@@ -549,9 +565,10 @@ QTextCharFormat syntaxFormatAt(QTextDocument *p_document, int p_position) {
   return format;
 }
 
-bool writeTypstTheme(const QString &p_path, const QString &p_stringColor,
-                     bool p_decorated = true) {
-  auto theme = QJsonDocument::fromJson(QStringLiteral(R"({
+bool writeTypstTheme(const QString &p_path, const QString &p_stringColor, bool p_decorated = true) {
+  auto theme =
+      QJsonDocument::fromJson(
+          QStringLiteral(R"({
     "metadata": {"type": "vtextedit", "name": "TypstTest"},
     "editor-styles": {"Text": {"font-size": 11}},
     "markdown-syntax-styles": {
@@ -572,8 +589,10 @@ bool writeTypstTheme(const QString &p_path, const QString &p_stringColor,
       "function": {"text-color": "#663399"},
       "mathdelimiter": {"text-color": "#007777"}
     }
-  })").arg(p_stringColor, p_decorated ? QStringLiteral("true") : QStringLiteral("false"))
-                   .toUtf8()).object();
+  })")
+              .arg(p_stringColor, p_decorated ? QStringLiteral("true") : QStringLiteral("false"))
+              .toUtf8())
+          .object();
   if (!p_decorated) {
     auto styles = theme.value(QStringLiteral("typst-syntax-styles")).toObject();
     styles.insert(QStringLiteral("raw"), QJsonObject{{QStringLiteral("text-color"), "#886600"}});
@@ -702,6 +721,177 @@ void TestTypstEditor::compilerGeometryAndScale() {
   }
 }
 
+void TestTypstEditor::previewThemeDefaultsRespectAuthoredStyles() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  QImage authoredImage(20, 10, QImage::Format_RGB32);
+  authoredImage.fill(Qt::white);
+  authoredImage.setPixelColor(5, 5, Qt::black);
+  QVERIFY(authoredImage.save(root.filePath(QStringLiteral("authored.png"))));
+  Helper helper(root.path());
+  const QColor dark(30, 32, 38), light(224, 226, 230), red(239, 51, 68);
+  helper.config.insert(QStringLiteral("previewBackground"), QJsonArray{30, 32, 38, 255});
+  helper.config.insert(QStringLiteral("previewForeground"), QJsonArray{224, 226, 230, 255});
+  QVERIFY2(helper.start(), qPrintable(helper.details()));
+  const auto source =
+      QStringLiteral("#set page(width: 240pt, height: 160pt, margin: 10pt)\n"
+                     "#set text(size: 20pt)\nDefault text\n\n"
+                     "#text(fill: rgb(\"#ef3344\"))[Local override]\n"
+                     "#place(bottom + right)[#image(\"authored.png\", width: 20pt, height: 10pt)]");
+  const auto raster = [&](const QString &p_source) {
+    if (!helper.compile(p_source))
+      return QImage();
+    const auto snapshot = helper.reply.header.value(QStringLiteral("snapshot"));
+    if (!helper.request({{QStringLiteral("op"), QStringLiteral("raster")},
+                         {QStringLiteral("snapshot"), snapshot},
+                         {QStringLiteral("page"), 0},
+                         {QStringLiteral("scale"), 1}}))
+      return QImage();
+    const auto &header = helper.reply.header;
+    if (header.value(QStringLiteral("op")) != QStringLiteral("raster"))
+      return QImage();
+    return QImage(reinterpret_cast<const uchar *>(helper.reply.payload.constData()),
+                  header.value(QStringLiteral("width")).toInt(),
+                  header.value(QStringLiteral("height")).toInt(),
+                  QImage::Format_RGBA8888_Premultiplied)
+        .copy();
+  };
+  auto image = raster(source);
+  QVERIFY2(!image.isNull(), qPrintable(helper.details()));
+  QCOMPARE(image.pixelColor(0, 0), dark);
+  QVERIFY(pixelsWithColor(image, light) > 30);
+  QVERIFY(pixelsWithColor(image, red) > 30);
+  QCOMPARE(image.pixelColor(211, 141), QColor(Qt::white));
+  QCOMPARE(image.pixelColor(215, 145), QColor(Qt::black));
+
+  // Same process and source: new library defaults must invalidate memoized layout.
+  helper.config[QStringLiteral("previewBackground")] = QJsonArray{246, 244, 238, 255};
+  helper.config[QStringLiteral("previewForeground")] = QJsonArray{42, 48, 52, 255};
+  image = raster(source);
+  QCOMPARE(image.pixelColor(0, 0), QColor(246, 244, 238));
+  QVERIFY(pixelsWithColor(image, QColor(42, 48, 52)) > 30);
+  QVERIFY(pixelsWithColor(image, red) > 30);
+
+  // Explicit black/white and transparent fills are authored styles, not theme defaults.
+  image = raster(QStringLiteral("#set page(fill: white)\n#set text(fill: black)\n") + source);
+  QCOMPARE(image.pixelColor(0, 0), QColor(Qt::white));
+  QVERIFY(pixelsWithColor(image, QColor(Qt::black)) > 30);
+  QCOMPARE(pixelsWithColor(image, QColor(42, 48, 52)), 0);
+  image = raster(QStringLiteral("#set page(fill: black)\n#set text(fill: white)\n") + source);
+  QCOMPARE(image.pixelColor(0, 0), QColor(Qt::black));
+  QVERIFY(pixelsWithColor(image, QColor(Qt::white)) > 200);
+  image = raster(QStringLiteral("#set page(fill: none)\n") + source);
+  QCOMPARE(image.pixelColor(0, 0).alpha(), 0);
+}
+
+void TestTypstEditor::previewThemeSwitchAndOptOutPreserveSource() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  auto config = editorConfig(root.path());
+  config->m_pdfBackground = QColor(30, 32, 38);
+  config->m_previewForeground = QColor(224, 226, 230);
+  const auto source = QStringLiteral("#set page(width: 320pt, height: 300pt, margin: 20pt)\n"
+                                     "#set text(size: 24pt)\nTheme text\n\n$ x^2 + y^2 $\n\n"
+                                     "#text(fill: rgb(\"#ef3344\"))[Explicit red]");
+  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, config, true, true);
+  auto *pane = fixture.pane();
+  QSignalSpy published(pane, SIGNAL(snapshotPublished(quint64)));
+  QVERIFY(waitUntil([&]() { return published.count() == 1; }));
+  auto *document = fixture.editor.document();
+  document->setModified(false);
+  const int undoSteps = document->availableUndoSteps();
+  for (int step = 0; step < 4; ++step) {
+    if (step) {
+      config = QSharedPointer<TypstEditorConfig>::create(*config);
+      config->m_enableThemeStyleInPreview = step != 2;
+      config->m_pdfBackground = step == 1 ? QColor(246, 244, 238) : QColor(30, 32, 38);
+      config->m_previewForeground = step == 1 ? QColor(42, 48, 52) : QColor(224, 226, 230);
+      const int count = published.count();
+      fixture.editor.setConfig(config);
+      QVERIFY(waitUntil([&]() { return published.count() > count; }));
+    }
+    const QColor background = step == 2 ? QColor(Qt::white) : config->m_pdfBackground;
+    const QColor foreground = step == 2 ? QColor(Qt::black) : config->m_previewForeground;
+    QVERIFY(waitUntil(
+        [&]() {
+          const auto image = widgetImage(pane->viewport());
+          return image.pixelColor(image.width() / 2, 24) == background &&
+                 pixelsWithColor(image, foreground) > 30 &&
+                 pixelsWithColor(image, QColor(239, 51, 68)) > 30;
+        },
+        paintTimeout));
+    QCOMPARE(widgetImage(pane->viewport()).pixelColor(2, 2), config->m_pdfBackground);
+    QVERIFY(waitUntil(
+        [&]() {
+          for (auto *card :
+               fixture.editor.findChildren<QWidget *>(QStringLiteral("typstPreviewCard"))) {
+            if (card->isVisible() && pixelsWithColor(widgetImage(card), foreground) > 10)
+              return true;
+          }
+          return false;
+        },
+        paintTimeout));
+    QCOMPARE(document->toPlainText(), source);
+    QCOMPARE(document->availableUndoSteps(), undoSteps);
+    QVERIFY(!document->isModified());
+  }
+  fixture.editor.setMode(VTypstEditor::Mode::Read);
+  QVERIFY(waitUntil(
+      [&]() {
+        return pixelsWithColor(widgetImage(pane->viewport()), config->m_previewForeground) > 30;
+      },
+      paintTimeout));
+}
+
+void TestTypstEditor::exportsIgnorePreviewTheme() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  auto config = editorConfig(root.path());
+  config->m_pdfBackground = QColor(30, 32, 38);
+  config->m_previewForeground = QColor(224, 226, 230);
+  config->m_enableThemeStyleInPreview = true;
+  TypstCompiler compiler(*config);
+  TypstCompiler unthemed(*editorConfig(root.path()));
+  QSignalSpy finished(&compiler, &TypstCompiler::finished);
+  QSignalSpy unthemedFinished(&unthemed, &TypstCompiler::finished);
+  const auto source = QStringLiteral("#set page(width: 240pt, height: 120pt, margin: 10pt)\n"
+                                     "#set text(size: 20pt)\nDefault text\n\n"
+                                     "#text(fill: rgb(\"#ef3344\"))[Explicit red]");
+  const auto renderedSvg = [](const QByteArray &p_svg) {
+    QSvgRenderer renderer(p_svg);
+    QImage image(QSize(240, 120), QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+    QPainter painter(&image);
+    renderer.render(&painter);
+    return image;
+  };
+  for (bool bitmap : {true, false}) {
+    finished.clear();
+    QVERIFY(bitmap ? compiler.compileToBitmap(source) : compiler.compileToSvg(source));
+    QVERIFY(waitUntil([&]() { return finished.count() == 1; }));
+    const auto result = qvariant_cast<TypstCompiler::Result>(finished.first().first());
+    QVERIFY2(result.isSuccess(), qPrintable(result.m_error));
+    QImage image;
+    if (bitmap) {
+      QCOMPARE(result.m_bitmapPages.size(), 1);
+      image = result.m_bitmapPages.first();
+    } else {
+      QCOMPARE(result.m_svgPages.size(), 1);
+      image = renderedSvg(result.m_svgPages.first());
+    }
+    QCOMPARE(image.pixelColor(0, 0), QColor(Qt::white));
+    QVERIFY(pixelsWithColor(image, QColor(Qt::black)) > 30);
+    QVERIFY(pixelsWithColor(image, QColor(239, 51, 68)) > 30);
+    unthemedFinished.clear();
+    QVERIFY(bitmap ? unthemed.compileToBitmap(source) : unthemed.compileToSvg(source));
+    QVERIFY(waitUntil([&]() { return unthemedFinished.count() == 1; }));
+    const auto original = qvariant_cast<TypstCompiler::Result>(unthemedFinished.first().first());
+    QVERIFY2(original.isSuccess(), qPrintable(original.m_error));
+    QCOMPARE(image,
+             bitmap ? original.m_bitmapPages.first() : renderedSvg(original.m_svgPages.first()));
+  }
+}
+
 void TestTypstEditor::compilerUnicodeImportsAndNormalization() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
@@ -780,13 +970,12 @@ void TestTypstEditor::compilerAsyncFailureAndRecovery() {
   bool idleAtCompletion = true;
   bool resubmitted = false;
   int callbackCount = 0;
-  connect(&compiler, &TypstCompiler::finished, &compiler,
-          [&](const TypstCompiler::Result &) {
-            asynchronous = asynchronous && returnedFromSubmit;
-            idleAtCompletion = idleAtCompletion && !compiler.isCompiling();
-            if (++callbackCount == 1)
-              resubmitted = compiler.compileToSvg(shortSource(QStringLiteral("Recovered $x^2$")));
-          });
+  connect(&compiler, &TypstCompiler::finished, &compiler, [&](const TypstCompiler::Result &) {
+    asynchronous = asynchronous && returnedFromSubmit;
+    idleAtCompletion = idleAtCompletion && !compiler.isCompiling();
+    if (++callbackCount == 1)
+      resubmitted = compiler.compileToSvg(shortSource(QStringLiteral("Recovered $x^2$")));
+  });
   QVERIFY(compiler.compileToBitmap(QStringLiteral("#let broken = (")));
   QCOMPARE(completed.count(), 0);
   QVERIFY(compiler.isCompiling());
@@ -836,9 +1025,8 @@ void TestTypstEditor::compilerRejectsInvalidScaleAndPixelLimit() {
   config.m_maxRasterPixels = pixelLimit;
   TypstCompiler compiler(config);
   QSignalSpy completed(&compiler, &TypstCompiler::finished);
-  const auto source = QStringLiteral(
-      "#set page(width: 64pt, height: 64pt, margin: 0pt)\n"
-      "#rect(width: 20pt, height: 20pt, fill: red)");
+  const auto source = QStringLiteral("#set page(width: 64pt, height: 64pt, margin: 0pt)\n"
+                                     "#rect(width: 20pt, height: 20pt, fill: red)");
   QVERIFY(compiler.compileToBitmap(source, scale));
   QCOMPARE(completed.count(), 0);
   QVERIFY(compiler.isCompiling());
@@ -893,7 +1081,7 @@ void TestTypstEditor::compilerResultBudgetClearsPartialPages() {
   qint64 largestPage = 0;
   for (int index = 0; index < 2; ++index) {
     const qint64 bytes = bitmap ? reference.m_bitmapPages.at(index).sizeInBytes()
-                               : reference.m_svgPages.at(index).size();
+                                : reference.m_svgPages.at(index).size();
     totalBytes += bytes;
     largestPage = qMax(largestPage, bytes);
   }
@@ -1170,11 +1358,10 @@ void TestTypstEditor::previewClickNavigatesSource() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
   const auto target = QStringLiteral("NavigationTarget");
-  const auto source =
-      QStringLiteral("#set page(width: 240pt, height: 700pt, margin: 24pt)\n") +
-      QString::fromUtf8("// non-BMP: \xf0\x9f\x98\x80\n") +
-      QStringLiteral("// source padding\n").repeated(80) +
-      QStringLiteral("First page.\n#pagebreak()\n") + target;
+  const auto source = QStringLiteral("#set page(width: 240pt, height: 700pt, margin: 24pt)\n") +
+                      QString::fromUtf8("// non-BMP: \xf0\x9f\x98\x80\n") +
+                      QStringLiteral("// source padding\n").repeated(80) +
+                      QStringLiteral("First page.\n#pagebreak()\n") + target;
   EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
   auto *pane = fixture.pane();
   auto exports = observePdfExports(&fixture.editor);
@@ -1207,8 +1394,7 @@ void TestTypstEditor::previewClickNavigatesSource() {
   QSignalSpy importedSource(&fixture.editor, &VTypstEditor::sourceLocationRequested);
 
   for (int step = 0; step < 5; ++step) {
-    const auto mode = step == 1 || step == 2 ? VTypstEditor::Mode::Read
-                                           : VTypstEditor::Mode::Edit;
+    const auto mode = step == 1 || step == 2 ? VTypstEditor::Mode::Read : VTypstEditor::Mode::Edit;
     fixture.editor.setMode(mode);
     fixture.editor.setInplacePreviewEnabled(step >= 2);
     fixture.editor.setLivePreviewEnabled(step != 2);
@@ -1218,8 +1404,8 @@ void TestTypstEditor::previewClickNavigatesSource() {
     fixture.editor.setPdfZoom(fixture.editor.pdfZoom() * 0.85);
     fixture.editor.goToPdfPage(1);
     const auto page = firstPdfPageRect(pane, pdf.size(1));
-    const QPoint click = (page.topLeft() + bounds.center() * (page.width() / pdf.size(1).width()))
-                             .toPoint();
+    const QPoint click =
+        (page.topLeft() + bounds.center() * (page.width() / pdf.size(1).width())).toPoint();
     QVERIFY(pane->viewport()->rect().contains(click));
     sourceReplies->clear();
     QTest::mouseClick(pane->viewport(), Qt::LeftButton, Qt::NoModifier, click);
@@ -1248,20 +1434,26 @@ void TestTypstEditor::previewClickNavigatesSource() {
       continue;
     }
     QVERIFY2(waitUntil([&]() {
-      const auto cursor = fixture.edit()->textCursor();
-      return cursor.position() >= start && cursor.position() <= start + target.size() &&
-             fixture.edit()->hasFocus();
-    }), qPrintable(fixture.editor.compileMessage()));
+               const auto cursor = fixture.edit()->textCursor();
+               return cursor.position() >= start && cursor.position() <= start + target.size() &&
+                      fixture.edit()->hasFocus();
+             }),
+             qPrintable(fixture.editor.compileMessage()));
     QCOMPARE(fixture.editor.mode(), VTypstEditor::Mode::Edit);
     QCOMPARE(fixture.editor.isInplacePreviewEnabled(), step >= 2);
     QCOMPARE(fixture.editor.isLivePreviewEnabled(), step != 2);
     QVERIFY(pane->isVisible());
     QVERIFY(fixture.edit()->isVisible());
     QVERIFY(!fixture.edit()->textCursor().hasSelection());
-    QVERIFY2(waitUntil([&]() {
-      return fixture.edit()->viewport()->rect().intersects(fixture.edit()->cursorRect());
-    }, 2000), qPrintable(QStringLiteral("mode=%1 cursorY=%2 viewportHeight=%3 scroll=%4/%5")
-                            .arg(int(mode)).arg(fixture.edit()->cursorRect().y())
+    QVERIFY2(waitUntil(
+                 [&]() {
+                   return fixture.edit()->viewport()->rect().intersects(
+                       fixture.edit()->cursorRect());
+                 },
+                 2000),
+             qPrintable(QStringLiteral("mode=%1 cursorY=%2 viewportHeight=%3 scroll=%4/%5")
+                            .arg(int(mode))
+                            .arg(fixture.edit()->cursorRect().y())
                             .arg(fixture.edit()->viewport()->height())
                             .arg(fixture.edit()->verticalScrollBar()->value())
                             .arg(fixture.edit()->verticalScrollBar()->maximum())));
@@ -1275,8 +1467,8 @@ void TestTypstEditor::previewClickPreservesSelectionLinksAndStaleOutput() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
   const auto target = QStringLiteral("Selection target.");
-  const auto source = shortSource(target + QStringLiteral(
-      "\n\n#link(\"https://example.org/\")[Visit link]"));
+  const auto source =
+      shortSource(target + QStringLiteral("\n\n#link(\"https://example.org/\")[Visit link]"));
   EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
   auto *pane = fixture.pane();
   auto *viewport = pane->viewport();
@@ -1323,10 +1515,10 @@ void TestTypstEditor::previewClickPreservesSelectionLinksAndStaleOutput() {
   // Direct events avoid synthesizing a blocking context menu for the right-button check.
   const QPointF click = point(bounds.center());
   QMouseEvent rightPress(QEvent::MouseButtonPress, click, viewport->mapToGlobal(click.toPoint()),
-                        Qt::RightButton, Qt::RightButton, Qt::NoModifier);
+                         Qt::RightButton, Qt::RightButton, Qt::NoModifier);
   QMouseEvent rightRelease(QEvent::MouseButtonRelease, click,
-                          viewport->mapToGlobal(click.toPoint()), Qt::RightButton,
-                          Qt::NoButton, Qt::NoModifier);
+                           viewport->mapToGlobal(click.toPoint()), Qt::RightButton, Qt::NoButton,
+                           Qt::NoModifier);
   QCoreApplication::sendEvent(viewport, &rightPress);
   QCoreApplication::sendEvent(viewport, &rightRelease);
   QCOMPARE(fixture.edit()->textCursor().position(), 0);
@@ -1338,13 +1530,13 @@ void TestTypstEditor::previewClickPreservesSelectionLinksAndStaleOutput() {
   }));
   QCOMPARE(fixture.editor.document()->toPlainText(), source);
 
-  fixture.editor.setFileOverlay(QStringLiteral("main.typ"), source + QStringLiteral("\n#let x = ("));
-  QVERIFY(waitUntil([&]() {
-    return fixture.editor.compileStatus() == VTypstEditor::CompileStatus::Error;
-  }));
+  fixture.editor.setFileOverlay(QStringLiteral("main.typ"),
+                                source + QStringLiteral("\n#let x = ("));
+  QVERIFY(waitUntil(
+      [&]() { return fixture.editor.compileStatus() == VTypstEditor::CompileStatus::Error; }));
   QCOMPARE(published.count(), 1); // Last-good PDF remains displayed, but its mapping is stale.
   const auto cursor = fixture.edit()->textCursor();
-  QSignalSpy navigation(pane, SIGNAL(sourceLocationRequested(quint64,int,QPointF)));
+  QSignalSpy navigation(pane, SIGNAL(sourceLocationRequested(quint64, int, QPointF)));
   QTest::mouseClick(viewport, Qt::LeftButton, Qt::NoModifier, click.toPoint());
   QCOMPARE(navigation.count(), 0);
   QCOMPARE(fixture.edit()->textCursor().position(), cursor.position());
@@ -1422,21 +1614,22 @@ void TestTypstEditor::outlineIncludesEvaluatedHeadingsAndUnicodeRanges() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
   const auto unicode = QString::fromUtf8("\xc3\xa9\xf0\x9f\x98\x80");
-  const auto main = QStringLiteral(
-      "#set heading(numbering: \"1.\", offset: 1, bookmarked: false)\n"
-      "// %1 before the first source range\n"
-      "#let suffix = [%1]\n"
-      "= *Main* #suffix\n"
-      "#import \"chapter.typ\": chapter\n"
-      "#chapter\n"
-      "#for title in (\"First\", \"Second\") [\n"
-      "  === #title\n"
-      "]\n"
-      "#heading(level: 8)[]\n"
-      "#heading(outlined: false)[Excluded]\n"
-      "#outline()\n").arg(unicode);
+  const auto main = QStringLiteral("#set heading(numbering: \"1.\", offset: 1, bookmarked: false)\n"
+                                   "// %1 before the first source range\n"
+                                   "#let suffix = [%1]\n"
+                                   "= *Main* #suffix\n"
+                                   "#import \"chapter.typ\": chapter\n"
+                                   "#chapter\n"
+                                   "#for title in (\"First\", \"Second\") [\n"
+                                   "  === #title\n"
+                                   "]\n"
+                                   "#heading(level: 8)[]\n"
+                                   "#heading(outlined: false)[Excluded]\n"
+                                   "#outline()\n")
+                        .arg(unicode);
   const auto chapter = QStringLiteral("// %1 before the imported range\n"
-                                      "#let chapter = [\n  == _Imported_ %1\n]\n").arg(unicode);
+                                      "#let chapter = [\n  == _Imported_ %1\n]\n")
+                           .arg(unicode);
   EditorFixture fixture(root.path(), main);
   fixture.editor.setFileOverlay(QStringLiteral("chapter.typ"), chapter);
   QSignalSpy updates(&fixture.editor, &VTypstEditor::headingsUpdated);
@@ -1447,8 +1640,7 @@ void TestTypstEditor::outlineIncludesEvaluatedHeadingsAndUnicodeRanges() {
 
   const QVector<TypstHeadingInfo> headings = fixture.editor.getHeadings();
   const auto payload = qvariant_cast<QVector<TypstHeadingInfo>>(updates.last().at(0));
-  const QStringList titles{QStringLiteral("Main ") + unicode,
-                           QStringLiteral("Imported ") + unicode,
+  const QStringList titles{QStringLiteral("Main ") + unicode, QStringLiteral("Imported ") + unicode,
                            QStringLiteral("First"), QStringLiteral("Second"), QString()};
   const QVector<int> levels{2, 3, 4, 4, 8};
   QCOMPARE(headings.size(), titles.size());
@@ -1457,8 +1649,8 @@ void TestTypstEditor::outlineIncludesEvaluatedHeadingsAndUnicodeRanges() {
     const auto &heading = headings.at(index);
     QCOMPARE(heading.m_title, titles.at(index));
     QCOMPARE(heading.m_level, levels.at(index));
-    QCOMPARE(heading.m_file, index == 1 ? QStringLiteral("chapter.typ")
-                                      : QStringLiteral("main.typ"));
+    QCOMPARE(heading.m_file,
+             index == 1 ? QStringLiteral("chapter.typ") : QStringLiteral("main.typ"));
     const auto &source = index == 1 ? chapter : main;
     QVERIFY(heading.m_startPos >= 0);
     QVERIFY(heading.m_endPos > heading.m_startPos);
@@ -1478,8 +1670,7 @@ void TestTypstEditor::outlineIncludesEvaluatedHeadingsAndUnicodeRanges() {
   const auto generatedHeading = QStringLiteral("=== #title");
   for (const int index : {2, 3}) {
     QCOMPARE(headings.at(index).m_startPos, main.indexOf(generatedHeading));
-    QCOMPARE(headings.at(index).m_endPos,
-             main.indexOf(generatedHeading) + generatedHeading.size());
+    QCOMPARE(headings.at(index).m_endPos, main.indexOf(generatedHeading) + generatedHeading.size());
   }
 }
 
@@ -1526,9 +1717,8 @@ void TestTypstEditor::outlineInvalidationFailureAndRecovery() {
                                 shortSource(QStringLiteral("= Invalid\n#let broken = (")));
   QVERIFY(fixture.editor.getHeadings().isEmpty());
   QCOMPARE(updates.count(), beforeFailure + 1);
-  QVERIFY(waitUntil([&]() {
-    return fixture.editor.compileStatus() == VTypstEditor::CompileStatus::Error;
-  }));
+  QVERIFY(waitUntil(
+      [&]() { return fixture.editor.compileStatus() == VTypstEditor::CompileStatus::Error; }));
   QVERIFY(fixture.editor.getHeadings().isEmpty());
   QCOMPARE(updates.count(), beforeFailure + 1);
   QCOMPARE(fixture.selected(), selected);
@@ -1580,18 +1770,16 @@ void TestTypstEditor::outlineScopeAndModesPreserveSource() {
   document->setModified(false);
   QSignalSpy changes(document, &QTextDocument::contentsChange);
   QSignalSpy updates(&fixture.editor, &VTypstEditor::headingsUpdated);
-  QVERIFY2(waitUntil([&]() {
-             return !updates.isEmpty() && fixture.editor.getHeadings().size() == 3;
-           }),
-           qPrintable(fixture.editor.compileMessage()));
+  QVERIFY2(
+      waitUntil([&]() { return !updates.isEmpty() && fixture.editor.getHeadings().size() == 3; }),
+      qPrintable(fixture.editor.compileMessage()));
   const QVector<TypstHeadingInfo> retained = fixture.editor.getHeadings();
   QCOMPARE(retained.at(0).m_title, QStringLiteral("Main"));
   QCOMPARE(retained.at(1).m_title, QStringLiteral("Imported"));
   QCOMPARE(retained.at(2).m_title, QStringLiteral("End"));
   const int beforeModes = updates.count();
   for (int step = 0; step < 4; ++step) {
-    const auto mode = step == 1 || step == 2 ? VTypstEditor::Mode::Edit
-                                          : VTypstEditor::Mode::Read;
+    const auto mode = step == 1 || step == 2 ? VTypstEditor::Mode::Edit : VTypstEditor::Mode::Read;
     if (step == 1 || step == 2) {
       fixture.editor.setInplacePreviewEnabled(step == 1);
       fixture.editor.setLivePreviewEnabled(step == 2);
@@ -1774,8 +1962,8 @@ void TestTypstEditor::independentEditPreviews() {
   QFETCH(bool, live);
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  const auto source = shortSource(QStringLiteral(
-      "#set text(fill: rgb(\"#ff0000\"), size: 24pt)\n= Preview\n$ x^2 $\nAfter"));
+  const auto source = shortSource(
+      QStringLiteral("#set text(fill: rgb(\"#ff0000\"), size: 24pt)\n= Preview\n$ x^2 $\nAfter"));
   EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, {}, inplace, live);
   QSignalSpy published(fixture.pane(), SIGNAL(snapshotPublished(quint64)));
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
@@ -1825,9 +2013,10 @@ void TestTypstEditor::independentEditPreviews() {
   QVERIFY(!heading.isNull());
   heading.insertText(QStringLiteral("Latest"));
   QVERIFY2(waitUntil([&]() {
-    const auto &headings = fixture.editor.getHeadings();
-    return headings.size() == 1 && headings.first().m_title == QStringLiteral("Latest");
-  }), qPrintable(fixture.editor.compileMessage()));
+             const auto &headings = fixture.editor.getHeadings();
+             return headings.size() == 1 && headings.first().m_title == QStringLiteral("Latest");
+           }),
+           qPrintable(fixture.editor.compileMessage()));
   QVERIFY(previewImages(fixture.editor).isEmpty());
   QCOMPARE(published.count(), 1);
   fixture.editor.setInplacePreviewEnabled(true);
@@ -1836,24 +2025,25 @@ void TestTypstEditor::independentEditPreviews() {
   fixture.editor.setLivePreviewEnabled(true);
   QVERIFY(waitUntil([&]() { return published.count() == 2; }));
   fixture.editor.fitPdfPage();
-  QVERIFY(waitUntil([&]() {
-    return coloredPixels(widgetImage(fixture.pane()->viewport()), false) > 20;
-  }));
+  QVERIFY(waitUntil(
+      [&]() { return coloredPixels(widgetImage(fixture.pane()->viewport()), false) > 20; }));
   QVERIFY(previewHasOnlyColor(previewImages(fixture.editor), false));
 }
 
 void TestTypstEditor::combinedPreviewsAdvanceWhilePdfSelectionIsDeferred() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  const auto source = shortSource(QStringLiteral(
-      "#set text(fill: rgb(\"#ff0000\"), size: 24pt)\n= Before\n$ x^2 $\nAfter"));
+  const auto source = shortSource(
+      QStringLiteral("#set text(fill: rgb(\"#ff0000\"), size: 24pt)\n= Before\n$ x^2 $\nAfter"));
   EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, {}, true, true);
   QSignalSpy published(fixture.pane(), SIGNAL(snapshotPublished(quint64)));
   auto exports = observePdfExports(&fixture.editor);
   QVERIFY(exports);
   QVERIFY2(waitUntil([&]() {
-    return published.count() == 1 && previewHasOnlyColor(previewImages(fixture.editor), true);
-  }), qPrintable(fixture.editor.compileMessage()));
+             return published.count() == 1 &&
+                    previewHasOnlyColor(previewImages(fixture.editor), true);
+           }),
+           qPrintable(fixture.editor.compileMessage()));
   QVERIFY(fixture.selectPage().contains(QStringLiteral("Before")));
   const auto selected = fixture.selected();
   const auto displayedSnapshot = published.first().at(0).toULongLong();
@@ -1866,11 +2056,12 @@ void TestTypstEditor::combinedPreviewsAdvanceWhilePdfSelectionIsDeferred() {
   color.insertText(QStringLiteral("#0000ff"));
   heading.endEditBlock();
   QVERIFY2(waitUntil([&]() {
-    const auto &headings = fixture.editor.getHeadings();
-    return headings.size() == 1 && headings.first().m_title == QStringLiteral("Updated") &&
-           previewHasOnlyColor(previewImages(fixture.editor), false) &&
-           fixture.editor.hasPendingPdfUpdate();
-  }), qPrintable(fixture.editor.compileMessage()));
+             const auto &headings = fixture.editor.getHeadings();
+             return headings.size() == 1 && headings.first().m_title == QStringLiteral("Updated") &&
+                    previewHasOnlyColor(previewImages(fixture.editor), false) &&
+                    fixture.editor.hasPendingPdfUpdate();
+           }),
+           qPrintable(fixture.editor.compileMessage()));
   QCOMPARE(published.count(), 1);
   QCOMPARE(fixture.selected(), selected);
   fixture.editor.setMode(VTypstEditor::Mode::Read);
@@ -1909,9 +2100,8 @@ void TestTypstEditor::combinedPreviewsAdvanceWhilePdfSelectionIsDeferred() {
   QVERIFY(updated.text().contains(QStringLiteral("Updated")));
   QVERIFY(!updated.text().contains(QStringLiteral("Before")));
   fixture.editor.fitPdfPage();
-  QVERIFY(waitUntil([&]() {
-    return coloredPixels(widgetImage(fixture.pane()->viewport()), false) > 20;
-  }));
+  QVERIFY(waitUntil(
+      [&]() { return coloredPixels(widgetImage(fixture.pane()->viewport()), false) > 20; }));
   QVERIFY(fixture.selectPage().contains(QStringLiteral("Updated")));
   QVERIFY(!fixture.selected().contains(QStringLiteral("Before")));
 }
@@ -2073,10 +2263,9 @@ void TestTypstEditor::pdfZoomPublicationIsReentrant() {
   using ZoomMode = VTypstEditor::PdfZoomMode;
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  const auto source = QStringLiteral(
-      "#import \"size.typ\": width, height\n"
-      "#set page(width: width, height: height, margin: 16pt)\n"
-      "Camera publication remains reentrant.");
+  const auto source = QStringLiteral("#import \"size.typ\": width, height\n"
+                                     "#set page(width: width, height: height, margin: 16pt)\n"
+                                     "Camera publication remains reentrant.");
   EditorFixture fixture(root.path(), source);
   fixture.editor.setFileOverlay(QStringLiteral("size.typ"),
                                 QStringLiteral("#let width = 240pt\n#let height = 160pt"));
@@ -2095,22 +2284,22 @@ void TestTypstEditor::pdfZoomPublicationIsReentrant() {
   QSignalSpy changes(document, &QTextDocument::contentsChange);
   QSignalSpy zooms(&fixture.editor, &VTypstEditor::pdfZoomChanged);
   bool reentered = false;
-  const auto connection = connect(
-      &fixture.editor, &VTypstEditor::pdfZoomChanged, &fixture.editor,
-      [&](qreal p_zoom, ZoomMode p_mode) {
-        if (reentered || p_mode != ZoomMode::Width)
-          return;
-        reentered = true;
-        QCOMPARE(published.count(), 2);
-        QCOMPARE(fixture.editor.pdfPageCount(), 1);
-        QCOMPARE(fixture.editor.pdfZoomMode(), p_mode);
-        QCOMPARE(fixture.editor.pdfZoom(), p_zoom);
-        QVERIFY(qFuzzyCompare(p_zoom, initialZoom / 2));
-        fixture.editor.setPdfZoom(1.125);
-        auto config = QSharedPointer<TypstEditorConfig>::create(fixture.editor.getConfig());
-        config->m_initialZoom = 7;
-        fixture.editor.setConfig(config);
-      });
+  const auto connection =
+      connect(&fixture.editor, &VTypstEditor::pdfZoomChanged, &fixture.editor,
+              [&](qreal p_zoom, ZoomMode p_mode) {
+                if (reentered || p_mode != ZoomMode::Width)
+                  return;
+                reentered = true;
+                QCOMPARE(published.count(), 2);
+                QCOMPARE(fixture.editor.pdfPageCount(), 1);
+                QCOMPARE(fixture.editor.pdfZoomMode(), p_mode);
+                QCOMPARE(fixture.editor.pdfZoom(), p_zoom);
+                QVERIFY(qFuzzyCompare(p_zoom, initialZoom / 2));
+                fixture.editor.setPdfZoom(1.125);
+                auto config = QSharedPointer<TypstEditorConfig>::create(fixture.editor.getConfig());
+                config->m_initialZoom = 7;
+                fixture.editor.setConfig(config);
+              });
   fixture.editor.setFileOverlay(QStringLiteral("size.typ"),
                                 QStringLiteral("#let width = 480pt\n#let height = 320pt"));
   QVERIFY2(waitUntil([&]() { return published.count() == 2; }),
@@ -2246,8 +2435,8 @@ void TestTypstEditor::modesPreserveSourceUndoAndSelection() {
       for (const bool live : {false, true}) {
         fixture.editor.setInplacePreviewEnabled(inplace);
         fixture.editor.setLivePreviewEnabled(live);
-        for (const auto mode : {VTypstEditor::Mode::Edit, VTypstEditor::Mode::Read,
-                                VTypstEditor::Mode::Edit}) {
+        for (const auto mode :
+             {VTypstEditor::Mode::Edit, VTypstEditor::Mode::Read, VTypstEditor::Mode::Edit}) {
           fixture.editor.setMode(mode);
           QCoreApplication::processEvents();
           QCOMPARE(document->toPlainText(), edited);
@@ -2439,8 +2628,8 @@ void TestTypstEditor::sideBySideScrollSync() {
   QSignalSpy changes(document, &QTextDocument::contentsChange);
   const auto *focus = QApplication::focusWidget();
   auto mapped = [](QScrollBar *p_from, QScrollBar *p_to) {
-    const qreal progress = qreal(p_from->value() - p_from->minimum()) /
-                           (p_from->maximum() - p_from->minimum());
+    const qreal progress =
+        qreal(p_from->value() - p_from->minimum()) / (p_from->maximum() - p_from->minimum());
     return qRound(p_to->minimum() + progress * (p_to->maximum() - p_to->minimum()));
   };
 
@@ -2577,7 +2766,8 @@ void TestTypstEditor::cursorLocationFlashesThreeTimes() {
   QVERIFY2(helper.request({{QStringLiteral("op"), QStringLiteral("sourceToOutput")},
                            {QStringLiteral("snapshot"), snapshot},
                            {QStringLiteral("file"), QStringLiteral("main.typ")},
-                           {QStringLiteral("offset"), offset}}), qPrintable(helper.details()));
+                           {QStringLiteral("offset"), offset}}),
+           qPrintable(helper.details()));
   const auto locations = helper.reply.header.value(QStringLiteral("locations")).toArray();
   QVERIFY(!locations.isEmpty());
   const auto location = locations.first().toObject();
@@ -2638,10 +2828,10 @@ void TestTypstEditor::cursorLocationFlashesThreeTimes() {
 void TestTypstEditor::cursorHighlightFollowsLatestPublication() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  const auto source = QStringLiteral(
-                          "#set page(width: 240pt, height: 700pt, margin: (x: 24pt, y: 100pt))\n") +
-                      QStringLiteral("// source padding\n").repeated(100) +
-                      QStringLiteral("First target.\n#pagebreak()\nLast target.");
+  const auto source =
+      QStringLiteral("#set page(width: 240pt, height: 700pt, margin: (x: 24pt, y: 100pt))\n") +
+      QStringLiteral("// source padding\n").repeated(100) +
+      QStringLiteral("First target.\n#pagebreak()\nLast target.");
   EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
   auto *pane = fixture.pane();
   QSignalSpy published(pane, SIGNAL(snapshotPublished(quint64)));
@@ -2658,10 +2848,13 @@ void TestTypstEditor::cursorHighlightFollowsLatestPublication() {
   pane->verticalScrollBar()->setValue(0);
   const int sourceScroll = fixture.edit()->verticalScrollBar()->value();
   int page = -1;
-  QVERIFY(waitUntil([&]() {
-    QMetaObject::invokeMethod(pane, "currentPage", Qt::DirectConnection, Q_RETURN_ARG(int, page));
-    return page == 1;
-  }, paintTimeout));
+  QVERIFY(waitUntil(
+      [&]() {
+        QMetaObject::invokeMethod(pane, "currentPage", Qt::DirectConnection,
+                                  Q_RETURN_ARG(int, page));
+        return page == 1;
+      },
+      paintTimeout));
   QCOMPARE(fixture.edit()->verticalScrollBar()->value(), sourceScroll);
   QCOMPARE(fixture.edit()->textCursor().position(), cursor.position());
   QCOMPARE(fixture.selected(), selected);
@@ -2689,14 +2882,15 @@ void TestTypstEditor::cursorHighlightFollowsLatestPublication() {
   observer.published = [&](quint64) { newFrame = widgetImage(pane->viewport()); };
   const auto *meta = pane->metaObject();
   QVERIFY(QObject::connect(pane, meta->method(meta->indexOfSignal("snapshotPublished(quint64)")),
-                           &observer, observer.metaObject()->method(
+                           &observer,
+                           observer.metaObject()->method(
                                observer.metaObject()->indexOfSlot("snapshotPublished(quint64)"))));
   fixture.clearSelection();
   QVERIFY2(waitUntil([&]() { return published.count() == 2; }),
            qPrintable(fixture.editor.compileMessage()));
-  QVERIFY(waitUntil([&]() {
-    return widgetImage(pane->viewport()).copy(content) != newFrame.copy(content);
-  }, paintTimeout));
+  QVERIFY(waitUntil(
+      [&]() { return widgetImage(pane->viewport()).copy(content) != newFrame.copy(content); },
+      paintTimeout));
   QCOMPARE(fixture.edit()->textCursor().position(), cursor.position());
 
   // Leaving side-by-side cancels a visible pulse; it must not restart in Read mode.
@@ -2711,9 +2905,9 @@ void TestTypstEditor::cursorHighlightFollowsLatestPublication() {
 void TestTypstEditor::headingCursorTargetsTitleInsteadOfOutline() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  const auto source = QStringLiteral(
-      "#set page(width: 320pt, height: 700pt, margin: 30pt)\n"
-      "#outline()\n#pagebreak()\n= Actual title\nBody below the title.");
+  const auto source =
+      QStringLiteral("#set page(width: 320pt, height: 700pt, margin: 30pt)\n"
+                     "#outline()\n#pagebreak()\n= Actual title\nBody below the title.");
   EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
   auto *pane = fixture.pane();
   QSignalSpy published(pane, SIGNAL(snapshotPublished(quint64)));
@@ -2726,10 +2920,13 @@ void TestTypstEditor::headingCursorTargetsTitleInsteadOfOutline() {
   cursor.setPosition(source.indexOf(QStringLiteral("Actual title")) + 3);
   fixture.edit()->setTextCursor(cursor);
   int page = -1;
-  QVERIFY(waitUntil([&]() {
-    QMetaObject::invokeMethod(pane, "currentPage", Qt::DirectConnection, Q_RETURN_ARG(int, page));
-    return page == 1;
-  }, paintTimeout));
+  QVERIFY(waitUntil(
+      [&]() {
+        QMetaObject::invokeMethod(pane, "currentPage", Qt::DirectConnection,
+                                  Q_RETURN_ARG(int, page));
+        return page == 1;
+      },
+      paintTimeout));
   QVERIFY(fixture.selectPage().contains(QStringLiteral("Body below the title.")));
 
   // Explicit navigation shares the same mapping, including a cursor at heading EOL.
@@ -2738,10 +2935,13 @@ void TestTypstEditor::headingCursorTargetsTitleInsteadOfOutline() {
   cursor.setPosition(source.indexOf(QStringLiteral("\nBody below")));
   fixture.edit()->setTextCursor(cursor);
   fixture.editor.showOutputAtCursor();
-  QVERIFY(waitUntil([&]() {
-    QMetaObject::invokeMethod(pane, "currentPage", Qt::DirectConnection, Q_RETURN_ARG(int, page));
-    return page == 1;
-  }, paintTimeout));
+  QVERIFY(waitUntil(
+      [&]() {
+        QMetaObject::invokeMethod(pane, "currentPage", Qt::DirectConnection,
+                                  Q_RETURN_ARG(int, page));
+        return page == 1;
+      },
+      paintTimeout));
   QCOMPARE(fixture.edit()->textCursor().position(), cursor.position());
   QCOMPARE(document->toPlainText(), source);
   QCOMPARE(document->availableUndoSteps(), undoSteps);
@@ -2773,23 +2973,20 @@ void TestTypstEditor::inPlaceReservationsDoNotEditSource() {
   fixture.editor.setLivePreviewEnabled(false);
   fixture.editor.setMode(VTypstEditor::Mode::Edit);
   QVERIFY(waitUntil([&]() { return top() > baseline; }, paintTimeout));
-  QVERIFY2(
-      waitUntil([&]() {
-        auto *card =
-            fixture.editor.findChild<QWidget *>(QStringLiteral("typstPreviewCard"));
-        return card && card->isVisible() && coloredPixels(widgetImage(card), true) > 20;
-      }),
-      qPrintable(fixture.editor.compileMessage()));
-  auto *card =
-      fixture.editor.findChild<QWidget *>(QStringLiteral("typstPreviewCard"));
+  QVERIFY2(waitUntil([&]() {
+             auto *card = fixture.editor.findChild<QWidget *>(QStringLiteral("typstPreviewCard"));
+             return card && card->isVisible() && coloredPixels(widgetImage(card), true) > 20;
+           }),
+           qPrintable(fixture.editor.compileMessage()));
+  auto *card = fixture.editor.findChild<QWidget *>(QStringLiteral("typstPreviewCard"));
   const QPoint blankPoint(card->geometry().right() - 4, card->geometry().center().y());
   const auto previewSurface = widgetImage(fixture.edit()->viewport());
   // The source pane is narrower before switching out of side-by-side mode.
   const QPoint sourceBlank(sourceSurface.width() - 4, blankPoint.y());
   QCOMPARE(previewSurface.pixelColor(blankPoint), sourceSurface.pixelColor(sourceBlank));
   const auto viewportRect = card->rect();
-  for (const auto &point : {viewportRect.center(),
-                            QPoint(viewportRect.right() - 1, viewportRect.center().y())}) {
+  for (const auto &point :
+       {viewportRect.center(), QPoint(viewportRect.right() - 1, viewportRect.center().y())}) {
     QTest::mouseClick(card, Qt::LeftButton, Qt::NoModifier, point);
     QCoreApplication::processEvents();
     QCOMPARE(fixture.editor.mode(), VTypstEditor::Mode::Edit);
@@ -2835,10 +3032,9 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
     }
     return nullptr;
   };
-  QVERIFY2(waitUntil([&]() {
-             return repeated() && coloredPixels(widgetImage(repeated()), false) > 10;
-           }),
-           qPrintable(fixture.editor.compileMessage()));
+  QVERIFY2(
+      waitUntil([&]() { return repeated() && coloredPixels(widgetImage(repeated()), false) > 10; }),
+      qPrintable(fixture.editor.compileMessage()));
   const auto sourceRect = [&](int p_position) {
     QTextCursor cursor(fixture.editor.document());
     cursor.setPosition(p_position);
@@ -2882,7 +3078,8 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
   const int chromeWidth = fixture.editor.width() - fixture.edit()->viewport()->width();
   const int remaining = (spanWidth + fullRowWidth) / 2;
   fixture.editor.resize(chromeWidth + sourceRect(equationStart).left() + remaining +
-                            qRound(fixture.editor.document()->documentMargin()) + 4, 650);
+                            qRound(fixture.editor.document()->documentMargin()) + 4,
+                        650);
   QVERIFY(waitUntil([&]() {
     return repeated() && repeated()->width() < fullRowWidth &&
            coloredPixels(widgetImage(repeated()), false) > 10;
@@ -2913,9 +3110,9 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
 
   // The combined natural row must shrink, not wrap or crop, in a narrow editor.
   const auto wide = QStringLiteral("#set page(width: 3000pt, height: 300pt, margin: 10pt)\n"
-                                    "#set text(size: 32pt)\n"
-                                    "#for color in (rgb(\"#ff0000\"), rgb(\"#0000ff\")) { "
-                                    "text(fill: color)[$x+x+x+x+x+x+x+x+x+x$] }\nAfter");
+                                   "#set text(size: 32pt)\n"
+                                   "#for color in (rgb(\"#ff0000\"), rgb(\"#0000ff\")) { "
+                                   "text(fill: color)[$x+x+x+x+x+x+x+x+x+x$] }\nAfter");
   fixture.edit()->setLineWrapMode(QTextEdit::NoWrap);
   fixture.editor.setFileOverlay(QStringLiteral("main.typ"), wide);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
@@ -2927,11 +3124,11 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
            block.layout()->lineAt(0).naturalTextWidth() + 2 * doc->documentMargin();
   }));
   scrollToSource(wideStart);
-  QVERIFY(waitUntil([&]() {
-    return repeated() && coloredPixels(widgetImage(repeated()), false) > 10;
-  }));
+  QVERIFY(waitUntil(
+      [&]() { return repeated() && coloredPixels(widgetImage(repeated()), false) > 10; }));
   const auto wideSize = repeated()->size();
-  const qreal wideDocumentWidth = fixture.editor.document()->documentLayout()->documentSize().width();
+  const qreal wideDocumentWidth =
+      fixture.editor.document()->documentLayout()->documentSize().width();
   const auto wideSelection = fixture.edit()->textCursor();
   const auto wideUndo = fixture.editor.document()->availableUndoSteps();
   const auto wideModified = fixture.editor.document()->isModified();
@@ -2940,10 +3137,12 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
     return fixture.editor.document()->documentLayout()->documentSize().width() < wideDocumentWidth;
   }));
   scrollToSource(wideStart);
-  QVERIFY(waitUntil([&]() {
-    return repeated() && repeated()->width() < wideSize.width() &&
-           coloredPixels(widgetImage(repeated()), false) > 10;
-  }, paintTimeout));
+  QVERIFY(waitUntil(
+      [&]() {
+        return repeated() && repeated()->width() < wideSize.width() &&
+               coloredPixels(widgetImage(repeated()), false) > 10;
+      },
+      paintTimeout));
   const auto narrowImage = widgetImage(repeated());
   QVERIFY(coloredPixels(narrowImage, true, &redBounds) > 10);
   QVERIFY(coloredPixels(narrowImage, false, &blueBounds) > 10);
@@ -2973,9 +3172,10 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
 
   // Clip past the short right occurrence while the tall left one is still visible.
   // Individual rectangle bottoms are not a searchable order in a horizontal row.
-  const auto unequal = QStringLiteral(
-      "#for (color, size) in ((rgb(\"#ff0000\"), 72pt), (rgb(\"#0000ff\"), 24pt)) { "
-      "text(fill: color, size: size)[$x$] }\n") + QStringLiteral("After\n").repeated(80);
+  const auto unequal =
+      QStringLiteral("#for (color, size) in ((rgb(\"#ff0000\"), 72pt), (rgb(\"#0000ff\"), 24pt)) { "
+                     "text(fill: color, size: size)[$x$] }\n") +
+      QStringLiteral("After\n").repeated(80);
   fixture.editor.resize(1000, 650);
   fixture.editor.setFileOverlay(QStringLiteral("main.typ"), unequal);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
@@ -2989,9 +3189,8 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
   fixture.edit()->moveCursor(QTextCursor::Start);
   fixture.edit()->verticalScrollBar()->setValue(0);
   scrollToSource(unequal.indexOf(QStringLiteral("$x$")));
-  QVERIFY(waitUntil([&]() {
-    return repeated() && coloredPixels(widgetImage(repeated()), false) > 10;
-  }));
+  QVERIFY(waitUntil(
+      [&]() { return repeated() && coloredPixels(widgetImage(repeated()), false) > 10; }));
   const auto unequalImage = widgetImage(repeated());
   QVERIFY(coloredPixels(unequalImage, true, &redBounds) > 10);
   QVERIFY(coloredPixels(unequalImage, false, &blueBounds) > 10);
@@ -3018,14 +3217,14 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
   QCOMPARE(fixture.editor.document()->isModified(), clipModified);
 
   QString split = QStringLiteral("#set page(width: 100mm, height: 30mm, margin: 4mm)\n"
-                                  "#set text(fill: red, size: 24pt)\n"
-                                  "#show math.equation: set block(breakable: true)\nBefore\n$ ");
+                                 "#set text(fill: red, size: 24pt)\n"
+                                 "#show math.equation: set block(breakable: true)\nBefore\n$ ");
   split.reserve(1024);
   for (int row = 1; row <= 32; ++row) {
     if (row > 1)
       split += QStringLiteral(" \\ ");
     split += row == 32 ? QStringLiteral("#text(fill: rgb(\"#0000ff\"))[$x_32$] &= 32")
-                      : QStringLiteral("x_%1 &= %1").arg(row);
+                       : QStringLiteral("x_%1 &= %1").arg(row);
   }
   split += QStringLiteral(" $\nAfter");
   fixture.edit()->setLineWrapMode(QTextEdit::NoWrap);
@@ -3058,11 +3257,10 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
   const auto afterRect = fixture.editor.document()->documentLayout()->blockBoundingRect(after);
   // Keep the end of the preview visible rather than scrolling into the editor's
   // trailing blank space beyond the final source line.
-  editorScroll->setValue(qMax(0, int(afterRect.top()) -
-                                  fixture.edit()->viewport()->height() * 3 / 4));
-  QVERIFY2(waitUntil([&]() {
-             return splitCard() && coloredPixels(widgetImage(splitCard()), false) > 5;
-           }),
+  editorScroll->setValue(
+      qMax(0, int(afterRect.top()) - fixture.edit()->viewport()->height() * 3 / 4));
+  QVERIFY2(waitUntil(
+               [&]() { return splitCard() && coloredPixels(widgetImage(splitCard()), false) > 5; }),
            "Editor scrolling must reach the final blue page fragment");
   QCOMPARE(fixture.editor.document()->toPlainText(), split);
   QCOMPARE(fixture.edit()->textCursor().anchor(), selection.anchor());
@@ -3774,7 +3972,9 @@ void TestTypstEditor::rawCodeHighlightsFollowEditsAndErrors() {
     QCOMPARE(color(QStringLiteral("fn")), QColor("#0033aa"));
     QCOMPARE(color(QStringLiteral("let n")), QColor("#557755"));
     QCOMPARE(syntaxFormatAt(document, text.lastIndexOf(QStringLiteral("\u00e9\U0001f600")))
-                 .foreground().color(), QColor("#aa2233"));
+                 .foreground()
+                 .color(),
+             QColor("#aa2233"));
   };
   checkShifted();
   fixture.editor.retryCompilation();
@@ -3806,9 +4006,8 @@ void TestTypstEditor::rawCodeHighlightsFollowEditsAndErrors() {
     const bool modified = document->isModified();
     QSignalSpy changes(document, &QTextDocument::contentsChange);
     fixture.editor.retryCompilation();
-    QVERIFY(waitUntil([&]() {
-      return fixture.editor.compileStatus() == VTypstEditor::CompileStatus::Error;
-    }));
+    QVERIFY(waitUntil(
+        [&]() { return fixture.editor.compileStatus() == VTypstEditor::CompileStatus::Error; }));
     QCOMPARE(color(QStringLiteral("fn")),
              tag == QStringLiteral("rust") ? QColor("#0033aa") : QColor("#886600"));
     if (tag == QStringLiteral("rust"))
@@ -3927,7 +4126,9 @@ void TestTypstEditor::lazyHighlightsFollowPendingEdits() {
   fixture.editor.setConfig(dark);
   QCoreApplication::processEvents();
   QCOMPARE(syntaxFormatAt(document, document->toPlainText().indexOf(QStringLiteral("string")))
-               .foreground().color(), QColor("#ff8899"));
+               .foreground()
+               .color(),
+           QColor("#ff8899"));
 
   cursor.setPosition(document->toPlainText().indexOf(QStringLiteral("/*")));
   cursor.deleteChar();
@@ -3937,9 +4138,8 @@ void TestTypstEditor::lazyHighlightsFollowPendingEdits() {
   const int second = document->toPlainText().indexOf(QStringLiteral("second"));
   QCOMPARE(syntaxFormatAt(document, second).foreground().color(), QColor("#557755"));
   fixture.editor.retryCompilation();
-  QVERIFY(waitUntil([&]() {
-    return fixture.editor.compileStatus() != VTypstEditor::CompileStatus::Compiling;
-  }));
+  QVERIFY(waitUntil(
+      [&]() { return fixture.editor.compileStatus() != VTypstEditor::CompileStatus::Compiling; }));
   QVERIFY(syntaxFormatAt(document, second).foreground().color() != QColor("#557755"));
 }
 
@@ -3953,9 +4153,8 @@ void TestTypstEditor::lazyPreviewsFollowPendingEdits() {
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
   const auto cards = [&]() {
     auto result = fixture.editor.findChildren<QWidget *>(QStringLiteral("typstPreviewCard"));
-    std::sort(result.begin(), result.end(), [](QWidget *p_a, QWidget *p_b) {
-      return p_a->y() < p_b->y();
-    });
+    std::sort(result.begin(), result.end(),
+              [](QWidget *p_a, QWidget *p_b) { return p_a->y() < p_b->y(); });
     return result;
   };
   QVERIFY(waitUntil([&]() {
@@ -4013,9 +4212,8 @@ void TestTypstEditor::lazyPreviewsFollowPendingEdits() {
   cursor.movePosition(QTextCursor::End);
   cursor.insertText(QStringLiteral("\n#let broken = ("));
   fixture.editor.retryCompilation();
-  QVERIFY(waitUntil([&]() {
-    return fixture.editor.compileStatus() == VTypstEditor::CompileStatus::Error;
-  }));
+  QVERIFY(waitUntil(
+      [&]() { return fixture.editor.compileStatus() == VTypstEditor::CompileStatus::Error; }));
   QVERIFY(waitUntil([&]() {
     const auto found = cards();
     return found.size() == 1 && found[0]->isVisible() &&
@@ -4049,8 +4247,10 @@ void TestTypstEditor::rasterHandoffRetainsLastGoodWhileTyping() {
       baselinePages.insert(p_page);
   };
   QVERIFY2(waitUntil([&]() {
-    return baselinePages.size() >= 2 && previewHasOnlyColor(previewImages(fixture.editor), true);
-  }), qPrintable(fixture.editor.compileMessage()));
+             return baselinePages.size() >= 2 &&
+                    previewHasOnlyColor(previewImages(fixture.editor), true);
+           }),
+           qPrintable(fixture.editor.compileMessage()));
   const auto lastGood = previewImages(fixture.editor);
   auto *document = fixture.editor.document();
   document->setModified(false);
@@ -4106,8 +4306,9 @@ void TestTypstEditor::rasterHandoffRetainsLastGoodWhileTyping() {
   fixture.edit()->setFocus();
   expectedSource = document->toPlainText();
   QVERIFY2(waitUntil([&]() {
-    return enters == 3 && previewHasOnlyColor(previewImages(fixture.editor), false);
-  }), qPrintable(fixture.editor.compileMessage()));
+             return enters == 3 && previewHasOnlyColor(previewImages(fixture.editor), false);
+           }),
+           qPrintable(fixture.editor.compileMessage()));
   watching = false;
   QVERIFY2(retained, "An arriving or partially rasterized snapshot replaced the last-good pixels");
   QCOMPARE(intercepted.size(), 3);
@@ -4119,7 +4320,8 @@ void TestTypstEditor::rasterHandoffRetainsLastGoodWhileTyping() {
   QRect oldBounds, newBounds;
   QVERIFY(coloredPixels(lastGood.front(), true, &oldBounds) > 20);
   QVERIFY(coloredPixels(accepted.front(), false, &newBounds) > 20);
-  QVERIFY2(newBounds.width() > oldBounds.width() + 10, "The new glyph must use its new crop geometry");
+  QVERIFY2(newBounds.width() > oldBounds.width() + 10,
+           "The new glyph must use its new crop geometry");
   QCOMPARE(document->toPlainText(), expectedSource);
   QCOMPARE(document->availableUndoSteps(), expectedUndo);
   QCOMPARE(textChangeCount(changes), expectedChanges);
@@ -4153,8 +4355,9 @@ void TestTypstEditor::rasterHandoffTransitions() {
     baselineSnapshot = p_snapshot;
   };
   QVERIFY2(waitUntil([&]() {
-    return baselineSnapshot && previewHasOnlyColor(previewImages(fixture.editor), true);
-  }), qPrintable(fixture.editor.compileMessage()));
+             return baselineSnapshot && previewHasOnlyColor(previewImages(fixture.editor), true);
+           }),
+           qPrintable(fixture.editor.compileMessage()));
   const auto lastGood = previewImages(fixture.editor);
   auto *document = fixture.editor.document();
   const auto *paneMeta = fixture.pane()->metaObject();
@@ -4183,7 +4386,8 @@ void TestTypstEditor::rasterHandoffTransitions() {
     retained = previewImages(fixture.editor) == lastGood;
     switch (transition) {
     case 0:
-      fixture.editor.setFileOverlay(QStringLiteral("main.typ"), QStringLiteral("Plain replacement."));
+      fixture.editor.setFileOverlay(QStringLiteral("main.typ"),
+                                    QStringLiteral("Plain replacement."));
       cleared = previewImages(fixture.editor).isEmpty();
       break;
     case 1:
@@ -4234,9 +4438,8 @@ void TestTypstEditor::rasterHandoffTransitions() {
       fixture.editor.setLivePreviewEnabled(false);
       fixture.editor.setMode(VTypstEditor::Mode::Edit);
     }
-    QVERIFY2(waitUntil([&]() {
-      return previewHasOnlyColor(previewImages(fixture.editor), false);
-    }), qPrintable(fixture.editor.compileMessage()));
+    QVERIFY2(waitUntil([&]() { return previewHasOnlyColor(previewImages(fixture.editor), false); }),
+             qPrintable(fixture.editor.compileMessage()));
     if (transition == 1)
       QCOMPARE(fixture.editor.activeFile(), QStringLiteral("other.typ"));
     if (transition == 3) {
@@ -4267,9 +4470,8 @@ void TestTypstEditor::lazyStateClearsOnReplacement() {
   EditorFixture fixture(root.path(), QStringLiteral("// comment\n$ x^2 $\n"),
                         VTypstEditor::Mode::Edit, config, true, false);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
-  QVERIFY(waitUntil([&]() {
-    return fixture.editor.findChild<QWidget *>(QStringLiteral("typstPreviewCard"));
-  }));
+  QVERIFY(waitUntil(
+      [&]() { return fixture.editor.findChild<QWidget *>(QStringLiteral("typstPreviewCard")); }));
   config->m_debounceMs = 60000;
   fixture.editor.setConfig(config);
   // Reapplying the same identity must not clear the pending display.
@@ -4441,8 +4643,8 @@ void TestTypstEditor::pdfVisiblePagesStaySharpAndRecover() {
     physicalSize = physicalPdfSize(page, dpr);
     QVERIFY(physicalSize.width() < 8192 && physicalSize.height() < 8192);
   }
-  const qint64 pagePixels = qint64(std::ceil((viewportSize.width() - 32) * dpr)) *
-                            physicalSize.height();
+  const qint64 pagePixels =
+      qint64(std::ceil((viewportSize.width() - 32) * dpr)) * physicalSize.height();
   // P is ONE visible page at physical resolution, not a share of visible+prefetch
   // or displayed+pending+retiring slots. Bytes are deliberately non-binding.
   const int pixelBudget = int(pagePixels * 3 / 2);
@@ -4492,9 +4694,10 @@ void TestTypstEditor::pdfVisiblePagesStaySharpAndRecover() {
   constexpr qreal fullTolerance = 3;
   const auto initial = pdfInkDifference(publications.front(), fullOriginal, interior);
   QVERIFY2(initial.pixels > 200, "The oracle must compare meaningful text/math, not blank paper");
-  QVERIFY2(initial.meanError <= fullTolerance,
-           qPrintable(QStringLiteral("Initial visible page is softer than physical-resolution PDF: %1")
-                          .arg(initial.meanError)));
+  QVERIFY2(
+      initial.meanError <= fullTolerance,
+      qPrintable(QStringLiteral("Initial visible page is softer than physical-resolution PDF: %1")
+                     .arg(initial.meanError)));
   // Prove the metric rejects a plausible half-area raster instead of averaging
   // its blurred edges away among the page's many white pixels.
   const QSize halfAreaSize(qMax(1, int(std::floor(physicalSize.width() / std::sqrt(2.0)))),
@@ -4522,8 +4725,9 @@ void TestTypstEditor::pdfVisiblePagesStaySharpAndRecover() {
   const int expectedAnchor = sourceSelection.anchor();
   const qreal expectedZoom = pane->property("zoom").toDouble();
   QVERIFY2(waitUntil([&]() {
-    return exports->size() >= 2 && pane->property("hasPendingUpdate").toBool();
-  }), qPrintable(fixture.editor.compileMessage()));
+             return exports->size() >= 2 && pane->property("hasPendingUpdate").toBool();
+           }),
+           qPrintable(fixture.editor.compileMessage()));
   Pdf replacement(exports->last().at(1).toByteArray());
   QVERIFY(replacement.load());
   QCOMPARE(replacement.document.pageCount(), 2);
@@ -4534,7 +4738,8 @@ void TestTypstEditor::pdfVisiblePagesStaySharpAndRecover() {
   // Compare the selected frame: the platform's selection tint changes glyph colors.
   const auto retained = pane->viewport()->grab().toImage().copy(interior);
   QCOMPARE(retained, selectedFrame);
-  const auto fullReplacement = paintPdfOracle(replacement, physicalSize, page, publications.front());
+  const auto fullReplacement =
+      paintPdfOracle(replacement, physicalSize, page, publications.front());
   QVERIFY(!fullReplacement.isNull());
   fixture.clearSelection();
   QVERIFY2(waitUntil([&]() { return publications.size() == 2; }),
@@ -4549,10 +4754,13 @@ void TestTypstEditor::pdfVisiblePagesStaySharpAndRecover() {
   // No edit, zoom, configuration change, selection change, or explicit refresh
   // follows publication: freeing the old snapshot must itself restore sharpness.
   PdfInkDifference recovered;
-  QVERIFY2(waitUntil([&]() {
-    recovered = pdfInkDifference(pane->viewport()->grab().toImage(), fullReplacement, interior);
-    return recovered.pixels > 200 && recovered.meanError <= fullTolerance;
-  }, paintTimeout),
+  QVERIFY2(waitUntil(
+               [&]() {
+                 recovered = pdfInkDifference(pane->viewport()->grab().toImage(), fullReplacement,
+                                              interior);
+                 return recovered.pixels > 200 && recovered.meanError <= fullTolerance;
+               },
+               paintTimeout),
            qPrintable(QStringLiteral("Published fallback never recovered physical resolution: %1")
                           .arg(recovered.meanError)));
   QCOMPARE(published.count(), 2);

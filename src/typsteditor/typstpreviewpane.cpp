@@ -165,8 +165,9 @@ public:
   TypstPreviewPanePrivate(TypstPreviewPane *p_q, const TypstEditorConfig &p_config)
       : q(p_q), m_maxPdfBytes(qMax(qint64(0), p_config.m_maxPdfBytes)),
         m_maxBytes(qMax(qint64(0), p_config.m_maxCacheBytes)),
-        m_maxPixels(qMax(0, p_config.m_maxRasterPixels)),
-        m_background(p_config.m_pdfBackground),
+        m_maxPixels(qMax(0, p_config.m_maxRasterPixels)), m_background(p_config.m_pdfBackground),
+        m_themeStyleEnabled(p_config.m_enableThemeStyleInPreview),
+        m_foreground(p_config.m_previewForeground),
         m_zoom(finiteCoordinate(p_config.m_initialZoom)
                    ? qBound(qreal(0.01), p_config.m_initialZoom, qreal(64))
                    : 1),
@@ -328,8 +329,7 @@ public:
       const bool adequate = wanted && key.adequateFor(*wanted);
       const qint64 pixels = key.pixels();
       if (result < 0 || (adequate && !bestAdequate) ||
-          (adequate == bestAdequate &&
-           (adequate ? pixels < bestPixels : pixels > bestPixels))) {
+          (adequate == bestAdequate && (adequate ? pixels < bestPixels : pixels > bestPixels))) {
         result = i;
         bestAdequate = adequate;
         bestPixels = pixels;
@@ -634,9 +634,8 @@ public:
       const QSizeF logical = p_slot.m_layout.m_pages.at(page).size();
       const qreal width = logical.width() * p_slot.m_layout.m_dpr;
       const qreal height = logical.height() * p_slot.m_layout.m_dpr;
-      const qreal factor =
-          qMin(qreal(1), qMin(MaximumRasterDimension / qMax(qreal(1), width),
-                             MaximumRasterDimension / qMax(qreal(1), height)));
+      const qreal factor = qMin(qreal(1), qMin(MaximumRasterDimension / qMax(qreal(1), width),
+                                               MaximumRasterDimension / qMax(qreal(1), height)));
       RenderNeed need;
       need.m_key.m_page = page;
       const int pixelWidth = qBound(
@@ -895,9 +894,8 @@ public:
     }
     // Leave at least one pixel for each remaining first paint, then divide
     // the actual unreserved capacity proportionally to the ideal sizes.
-    return qMin(p_key.pixels(),
-                1 + static_cast<qint64>((spare - missingPages) *
-                                       (qreal(p_key.pixels()) / missingPixels)));
+    return qMin(p_key.pixels(), 1 + static_cast<qint64>((spare - missingPages) *
+                                                        (qreal(p_key.pixels()) / missingPixels)));
   }
 
   void updateResolutionLimited(PdfSlot &p_slot) {
@@ -964,8 +962,7 @@ public:
         }
       }
       p_slot.m_active = key;
-      p_slot.m_request =
-          p_slot.m_renderer->requestPage(key.m_page, key.m_size, key.m_options);
+      p_slot.m_request = p_slot.m_renderer->requestPage(key.m_page, key.m_size, key.m_options);
       if (!p_slot.m_request) {
         fail(p_slot, TypstPreviewPane::tr("Qt PDF could not schedule page %1 for rendering.")
                          .arg(key.m_page + 1));
@@ -1195,7 +1192,8 @@ public:
       const auto pages = visiblePages(slot.m_layout);
       for (int page : pages) {
         const QRectF rect = slot.m_layout.m_pages.at(page).translated(-slot.m_layout.m_offset);
-        painter.fillRect(rect, Qt::white);
+        painter.fillRect(rect, m_themeStyleEnabled && m_background.isValid() ? m_background
+                                                                             : QColor(Qt::white));
         const int index = bestImageIndex(slot, page);
         if (index >= 0) {
           auto &image = slot.m_images[index];
@@ -1203,7 +1201,8 @@ public:
           painter.drawImage(rect, image.m_image, QRectF(image.m_image.rect()));
         } else {
           painter.save();
-          painter.setPen(Qt::darkGray);
+          painter.setPen(m_themeStyleEnabled && m_foreground.isValid() ? m_foreground
+                                                                       : QColor(Qt::darkGray));
           painter.drawText(rect.intersected(q->viewport()->rect()), Qt::AlignCenter,
                            slot.m_failed
                                ? TypstPreviewPane::tr("Page could not be rendered")
@@ -1294,6 +1293,8 @@ public:
   qint64 m_maxBytes;
   qint64 m_maxPixels;
   QColor m_background;
+  bool m_themeStyleEnabled;
+  QColor m_foreground;
   std::unique_ptr<PdfSlot> m_displayed;
   std::unique_ptr<PdfSlot> m_pending;
   std::unique_ptr<PdfSlot> m_retiring;
@@ -1360,6 +1361,8 @@ void TypstPreviewPane::applyConfig(const TypstEditorConfig &p_config) {
   m_d->m_maxBytes = qMax(qint64(0), p_config.m_maxCacheBytes);
   m_d->m_maxPixels = qMax(0, p_config.m_maxRasterPixels);
   m_d->m_background = p_config.m_pdfBackground;
+  m_d->m_themeStyleEnabled = p_config.m_enableThemeStyleInPreview;
+  m_d->m_foreground = p_config.m_previewForeground;
   if (m_d->m_queuedPdf.size() > m_d->m_maxPdfBytes) {
     m_d->m_queuedSnapshot.clear();
     m_d->m_queuedPdf.clear();
@@ -1520,8 +1523,7 @@ void TypstPreviewPane::clearSourceHighlight() {
   }
 }
 
-void TypstPreviewPane::flashSourceLocation(quint64 p_snapshot, int p_page,
-                                          const QPointF &p_point) {
+void TypstPreviewPane::flashSourceLocation(quint64 p_snapshot, int p_page, const QPointF &p_point) {
   clearSourceHighlight();
   if (!m_d->m_displayed || !m_d->current(m_d->m_displayed->m_snapshot) ||
       m_d->m_displayed->m_snapshot->m_id != p_snapshot || p_page < 0 ||
@@ -1535,8 +1537,7 @@ void TypstPreviewPane::flashSourceLocation(quint64 p_snapshot, int p_page,
     return;
   }
   const QPointF center = layout.m_pages.at(p_page).topLeft() + p_point * layout.m_scale;
-  if (!QRectF(viewport()->rect()).adjusted(16, 16, -16, -16)
-           .contains(center - layout.m_offset)) {
+  if (!QRectF(viewport()->rect()).adjusted(16, 16, -16, -16).contains(center - layout.m_offset)) {
     m_d->setOffset(center - QPointF(viewport()->width() / 2.0, viewport()->height() / 2.0));
   }
   m_d->m_sourceFlashPage = p_page;
@@ -1674,8 +1675,7 @@ void TypstPreviewPane::mouseReleaseEvent(QMouseEvent *p_event) {
   m_d->m_dragging = false;
   m_d->m_autoScroll.stop();
   // Ordinary clicks navigate source; links and drag selection keep their own gestures.
-  if (click && m_d->hitPage(position) == page &&
-      (m_d->m_controlClick || m_d->m_pressedLink < 0)) {
+  if (click && m_d->hitPage(position) == page && (m_d->m_controlClick || m_d->m_pressedLink < 0)) {
     if (m_d->current(m_d->m_displayed->m_snapshot)) {
       emit sourceLocationRequested(m_d->m_displayed->m_snapshot->m_id, page, point);
     } else {
@@ -1781,7 +1781,8 @@ void TypstPreviewPane::contextMenuEvent(QContextMenuEvent *p_event) {
   clearAction->setEnabled(hasSelection() || m_d->m_pressed);
   menu.addSeparator();
   if (!m_d->m_readMode) {
-    auto updateAction = menu.addAction(tr("Update preview"), this, &TypstPreviewPane::publishPending);
+    auto updateAction =
+        menu.addAction(tr("Update preview"), this, &TypstPreviewPane::publishPending);
     updateAction->setEnabled(hasPendingUpdate());
     menu.addSeparator();
   }

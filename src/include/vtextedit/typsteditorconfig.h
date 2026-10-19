@@ -33,8 +33,12 @@ public:
   // sequential preview is not height-capped and scrolls with the source editor.
   qreal m_previewMaxHeight = 480;
   qreal m_initialZoom = 1.0;
-  // PDF canvas only, not page colors. Invalid uses the widget's QPalette::Dark brush.
+  // Canvas color; also the default page fill when theme styling is enabled.
+  // Invalid leaves native Typst defaults and uses QPalette::Dark for the canvas.
   QColor m_pdfBackground;
+  // Preview-only defaults. Authored styles win; TypstCompiler exports ignore these.
+  bool m_enableThemeStyleInPreview = true;
+  QColor m_previewForeground;
 };
 
 } // namespace vte

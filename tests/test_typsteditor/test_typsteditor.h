@@ -1,8 +1,8 @@
 #ifndef TEST_TYPSTEDITOR_H
 #define TEST_TYPSTEDITOR_H
 
-#include <QtTest>
 #include <QImage>
+#include <QtTest>
 
 #include <functional>
 
@@ -45,6 +45,9 @@ class TestTypstEditor : public QObject {
   Q_OBJECT
 private slots:
   void compilerGeometryAndScale();
+  void previewThemeDefaultsRespectAuthoredStyles();
+  void previewThemeSwitchAndOptOutPreserveSource();
+  void exportsIgnorePreviewTheme();
   void compilerUnicodeImportsAndNormalization();
   void compilerAsyncFailureAndRecovery();
   void compilerRejectsInvalidScaleAndPixelLimit_data();

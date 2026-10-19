@@ -399,6 +399,22 @@ state or undo history. Coverage: inline Rust extractor tests,
 `raw_highlights_survive_evaluation_errors`, `rawCodeHighlightsUseSyntaxTheme` and
 `rawCodeHighlightsFollowEditsAndErrors`.
 
+## Typst Preview Theme Defaults
+
+`TypstEditorConfig::m_enableThemeStyleInPreview` defaults to true. When enabled, valid
+`m_pdfBackground` and `m_previewForeground` supply default page/text fills for both PDF
+and in-place previews. Invalid colors retain native Typst defaults. The canvas always
+uses `m_pdfBackground`, independently of the flag.
+
+Only the Preview bridge sends these colors. The helper installs them in `Library.styles`,
+below authored set/show/constructor styles, without rewriting source or recoloring images.
+Explicit black, white, and transparent page fills retain their meaning. Theme changes and
+opt-out rebuild the library only when defaults change; retained snapshots keep their old
+library. `TypstCompiler` uses Export mode and never sends preview defaults, even when given
+the editor's themed config. Font and layout defaults are unchanged. Regression coverage:
+`previewThemeDefaultsRespectAuthoredStyles`, `previewThemeSwitchAndOptOutPreserveSource`,
+and `exportsIgnorePreviewTheme` in `tests/test_typsteditor/`.
+
 ## Typst PDF Camera State
 
 `VTypstEditor::PdfZoomMode` (`Custom`, `Width`, `Page`) is shared with the internal PDF pane.
