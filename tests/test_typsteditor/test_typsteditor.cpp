@@ -3211,6 +3211,302 @@ void TestTypstEditor::syntaxHighlightsSurviveRehighlightAndThemeChanges() {
   QCOMPARE(textChangeCount(changes), 0);
 }
 
+void TestTypstEditor::rawCodeHighlightsUseEditorTheme() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto makeTheme = [&](const QString &p_name, const QString &p_stringColor,
+                             const QString &p_rawColor, const QString &p_background) {
+    const auto path = root.filePath(p_name);
+    if (!writeTypstTheme(path, p_stringColor, false))
+      return QSharedPointer<Theme>();
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+      return QSharedPointer<Theme>();
+    auto theme = QJsonDocument::fromJson(file.readAll()).object();
+    // Explicit Text defaults must not overwrite inherited raw properties.
+    theme.insert(QStringLiteral("editor-styles"), QJsonObject{
+        {QStringLiteral("Text"), QJsonObject{{QStringLiteral("font-size"), 11},
+          {QStringLiteral("font-family"), "Arial"}, {QStringLiteral("bold"), false},
+          {QStringLiteral("italic"), false}, {QStringLiteral("background-color"), "#ffffff"}}}});
+    auto styles = theme.value(QStringLiteral("typst-syntax-styles")).toObject();
+    styles.insert(QStringLiteral("raw"), QJsonObject{
+        {QStringLiteral("text-color"), p_rawColor},
+        {QStringLiteral("background-color"), p_background},
+        {QStringLiteral("font-family"), "Courier New"}, {QStringLiteral("font-size"), 17},
+        {QStringLiteral("bold"), true}, {QStringLiteral("italic"), true},
+        {QStringLiteral("underline"), true}, {QStringLiteral("strike-through"), true}});
+    // An authored empty token style inherits raw instead of clearing it.
+    styles.insert(QStringLiteral("function"), QJsonObject());
+    theme.insert(QStringLiteral("typst-syntax-styles"), styles);
+    return Theme::createThemeFromContent(QString::fromUtf8(QJsonDocument(theme).toJson()));
+  };
+  auto light = editorConfig(root.path());
+  light->m_textEditorConfig->m_theme = makeTheme(QStringLiteral("light.theme"),
+      QStringLiteral("#aa2233"), QStringLiteral("#886600"), QStringLiteral("#ddeeff"));
+  auto dark = editorConfig(root.path());
+  dark->m_textEditorConfig->m_theme = makeTheme(QStringLiteral("dark.theme"),
+      QStringLiteral("#ff8899"), QStringLiteral("#ffdd88"), QStringLiteral("#223344"));
+  QVERIFY(light->m_textEditorConfig->m_theme);
+  QVERIFY(dark->m_textEditorConfig->m_theme);
+  const auto source = QStringLiteral(
+      "```rust\nfn main() {\n  let message = \"\u00e9\U0001f600\";\n"
+      "  // comment\n  let n = 42;\n}\n```\n#let outside = \"ordinary\"\n// normal comment\n");
+  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, light, false, false);
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  auto *document = fixture.editor.document();
+  auto *highlighter = document->findChild<QSyntaxHighlighter *>();
+  QVERIFY(highlighter);
+  const auto at = [&](const QString &p_token) {
+    return syntaxFormatAt(document, source.indexOf(p_token));
+  };
+  const auto check = [&](const QColor &p_string, const QColor &p_raw, const QColor &p_background,
+                         int p_zoom) {
+    QCOMPARE(at(QStringLiteral("fn")).foreground().color(), QColor("#0033aa"));
+    QCOMPARE(at(QStringLiteral("comment")).foreground().color(), QColor("#557755"));
+    QCOMPARE(at(QStringLiteral("42")).foreground().color(), QColor("#aa5500"));
+    QCOMPARE(at(QStringLiteral("\u00e9\U0001f600")).foreground().color(), p_string);
+    for (const auto &probe : {QStringLiteral("```"), QStringLiteral("rust"),
+                              QStringLiteral("main")}) {
+      QCOMPARE(at(probe).foreground().color(), p_raw);
+      QCOMPARE(at(probe).background().color(), p_background);
+      QCOMPARE(at(probe).fontFamily(), QStringLiteral("Courier New"));
+      QCOMPARE(at(probe).fontPointSize(), qreal(17 + p_zoom));
+      QCOMPARE(at(probe).fontWeight(), int(QFont::Bold));
+    }
+    for (const auto &probe : {QStringLiteral("fn"), QStringLiteral("comment"),
+                              QStringLiteral("42")}) {
+      QCOMPARE(at(probe).background().color(), p_background);
+      QCOMPARE(at(probe).fontFamily(), QStringLiteral("Courier New"));
+      QCOMPARE(at(probe).fontPointSize(), qreal(17 + p_zoom));
+      QVERIFY(at(probe).fontItalic());
+    }
+    QCOMPARE(at(QStringLiteral("fn")).fontWeight(), int(QFont::Normal));
+    QCOMPARE(at(QStringLiteral("comment")).fontWeight(), int(QFont::Bold));
+    const auto string = at(QStringLiteral("\u00e9\U0001f600"));
+    QCOMPARE(string.background().color(), QColor("#ffeeee"));
+    QCOMPARE(string.fontFamily(), QStringLiteral("Consolas"));
+    QCOMPARE(string.fontPointSize(), qreal(13 + p_zoom));
+    QVERIFY(!string.fontUnderline());
+    QVERIFY(!string.fontStrikeOut());
+    QVERIFY(string.fontItalic());
+    const auto ordinary = at(QStringLiteral("ordinary"));
+    QCOMPARE(ordinary.foreground().color(), p_string);
+    QCOMPARE(ordinary.fontWeight(), int(QFont::Normal));
+    QVERIFY(!ordinary.fontItalic());
+    QCOMPARE(at(QStringLiteral("normal comment")).background().color(), QColor("#ffffff"));
+    QCOMPARE(at(QStringLiteral("normal comment")).fontFamily(), QStringLiteral("Arial"));
+    QVERIFY(!at(QStringLiteral("normal comment")).hasProperty(QTextFormat::FontPointSize));
+  };
+  auto selection = fixture.edit()->textCursor();
+  selection.setPosition(source.indexOf(QStringLiteral("message")) + 7);
+  selection.setPosition(source.indexOf(QStringLiteral("message")), QTextCursor::KeepAnchor);
+  fixture.edit()->setTextCursor(selection);
+  const auto selected = selection.selectedText();
+  const bool modified = document->isModified();
+  const int undoSteps = document->availableUndoSteps();
+  QSignalSpy changes(document, &QTextDocument::contentsChange);
+  check(QColor("#aa2233"), QColor("#886600"), QColor("#ddeeff"), 0);
+  highlighter->rehighlight();
+  QCoreApplication::processEvents();
+  check(QColor("#aa2233"), QColor("#886600"), QColor("#ddeeff"), 0);
+  fixture.editor.setConfig(dark);
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  for (const int delta : {0, 2, -2, 0}) {
+    fixture.editor.getTextEditor()->zoom(delta);
+    QCoreApplication::processEvents();
+    check(QColor("#ff8899"), QColor("#ffdd88"), QColor("#223344"), delta);
+  }
+  // Neither raw nor token size specified: inherit editor zoom, not Text's explicit size.
+  auto unsized = editorConfig(root.path());
+  unsized->m_textEditorConfig->m_theme = Theme::createThemeFromContent(QStringLiteral(R"({
+    "metadata": {"type": "vtextedit"}, "editor-styles": {"Text": {"font-size": 11}},
+    "typst-syntax-styles": {"raw": {"text-color": "#886600"}, "keyword": {}}
+  })"));
+  fixture.editor.setConfig(unsized);
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  fixture.editor.getTextEditor()->zoom(2);
+  QCoreApplication::processEvents();
+  QCOMPARE(at(QStringLiteral("fn")).foreground().color(), QColor("#886600"));
+  QVERIFY(!at(QStringLiteral("fn")).hasProperty(QTextFormat::FontPointSize));
+  // Absent string style leaves the outer raw format intact.
+  QCOMPARE(at(QStringLiteral("\u00e9\U0001f600")).foreground().color(), QColor("#886600"));
+  fixture.editor.getTextEditor()->zoom(0);
+  QCoreApplication::processEvents();
+  auto unstyled = editorConfig(root.path());
+  unstyled->m_textEditorConfig->m_theme = Theme::createThemeFromContent(QStringLiteral(
+      R"({"metadata": {"type": "vtextedit"}, "editor-styles": {"Text": {"font-size": 11}}})"));
+  fixture.editor.setConfig(unstyled);
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  QVERIFY(at(QStringLiteral("fn")).isEmpty());
+  QVERIFY(at(QStringLiteral("rust")).isEmpty());
+  QVERIFY(at(QStringLiteral("ordinary")).isEmpty());
+  fixture.editor.setConfig(light);
+  fixture.editor.getTextEditor()->zoom(0);
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  check(QColor("#aa2233"), QColor("#886600"), QColor("#ddeeff"), 0);
+  QCOMPARE(document->toPlainText(), source);
+  QCOMPARE(fixture.edit()->textCursor().selectedText(), selected);
+  QCOMPARE(fixture.edit()->textCursor().anchor(), selection.anchor());
+  QCOMPARE(fixture.edit()->textCursor().position(), selection.position());
+  QCOMPARE(document->isModified(), modified);
+  QCOMPARE(document->availableUndoSteps(), undoSteps);
+  QCOMPARE(textChangeCount(changes), 0);
+}
+
+void TestTypstEditor::rawCodeHighlightsFollowEditsAndErrors() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto path = root.filePath(QStringLiteral("raw.theme"));
+  QVERIFY(writeTypstTheme(path, QStringLiteral("#aa2233"), false));
+  auto config = editorConfig(root.path());
+  config->m_textEditorConfig->m_theme = Theme::createThemeFromFile(path);
+  QVERIFY(config->m_textEditorConfig->m_theme);
+  const auto source = QStringLiteral(
+      "```rust\nfn main() {\n  /* first\n  let n = 42;\n  second */\n"
+      "  let message = \"\u00e9\U0001f600\";\n}\n```\n");
+  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, config, false, false);
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  auto *document = fixture.editor.document();
+  const auto color = [&](const QString &p_token) {
+    return syntaxFormatAt(document, document->toPlainText().indexOf(p_token)).foreground().color();
+  };
+  const auto replace = [&](const QString &p_old, const QString &p_new) {
+    const int position = document->toPlainText().indexOf(p_old);
+    QVERIFY(position >= 0);
+    QTextCursor cursor(document);
+    cursor.setPosition(position);
+    cursor.setPosition(position + p_old.size(), QTextCursor::KeepAnchor);
+    cursor.beginEditBlock();
+    cursor.insertText(p_new);
+    cursor.endEditBlock();
+  };
+  const auto checkRust = [&]() {
+    QCOMPARE(color(QStringLiteral("fn")), QColor("#0033aa"));
+    QCOMPARE(color(QStringLiteral("let n")), QColor("#557755"));
+    QCOMPARE(color(QStringLiteral("\u00e9\U0001f600")), QColor("#aa2233"));
+  };
+  checkRust();
+  replace(QStringLiteral("rust"), QStringLiteral("unknown-lang"));
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  QCOMPARE(color(QStringLiteral("fn")), QColor("#886600"));
+  QCOMPARE(color(QStringLiteral("\u00e9\U0001f600")), QColor("#886600"));
+  document->undo();
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  checkRust();
+  document->redo();
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  QCOMPARE(color(QStringLiteral("fn")), QColor("#886600"));
+  document->undo();
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  replace(QStringLiteral("/*"), QStringLiteral("//"));
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  QCOMPARE(color(QStringLiteral("let n")), QColor("#0033aa"));
+  document->undo();
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  checkRust();
+  document->redo();
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  QCOMPARE(color(QStringLiteral("let n")), QColor("#0033aa"));
+  document->undo();
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+
+  config->m_debounceMs = 60000;
+  fixture.editor.setConfig(config);
+  QTextCursor cursor(document);
+  cursor.setPosition(0);
+  cursor.beginEditBlock();
+  cursor.insertText(QStringLiteral("\u00e9\U0001f600\n"));
+  cursor.endEditBlock();
+  QCoreApplication::processEvents();
+  QCOMPARE(fixture.editor.compileStatus(), VTypstEditor::CompileStatus::Compiling);
+  // Probe the string inside the block, not the newly inserted Unicode prefix.
+  const auto checkShifted = [&]() {
+    const auto text = document->toPlainText();
+    QCOMPARE(color(QStringLiteral("fn")), QColor("#0033aa"));
+    QCOMPARE(color(QStringLiteral("let n")), QColor("#557755"));
+    QCOMPARE(syntaxFormatAt(document, text.lastIndexOf(QStringLiteral("\u00e9\U0001f600")))
+                 .foreground().color(), QColor("#aa2233"));
+  };
+  checkShifted();
+  fixture.editor.retryCompilation();
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  checkShifted();
+  document->undo();
+  QCoreApplication::processEvents();
+  QCOMPARE(document->toPlainText(), source);
+  checkRust();
+  fixture.editor.retryCompilation();
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  document->redo();
+  QCoreApplication::processEvents();
+  checkShifted();
+  fixture.editor.retryCompilation();
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  document->undo();
+  fixture.editor.retryCompilation();
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+
+  cursor.movePosition(QTextCursor::End);
+  cursor.insertText(QStringLiteral("\n#missing_name"));
+  // Remove and restore the language while evaluation fails, proving fresh parsed ranges arrive.
+  for (const auto &tag : {QStringLiteral("unknown-lang"), QStringLiteral("rust")}) {
+    replace(tag == QStringLiteral("rust") ? QStringLiteral("unknown-lang") : QStringLiteral("rust"),
+            tag);
+    const auto expectedText = document->toPlainText();
+    const int undoSteps = document->availableUndoSteps();
+    const bool modified = document->isModified();
+    QSignalSpy changes(document, &QTextDocument::contentsChange);
+    fixture.editor.retryCompilation();
+    QVERIFY(waitUntil([&]() {
+      return fixture.editor.compileStatus() == VTypstEditor::CompileStatus::Error;
+    }));
+    QCOMPARE(color(QStringLiteral("fn")),
+             tag == QStringLiteral("rust") ? QColor("#0033aa") : QColor("#886600"));
+    QCOMPARE(document->toPlainText(), expectedText);
+    QCOMPARE(document->availableUndoSteps(), undoSteps);
+    QCOMPARE(document->isModified(), modified);
+    QCOMPARE(textChangeCount(changes), 0);
+  }
+  replace(QStringLiteral("\n#missing_name"), QString());
+  fixture.editor.retryCompilation();
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  QCOMPARE(document->toPlainText(), source);
+  checkRust();
+
+  // Replace a real in-flight Rust request with an unknown-language generation.
+  config->m_debounceMs = 10;
+  fixture.editor.setConfig(config);
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  int compilingEvents = 0;
+  int readyEvents = 0;
+  bool replacedInFlight = false;
+  const auto connection = QObject::connect(
+      &fixture.editor, &VTypstEditor::compileStatusChanged, &fixture.editor,
+      [&](VTypstEditor::CompileStatus p_state, const QString &) {
+        if (p_state == VTypstEditor::CompileStatus::Ready)
+          ++readyEvents;
+        if (p_state == VTypstEditor::CompileStatus::Compiling && ++compilingEvents == 2) {
+          replacedInFlight = true;
+          replace(QStringLiteral("rust"), QStringLiteral("unknown-lang"));
+        }
+      });
+  cursor.movePosition(QTextCursor::End);
+  cursor.insertText(QStringLiteral("\n"));
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  QObject::disconnect(connection);
+  QVERIFY(replacedInFlight);
+  QCOMPARE(readyEvents, 1);
+  QCOMPARE(color(QStringLiteral("fn")), QColor("#886600"));
+  auto *highlighter = document->findChild<QSyntaxHighlighter *>();
+  QVERIFY(highlighter);
+  highlighter->rehighlight();
+  QCOMPARE(color(QStringLiteral("fn")), QColor("#886600"));
+  replace(QStringLiteral("unknown-lang"), QStringLiteral("rust"));
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  checkRust();
+  QCOMPARE(fixture.editor.compileStatus(), VTypstEditor::CompileStatus::Ready);
+}
+
 void TestTypstEditor::lazyHighlightsFollowPendingEdits() {
   QTemporaryDir root;
   QVERIFY(root.isValid());

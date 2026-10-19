@@ -119,13 +119,30 @@ void TypstHighlighter::refreshTheme(const TextEditorConfig &p_config, int p_zoom
   base.clearProperty(QTextFormat::FontPointSize);
   m_formats.clear();
   const auto &styles = theme->typstSyntaxStyles();
+  QTextCharFormat rawBase = base;
+  int rawSize = 0;
+  const auto raw = styles.constFind(QStringLiteral("raw"));
+  if (raw != styles.constEnd()) {
+    rawBase.merge(raw.value().toTextCharFormat());
+    rawSize = raw.value().m_fontPointSize;
+  }
   for (auto it = styles.constBegin(); it != styles.constEnd(); ++it) {
+    const auto authored = it.value().toTextCharFormat();
     QTextCharFormat format = base;
-    format.merge(it.value().toTextCharFormat());
+    format.merge(authored);
     if (it.value().m_fontPointSize > 0) {
       format.setFontPointSize(qMax(2, it.value().m_fontPointSize + p_zoomDelta));
     }
     m_formats.insert(it.key(), format);
+
+    // Merge authored properties, not the ordinary format's inherited Text values.
+    QTextCharFormat rawFormat = rawBase;
+    rawFormat.merge(authored);
+    const int size = it.value().m_fontPointSize > 0 ? it.value().m_fontPointSize : rawSize;
+    if (size > 0) {
+      rawFormat.setFontPointSize(qMax(2, size + p_zoomDelta));
+    }
+    m_formats.insert(QStringLiteral("raw.") + it.key(), rawFormat);
   }
   m_refreshTimer.start(0);
 }

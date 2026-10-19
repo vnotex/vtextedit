@@ -10,6 +10,11 @@
 
 ### Features
 
+- Highlight tagged Typst raw/code blocks in edit mode with the editor's Typst palette,
+  reusing the preview engine's built-in language grammars. Supports multiline and inline
+  snippets, including Typst markup/code/math, without evaluating document customizations.
+  Tokens retain authored source positions and remain available when evaluation fails;
+  theme changes and zoom preserve source, selection and undo history.
 - Add optional `TypstCompiler`: compile in-memory Typst text asynchronously to per-page
   vector SVG or native RGBA `QImage` bitmaps without an editor widget. Supports bitmap
   scaling, project imports and fonts, diagnostics, bounded all-or-nothing results and

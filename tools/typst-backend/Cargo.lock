@@ -3220,6 +3220,7 @@ dependencies = [
  "comemo",
  "serde",
  "serde_json",
+ "syntect",
  "typst",
  "typst-ide",
  "typst-kit",

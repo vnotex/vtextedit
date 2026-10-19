@@ -361,6 +361,28 @@ Once written back as HTML a table **stays** HTML, even after every merge is spli
 is no in-editor route back to pipe syntax.
 
 
+## Typst Raw Code Highlighting
+
+`tools/typst-backend/src/highlight.rs` extracts embedded tokens from literal Raw CST nodes,
+using direct Text children as authored byte ranges (the lexer owns trimming). Foreign
+languages reuse `typst::text::RAW_SYNTAXES` and per-block Syntect state; `typ`/`typst`,
+`typc` and `typm` use the official markup/code/math parsers with a multiline source map.
+Never evaluate document-defined languages/themes/syntaxes, scan fences separately, or
+recursively highlight nested raw examples. Unknown/untagged/empty raw stays ordinary Raw;
+unfinished fences retain the official parser's Error styling.
+
+`parse_metadata` emits outer Raw before `raw.<tag>` tokens, through the existing UTF-16
+wire mapping and metadata budget. Parsed and compiled replies share the ranges even when
+evaluation fails; export's `previewMetadata: false` still bypasses them. Parser/scope or
+resource errors reject metadata rather than publishing a partial result.
+
+`TypstHighlighter::refreshTheme` caches Text + authored raw + authored token formats.
+Token properties override raw only when explicitly authored, including false decorations;
+size uses token, then raw, then inherited editor font, applying zoom once. `raw.<tag>` is
+internal, not a new theme key. Theme/zoom refresh and asynchronous range mapping must not
+change source, selection, dirty state or undo history. Coverage: inline Rust extractor tests,
+`raw_highlights_survive_evaluation_errors`, and the two `rawCodeHighlights*` editor slots.
+
 ## Typst PDF Camera State
 
 `VTypstEditor::PdfZoomMode` (`Custom`, `Width`, `Page`) is shared with the internal PDF pane.

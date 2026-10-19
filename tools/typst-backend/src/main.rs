@@ -1,4 +1,5 @@
 mod compile;
+mod highlight;
 mod preview;
 mod world;
 

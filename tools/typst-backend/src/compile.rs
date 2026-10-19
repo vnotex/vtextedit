@@ -437,6 +437,16 @@ fn parse_metadata(world: &dyn World, source: &Source, highlights: &mut Vec<Value
                 range["kind"] = json!(format!("{tag:?}"));
                 highlights.push(range);
             }
+            if tag == typst_syntax::Tag::Raw {
+                crate::highlight::highlight_raw(source, &node, &mut |bytes, kind| {
+                    if let Some(mut range) = wire_range(world, source.id(), bytes) {
+                        metadata_room(highlights.len())?;
+                        range["kind"] = json!(kind);
+                        highlights.push(range);
+                    }
+                    Ok(())
+                })?;
+            }
         }
         nodes.extend(node.children().rev());
     }
@@ -555,6 +565,37 @@ mod tests {
         request["activeFile"] = json!("main.typ"); request["generation"] = json!(generation);
         request["overlays"] = json!([{"file":"main.typ","text":text}]);
         request
+    }
+
+    #[test]
+    fn raw_highlights_survive_evaluation_errors() {
+        let (mut session, config) = configured();
+        let text = "é😀\n```rust\nfn main() {\n  let s = \"é😀\";\n  // comment\n}\n```\n#missing_name";
+        let mut responses = Vec::new();
+        session.handle(&compile_request(&config, text, json!([]), 1), &mut |v, _| {
+            responses.push(v);
+            Ok(())
+        }).unwrap();
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0]["op"], "parsed");
+        assert_eq!(responses[0]["diagnostics"], json!([]));
+        assert_eq!(responses[1]["op"], "compiled");
+        assert!(responses[1].get("snapshot").is_none());
+        assert!(responses[1]["diagnostics"].as_array().unwrap().iter().any(|d|
+            d["severity"] == "error" && d["message"].as_str().unwrap().contains("missing_name")));
+        assert_eq!(responses[0]["highlights"], responses[1]["highlights"]);
+        let highlights = responses[0]["highlights"].as_array().unwrap();
+        let outer = highlights.iter().position(|h| h["kind"] == "Raw").unwrap();
+        for (token, kind) in [("fn", "raw.keyword"), ("let", "raw.keyword"),
+            ("\"é😀\"", "raw.string"), ("// comment", "raw.comment")] {
+            let byte = text.find(token).unwrap();
+            let start = text[..byte].encode_utf16().count();
+            let end = start + token.encode_utf16().count();
+            let expected = json!({"file":"main.typ", "start":start, "end":end, "kind":kind});
+            let index = highlights.iter().position(|h| h == &expected)
+                .unwrap_or_else(|| panic!("missing {expected}: {highlights:?}"));
+            assert!(index > outer);
+        }
     }
 
     #[test]
