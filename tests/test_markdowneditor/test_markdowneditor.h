@@ -15,6 +15,7 @@ private slots:
   void testHighlightPaletteRejectsLateReplies();
   void testHighlightPalettesAreEditorLocal();
   void testKSyntaxThemeRefreshesCachedCode();
+  void testKSyntaxThemeFileSnapshot();
 
   // Source-preserving Markdown concealment through the real editor and Vi input.
   void testConcealMarkdownConfig();

@@ -3,7 +3,7 @@
 ## Build/Lint/Test Commands
 
 * **Build**: `mkdir build && cd build && cmake .. && cmake --build . --config Release`
-* **Build (Qt 5)**: Pass `-DQT_DEFAULT_MAJOR_VERSION=5` to cmake
+* **Build requirements**: Qt 6.9+, CMake 3.21+, Perl and Python 3; Qt 5 is not supported. KSyntaxHighlighting 6.30.0 builds without KDE Frameworks/ECM.
 * **Format**: Use `.clang-format` (2-space indent, 100-column limit, `PointerAlignment: Right`, `BreakBeforeBraces: Attach`). A pre-commit hook at `scripts/pre-commit` auto-formats staged `.cpp/.h` files (excludes `libs/`)
 * **Run All Tests**: `cd build && ctest` (after building)
 * **Run Single Test**: `cd build && ctest -R test_textfolding` (pattern matching)
@@ -14,8 +14,8 @@
 
 ### Standards & Tooling
 
-* C++14, Qt 5/6 dual-support via `QT_DEFAULT_MAJOR_VERSION` cache variable
-* Qt modules required: Core, Gui, Network, Svg, Widgets, LinguistTools; optional: Core5Compat (Qt 6)
+* C++17 library/consumer interfaces; the upstream syntax indexer requires a C++20-capable build compiler. `QT_DEFAULT_MAJOR_VERSION` must be 6.
+* Qt modules required by vtextedit: Core, Gui, Network, Svg, Widgets, LinguistTools, Core5Compat, and matching Gui private development headers. Standalone VSyntaxHighlighting needs only Core/Gui/Network.
 * `CMAKE_AUTOMOC`/`AUTOUIC`/`AUTORCC` enabled (Qt 6 uses `qt_standard_project_setup()`)
 
 ### Naming Conventions

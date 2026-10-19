@@ -25,10 +25,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - qt-version: '5.15.2'
-            qt-major: 5
-            arch: 'win64_msvc2019_64'
-            modules: ''
+          - qt-version: '6.9.3'
+            qt-major: 6
+            arch: 'win64_msvc2022_64'
+            modules: 'qt5compat'
             typst: 'OFF'
             expected-tests: 16
           - qt-version: '6.10.3'
@@ -53,8 +53,17 @@ jobs:
           fetch-depth: 1
           submodules: recursive
 
-      # Typst is Qt 6-only and requires qtpdf; ordinary Qt 5 builds remain enabled.
-      # Qt 6 also needs qt5compat. Svg is in the base archive.
+      - name: Set up syntax generator Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Set up syntax generator Perl
+        uses: shogo82148/actions-setup-perl@v1
+        with:
+          perl-version: '5.40'
+
+      # Typst requires qtpdf; all builds need qt5compat. Svg is in the base archive.
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:

@@ -259,12 +259,12 @@ static VTypstEditor *setupTypstEditor(QMainWindow *p_window, const QStringList &
   };
   QObject::connect(modeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), editor,
                    [editor, modeCombo](int p_index) {
-                     editor->setMode(static_cast<VTypstEditor::Mode>(modeCombo->itemData(p_index).toInt()));
+                     editor->setMode(
+                         static_cast<VTypstEditor::Mode>(modeCombo->itemData(p_index).toInt()));
                    });
   QObject::connect(inplaceButton, &QToolButton::toggled, editor,
                    &VTypstEditor::setInplacePreviewEnabled);
-  QObject::connect(liveButton, &QToolButton::toggled, editor,
-                   &VTypstEditor::setLivePreviewEnabled);
+  QObject::connect(liveButton, &QToolButton::toggled, editor, &VTypstEditor::setLivePreviewEnabled);
   QObject::connect(editor, &VTypstEditor::modeChanged, central, updateMode);
   QObject::connect(editor, &VTypstEditor::inplacePreviewEnabledChanged, central, updateMode);
   QObject::connect(editor, &VTypstEditor::livePreviewEnabledChanged, central, updateMode);
@@ -281,8 +281,7 @@ static VTypstEditor *setupTypstEditor(QMainWindow *p_window, const QStringList &
                    [editor]() { editor->findNextPdfMatch(); });
   QObject::connect(previous, &QToolButton::clicked, editor,
                    [editor]() { editor->findNextPdfMatch(true); });
-  QObject::connect(next, &QToolButton::clicked, editor,
-                   [editor]() { editor->findNextPdfMatch(); });
+  QObject::connect(next, &QToolButton::clicked, editor, [editor]() { editor->findNextPdfMatch(); });
   QObject::connect(zoomOut, &QToolButton::clicked, editor,
                    [editor]() { editor->setPdfZoom(editor->pdfZoom() / 1.2); });
   QObject::connect(zoomIn, &QToolButton::clicked, editor,
@@ -463,9 +462,8 @@ static void runTypstSmoke(VTypstEditor *p_editor, const QStringList &p_arguments
         return;
       }
       timer->stop();
-      std::fprintf(
-          stdout,
-          "TYPST_WIDGET_SMOKE_OK selection copy deferred-update read live-toggle in-place combined undo\n");
+      std::fprintf(stdout, "TYPST_WIDGET_SMOKE_OK selection copy deferred-update read live-toggle "
+                           "in-place combined undo\n");
       std::fflush(stdout);
       QCoreApplication::exit(0);
     }
@@ -489,7 +487,7 @@ int main(int p_argc, char *p_argv[]) {
 
   setupSpellChecker();
 
-  VTextEditor::addSyntaxCustomSearchPaths(QStringList(QStringLiteral(":/demo/data")));
+  VTextEditor::addSyntaxCustomSearchPaths({});
 
   if (app.arguments().contains(QStringLiteral("--richtext"))) {
     auto cleanup = setupRichTextEditor(&win);

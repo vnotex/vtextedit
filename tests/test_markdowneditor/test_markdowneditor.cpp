@@ -31,6 +31,9 @@
 #include <QtMath>
 #include <cmark.h>
 
+#include <KSyntaxHighlighting/Repository>
+#include <KSyntaxHighlighting/Theme>
+
 #include <memory>
 
 #include <vtextedit/markdowneditorconfig.h>
@@ -158,7 +161,7 @@ const QColor c_staleHighlightColor(QStringLiteral("#ed00a8"));
 
 QSharedPointer<MarkdownEditorConfig> makeHighlightConfig(bool p_web = true) {
   if (!p_web) {
-    VTextEditor::addSyntaxCustomSearchPaths({QFINDTESTDATA("../../libs/syntax-highlighting/data")});
+    VTextEditor::addSyntaxCustomSearchPaths({});
   }
   auto config = makeConfig();
   config->m_webCodeBlockHighlighterEnabled = p_web;
@@ -442,6 +445,37 @@ void TestMarkdownEditor::testKSyntaxThemeRefreshesCachedCode() {
   QCOMPARE(highlightForeground(fixture, 1), secondColor);
   fixture.editor()->setConfig(config);
   QTRY_COMPARE_WITH_TIMEOUT(highlightForeground(fixture, 1), firstColor, 5000);
+}
+
+void TestMarkdownEditor::testKSyntaxThemeFileSnapshot() {
+  QTemporaryDir dir;
+  QVERIFY(dir.isValid());
+  KSyntaxHighlighting::Repository repository;
+  const QColor expected(QStringLiteral("#315cb7"));
+  const QString path = dir.filePath(QStringLiteral("snapshot.theme"));
+  const auto writeFile = [](const QString &p_path, const QByteArray &p_data) {
+    QFile file(p_path);
+    return file.open(QIODevice::WriteOnly) && file.write(p_data) == p_data.size();
+  };
+  const QJsonObject json{
+      {QStringLiteral("metadata"), QJsonObject{{QStringLiteral("name"), QStringLiteral("Snapshot")},
+                                               {QStringLiteral("revision"), 1}}},
+      {QStringLiteral("text-styles"),
+       QJsonObject{{QStringLiteral("Normal"),
+                    QJsonObject{{QStringLiteral("text-color"), expected.name()}}}}}};
+  QVERIFY(writeFile(path, QJsonDocument(json).toJson()));
+  const auto theme = repository.themeFromFile(path);
+  QVERIFY(theme.isValid());
+  // File themes are snapshots, not lazy reads on the first color lookup.
+  QVERIFY(QFile::remove(path));
+  QCOMPARE(theme.textColor(KSyntaxHighlighting::Theme::Normal), expected.rgb());
+
+  const QString malformedPath = dir.filePath(QStringLiteral("malformed.theme"));
+  QVERIFY(writeFile(malformedPath,
+                    QByteArrayLiteral("{\"metadata\": {\"name\": \"Malformed\", \"revision\": 1},"
+                                      "\"text-styles\": }")));
+  // Valid metadata cannot make an otherwise malformed theme valid.
+  QVERIFY(!repository.themeFromFile(malformedPath).isValid());
 }
 
 void TestMarkdownEditor::testShiftWheelScroll_data() {

@@ -10,6 +10,36 @@ Check the `demo` project and VNote for details.
 
 ![Main Interface](pics/main.png)
 
+## Building and syntax highlighting
+
+Requires **Qt 6.9 or newer**, CMake 3.21+, Perl, Python 3 and a C++20-capable build
+compiler. The syntax catalog indexer uses C++20; library consumers require C++17.
+Qt 5 is no longer supported. Install Qt Core, Gui, Network, Svg, Widgets, LinguistTools,
+Core5Compat and the matching Qt Gui private development headers. Neither KDE Frameworks
+nor ECM is required.
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+```
+
+Set `CMAKE_PREFIX_PATH` to your Qt SDK if it is not discoverable. KSyntaxHighlighting is
+based on upstream **6.30.0** and remains the `VSyntaxHighlighting` CMake target. Its complete
+syntax catalog, including generated PHP/Twig/Jinja variants, and themes are embedded by
+default; the demo no longer ships a separate XML catalog. Initialize the repository with
+`VTextEditor::addSyntaxCustomSearchPaths({})`, or pass host-specific search paths as before.
+
+Theme names and file paths remain supported by `TextEditorConfig::m_syntaxTheme`.
+`Repository::themeFromFile()` loads a complete snapshot and rejects unreadable or malformed
+files. The existing `Default` theme name remains available; upstream `defaultTheme()` uses
+Breeze Light/Breeze Dark. The native code highlighter requires
+`MarkdownEditorConfig::m_webCodeBlockHighlighterEnabled = false`.
+
+Rebuild downstream consumers: the KF6 engine and corrected export boundary are not binary
+compatible with the old fork. VTextEdit's SOVERSION is now 9. Standalone dependency build
+options are documented in `libs/syntax-highlighting/README.md`.
+
 ## Font colors in Markdown
 
 The source editor colors the contents of matched `<font color=red>text</font>` tags.
@@ -198,15 +228,10 @@ Export compilation skips highlighting, outlines and editor-only preview metadata
 ### Building and running
 
 `VTEXTEDIT_ENABLE_TYPST` defaults to **OFF**. Disabled builds do not build the helper or
-`VTypstEditorDemo`, install the Typst headers, or require Rust/Qt Pdf. **Typst requires
-Qt 6**; Qt 5 remains supported for the existing editors with this option OFF. Configuring
-Qt 5 with Typst enabled fails with an explicit error before looking for Cargo or Qt Pdf.
-Enabled builds require Cargo with pinned **Rust 1.99.0**, the locked helper dependencies
-(official Typst crates pinned to **0.15.1**), and **Qt 6 Pdf** in addition to the existing
-Qt Widgets dependencies. Install matching Qt Gui private development headers,
-LinguistTools and Core5Compat as required by the existing build. Use CMake 3.16 or later and
-a toolchain supporting the selected Qt version (Qt 6.10 requires C++17); on Windows
-use an MSVC Qt kit for Qt Pdf, not MinGW.
+`VTypstEditorDemo`, install the Typst headers, or require Rust/Qt Pdf. All editors require
+Qt 6.9 or newer and the build dependencies listed above. Enabled builds additionally require
+Cargo with pinned **Rust 1.99.0**, the locked helper dependencies (official Typst crates
+pinned to **0.15.1**), and **Qt 6 Pdf**. On Windows use an MSVC Qt kit for Qt Pdf, not MinGW.
 
 The preview is QWidget-only: it uses public Qt Pdf APIs, not PdfWidgets, Qt Quick/QML,
 WebEngine, a browser, or a Tinymist/LSP server. The Typst CI baseline is Qt 6.10.3;

@@ -1,5 +1,26 @@
 # Changelog
 
+## 9.0.0 (unreleased)
+
+### Breaking changes
+
+- Require Qt 6.9+, CMake 3.21+, Perl and Python 3. Building the upstream syntax indexer
+  requires C++20; public library headers require C++17. Qt 5 support is removed.
+- Replace the 2019 KSyntaxHighlighting engine with upstream 6.30.0. Rebuild downstream
+  consumers against the new engine and export definitions; VTextEdit SOVERSION is 9.
+
+### Features and compatibility
+
+- Keep the standalone `VSyntaxHighlighting` target without KDE Frameworks or ECM, with
+  generated public headers and correct static/shared exports.
+- Embed the current syntax catalog, including generated grammars, and remove the demo's
+  obsolete XML copy. Custom syntax search paths and both public header include styles remain.
+- Preserve `Repository::themeFromFile()` as an eager snapshot, including rejection of
+  malformed files, and retain the named `Default` theme. Upstream default theme selection
+  uses Breeze Light/Breeze Dark.
+- Grow the editor's format cache for upstream format IDs beyond the former 256-entry limit.
+- Replace Qt 5 CI rows with Qt 6.9.3 and retain the Qt 6.10.3/Typst matrix.
+
 ## 8.0.0 (unreleased)
 
 ### Breaking changes
