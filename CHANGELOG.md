@@ -18,6 +18,10 @@
 - Preserve `Repository::themeFromFile()` as an eager snapshot, including rejection of
   malformed files, and retain the named `Default` theme. Upstream default theme selection
   uses Breeze Light/Breeze Dark.
+- Enrich the named `Default` syntax theme with current Breeze Light base styling and
+  CSV/TSV column colors, plus INI/Python/Rust/XML/Odin semantic overrides adapted to its
+  classic light palette. Modern editor-color roles retain the white background and
+  selection color, with amber warning markers and softer separators.
 - Grow the editor's format cache for upstream format IDs beyond the former 256-entry limit.
 - Replace Qt 5 CI rows with Qt 6.9.3 and retain the Qt 6.10.3/Typst matrix.
 
