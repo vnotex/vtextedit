@@ -12,11 +12,13 @@ Check the `demo` project and VNote for details.
 
 ## Building and syntax highlighting
 
-Requires **Qt 6.9 or newer**, CMake 3.21+, Perl, Python 3 and a C++20-capable build
+Requires **Qt 6.9 or newer**, CMake 3.21+, Python 3 and a C++20-capable build
 compiler. The syntax catalog indexer uses C++20; library consumers require C++17.
 Qt 5 is no longer supported. Install Qt Core, Gui, Network, Svg, Widgets, LinguistTools,
 Core5Compat and the matching Qt Gui private development headers. Neither KDE Frameworks
-nor ECM is required.
+nor ECM is required. Perl is needed only by maintainers regenerating the checked-in
+PHP/Twig/DoxygenLua/XSLT/JSONC definitions, not for normal builds; see the
+[regeneration instructions](libs/syntax-highlighting/README.md#regenerating-checked-in-syntax-definitions).
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release

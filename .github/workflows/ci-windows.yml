@@ -58,11 +58,6 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Set up syntax generator Perl
-        uses: shogo82148/actions-setup-perl@v1
-        with:
-          perl-version: '5.40'
-
       # Typst requires qtpdf; all builds need qt5compat. Svg is in the base archive.
       - name: Install Qt
         uses: jurplel/install-qt-action@v4

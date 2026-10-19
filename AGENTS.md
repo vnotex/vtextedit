@@ -3,12 +3,35 @@
 ## Build/Lint/Test Commands
 
 * **Build**: `mkdir build && cd build && cmake .. && cmake --build . --config Release`
-* **Build requirements**: Qt 6.9+, CMake 3.21+, Perl and Python 3; Qt 5 is not supported. KSyntaxHighlighting 6.30.0 builds without KDE Frameworks/ECM.
+* **Build requirements**: Qt 6.9+, CMake 3.21+ and Python 3; Qt 5 is not supported. KSyntaxHighlighting 6.30.0 builds without KDE Frameworks/ECM.
 * **Format**: Use `.clang-format` (2-space indent, 100-column limit, `PointerAlignment: Right`, `BreakBeforeBraces: Attach`). A pre-commit hook at `scripts/pre-commit` auto-formats staged `.cpp/.h` files (excludes `libs/`)
 * **Run All Tests**: `cd build && ctest` (after building)
 * **Run Single Test**: `cd build && ctest -R test_textfolding` (pattern matching)
 * **Tests are enabled by default** — `add_subdirectory(tests)` is present in root `CMakeLists.txt`
 * **Test targets**: `test_textfolding`, `test_utils`
+
+## Checked-In Perl-Generated Syntax Definitions
+
+Normal builds and CI must not require Perl. `libs/syntax-highlighting/data/syntax/`
+contains 14 checked-in generated XMLs: six PHP variants (HTML, CSS, JavaScript, JSX,
+TypeScript, Mustache), five Twig variants (HTML, CSS, JavaScript, JSX, TypeScript),
+DoxygenLua, XSLT and JSONC. Python/Jinja generation remains part of the normal build.
+
+**Tradeoff: generated files no longer refresh automatically.** Whenever their base
+grammars, PHP/Twig dependencies, generator scripts or `data/generators/xslt.base.xml`
+change in the syntax-highlighting submodule, including during an upstream update, run
+this maintainer-only command from the vtextedit root with Perl installed:
+
+```sh
+cmake -P libs/syntax-highlighting/data/generators/regenerate-perl-syntax.cmake
+```
+
+Commit the refreshed XMLs with their input changes in the submodule, then update the
+parent gitlink. Never hand-edit generated XMLs; preserve their generated-file notices
+and LF line endings. Rebuild the catalog and exercise the affected languages before
+committing. Upstream CMake updates must not restore normal-build Perl discovery or
+Perl generation rules: the source XML glob already includes these definitions, so doing
+so would both restore the dependency and duplicate catalog entries.
 
 ## C++ Code Style Guidelines
 

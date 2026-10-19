@@ -55,11 +55,6 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Install syntax generator Perl
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y perl
-
       # Typst requires qtpdf; all builds need qt5compat. Svg is in the base archive.
       - name: Install Qt
         uses: jurplel/install-qt-action@v4

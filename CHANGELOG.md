@@ -4,7 +4,7 @@
 
 ### Breaking changes
 
-- Require Qt 6.9+, CMake 3.21+, Perl and Python 3. Building the upstream syntax indexer
+- Require Qt 6.9+, CMake 3.21+ and Python 3. Building the upstream syntax indexer
   requires C++20; public library headers require C++17. Qt 5 support is removed.
 - Replace the 2019 KSyntaxHighlighting engine with upstream 6.30.0. Rebuild downstream
   consumers against the new engine and export definitions; VTextEdit SOVERSION is 9.
@@ -24,6 +24,9 @@
   code-block highlighting and other library updates.
 - Embed the current syntax catalog, including generated grammars, and remove the demo's
   obsolete XML copy. Custom syntax search paths and both public header include styles remain.
+- Check in the 14 PHP/Twig/DoxygenLua/XSLT/JSONC generated definitions, removing Perl from
+  normal builds and CI. Perl is only needed for explicit maintainer regeneration after
+  grammar or generator updates; Python still generates Jinja definitions during builds.
 - Add native PlantUML, Flowchart.js (`flowchart` / `flow`) and WaveDrom / WaveJSON grammars.
   Reuse the bundled Mermaid, Graphviz, LaTeX and Typst definitions; native language tags
   now fall back to case-insensitive catalog names and aliases after extension lookup,
