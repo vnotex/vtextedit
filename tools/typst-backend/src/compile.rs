@@ -1,15 +1,14 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::num::NonZeroUsize;
-use std::sync::Arc;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
 use typst::diag::{Severity, SourceDiagnostic};
-use typst::foundations::{NativeElement, StyleChain};
+use typst::foundations::{Bytes, NativeElement, StyleChain};
 use typst::introspection::{Introspector, PagedPosition};
 use typst::layout::{Abs, Frame, FrameItem, Point, Sides, Transform};
-use typst::model::{Destination, Document, HeadingElem};
+use typst::model::{Document, HeadingElem};
 use typst::syntax::{LinkedNode, Source};
 use typst::utils::Scalar;
 use typst::{World, WorldExt};
@@ -18,16 +17,16 @@ use typst_layout::PagedDocument;
 use crate::world::{Config, FrozenWorld, Overlay, ProjectWorld, byte_offset, project_id, wire_range};
 use crate::{MAX_BINARY, MAX_HEADER, MAX_ID, id, index, text};
 
-type SendReply<'a> = dyn FnMut(Value, Arc<Vec<u8>>) -> Result<(), String> + 'a;
+type SendReply<'a> = dyn FnMut(Value, Bytes) -> Result<(), String> + 'a;
 
-struct Snapshot { document: PagedDocument, world: FrozenWorld }
+struct Snapshot { document: PagedDocument, world: FrozenWorld, resources: crate::resources::Resources }
 
 #[derive(Clone, PartialEq, Eq)]
-enum CacheKey { Pdf(u64), Raster(u64, usize, u64), Svg(u64, usize) }
+enum CacheKey { Pdf(u64), Raster(u64, usize, u64), Svg(u64, usize), Image(u64, u64) }
 impl CacheKey {
-    fn snapshot(&self) -> u64 { match *self { Self::Pdf(id) | Self::Raster(id, ..) | Self::Svg(id, ..) => id } }
+    fn snapshot(&self) -> u64 { match *self { Self::Pdf(id) | Self::Raster(id, ..) | Self::Svg(id, ..) | Self::Image(id, ..) => id } }
 }
-struct CacheEntry { key: CacheKey, bytes: Arc<Vec<u8>> }
+struct CacheEntry { key: CacheKey, bytes: Bytes }
 
 #[derive(Default)]
 pub struct Session {
@@ -57,7 +56,7 @@ impl Session {
             self.epoch = Some(epoch);
             self.world = Some(world);
             send(json!({"op":"ready", "version":1,
-                "capabilities":["pdf","raster","svg","navigation","previews","highlights","headings"]}), Arc::default())?;
+                "capabilities":["pdf","raster","svg","navigation","previews","highlights","headings","resources"]}), Bytes::new([]))?;
             return Ok(false);
         }
         if self.epoch != Some(epoch) { return Err("session is not initialized for this epoch".into()); }
@@ -70,11 +69,12 @@ impl Session {
             "compile" => self.compile(request, send)?,
             "retain" => {
                 self.retain(request)?;
-                send(json!({"op":"retained"}), Arc::default())?;
+                send(json!({"op":"retained"}), Bytes::new([]))?;
             }
             "pdf" => self.pdf(request, send)?,
             "raster" => self.raster(request, send)?,
             "svg" => self.svg(request, send)?,
+            "imageData" => self.image_data(request, send)?,
             "sourceToOutput" => self.source_to_output(request, send)?,
             "outputToSource" => self.output_to_source(request, send)?,
             "shutdown" => return Ok(true),
@@ -85,7 +85,7 @@ impl Session {
 
     fn retain(&mut self, request: &Value) -> Result<(), String> {
         let values = request["snapshots"].as_array().ok_or("snapshots must be a complete retention array")?;
-        if values.len() > 2 { return Err("at most two finished snapshots can be retained".into()); }
+        if values.len() > 3 { return Err("at most three finished snapshots can be retained".into()); }
         let mut retained = HashSet::new();
         for value in values {
             let value = value.as_u64().filter(|n| (1..=MAX_ID).contains(n)).ok_or("invalid retained snapshot ID")?;
@@ -109,7 +109,7 @@ impl Session {
         self.generation = generation;
         let world = self.world.as_mut().unwrap();
         if let Err(error) = world.update(config, overlays) {
-            send(json!({"op":"parsed", "activeFile":active_file, "highlights":[], "diagnostics":[]}), Arc::default())?;
+            send(json!({"op":"parsed", "activeFile":active_file, "highlights":[], "diagnostics":[]}), Bytes::new([]))?;
             return Err(error);
         }
         let mut highlights = Vec::new();
@@ -127,11 +127,11 @@ impl Session {
             Ok::<_, String>(())
         })();
         if let Err(error) = parsed {
-            send(json!({"op":"parsed", "activeFile":active_file, "highlights":[], "diagnostics":[]}), Arc::default())?;
+            send(json!({"op":"parsed", "activeFile":active_file, "highlights":[], "diagnostics":[]}), Bytes::new([]))?;
             return Err(error);
         }
         send(json!({"op":"parsed", "activeFile":active_file,
-            "highlights":highlights, "diagnostics":diagnostics}), Arc::default())?;
+            "highlights":highlights, "diagnostics":diagnostics}), Bytes::new([]))?;
 
         let result = typst::compile::<PagedDocument>(world);
         for diagnostic in result.warnings.iter() { push_diagnostic(world, diagnostic, &mut diagnostics)?; }
@@ -144,6 +144,8 @@ impl Session {
         };
         let mut reply = json!({"op":"compiled", "activeFile":active_file, "highlights":highlights,
             "diagnostics":diagnostics, "dependencies":world.dependencies()});
+        reply["images"] = json!([]);
+        reply["sourceLinks"] = json!([]);
         if !preview_metadata {
             reply["previews"] = json!([]);
             reply["links"] = json!([]);
@@ -153,11 +155,11 @@ impl Session {
         if let Err(error) = world.check_dependencies() {
             reply["invalidated"] = json!(true);
             reply["diagnostics"].as_array_mut().unwrap().push(unmapped_diagnostic(&error));
-            send(reply, Arc::default())?;
+            send(reply, Bytes::new([]))?;
             return Ok(());
         }
         if let Some(document) = document {
-            if self.snapshots.len() == 2 { return Err("two finished snapshots are retained; release the superseded newest before compiling".into()); }
+            if self.snapshots.len() == 3 { return Err("three finished snapshots are retained; release the superseded newest before compiling".into()); }
             let mut pages = Vec::new();
             for page in document.pages() {
                 metadata_room(pages.len())?;
@@ -169,10 +171,12 @@ impl Session {
                 }
                 pages.push(json!([width, height]));
             }
-            let (previews, links, headings) = if preview_metadata {
-                (crate::preview::extract(world, &document)?, extract_links(&document)?, extract_headings(world, &document)?)
+            let (previews, mut resources, links, headings, source_links) = if preview_metadata {
+                let (previews, resources) = crate::preview::extract_with_resources(world, &document)?;
+                (previews, resources, extract_links(&document)?, extract_headings(world, &document)?,
+                    crate::resources::source_links(world, &document)?)
             } else {
-                (json!([]), json!([]), json!([]))
+                (json!([]), crate::resources::Resources::default(), json!([]), json!([]), json!([]))
             };
             // Semantic extraction may need additional source files. Validate the
             // complete frozen read set at the actual publication boundary.
@@ -181,7 +185,7 @@ impl Session {
                 reply["invalidated"] = json!(true);
                 reply["dependencies"] = world.dependencies();
                 reply["diagnostics"].as_array_mut().unwrap().push(unmapped_diagnostic(&error));
-                send(reply, Arc::default())?;
+                send(reply, Bytes::new([]))?;
                 return Ok(());
             }
             self.next_snapshot = self.next_snapshot.checked_add(1).filter(|id| *id <= MAX_ID).ok_or("snapshot identifier space exhausted")?;
@@ -192,13 +196,15 @@ impl Session {
             reply["links"] = links;
             reply["headings"] = headings;
             reply["dependencies"] = world.dependencies();
+            reply["images"] = resources.take_metadata();
+            reply["sourceLinks"] = source_links;
             // Serialization's bounded writer checks the full atomic metadata
             // before a finished slot becomes observable to the consumer.
             check_metadata_size(&reply)?;
-            self.snapshots.insert(snapshot_id, Snapshot { document, world: world.freeze() });
+            self.snapshots.insert(snapshot_id, Snapshot { document, world: world.freeze(), resources });
         }
         let created = reply["snapshot"].as_u64();
-        if let Err(error) = send(reply, Arc::default()) {
+        if let Err(error) = send(reply, Bytes::new([])) {
             if let Some(id) = created { self.snapshots.remove(&id); }
             return Err(error);
         }
@@ -206,7 +212,7 @@ impl Session {
         Ok(())
     }
 
-    fn cached(&mut self, key: &CacheKey) -> Option<Arc<Vec<u8>>> {
+    fn cached(&mut self, key: &CacheKey) -> Option<Bytes> {
         let index = self.cache.iter().position(|entry| &entry.key == key)?;
         let entry = self.cache.remove(index)?;
         let bytes = entry.bytes.clone();
@@ -222,7 +228,7 @@ impl Session {
         }
     }
 
-    fn cache(&mut self, key: CacheKey, bytes: Arc<Vec<u8>>) {
+    fn cache(&mut self, key: CacheKey, bytes: Bytes) {
         self.trim_cache(bytes.len());
         self.cache_bytes += bytes.len();
         self.cache.push_back(CacheEntry { key, bytes });
@@ -245,7 +251,7 @@ impl Session {
             // typst-pdf owns its output Vec and has no bounded writer API.
             // Never copy, cache, or transmit an oversized export.
             if bytes.len() > limit { return Err("PDF exceeds maxPdfBytes or maxCacheBytes".into()); }
-            let bytes = Arc::new(bytes);
+            let bytes = Bytes::new(bytes);
             self.cache(key, bytes.clone());
             bytes
         };
@@ -270,7 +276,7 @@ impl Session {
             // The native exporter owns its String and has no bounded writer API.
             // Check before transferring its buffer without copying into the cache.
             if svg.len() > limit { return Err("SVG exceeds maxCacheBytes or protocol resource limit".into()); }
-            let bytes = Arc::new(svg.into_bytes());
+            let bytes = Bytes::new(svg.into_bytes());
             self.cache(key, bytes.clone());
             bytes
         };
@@ -293,12 +299,37 @@ impl Session {
             let options = typst_render::RenderOptions { pixel_per_pt: Scalar::new(scale), render_bleed: false };
             let pixels = typst_render::render(original, &options);
             if pixels.width() != width || pixels.height() != height { return Err("renderer dimensions differed from checked dimensions".into()); }
-            let bytes = Arc::new(pixels.take());
+            let bytes = Bytes::new(pixels.take());
             self.cache(key, bytes.clone());
             bytes
         };
         send(json!({"op":"raster", "snapshot":snapshot_id, "page":page, "scale":scale,
             "width":width, "height":height, "stride":width * 4}), bytes)
+    }
+
+    fn image_data(&mut self, request: &Value, send: &mut SendReply<'_>) -> Result<(), String> {
+        let snapshot_id = id(request, "snapshot")?;
+        let image_id = id(request, "image")?;
+        let snapshot = self.snapshots.get(&snapshot_id).ok_or("unknown or released snapshot")?;
+        let resource = snapshot.resources.get(image_id)?;
+        let config = &self.world.as_ref().unwrap().config;
+        let (width, height, raster_bytes) = resource.checked_size(config)?;
+        let mime = resource.mime();
+        let key = CacheKey::Image(snapshot_id, image_id);
+        let bytes = if let Some(bytes) = self.cached(&key) {
+            if bytes.len() > self.world.as_ref().unwrap().config.max_cache_bytes {
+                return Err("image exceeds the current cache resource limit".into());
+            }
+            bytes
+        } else {
+            self.trim_cache(raster_bytes);
+            let resource = self.snapshots[&snapshot_id].resources.get(image_id)?;
+            let bytes = resource.data(&self.world.as_ref().unwrap().config)?;
+            self.cache(key, bytes.clone());
+            bytes
+        };
+        send(json!({"op":"imageData", "snapshot":snapshot_id, "image":image_id,
+            "mime":mime, "width":width, "height":height}), bytes)
     }
 
     fn source_to_output(&self, request: &Value, send: &mut SendReply<'_>) -> Result<(), String> {
@@ -310,7 +341,7 @@ impl Session {
         let locations: Vec<Value> = source_locations(&snapshot.document, &source, offset).into_iter()
             .filter(|position| position.page.get() <= snapshot.document.pages().len())
             .map(|position| json!({"page":position.page.get() - 1, "x":position.point.x.to_pt(), "y":position.point.y.to_pt()})).collect();
-        send(json!({"op":"sourceToOutput", "snapshot":snapshot_id, "locations":locations}), Arc::default())
+        send(json!({"op":"sourceToOutput", "snapshot":snapshot_id, "locations":locations}), Bytes::new([]))
     }
 
     fn output_to_source(&self, request: &Value, send: &mut SendReply<'_>) -> Result<(), String> {
@@ -334,7 +365,7 @@ impl Session {
             // The snapshot-owned link sidecar implements internal navigation.
             Some(typst_ide::Jump::Position(_)) | None => {},
         }
-        send(reply, Arc::default())
+        send(reply, Bytes::new([]))
     }
 }
 
@@ -522,21 +553,7 @@ fn collect_links(document: &PagedDocument, frame: &Frame, transform: Transform, 
                 if right <= left || bottom <= top { continue; }
                 let mut link = json!({"page":page,"x":left,"y":top,"width":right-left,"height":bottom-top,
                     "targetPage":-1,"targetX":0,"targetY":0,"url":""});
-                let target = match destination {
-                    Destination::Url(url) => { link["url"] = json!(url.to_string()); None }
-                    Destination::Position(position) => Some(*position),
-                    Destination::Location(location) => document.introspector().position(*location),
-                };
-                if let Some(target) = target {
-                    if target.page.get() <= document.pages().len() {
-                        let x = target.point.x.to_pt();
-                        let y = (target.point.y.to_pt() - 10.0).max(0.0);
-                        if x.is_finite() && y.is_finite() {
-                            link["targetPage"] = json!(target.page.get() - 1);
-                            link["targetX"] = json!(x); link["targetY"] = json!(y);
-                        }
-                    }
-                }
+                crate::resources::set_destination(document, destination, &mut link);
                 links.push(link);
             }
             _ => {},
@@ -611,7 +628,7 @@ mod tests {
         session.handle(&compile, &mut |v, _| { responses.push(v); Ok(()) }).unwrap();
         assert!(responses[1]["snapshot"].as_u64().is_some());
         assert_eq!(responses[0]["highlights"], json!([]));
-        for key in ["highlights", "previews", "links", "headings"] {
+        for key in ["highlights", "previews", "links", "headings", "images", "sourceLinks"] {
             assert_eq!(responses[1][key], json!([]));
         }
         compile = compile_request(&config, "#let x =", json!([]), 2);
@@ -620,7 +637,7 @@ mod tests {
         session.handle(&compile, &mut |v, _| { responses.push(v); Ok(()) }).unwrap();
         assert!(responses[1].get("snapshot").is_none());
         assert!(responses[1]["diagnostics"].as_array().unwrap().iter().any(|d| d["severity"] == "error"));
-        for key in ["highlights", "previews", "links", "headings"] {
+        for key in ["highlights", "previews", "links", "headings", "images", "sourceLinks"] {
             assert_eq!(responses[1][key], json!([]));
         }
     }
@@ -633,7 +650,7 @@ mod tests {
         session.handle(&compile, &mut |v, _| { responses.push(v); Ok(()) }).unwrap();
         let snapshot = responses[1]["snapshot"].as_u64().unwrap();
         let mut svg = request("svg"); svg["snapshot"] = json!(snapshot); svg["page"] = json!(0);
-        let mut first = Arc::<Vec<u8>>::default();
+        let mut first = Bytes::new([]);
         session.handle(&svg, &mut |v, bytes| {
             assert_eq!(v, json!({"op":"svg", "snapshot":snapshot, "page":0}));
             first = bytes;
@@ -673,13 +690,21 @@ mod tests {
         let second = responses[1]["snapshot"].as_u64().unwrap();
         assert!(second > first);
         assert_eq!(session.snapshots.len(), 2);
-        let error = session.handle(&compile_request(&config, "Third", json!([first, second]), 4), &mut |_, _| Ok(())).unwrap_err();
-        assert!(error.contains("two finished"));
+        responses.clear();
+        session.handle(&compile_request(&config, "Third", json!([first, second]), 4), &mut |v, _| { responses.push(v); Ok(()) }).unwrap();
+        let third = responses[1]["snapshot"].as_u64().unwrap();
+        assert_eq!(session.snapshots.len(), 3);
+        assert!(session.handle(&compile_request(&config, "Fourth", json!([first, second, third]), 5), &mut |_, _| Ok(())).is_err());
+        assert_eq!(session.snapshots.keys().copied().collect::<Vec<_>>(), vec![first, second, third]);
         let mut retain = request("retain"); retain["snapshots"] = json!([first, MAX_ID]);
         session.handle(&retain, &mut |_, _| Ok(())).unwrap();
         assert_eq!(session.snapshots.keys().copied().collect::<Vec<_>>(), vec![first]);
         let mut pdf = request("pdf"); pdf["snapshot"] = json!(second);
         assert!(session.handle(&pdf, &mut |_, _| Ok(())).is_err());
+        responses.clear();
+        session.handle(&compile_request(&config, "Fourth", json!([first]), 6), &mut |v, _| { responses.push(v); Ok(()) }).unwrap();
+        assert!(responses[1]["snapshot"].as_u64().unwrap() > third);
+        assert_eq!(session.snapshots.len(), 2);
     }
 
     #[test]

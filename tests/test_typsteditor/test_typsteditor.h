@@ -101,6 +101,20 @@ private slots:
   void documentResetRetiresPendingPdf();
   void documentResetDrainsTimedOutRequest();
   void repeatedCloseDuringPendingOutput();
+  void resourceContextMetadataAndGestures();
+  void resourceImageDataRetentionAndCancellation();
+  void resourceImageDataBoundsAndGeneratedPixels();
+  void resourceIndependentSnapshotRetention();
+  void resourceInternalLinkNavigation();
+  void resourceStaleInternalLinkEligibility();
+  void resourceResizePreservesSourceUndo();
+  void resourceResizeRejectsUnsafeContexts();
+  void resourceMenusFollowTheirSurface_data();
+  void resourceMenusFollowTheirSurface();
+  void resourceMenusSurviveDeletion_data();
+  void resourceMenusSurviveDeletion();
+  void resourceImageCompletionSurvivesDeletion_data();
+  void resourceImageCompletionSurvivesDeletion();
 };
 } // namespace tests
 

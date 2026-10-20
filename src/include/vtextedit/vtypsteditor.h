@@ -3,14 +3,18 @@
 
 #include <vtextedit/vtextedit_export.h>
 
+#include <QByteArray>
 #include <QMetaType>
+#include <QPointF>
 #include <QScopedPointer>
 #include <QSharedPointer>
+#include <QSize>
 #include <QStringList>
 #include <QUrl>
 #include <QVector>
 #include <QWidget>
 
+class QMenu;
 class QTextDocument;
 
 namespace vte {
@@ -29,6 +33,29 @@ struct TypstHeadingInfo {
   QString m_title;
   // Project-relative slash path, or @package path; empty when unmappable.
   QString m_file;
+};
+
+// Snapshot identities are opaque. Actions resolve the original compiler record, not copied fields.
+struct TypstResourceContext {
+  enum class Surface { Source, InPlace, Preview };
+  Surface m_surface = Surface::Source;
+  quint64 m_epoch = 0;
+  quint64 m_generation = 0;
+  quint64 m_snapshot = 0;
+  quint64 m_imageId = 0;
+  QString m_imagePath;
+  QSize m_imageSize;
+  int m_width = 0;
+  int m_height = 0;
+  bool m_imageResizable = false;
+  QString m_sourceFile;
+  int m_sourceStart = -1;
+  int m_sourceEnd = -1;
+  QUrl m_linkUrl;
+  int m_linkPage = -1;
+  QPointF m_linkPoint;
+  int m_linkIndex = -1;
+  bool m_linkNavigable = false;
 };
 
 // One source document and compiler session, independent of the presentation mode.
@@ -103,6 +130,11 @@ public:
   bool hasPendingPdfUpdate() const;
   void publishPendingPdfUpdate();
 
+  bool isResourceContextValid(const TypstResourceContext &p_context, bool p_forEdit = false) const;
+  void requestImageData(const TypstResourceContext &p_context, quint64 p_requestId);
+  bool resizeImage(const TypstResourceContext &p_context, int p_width, int p_height);
+  void openContextLink(const TypstResourceContext &p_context);
+
 signals:
   void modeChanged(vte::VTypstEditor::Mode p_mode);
   void inplacePreviewEnabledChanged(bool p_enabled);
@@ -120,6 +152,15 @@ signals:
   void sourceLocationRequested(const QString &p_file, int p_start, int p_end);
   // The host applies its URL opening/security policy; the editor never launches URLs.
   void externalLinkRequested(const QUrl &p_url);
+  void resourceContextMenuRequested(const vte::TypstResourceContext &p_context, QMenu *p_menu);
+  void imageActivated(const vte::TypstResourceContext &p_context);
+  void imageDataReady(quint64 p_requestId, const QByteArray &p_data, const QString &p_mime,
+                      const QString &p_error);
+  void resourceContextsInvalidated();
+
+protected:
+  void changeEvent(QEvent *p_event) Q_DECL_OVERRIDE;
+  void hideEvent(QHideEvent *p_event) Q_DECL_OVERRIDE;
 
 private:
   class Private;
@@ -129,5 +170,6 @@ private:
 } // namespace vte
 
 Q_DECLARE_METATYPE(vte::TypstHeadingInfo)
+Q_DECLARE_METATYPE(vte::TypstResourceContext)
 
 #endif // VTEXTEDIT_VTYPSTEDITOR_H

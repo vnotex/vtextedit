@@ -11,14 +11,20 @@
 #include "typstpreviewpane.h"
 #include "typstsourceeditor.h"
 
+#include <QContextMenuEvent>
 #include <QDir>
 #include <QListWidget>
+#include <QMenu>
+#include <QPointer>
 #include <QScopedValueRollback>
+#include <QScopeGuard>
 #include <QScrollBar>
 #include <QSplitter>
 #include <QTextDocument>
 #include <QTimer>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 using namespace vte;
 
@@ -68,6 +74,60 @@ public:
     host->setActiveFile(activeFile);
     host->setEnabled(isInplacePreviewActive());
 
+    QObject::connect(
+        source->getTextEdit(), &VTextEdit::contextMenuEventRequested, q,
+        [this](QContextMenuEvent *p_event, bool *, QScopedPointer<QMenu> *p_menu) {
+          if (!*p_menu)
+            return;
+          // The standard native creator ran first; preserve its actions and ownership.
+          auto *menu = p_menu->data();
+          // Keep logical focus in the editor. If parent teardown deletes the menu
+          // during exec(), release the matching scoped owner without deleting again.
+          QObject::connect(
+              menu, &QObject::destroyed, menu,
+              [p_menu, menu] {
+                if (p_menu->data() == menu)
+                  static_cast<void>(p_menu->take());
+              },
+              Qt::DirectConnection);
+          const int offset =
+              p_event->reason() == QContextMenuEvent::Keyboard
+                  ? source->getTextEdit()->textCursor().position()
+                  : source->getTextEdit()->cursorForPosition(p_event->pos()).position();
+          const QPointer<VTypstEditor> alive(q);
+          resourceMenu(sourceContext(offset), p_menu->data());
+          if (!alive || !alive->isEnabled() || !alive->getTextEditor()->isVisible())
+            p_menu->reset();
+        });
+    QObject::connect(pane, &TypstPreviewPane::resourceContextMenuRequested, q,
+                     [this](const TypstResourceContext &p_context, QMenu *p_menu) {
+                       resourceMenu(p_context, p_menu);
+                     });
+    QObject::connect(host, &TypstPreviewHost::resourceContextMenuRequested, q,
+                     [this](const TypstResourceContext &p_context, QMenu *p_menu) {
+                       resourceMenu(p_context, p_menu);
+                     });
+    const auto activateImage = [this](const TypstResourceContext &p_context) {
+      if (q->isResourceContextValid(p_context) && p_context.m_imageId &&
+          p_context.m_linkIndex < 0) {
+        auto context = p_context;
+        context.m_imageResizable = q->isResourceContextValid(context, true);
+        emit q->imageActivated(context);
+      }
+    };
+    QObject::connect(pane, &TypstPreviewPane::imageActivated, q, activateImage);
+    QObject::connect(host, &TypstPreviewHost::imageActivated, q, activateImage);
+    QObject::connect(host, &TypstPreviewHost::linkActivated, q, &VTypstEditor::openContextLink);
+    QObject::connect(host, &TypstPreviewHost::sourceLocationRequested, q,
+                     [this](quint64 p_snapshot, int p_page, QPointF p_point) {
+                       if (mode == Mode::Edit)
+                         bridge->outputToSource(p_snapshot, p_page, p_point);
+                     });
+    QObject::connect(host, &TypstPreviewHost::snapshotPublished, bridge,
+                     &TypstCompilerBridge::setInplaceSnapshot);
+    QObject::connect(bridge, &TypstCompilerBridge::imageDataReady, q,
+                     &VTypstEditor::imageDataReady);
+
     QObject::connect(pane, &TypstPreviewPane::verticalScrollChanged, q, [this]() {
       emit q->pdfNavigationChanged();
       syncScroll(false);
@@ -106,28 +166,36 @@ public:
                          updateInput();
                        }
                      });
-    QObject::connect(bridge, &TypstCompilerBridge::generationChanged, q,
-                     [this](quint64 p_epoch, quint64 p_generation) {
-                       const bool hadHeadings =
-                           outlineSnapshot && !outlineSnapshot->m_headings.isEmpty();
-                       outlineSnapshot.clear();
-                       invalidateCursorHighlight();
-                       host->setCurrentGeneration(p_epoch, p_generation);
-                       source->typstHighlighter()->setGeneration(p_generation);
-                       pane->setCurrentGeneration(p_epoch, p_generation);
-                       pdfDelivered = 0;
-                       pendingNavigationSnapshot = 0;
-                       if (hadHeadings) {
-                         emit q->headingsUpdated({});
-                         if (p_epoch != bridge->epoch() || p_generation != bridge->generation()) {
-                           return;
-                         }
-                       }
-                       if (!documentReset) {
-                         setStatus(CompileStatus::Compiling,
-                                   VTypstEditor::tr("Preview is stale; compiling changes…"));
-                       }
-                     });
+    QObject::connect(source->document(), &QTextDocument::contentsChanged, q, [this]() {
+      // contentsChange above synchronously updates the compiler generation for every
+      // text edit. Rehighlighting also bumps Qt's revision, but leaves that input intact.
+      inputRevision = source->document()->revision();
+    });
+    QObject::connect(
+        bridge, &TypstCompilerBridge::generationChanged, q,
+        [this](quint64 p_epoch, quint64 p_generation) {
+          const bool hadHeadings = outlineSnapshot && !outlineSnapshot->m_headings.isEmpty();
+          outlineSnapshot.clear();
+          invalidateCursorHighlight();
+          host->setCurrentGeneration(p_epoch, p_generation);
+          source->typstHighlighter()->setGeneration(p_generation);
+          pane->setCurrentGeneration(p_epoch, p_generation);
+          pdfDelivered = 0;
+          pendingNavigationSnapshot = 0;
+          const QPointer<VTypstEditor> alive(q);
+          if (hadHeadings) {
+            emit q->headingsUpdated({});
+            if (!alive || p_epoch != bridge->epoch() || p_generation != bridge->generation()) {
+              return;
+            }
+          }
+          if (!documentReset) {
+            setStatus(CompileStatus::Compiling,
+                      VTypstEditor::tr("Preview is stale; compiling changes…"));
+          }
+          if (alive)
+            emit alive->resourceContextsInvalidated();
+        });
     QObject::connect(bridge, &TypstCompilerBridge::stateChanged, q,
                      [this](TypstCompilerBridge::State p_state, const QString &p_message) {
                        CompileStatus state = CompileStatus::Idle;
@@ -304,7 +372,109 @@ public:
     }
     // toPlainText is LF source; getText applies the host's save-time line-ending policy.
     overlays.insert(activeFile, source->document()->toPlainText());
+    inputRevision = source->document()->revision();
     bridge->updateProject(*config, activeFile, overlays);
+  }
+
+  TypstSnapshot resourceSnapshot(const TypstResourceContext &p_context) const {
+    if (documentReset)
+      return {};
+    TypstSnapshot snapshot;
+    switch (p_context.m_surface) {
+    case TypstResourceContext::Surface::Source:
+      if (source->document()->revision() != inputRevision)
+        return {};
+      snapshot = bridge->latestSnapshot();
+      break;
+    case TypstResourceContext::Surface::InPlace:
+      snapshot = host->snapshot();
+      break;
+    case TypstResourceContext::Surface::Preview:
+      snapshot = pane->snapshot();
+      break;
+    }
+    return snapshot && snapshot->m_epoch == bridge->epoch() &&
+                   snapshot->m_generation >= minimumResourceGeneration &&
+                   snapshot->m_epoch == p_context.m_epoch &&
+                   snapshot->m_generation == p_context.m_generation &&
+                   snapshot->m_id == p_context.m_snapshot
+               ? snapshot
+               : TypstSnapshot();
+  }
+
+  TypstResourceContext sourceContext(int p_offset) const {
+    const auto snapshot = bridge->latestSnapshot();
+    if (!snapshot || snapshot->m_epoch != bridge->epoch() ||
+        snapshot->m_generation != bridge->generation() ||
+        source->document()->revision() != inputRevision)
+      return {};
+    const auto contains = [&](const TypstSourceRange &p_range) {
+      return p_range.m_file == activeFile && p_range.m_start <= p_offset &&
+             p_offset < p_range.m_end;
+    };
+    for (const auto &highlight : snapshot->m_highlights) {
+      if (contains(highlight.m_source) && (highlight.m_kind == QLatin1String("comment") ||
+                                           highlight.m_kind == QLatin1String("raw") ||
+                                           highlight.m_kind.startsWith(QLatin1String("raw."))))
+        return {};
+    }
+    quint64 imageId = 0;
+    int imageLength = std::numeric_limits<int>::max();
+    for (const auto &image : snapshot->m_images) {
+      const auto &range = image.m_source;
+      if (contains(range) && range.m_end - range.m_start < imageLength) {
+        imageId = image.m_id;
+        imageLength = range.m_end - range.m_start;
+      }
+    }
+    int linkIndex = -1;
+    int linkLength = std::numeric_limits<int>::max();
+    for (int i = 0; i < snapshot->m_sourceLinks.size(); ++i) {
+      const auto &range = snapshot->m_sourceLinks[i].m_source;
+      if (contains(range) && range.m_end - range.m_start < linkLength) {
+        linkIndex = i;
+        linkLength = range.m_end - range.m_start;
+      }
+    }
+    return typstResourceContext(snapshot, TypstResourceContext::Surface::Source, imageId,
+                                linkIndex);
+  }
+
+  bool canNavigateLink(const TypstResourceContext &p_context) const {
+    if (!q->isResourceContextValid(p_context) || p_context.m_linkIndex < 0)
+      return false;
+    const auto snapshot = resourceSnapshot(p_context);
+    const auto &link = p_context.m_surface == TypstResourceContext::Surface::Source
+                           ? snapshot->m_sourceLinks[p_context.m_linkIndex].m_link
+                           : snapshot->m_links[p_context.m_linkIndex];
+    if (!link.m_url.isEmpty())
+      return true;
+    // Never reinterpret stale in-place coordinates on another displayed PDF.
+    return link.m_targetPage >= 0 && link.m_targetPage < snapshot->m_pages.size() &&
+           (pane->snapshot() == snapshot || (bridge->latestSnapshot() == snapshot &&
+                                             snapshot->m_generation == bridge->generation()));
+  }
+
+  void resourceMenu(TypstResourceContext p_context, QMenu *p_menu) {
+    p_context.m_imageResizable = q->isResourceContextValid(p_context, true);
+    p_context.m_linkNavigable = canNavigateLink(p_context);
+    QObject::connect(q, &VTypstEditor::resourceContextsInvalidated, p_menu, &QMenu::close);
+    QObject::connect(q, &QObject::destroyed, p_menu, &QMenu::close);
+    // Publication retires only that surface's snapshot, not current source menus
+    // or actions on another independently retained preview.
+    const auto closeIfRetired = [editor = QPointer<VTypstEditor>(q), menu = QPointer<QMenu>(p_menu),
+                                 p_context] {
+      if (menu && (!editor || !editor->d->resourceSnapshot(p_context)))
+        menu->close();
+    };
+    if (p_context.m_surface == TypstResourceContext::Surface::Preview) {
+      QObject::connect(pane, &TypstPreviewPane::snapshotPublished, p_menu, closeIfRetired);
+    } else if (p_context.m_surface == TypstResourceContext::Surface::InPlace) {
+      QObject::connect(host, &TypstPreviewHost::snapshotPublished, p_menu, closeIfRetired,
+                       Qt::QueuedConnection);
+    }
+    // Empty menus also notify the host so its native composite lifetime guard covers idle popups.
+    emit q->resourceContextMenuRequested(p_context, p_menu);
   }
 
   void setStatus(CompileStatus p_status, const QString &p_message) {
@@ -384,6 +554,7 @@ public:
     if (liveChanged) {
       emit q->livePreviewEnabledChanged(livePreviewEnabled);
     }
+    emit q->resourceContextsInvalidated();
   }
 
   void ensurePdf() {
@@ -490,6 +661,8 @@ public:
   TypstPreviewHost *host = nullptr;
   TypstCompilerBridge *bridge = nullptr;
   TypstSnapshot outlineSnapshot;
+  quint64 minimumResourceGeneration = 0;
+  int inputRevision = -1;
   QSplitter *splitter = nullptr;
   QListWidget *diagnosticList = nullptr;
   QVector<TypstDiagnostic> diagnosticRecords;
@@ -521,7 +694,7 @@ VTypstEditor::VTypstEditor(const QSharedPointer<TypstEditorConfig> &p_config,
                            QWidget *p_parent)
     : QWidget(p_parent), d(new Private(this, p_config, p_parameters)) {}
 
-VTypstEditor::~VTypstEditor() = default;
+VTypstEditor::~VTypstEditor() { emit resourceContextsInvalidated(); }
 VTextEditor *VTypstEditor::getTextEditor() const { return d->source; }
 QTextDocument *VTypstEditor::document() const { return d->source->document(); }
 VTypstEditor::Mode VTypstEditor::mode() const { return d->mode; }
@@ -544,6 +717,7 @@ bool VTypstEditor::isReadOnly() const { return d->readOnly; }
 void VTypstEditor::setReadOnly(bool p_readOnly) {
   d->readOnly = p_readOnly;
   d->source->setReadOnly(p_readOnly || d->mode == Mode::Read);
+  emit resourceContextsInvalidated();
 }
 
 const TypstEditorConfig &VTypstEditor::getConfig() const { return *d->config; }
@@ -556,6 +730,7 @@ void VTypstEditor::setConfig(const QSharedPointer<TypstEditorConfig> &p_config) 
       d->config->m_mainFile != normalizedFile(p_config->m_mainFile)) {
     d->host->clear();
     d->source->typstHighlighter()->invalidate();
+    d->minimumResourceGeneration = d->bridge->generation() + 1;
   }
   d->config = QSharedPointer<TypstEditorConfig>::create(*p_config);
   d->normalizeConfig();
@@ -567,9 +742,17 @@ void VTypstEditor::setConfig(const QSharedPointer<TypstEditorConfig> &p_config) 
 }
 
 void VTypstEditor::resetForNewDocument() {
+  const QPointer<VTypstEditor> alive(this);
   d->documentReset = true;
-  const QScopedValueRollback<bool> scrollGuard(d->syncingScroll, true);
+  const auto wasSyncing = d->syncingScroll;
+  d->syncingScroll = true;
+  const auto scrollGuard = qScopeGuard([alive, wasSyncing] {
+    if (alive)
+      alive->d->syncingScroll = wasSyncing;
+  });
   d->bridge->resetForNewDocument();
+  if (!alive)
+    return;
   d->invalidateCursorHighlight();
   d->cursorHighlightPending = false;
   d->pendingNavigationSnapshot = 0;
@@ -577,12 +760,16 @@ void VTypstEditor::resetForNewDocument() {
   d->pendingNavigationPoint = QPointF();
   d->pdfDelivered = 0;
   d->pane->resetForNewDocument();
+  if (!alive)
+    return;
   d->host->clear();
   d->source->typstHighlighter()->invalidate();
   d->overlays.clear();
   d->source->clearIncrementalSearchHighlight();
   d->source->clearSearchHighlight();
   d->source->setText(QString());
+  if (!alive)
+    return;
   document()->clearUndoRedoStacks();
   d->source->getTextEdit()->horizontalScrollBar()->setValue(0);
   d->source->getTextEdit()->verticalScrollBar()->setValue(0);
@@ -596,6 +783,7 @@ void VTypstEditor::finishDocumentReset() {
   // The host's setText also applies paragraph formatting. Neither belongs in
   // the incoming document's user history.
   document()->clearUndoRedoStacks();
+  d->inputRevision = document()->revision();
   d->overlays.insert(d->activeFile, document()->toPlainText());
   d->bridge->updateProject(*d->config, d->activeFile, d->overlays);
   d->documentReset = false;
@@ -608,6 +796,7 @@ void VTypstEditor::setProject(const QString &p_root, const QString &p_mainFile) 
   if (d->config->m_projectRoot != root || d->config->m_mainFile != mainFile) {
     d->host->clear();
     d->source->typstHighlighter()->invalidate();
+    d->minimumResourceGeneration = d->bridge->generation() + 1;
   }
   d->config->m_projectRoot = root;
   d->config->m_mainFile = mainFile;
@@ -625,6 +814,7 @@ void VTypstEditor::setActiveFile(const QString &p_file) {
     d->overlays.insert(d->activeFile, document()->toPlainText());
   }
   d->activeFile = file;
+  d->minimumResourceGeneration = d->bridge->generation() + 1;
   d->host->setActiveFile(file);
   d->source->typstHighlighter()->invalidate();
   d->updateInput();
@@ -682,3 +872,124 @@ int VTypstEditor::pdfPageCount() const {
 void VTypstEditor::goToPdfPage(int p_page) { d->pane->goToPage(p_page); }
 bool VTypstEditor::hasPendingPdfUpdate() const { return d->pane->hasPendingUpdate(); }
 void VTypstEditor::publishPendingPdfUpdate() { d->pane->publishPending(); }
+
+bool VTypstEditor::isResourceContextValid(const TypstResourceContext &p_context,
+                                          bool p_forEdit) const {
+  const auto snapshot = d->resourceSnapshot(p_context);
+  if (!snapshot || !isEnabled())
+    return false;
+  const auto image = typstImage(snapshot, p_context.m_imageId);
+  const bool link =
+      p_context.m_linkIndex >= 0 && (p_context.m_surface == TypstResourceContext::Surface::Source
+                                         ? p_context.m_linkIndex < snapshot->m_sourceLinks.size()
+                                         : p_context.m_linkIndex < snapshot->m_links.size());
+  if ((p_context.m_imageId && !image) || (p_context.m_linkIndex >= 0 && !link) || (!image && !link))
+    return false;
+  if (p_context.m_surface == TypstResourceContext::Surface::Source &&
+      ((image && image->m_source.m_file != d->activeFile) ||
+       (link && snapshot->m_sourceLinks[p_context.m_linkIndex].m_source.m_file != d->activeFile)))
+    return false;
+  if (!p_forEdit)
+    return true;
+  return image && image->m_resize.m_argumentsEnd >= 0 && image->m_source.m_file == d->activeFile &&
+         image->m_source.isValid() && image->m_source.m_end <= document()->characterCount() - 1 &&
+         snapshot == d->bridge->latestSnapshot() &&
+         snapshot->m_generation == d->bridge->generation() &&
+         document()->revision() == d->inputRevision && !d->readOnly && !d->source->isReadOnly() &&
+         d->mode == Mode::Edit;
+}
+
+void VTypstEditor::requestImageData(const TypstResourceContext &p_context, quint64 p_requestId) {
+  if (!isResourceContextValid(p_context) || !p_context.m_imageId) {
+    QTimer::singleShot(0, this, [this, p_requestId]() {
+      emit imageDataReady(p_requestId, {}, {},
+                          tr("The Typst image context is no longer available."));
+    });
+    return;
+  }
+  d->bridge->requestImageData(p_context.m_epoch, p_context.m_snapshot, p_context.m_imageId,
+                              p_requestId);
+}
+
+bool VTypstEditor::resizeImage(const TypstResourceContext &p_context, int p_width, int p_height) {
+  if (p_width < 0 || p_height < 0 || !isResourceContextValid(p_context, true))
+    return false;
+  const auto snapshot = d->resourceSnapshot(p_context);
+  const auto &plan = typstImage(snapshot, p_context.m_imageId)->m_resize;
+  struct Edit {
+    int start;
+    int end;
+    QString text;
+  };
+  QVector<Edit> edits;
+  QStringList added;
+  const auto axis = [&](int p_pixels, int p_start, int p_end, double p_points,
+                        const QString &p_name) {
+    if (p_pixels == qRound(p_points * 96.0 / 72.0))
+      return;
+    const QString value = p_pixels ? QString::number(p_pixels * 0.75, 'f', 2) + QStringLiteral("pt")
+                                   : QStringLiteral("auto");
+    if (p_start >= 0)
+      edits.append({p_start, p_end, value});
+    else if (p_pixels)
+      added.append(p_name + QStringLiteral(": ") + value);
+  };
+  axis(p_width, plan.m_widthStart, plan.m_widthEnd, plan.m_widthPoints, QStringLiteral("width"));
+  axis(p_height, plan.m_heightStart, plan.m_heightEnd, plan.m_heightPoints,
+       QStringLiteral("height"));
+  if (!added.isEmpty()) {
+    QString text = (plan.m_trailingComma ? QStringLiteral(" ") : QStringLiteral(", ")) +
+                   added.join(QStringLiteral(", "));
+    if (plan.m_trailingComma)
+      text += QLatin1Char(',');
+    edits.append({plan.m_argumentsEnd, plan.m_argumentsEnd, text});
+  }
+  if (edits.isEmpty())
+    return true;
+  std::sort(edits.begin(), edits.end(),
+            [](const Edit &a, const Edit &b) { return a.start > b.start; });
+  const QPointer<VTypstEditor> alive(this);
+  const QPointer<QTextDocument> doc(document());
+  QTextCursor cursor(doc);
+  cursor.beginEditBlock();
+  for (const auto &edit : edits) {
+    cursor.setPosition(edit.start);
+    cursor.setPosition(edit.end, QTextCursor::KeepAnchor);
+    cursor.insertText(edit.text);
+  }
+  cursor.endEditBlock();
+  return alive && doc;
+}
+
+void VTypstEditor::openContextLink(const TypstResourceContext &p_context) {
+  if (!d->canNavigateLink(p_context))
+    return;
+  const auto snapshot = d->resourceSnapshot(p_context);
+  const TypstLink link = p_context.m_surface == TypstResourceContext::Surface::Source
+                             ? snapshot->m_sourceLinks[p_context.m_linkIndex].m_link
+                             : snapshot->m_links[p_context.m_linkIndex];
+  if (!link.m_url.isEmpty()) {
+    emit externalLinkRequested(link.m_url);
+  } else if (link.m_targetPage >= 0) {
+    const QPointer<VTypstEditor> alive(this);
+    if (d->mode == Mode::Edit && !d->livePreviewEnabled)
+      setLivePreviewEnabled(true);
+    if (!alive || !d->canNavigateLink(p_context))
+      return;
+    if (d->pane->snapshot() == snapshot)
+      d->pane->goToPage(link.m_targetPage, link.m_target);
+    else
+      d->navigateOutput(snapshot->m_id, link.m_targetPage, link.m_target);
+  }
+}
+
+void VTypstEditor::changeEvent(QEvent *p_event) {
+  QWidget::changeEvent(p_event);
+  if (p_event->type() == QEvent::EnabledChange)
+    emit resourceContextsInvalidated();
+}
+
+void VTypstEditor::hideEvent(QHideEvent *p_event) {
+  QWidget::hideEvent(p_event);
+  emit resourceContextsInvalidated();
+}

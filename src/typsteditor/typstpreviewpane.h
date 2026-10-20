@@ -63,6 +63,8 @@ signals:
   void updateAvailableChanged(bool p_available);
   void snapshotPublished(quint64 p_snapshot);
   void errorOccurred(QString p_message);
+  void resourceContextMenuRequested(const vte::TypstResourceContext &p_context, QMenu *p_menu);
+  void imageActivated(const vte::TypstResourceContext &p_context);
 
 protected:
   bool event(QEvent *p_event) Q_DECL_OVERRIDE;
@@ -72,6 +74,7 @@ protected:
   void mousePressEvent(QMouseEvent *p_event) Q_DECL_OVERRIDE;
   void mouseMoveEvent(QMouseEvent *p_event) Q_DECL_OVERRIDE;
   void mouseReleaseEvent(QMouseEvent *p_event) Q_DECL_OVERRIDE;
+  void mouseDoubleClickEvent(QMouseEvent *p_event) Q_DECL_OVERRIDE;
   void keyPressEvent(QKeyEvent *p_event) Q_DECL_OVERRIDE;
   void wheelEvent(QWheelEvent *p_event) Q_DECL_OVERRIDE;
   void contextMenuEvent(QContextMenuEvent *p_event) Q_DECL_OVERRIDE;

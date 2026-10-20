@@ -1,12 +1,16 @@
 #include "typstpreviewhost.h"
 
+#include <QContextMenuEvent>
 #include <QCoreApplication>
 #include <QEvent>
 #include <QFontMetricsF>
 #include <QMap>
-#include <QPainter>
+#include <QMenu>
+#include <QMouseEvent>
 #include <QPaintEvent>
+#include <QPainter>
 #include <QPointer>
+#include <QScopeGuard>
 #include <QScrollBar>
 #include <QSet>
 #include <QTextBlock>
@@ -109,19 +113,18 @@ QVector<Part> partsFor(const QVector<TypstPreviewOccurrence> &p_occurrences, qre
                         ? QFontMetricsF(p_font).horizontalAdvance(statusLabel(occurrence.m_status))
                         : innerWidth;
       if (!p_measureOnly) {
-        parts.append({nullptr, &occurrence.m_status,
-                      QRectF(left, top, columnWidth, statusHeight), 1});
+        parts.append(
+            {nullptr, &occurrence.m_status, QRectF(left, top, columnWidth, statusHeight), 1});
       }
       top += statusHeight + c_padding;
     } else {
       hasFragments |= occurrence.m_regions.size() > 1;
       for (const auto &region : occurrence.m_regions) {
-        qreal scale = qMin(p_dpiScale, qMax<qreal>(1, p_maxHeight - 2 * c_padding) /
-                                          region.m_rect.height());
+        qreal scale =
+            qMin(p_dpiScale, qMax<qreal>(1, p_maxHeight - 2 * c_padding) / region.m_rect.height());
         if (!inlinePreview)
           scale = qMin(scale, innerWidth / region.m_rect.width());
-        const QRectF rect(left, top, region.m_rect.width() * scale,
-                          region.m_rect.height() * scale);
+        const QRectF rect(left, top, region.m_rect.width() * scale, region.m_rect.height() * scale);
         if (!p_measureOnly)
           parts.append({&region, nullptr, rect, scale});
         columnWidth = qMax(columnWidth, rect.width());
@@ -165,12 +168,11 @@ QVector<Part> partsFor(const QVector<TypstPreviewOccurrence> &p_occurrences, qre
   return parts;
 }
 
-void appendPartNeeds(const QVector<Part> &p_parts, const QRectF &p_clip,
-                     QHash<int, qreal> &p_needs, qreal p_dpr) {
-  auto part = std::lower_bound(p_parts.constBegin(), p_parts.constEnd(), p_clip.top(),
-                               [](const Part &p_part, qreal p_top) {
-                                 return p_part.m_maxBottom < p_top;
-                               });
+void appendPartNeeds(const QVector<Part> &p_parts, const QRectF &p_clip, QHash<int, qreal> &p_needs,
+                     qreal p_dpr) {
+  auto part =
+      std::lower_bound(p_parts.constBegin(), p_parts.constEnd(), p_clip.top(),
+                       [](const Part &p_part, qreal p_top) { return p_part.m_maxBottom < p_top; });
   for (; part != p_parts.constEnd() && part->m_imageRect.top() <= p_clip.bottom(); ++part) {
     if (part->m_region && part->m_imageRect.intersects(p_clip))
       p_needs[part->m_region->m_page] =
@@ -212,8 +214,70 @@ public:
 
   std::function<const PageImage *(int)> m_pageImage;
   std::function<bool(int)> m_failed;
+  TypstSnapshot m_snapshot;
+  QPointer<TypstPreviewHost> m_host;
+
+  TypstResourceContext resourceAt(const QPointF &p_position, int *p_page = nullptr,
+                                  QPointF *p_point = nullptr) const {
+    const auto position = p_position + m_contentOffset;
+    for (const auto &part : m_parts) {
+      if (!part.m_region || !part.m_imageRect.contains(position))
+        continue;
+      const auto point =
+          part.m_region->m_rect.topLeft() + (position - part.m_imageRect.topLeft()) / part.m_scale;
+      if (p_page)
+        *p_page = part.m_region->m_page;
+      if (p_point)
+        *p_point = point;
+      return typstResourceAt(m_snapshot, TypstResourceContext::Surface::InPlace,
+                             part.m_region->m_page, point);
+    }
+    return {};
+  }
 
 protected:
+  void contextMenuEvent(QContextMenuEvent *p_event) override {
+    const auto context = resourceAt(p_event->pos());
+    if (!m_host || (!context.m_imageId && context.m_linkIndex < 0)) {
+      p_event->ignore();
+      return;
+    }
+    const QPointer<PreviewCard> alive(this);
+    const QPointer<TypstPreviewHost> host(m_host);
+    const QPointer<QMenu> menu(new QMenu(this));
+    const auto cleanup = qScopeGuard([menu]() { delete menu.data(); });
+    connect(host, &QObject::destroyed, menu, &QMenu::close);
+    connect(this, &QObject::destroyed, menu, &QMenu::close);
+    p_event->accept();
+    emit host->resourceContextMenuRequested(context, menu);
+    if (alive && alive->isVisible() && alive->isEnabled() && host && menu && !menu->isEmpty())
+      menu->exec(p_event->globalPos());
+  }
+
+  void mouseReleaseEvent(QMouseEvent *p_event) override {
+    if (p_event->button() != Qt::LeftButton || !m_host)
+      return;
+    int page = -1;
+    QPointF point;
+    const auto context = resourceAt(p_event->position(), &page, &point);
+    const auto host = m_host;
+    const auto snapshot = m_snapshot;
+    p_event->accept();
+    if (context.m_linkIndex >= 0)
+      emit host->linkActivated(context);
+    else if (page >= 0 && snapshot)
+      emit host->sourceLocationRequested(snapshot->m_id, page, point);
+  }
+
+  void mouseDoubleClickEvent(QMouseEvent *p_event) override {
+    const auto context = resourceAt(p_event->position());
+    if (p_event->button() == Qt::LeftButton && m_host && context.m_imageId &&
+        context.m_linkIndex < 0) {
+      p_event->accept();
+      emit m_host->imageActivated(context);
+    }
+  }
+
   void paintEvent(QPaintEvent *p_event) override {
     QPainter painter(this);
     painter.translate(-m_contentOffset);
@@ -263,22 +327,21 @@ protected:
   }
 
   void wheelEvent(QWheelEvent *p_event) override {
-    // Clicks remain passive, but the editor owns all preview scrolling.
+    // The editor owns preview scrolling.
     QWheelEvent forwarded(p_event->position() + QPointF(pos()), p_event->globalPosition(),
-                           p_event->pixelDelta(), p_event->angleDelta(), p_event->buttons(),
-                           p_event->modifiers(), p_event->phase(), p_event->inverted(),
-                           p_event->source(), p_event->pointingDevice());
+                          p_event->pixelDelta(), p_event->angleDelta(), p_event->buttons(),
+                          p_event->modifiers(), p_event->phase(), p_event->inverted(),
+                          p_event->source(), p_event->pointingDevice());
     QCoreApplication::sendEvent(parentWidget(), &forwarded);
     p_event->setAccepted(forwarded.isAccepted());
   }
 
 private:
   int firstPart(qreal p_top) const {
-    return int(std::lower_bound(m_parts.constBegin(), m_parts.constEnd(), p_top,
-                                [](const Part &p_part, qreal p_y) {
-                                  return p_part.m_maxBottom < p_y;
-                                }) -
-               m_parts.constBegin());
+    return int(
+        std::lower_bound(m_parts.constBegin(), m_parts.constEnd(), p_top,
+                         [](const Part &p_part, qreal p_y) { return p_part.m_maxBottom < p_y; }) -
+        m_parts.constBegin());
   }
 
   const QVector<TypstPreviewOccurrence> *m_occurrences;
@@ -534,19 +597,16 @@ public:
     }
   }
 
-  template<typename Visitor>
-  void visitVisible(Frame &p_frame, Visitor p_visit) {
+  template <typename Visitor> void visitVisible(Frame &p_frame, Visitor p_visit) {
     auto viewport = m_edit->viewport();
     if (!m_enabled || !p_frame.m_snapshot || !viewport->isVisible())
       return;
     const QPoint offset(m_edit->horizontalScrollBar()->value(),
                         m_edit->verticalScrollBar()->value());
     const QRect view = viewport->rect().translated(offset);
-    const auto first =
-        std::lower_bound(p_frame.m_geometry.constBegin(), p_frame.m_geometry.constEnd(), view.top(),
-                         [](const Geometry &p_entry, qreal p_y) {
-                           return p_entry.m_maxBottom < p_y;
-                         });
+    const auto first = std::lower_bound(
+        p_frame.m_geometry.constBegin(), p_frame.m_geometry.constEnd(), view.top(),
+        [](const Geometry &p_entry, qreal p_y) { return p_entry.m_maxBottom < p_y; });
     for (auto it = first; it != p_frame.m_geometry.constEnd() && it->m_top <= view.bottom(); ++it) {
       auto &item = p_frame.m_items[it->m_item];
       if (!item.m_rect.intersects(view))
@@ -562,9 +622,12 @@ public:
     auto &frame = *m_displayed;
     QSet<int> visible;
     frame.m_needs.clear();
-    visitVisible(frame, [&](int p_index, Item &p_item, const QRect &p_target, const QRectF &p_full) {
+    visitVisible(frame, [&](int p_index, Item &p_item, const QRect &p_target,
+                            const QRectF &p_full) {
       if (!p_item.m_widget) {
         auto widget = new PreviewCard(m_edit->viewport(), &p_item.m_occurrences, m_maxHeight);
+        widget->m_snapshot = frame.m_snapshot;
+        widget->m_host = q;
         widget->setFont(m_edit->font());
         widget->setPalette(m_edit->palette());
         widget->m_pageImage = [this](int p_page) -> const PageImage * {
@@ -614,8 +677,8 @@ public:
   }
 
   void constrainNeeds(Frame &p_frame) {
-    const qreal pixels =
-        std::floor(qMin<qreal>(m_maxPixels, cacheBudget(p_frame) / (4.0 * qMax(1, int(p_frame.m_needs.size())))));
+    const qreal pixels = std::floor(qMin<qreal>(
+        m_maxPixels, cacheBudget(p_frame) / (4.0 * qMax(1, int(p_frame.m_needs.size())))));
     for (auto it = p_frame.m_needs.begin(); it != p_frame.m_needs.end(); ++it) {
       if (pixels < 1) {
         it.value() = 0;
@@ -702,6 +765,8 @@ public:
       m_edit->horizontalScrollBar()->setValue(horizontal);
     }
     m_measuring = false;
+    if (!m_pending)
+      emit q->snapshotPublished(m_displayed->m_snapshot);
   }
 
   void requestImage() {
@@ -778,15 +843,20 @@ public:
       m_restoreAnchor = false;
       restoreAnchor(m_anchor);
     }
+    const QPointer<TypstPreviewHost> alive(q);
     if (m_pending && m_enabled && m_edit->viewport()->isVisible() &&
         (m_pendingViewDirty || pendingReady()))
       measurePending();
+    if (!alive)
+      return;
     visibleWidgets();
     m_lastAnchor = captureAnchor();
     m_draining = false;
     if (m_publish || m_geometryDirty || !m_displayed->m_recreate.isEmpty())
       schedule();
     requestImage();
+    if (!alive)
+      return;
     if (m_errorPending) {
       m_errorPending = false;
       emit q->errorOccurred(TypstPreviewHost::tr("Preview unavailable"));
@@ -879,13 +949,12 @@ TypstPreviewHost::TypstPreviewHost(TypstSourceEditor *p_editor, const TypstEdito
       d->m_lastAnchor = d->captureAnchor();
     d->schedule();
   });
-  connect(d->m_edit->horizontalScrollBar(), &QScrollBar::valueChanged, this,
-          [this]() {
-            if (d->m_measuring)
-              return;
-            d->m_pendingViewDirty = true;
-            d->schedule();
-          });
+  connect(d->m_edit->horizontalScrollBar(), &QScrollBar::valueChanged, this, [this]() {
+    if (d->m_measuring)
+      return;
+    d->m_pendingViewDirty = true;
+    d->schedule();
+  });
   connect(p_editor->getTextFolding(), &TextFolding::foldingRangesChanged, this, [this]() {
     if (d->m_measuring)
       return;
@@ -936,6 +1005,8 @@ void TypstPreviewHost::setSnapshot(const TypstSnapshot &p_snapshot) {
   d->schedule();
 }
 
+TypstSnapshot TypstPreviewHost::snapshot() const { return d->m_displayed->m_snapshot; }
+
 void TypstPreviewHost::clear() {
   d->preserveAnchor();
   d->m_pending.reset();
@@ -944,6 +1015,7 @@ void TypstPreviewHost::clear() {
   d->m_publish = true;
   d->m_errorPending = false;
   d->schedule();
+  emit snapshotPublished({});
 }
 
 void TypstPreviewHost::setEnabled(bool p_enabled) {
@@ -965,8 +1037,8 @@ void TypstPreviewHost::setActiveFile(const QString &p_file) {
   d->m_activeFile = p_file;
 }
 
-void TypstPreviewHost::setPageImage(quint64 p_epoch, quint64 p_snapshot, int p_page,
-                                    qreal p_scale, const QImage &p_image) {
+void TypstPreviewHost::setPageImage(quint64 p_epoch, quint64 p_snapshot, int p_page, qreal p_scale,
+                                    const QImage &p_image) {
   if (!d->finishRequest(p_epoch, p_snapshot, p_page, p_scale))
     return;
   auto frame = d->frameFor(p_epoch, p_snapshot);

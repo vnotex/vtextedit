@@ -1,10 +1,11 @@
 mod compile;
 mod highlight;
 mod preview;
+mod resources;
 mod world;
 
 use std::io::{self, BufReader, BufWriter, Read, Write};
-use std::sync::Arc;
+use typst::foundations::Bytes;
 
 use serde_json::{Value, json};
 
@@ -93,7 +94,7 @@ fn run() -> Result<(), String> {
         let generation = id(&request, "generation")?;
         let request_id = id(&request, "request")?;
         let op = text(&request, "op")?;
-        let mut send = |mut reply: Value, bytes: Arc<Vec<u8>>| {
+        let mut send = |mut reply: Value, bytes: Bytes| {
             reply["v"] = json!(1);
             reply["epoch"] = json!(epoch);
             reply["generation"] = json!(generation);
@@ -110,7 +111,7 @@ fn run() -> Result<(), String> {
             Ok(false) => {},
             Err(message) => {
                 send(json!({"op":"error", "for":op, "message":message,
-                    "dependencies":session.dependencies()}), Arc::default())?;
+                    "dependencies":session.dependencies()}), Bytes::new([]))?;
             }
         }
     }

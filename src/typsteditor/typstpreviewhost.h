@@ -19,6 +19,7 @@ public:
 
   void setCurrentGeneration(quint64 p_epoch, quint64 p_generation);
   void setSnapshot(const TypstSnapshot &p_snapshot);
+  TypstSnapshot snapshot() const;
   void clear();
   void setEnabled(bool p_enabled);
   // A null image is a terminal failure for this request, not an automatic retry.
@@ -31,6 +32,11 @@ public:
 signals:
   void rasterRequested(quint64 p_epoch, quint64 p_snapshot, int p_page, qreal p_scale);
   void errorOccurred(const QString &p_message);
+  void snapshotPublished(const vte::TypstSnapshot &p_snapshot);
+  void resourceContextMenuRequested(const vte::TypstResourceContext &p_context, QMenu *p_menu);
+  void imageActivated(const vte::TypstResourceContext &p_context);
+  void linkActivated(const vte::TypstResourceContext &p_context);
+  void sourceLocationRequested(quint64 p_snapshot, int p_page, QPointF p_point);
 
 protected:
   bool eventFilter(QObject *p_object, QEvent *p_event) Q_DECL_OVERRIDE;

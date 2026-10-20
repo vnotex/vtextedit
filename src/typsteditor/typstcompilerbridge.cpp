@@ -6,6 +6,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
+#include <QPointer>
 #include <QSet>
 #include <QStandardPaths>
 #include <QtEndian>
@@ -93,7 +94,110 @@ bool validRectangle(const QRectF &p_rect) {
          p_rect.height() > 0;
 }
 
-TypstSnapshot snapshotFromJson(const QJsonObject &p_header) {
+bool resourceSource(const QJsonObject &p_object, TypstSourceRange &p_range) {
+  p_range = sourceRange(p_object);
+  return p_object.value(QStringLiteral("file")).isString() &&
+         integer(p_object.value(QStringLiteral("start")), -2) == p_range.m_start &&
+         integer(p_object.value(QStringLiteral("end")), -2) == p_range.m_end &&
+         (p_range.m_file.isEmpty() ? p_range.m_start == -1 && p_range.m_end == -1
+                                   : p_range.m_start >= 0 && p_range.m_end > p_range.m_start);
+}
+
+bool resourceTarget(const QJsonObject &p_object, int p_pages, TypstLink &p_link) {
+  const auto nan = std::numeric_limits<double>::quiet_NaN();
+  p_link.m_targetPage = integer(p_object.value(QStringLiteral("targetPage")), -2);
+  p_link.m_target = QPointF(p_object.value(QStringLiteral("targetX")).toDouble(nan),
+                            p_object.value(QStringLiteral("targetY")).toDouble(nan));
+  if (!p_object.value(QStringLiteral("url")).isString() || !finitePoint(p_link.m_target))
+    return false;
+  p_link.m_url = QUrl(p_object.value(QStringLiteral("url")).toString());
+  return p_link.m_targetPage >= -1 && p_link.m_targetPage < p_pages &&
+         (p_link.m_targetPage >= 0 ? p_link.m_url.isEmpty()
+                                   : !p_link.m_url.isEmpty() && p_link.m_url.isValid());
+}
+
+bool resourcesFromJson(const QJsonObject &p_header, TypstCompiledSnapshot &p_snapshot,
+                       bool p_required) {
+  const auto imagesValue = p_header.value(QStringLiteral("images"));
+  const auto linksValue = p_header.value(QStringLiteral("sourceLinks"));
+  if ((!imagesValue.isArray() && (p_required || !imagesValue.isUndefined())) ||
+      (!linksValue.isArray() && (p_required || !linksValue.isUndefined())))
+    return false;
+  const auto images = imagesValue.toArray();
+  const auto links = linksValue.toArray();
+  if (images.size() > 100000 || links.size() > 100000 ||
+      (!p_required && (!images.isEmpty() || !links.isEmpty())))
+    return false;
+  QHash<quint64, int> occurrences;
+  for (int i = 0; i < p_snapshot.m_previews.size(); ++i) {
+    const auto &preview = p_snapshot.m_previews[i];
+    if (preview.m_kind == QLatin1String("image"))
+      occurrences.insert(preview.m_id, i);
+  }
+  p_snapshot.m_images.reserve(images.size());
+  for (const auto &value : images) {
+    if (!value.isObject())
+      return false;
+    const auto object = value.toObject();
+    TypstImageResource image;
+    image.m_id = identifier(object.value(QStringLiteral("id")));
+    image.m_path = object.value(QStringLiteral("path")).toString();
+    image.m_size = QSize(integer(object.value(QStringLiteral("width"))),
+                         integer(object.value(QStringLiteral("height"))));
+    image.m_previewIndex = occurrences.value(image.m_id, -1);
+    if (!image.m_id || !occurrences.remove(image.m_id) ||
+        !object.value(QStringLiteral("path")).isString() || image.m_path.contains(QChar::Null) ||
+        image.m_size.width() < 0 || image.m_size.height() < 0 ||
+        !resourceSource(object, image.m_source))
+      return false;
+    const auto resizeValue = object.value(QStringLiteral("resize"));
+    if (!resizeValue.isNull()) {
+      if (!resizeValue.isObject() || !image.m_source.isValid())
+        return false;
+      const auto resize = resizeValue.toObject();
+      auto &plan = image.m_resize;
+      plan.m_argumentsEnd = integer(resize.value(QStringLiteral("argumentsEnd")));
+      plan.m_trailingComma = resize.value(QStringLiteral("trailingComma")).toBool();
+      plan.m_widthStart = integer(resize.value(QStringLiteral("widthStart")), -2);
+      plan.m_widthEnd = integer(resize.value(QStringLiteral("widthEnd")), -2);
+      plan.m_heightStart = integer(resize.value(QStringLiteral("heightStart")), -2);
+      plan.m_heightEnd = integer(resize.value(QStringLiteral("heightEnd")), -2);
+      const auto nan = std::numeric_limits<double>::quiet_NaN();
+      plan.m_widthPoints = resize.value(QStringLiteral("widthPoints")).toDouble(nan);
+      plan.m_heightPoints = resize.value(QStringLiteral("heightPoints")).toDouble(nan);
+      const auto validAxis = [&](int p_start, int p_end, double p_points) {
+        return std::isfinite(p_points) && p_points >= 0 &&
+               p_points <= std::numeric_limits<int>::max() * 0.75 &&
+               ((p_start == -1 && p_end == -1 && p_points == 0) ||
+                (p_start >= image.m_source.m_start && p_end > p_start &&
+                 p_end <= plan.m_argumentsEnd));
+      };
+      if (!resize.value(QStringLiteral("trailingComma")).isBool() ||
+          plan.m_argumentsEnd < image.m_source.m_start ||
+          plan.m_argumentsEnd >= image.m_source.m_end ||
+          !validAxis(plan.m_widthStart, plan.m_widthEnd, plan.m_widthPoints) ||
+          !validAxis(plan.m_heightStart, plan.m_heightEnd, plan.m_heightPoints) ||
+          (plan.m_widthStart >= 0 && plan.m_heightStart >= 0 &&
+           plan.m_widthStart < plan.m_heightEnd && plan.m_heightStart < plan.m_widthEnd))
+        return false;
+    }
+    p_snapshot.m_images.append(std::move(image));
+  }
+  p_snapshot.m_sourceLinks.reserve(links.size());
+  for (const auto &value : links) {
+    if (!value.isObject())
+      return false;
+    const auto object = value.toObject();
+    TypstSourceLink link;
+    if (!resourceSource(object, link.m_source) || !link.m_source.isValid() ||
+        !resourceTarget(object, p_snapshot.m_pages.size(), link.m_link))
+      return false;
+    p_snapshot.m_sourceLinks.append(std::move(link));
+  }
+  return true;
+}
+
+TypstSnapshot snapshotFromJson(const QJsonObject &p_header, bool p_resourcesRequired) {
   auto result = QSharedPointer<TypstCompiledSnapshot>::create();
   result->m_epoch = identifier(p_header.value(QStringLiteral("epoch")));
   result->m_generation = identifier(p_header.value(QStringLiteral("generation")));
@@ -184,6 +288,8 @@ TypstSnapshot snapshotFromJson(const QJsonObject &p_header) {
     heading.m_file = range.m_file;
     result->m_headings.append(std::move(heading));
   }
+  if (!resourcesFromJson(p_header, *result, p_resourcesRequired))
+    return {};
   result->m_highlights = highlights(p_header.value(QStringLiteral("highlights")).toArray());
   result->m_diagnostics = diagnostics(p_header.value(QStringLiteral("diagnostics")).toArray());
   for (const auto &value : p_header.value(QStringLiteral("dependencies")).toArray()) {
@@ -267,6 +373,7 @@ void TypstCompilerBridge::resetForNewDocument() {
   m_compileDue = false;
   ++m_generation;
   m_displayed = 0;
+  m_inplace = 0;
   m_latest.clear();
   m_overlays.clear();
   m_activeFile.clear();
@@ -274,11 +381,20 @@ void TypstCompilerBridge::resetForNewDocument() {
   m_queue.clear();
   updateDependencies({});
   // m_request, its timeout, epoch and partially received frame remain intact.
+  const QPointer<TypstCompilerBridge> alive(this);
   emit generationChanged(m_epoch, m_generation);
+  if (!alive)
+    return;
   emit diagnosticsReady({});
+  if (!alive)
+    return;
   emit stateChanged(State::Idle, QString());
+  if (!alive)
+    return;
   for (const auto &request : queue) {
     completeRaster(request, true);
+    if (!alive)
+      return;
   }
 }
 
@@ -302,9 +418,14 @@ void TypstCompilerBridge::invalidate() {
   m_compilePending = true;
   m_compileDue = false;
   m_debounce.start(m_mode == Mode::Export ? 0 : qMax(0, m_config.m_debounceMs));
+  const QPointer<TypstCompilerBridge> alive(this);
   emit generationChanged(m_epoch, m_generation);
+  if (!alive)
+    return;
   for (const auto &request : queue) {
     completeRaster(request, true);
+    if (!alive)
+      return;
   }
 }
 
@@ -312,8 +433,13 @@ void TypstCompilerBridge::retry() {
   if (m_documentReset) {
     return;
   }
+  const QPointer<TypstCompilerBridge> alive(this);
   stop();
+  if (!alive)
+    return;
   invalidate();
+  if (!alive)
+    return;
   m_debounce.stop();
   m_compileDue = true;
   pump();
@@ -337,6 +463,7 @@ void TypstCompilerBridge::stop(bool p_failure) {
   ++m_epoch;
   m_ready = false;
   m_displayed = 0;
+  m_inplace = 0;
   m_latest.clear();
   if (m_process.state() != QProcess::NotRunning) {
     m_process.kill();
@@ -407,7 +534,9 @@ QJsonArray TypstCompilerBridge::retained(bool p_forCompile) const {
   if (m_displayed) {
     result.append(static_cast<double>(m_displayed));
   }
-  if (!p_forCompile && m_latest && m_latest->m_id != m_displayed) {
+  if (m_inplace && m_inplace != m_displayed)
+    result.append(static_cast<double>(m_inplace));
+  if (!p_forCompile && m_latest && m_latest->m_id != m_displayed && m_latest->m_id != m_inplace) {
     result.append(static_cast<double>(m_latest->m_id));
   }
   return result;
@@ -521,6 +650,30 @@ void TypstCompilerBridge::setDisplayedSnapshot(const TypstSnapshot &p_snapshot) 
   }
 }
 
+void TypstCompilerBridge::setInplaceSnapshot(const TypstSnapshot &p_snapshot) {
+  m_inplace = p_snapshot && p_snapshot->m_epoch == m_epoch ? p_snapshot->m_id : 0;
+  if (m_ready)
+    enqueue({{QStringLiteral("op"), QStringLiteral("retain")}});
+}
+
+void TypstCompilerBridge::requestImageData(quint64 p_epoch, quint64 p_snapshot, quint64 p_image,
+                                           quint64 p_consumerRequest) {
+  const quint64 token = m_nextImageRequest++;
+  m_imageRequests.insert(token, p_consumerRequest);
+  const QJsonObject request{{QStringLiteral("op"), QStringLiteral("imageData")},
+                            {QStringLiteral("epoch"), static_cast<double>(p_epoch)},
+                            {QStringLiteral("snapshot"), static_cast<double>(p_snapshot)},
+                            {QStringLiteral("image"), static_cast<double>(p_image)},
+                            {QStringLiteral("consumerToken"), static_cast<double>(token)}};
+  if (p_epoch != m_epoch || !p_image ||
+      (p_snapshot != m_displayed && p_snapshot != m_inplace &&
+       (!m_latest || p_snapshot != m_latest->m_id))) {
+    completeImage(request, {}, {}, tr("The Typst image snapshot is no longer retained."));
+    return;
+  }
+  enqueue(request);
+}
+
 void TypstCompilerBridge::requestPdf(quint64 p_snapshot) {
   if (m_latest && m_latest->m_id == p_snapshot) {
     enqueue({{QStringLiteral("op"), QStringLiteral("pdf")},
@@ -605,6 +758,8 @@ void TypstCompilerBridge::readOutput() {
       const auto headerSize = qFromBigEndian<quint32>(reinterpret_cast<uchar *>(m_prefix));
       const auto payloadSize = qFromBigEndian<quint32>(reinterpret_cast<uchar *>(m_prefix + 4));
       if (!headerSize || headerSize > c_maxHeader || payloadSize > c_maxPayload ||
+          (m_request.value(QStringLiteral("op")) == QStringLiteral("imageData") &&
+           payloadSize > 32U * 1024 * 1024) ||
           static_cast<qint64>(payloadSize) > m_config.m_maxCacheBytes) {
         fail(tr("Typst helper returned an oversized frame."));
         return;
@@ -675,7 +830,17 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
     }
     return;
   }
-  if (!current && requested != QStringLiteral("initialize")) {
+  bool obsolete = !current;
+  if (requested == QStringLiteral("imageData")) {
+    // Ordinary edits keep displayed image snapshots readable. A document reset
+    // clears all retained IDs, even while the old serial reply is still draining.
+    const auto snapshot = identifier(m_request.value(QStringLiteral("snapshot")));
+    obsolete = m_documentReset || !snapshot ||
+               identifier(m_request.value(QStringLiteral("epoch"))) != m_epoch ||
+               (snapshot != m_displayed && snapshot != m_inplace &&
+                (!m_latest || snapshot != m_latest->m_id));
+  }
+  if (obsolete && requested != QStringLiteral("initialize")) {
     // Only the matching final reply releases the serial request. Parsed is intermediate.
     auto request = std::move(m_request);
     m_request = {};
@@ -692,6 +857,13 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
     auto request = std::move(m_request);
     m_request = {};
     m_timeout.stop();
+    if (requested == QStringLiteral("imageData")) {
+      const auto message = p_header.value(QStringLiteral("message")).toString();
+      completeImage(request, {}, {},
+                    message.isEmpty() ? tr("Typst image request failed.") : message);
+      pump();
+      return;
+    }
     completeRaster(request, !current);
     if (current) {
       updateDependencies(p_header.value(QStringLiteral("dependencies")).toArray());
@@ -710,7 +882,8 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
             ? QStringList{QStringLiteral("svg"), QStringLiteral("raster")}
             : QStringList{QStringLiteral("pdf"),        QStringLiteral("raster"),
                           QStringLiteral("navigation"), QStringLiteral("previews"),
-                          QStringLiteral("highlights"), QStringLiteral("headings")};
+                          QStringLiteral("highlights"), QStringLiteral("headings"),
+                          QStringLiteral("resources")};
     for (const auto &required : requiredCapabilities) {
       if (!capabilities.contains(required)) {
         fail(tr("Typst helper is incompatible: missing %1.").arg(required));
@@ -743,7 +916,7 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
         return;
       }
       if (p_header.contains(QStringLiteral("snapshot"))) {
-        m_latest = snapshotFromJson(p_header);
+        m_latest = snapshotFromJson(p_header, m_mode == Mode::Preview);
         if (!m_latest) {
           fail(tr("Typst helper returned invalid compiled geometry."));
           return;
@@ -768,6 +941,29 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
         emit pdfReady(m_latest, p_payload);
       }
     }
+  } else if (operation == QStringLiteral("imageData") && requested == operation) {
+    const int width = integer(p_header.value(QStringLiteral("width")));
+    const int height = integer(p_header.value(QStringLiteral("height")));
+    const auto mime = p_header.value(QStringLiteral("mime")).toString();
+    if (identifier(p_header.value(QStringLiteral("snapshot"))) !=
+            identifier(m_request.value(QStringLiteral("snapshot"))) ||
+        identifier(p_header.value(QStringLiteral("image"))) !=
+            identifier(m_request.value(QStringLiteral("image"))) ||
+        width <= 0 || height <= 0 || width > 8192 || height > 8192 ||
+        qint64(width) * height > 16 * 1024 * 1024 || p_payload.isEmpty() ||
+        p_payload.size() > 32 * 1024 * 1024 ||
+        (mime != QLatin1String("image/png") && mime != QLatin1String("image/jpeg") &&
+         mime != QLatin1String("image/gif") && mime != QLatin1String("image/webp"))) {
+      fail(tr("Typst helper returned invalid image data."));
+      return;
+    }
+    auto request = std::move(m_request);
+    m_request = {};
+    m_timeout.stop();
+    // Retained bytes are independent of today's live file and source generation.
+    completeImage(request, p_payload, mime, {});
+    pump();
+    return;
   } else if (operation == QStringLiteral("svg") && requested == operation) {
     const auto id = identifier(p_header.value(QStringLiteral("snapshot")));
     const int page = integer(p_header.value(QStringLiteral("page")));
@@ -863,7 +1059,26 @@ void TypstCompilerBridge::finishRequest() {
   pump();
 }
 
+void TypstCompilerBridge::completeImage(const QJsonObject &p_request, const QByteArray &p_data,
+                                        const QString &p_mime, const QString &p_error) {
+  const auto token = identifier(p_request.value(QStringLiteral("consumerToken")));
+  auto it = m_imageRequests.find(token);
+  if (it == m_imageRequests.end())
+    return;
+  const auto consumer = it.value();
+  m_imageRequests.erase(it);
+  QTimer::singleShot(0, this, [this, consumer, p_data, p_mime, p_error]() {
+    emit imageDataReady(consumer, p_data, p_mime, p_error);
+  });
+}
+
 void TypstCompilerBridge::completeRaster(const QJsonObject &p_request, bool p_cancelled) {
+  if (p_request.value(QStringLiteral("op")) == QStringLiteral("imageData")) {
+    completeImage(p_request, {}, {},
+                  p_cancelled ? tr("Typst image request cancelled.")
+                              : tr("Typst image request failed."));
+    return;
+  }
   if (p_request.value(QStringLiteral("op")) == QStringLiteral("svg")) {
     emit pageSvgReady(identifier(p_request.value(QStringLiteral("epoch"))),
                       identifier(p_request.value(QStringLiteral("snapshot"))),

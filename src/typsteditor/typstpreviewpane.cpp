@@ -17,7 +17,9 @@
 #include <QPdfPageRenderer>
 #include <QPdfSearchModel>
 #include <QPdfSelection>
+#include <QPointer>
 #include <QResizeEvent>
+#include <QScopeGuard>
 #include <QScopedValueRollback>
 #include <QScrollBar>
 #include <QSignalBlocker>
@@ -1722,6 +1724,7 @@ void TypstPreviewPane::mouseReleaseEvent(QMouseEvent *p_event) {
   m_d->m_dragging = false;
   m_d->m_autoScroll.stop();
   // Ordinary clicks navigate source; links and drag selection keep their own gestures.
+  const QPointer<TypstPreviewPane> alive(this);
   if (click && m_d->hitPage(position) == page && (m_d->m_controlClick || m_d->m_pressedLink < 0)) {
     if (m_d->current(m_d->m_displayed->m_snapshot)) {
       emit sourceLocationRequested(m_d->m_displayed->m_snapshot->m_id, page, point);
@@ -1738,8 +1741,28 @@ void TypstPreviewPane::mouseReleaseEvent(QMouseEvent *p_event) {
       emit externalLinkRequested(link.m_url);
     }
   }
-  m_d->schedule();
+  if (alive)
+    m_d->schedule();
   p_event->accept();
+}
+
+void TypstPreviewPane::mouseDoubleClickEvent(QMouseEvent *p_event) {
+  const int page = m_d->hitPage(p_event->position());
+  if (p_event->button() == Qt::LeftButton && page >= 0) {
+    const auto snapshot = m_d->m_displayed->m_snapshot;
+    const auto context =
+        typstResourceAt(snapshot, TypstResourceContext::Surface::Preview, page,
+                        m_d->pagePoint(*m_d->m_displayed, page, p_event->position()));
+    if (context.m_imageId && context.m_linkIndex < 0) {
+      m_d->m_pressed = false;
+      m_d->m_dragging = false;
+      m_d->m_autoScroll.stop();
+      p_event->accept();
+      emit imageActivated(context);
+      return;
+    }
+  }
+  QAbstractScrollArea::mouseDoubleClickEvent(p_event);
 }
 
 void TypstPreviewPane::keyPressEvent(QKeyEvent *p_event) {
@@ -1811,24 +1834,31 @@ void TypstPreviewPane::wheelEvent(QWheelEvent *p_event) {
 }
 
 void TypstPreviewPane::contextMenuEvent(QContextMenuEvent *p_event) {
-  if (p_event->reason() == QContextMenuEvent::Mouse) {
-    const int page = m_d->hitPage(p_event->pos());
-    if (page >= 0) {
-      m_d->m_focusedPage = page;
-    }
+  const int page = m_d->hitPage(p_event->pos());
+  TypstResourceContext context;
+  if (page >= 0) {
+    m_d->m_focusedPage = page;
+    context = typstResourceAt(m_d->m_displayed->m_snapshot, TypstResourceContext::Surface::Preview,
+                              page, m_d->pagePoint(*m_d->m_displayed, page, p_event->pos()));
   }
-  QMenu menu(this);
-  auto copyAction = menu.addAction(tr("Copy"), this, &TypstPreviewPane::copy);
+  const QPointer<TypstPreviewPane> alive(this);
+  const QPointer<QMenu> menu(new QMenu(this));
+  const auto cleanup = qScopeGuard([menu]() { delete menu.data(); });
+  connect(this, &QObject::destroyed, menu, &QMenu::close);
+  auto copyAction = menu->addAction(tr("Copy"), this, &TypstPreviewPane::copy);
   copyAction->setShortcut(QKeySequence::Copy);
   copyAction->setEnabled(hasSelection());
   auto selectAction =
-      menu.addAction(tr("Select page text"), this, &TypstPreviewPane::selectPageText);
+      menu->addAction(tr("Select page text"), this, &TypstPreviewPane::selectPageText);
   selectAction->setEnabled(bool(m_d->m_displayed));
-  auto clearAction = menu.addAction(tr("Clear selection"), this, &TypstPreviewPane::clearSelection);
+  auto clearAction =
+      menu->addAction(tr("Clear selection"), this, &TypstPreviewPane::clearSelection);
   clearAction->setEnabled(hasSelection() || m_d->m_pressed);
-  menu.addSeparator();
-  menu.addAction(tr("Fit width"), this, &TypstPreviewPane::fitWidth);
-  menu.addAction(tr("Fit page"), this, &TypstPreviewPane::fitPage);
-  menu.exec(p_event->globalPos());
+  menu->addSeparator();
+  menu->addAction(tr("Fit width"), this, &TypstPreviewPane::fitWidth);
+  menu->addAction(tr("Fit page"), this, &TypstPreviewPane::fitPage);
   p_event->accept();
+  emit resourceContextMenuRequested(context, menu);
+  if (alive && alive->isVisible() && alive->isEnabled() && menu)
+    menu->exec(p_event->globalPos());
 }

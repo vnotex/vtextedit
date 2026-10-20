@@ -67,7 +67,7 @@ add_custom_command(
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
     COMMAND ${_publish_command}
     DEPENDS Cargo.toml Cargo.lock rust-toolchain.toml
-            src/main.rs src/world.rs src/compile.rs src/preview.rs src/highlight.rs
+            src/main.rs src/world.rs src/compile.rs src/preview.rs src/highlight.rs src/resources.rs
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMENT "Building the pinned Typst compiler helper"
     VERBATIM

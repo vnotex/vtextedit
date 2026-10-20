@@ -98,6 +98,7 @@ struct Index<'a> {
     next_region: usize,
     next_paint: usize,
     next_wire_id: usize,
+    image_items: Vec<(Scope, typst::visualize::Image, typst::syntax::Span)>,
     visible_images: HashMap<typst::visualize::Image, bool>,
     budget: Budget,
 }
@@ -231,7 +232,10 @@ impl<'a> Index<'a> {
                     }
                 }
                 FrameItem::Text(_) | FrameItem::Shape(..) | FrameItem::Image(..) => {
-                    if let FrameItem::Image(image, ..) = item {
+                    if let FrameItem::Image(image, _, span) = item {
+                        if let Some(scope) = stack.last().copied() {
+                            self.image_items.push((scope, image.clone(), *span));
+                        }
                         let visible = self.visible_images.entry(image.clone())
                             .or_insert_with(|| raster_has_paint(image));
                         if !*visible {
@@ -414,7 +418,7 @@ fn prune(frame: &Frame, plan: &FramePlan, index: &Index<'_>, budget: &mut Budget
     Ok(parts)
 }
 
-fn source_range(world: &dyn World, content: &Content) -> Option<Value> {
+pub(crate) fn source_range(world: &dyn World, content: &Content) -> Option<Value> {
     let span = content.span();
     let file = span.id()?;
     let source = world.source(file).ok()?;
@@ -432,6 +436,7 @@ fn source_range(world: &dyn World, content: &Content) -> Option<Value> {
     match expression {
         ast::Expr::Equation(_) if content.is::<EquationElem>() => {}
         ast::Expr::FuncCall(_) | ast::Expr::MathCall(_) => {}
+        ast::Expr::Link(_) | ast::Expr::Ref(_) if content.is::<typst::model::LinkElem>() => {}
         _ => return None,
     }
     let mut bytes = node.range();
@@ -447,12 +452,12 @@ fn source_range(world: &dyn World, content: &Content) -> Option<Value> {
             }
             bytes.start = previous.range().start;
         } else if node.parent_kind() == Some(SyntaxKind::Markup)
-            && !matches!(expression, ast::Expr::Equation(_))
+            && !matches!(expression, ast::Expr::Equation(_) | ast::Expr::Link(_) | ast::Expr::Ref(_))
         {
             return None;
         }
     } else if node.parent_kind() == Some(SyntaxKind::Markup)
-        && !matches!(expression, ast::Expr::Equation(_))
+        && !matches!(expression, ast::Expr::Equation(_) | ast::Expr::Link(_) | ast::Expr::Ref(_))
     {
         return None;
     }
@@ -543,7 +548,7 @@ fn svg_bounds(group: &usvg::Group, budget: &mut Budget, depth: usize) -> Bounds 
 /// Extract ordered semantic occurrences from this exact finished document.
 /// Final raster/PDF rendering remains the responsibility of compile.rs and uses
 /// the original pages, not any of the temporary pruned frames below.
-pub fn extract(world: &dyn World, document: &PagedDocument) -> Result<Value, String> {
+pub fn extract_with_resources(world: &dyn World, document: &PagedDocument) -> Result<(Value, crate::resources::Resources), String> {
     let mut index = Index::default();
     index.budget.take(document.pages().len(), "indexing preview pages")?;
     let mut stack = Vec::new();
@@ -552,13 +557,28 @@ pub fn extract(world: &dyn World, document: &PagedDocument) -> Result<Value, Str
         .collect::<Result<_, _>>()?;
     index.finish(&stack)?;
     let mut records = Vec::new();
+    let mut images: HashMap<NodeId, Option<typst::visualize::Image>> = HashMap::new();
+    for (scope, image, span) in &index.image_items {
+        if let Some(owner) = index.owners(*scope).iter().copied()
+            .find(|owner| index.elements[*owner].content.is::<typst::visualize::ImageElem>())
+        {
+            if index.elements[owner].content.span() != *span { continue; }
+            images.entry(owner).and_modify(|previous| {
+                if previous.as_ref() != Some(image) { *previous = None; }
+            }).or_insert_with(|| Some(image.clone()));
+        }
+    }
+    let mut resources = crate::resources::Resources::default();
     let mut output_budget = Budget { remaining: METADATA_BYTES };
-    for element in &index.elements {
+    for (node, element) in index.elements.iter().enumerate() {
         let Some(kind) = element.kind else { continue };
         let range = source_range(world, element.content);
         let parent = element.owners.iter().copied()
             .find(|owner| index.elements[*owner].wire_id != element.wire_id)
             .map(|owner| index.elements[owner].wire_id).unwrap_or(0);
+        if kind == "image" {
+            resources.insert(world, element.content, element.wire_id, images.remove(&node).flatten());
+        }
         let block = element.content.to_packed::<EquationElem>()
             .map(|equation| equation.block.get(StyleChain::default()))
             .unwrap_or(true);
@@ -626,7 +646,13 @@ pub fn extract(world: &dyn World, document: &PagedDocument) -> Result<Value, Str
             }
         }
     }
-    Ok(Value::Array(records))
+    resources.finish();
+    Ok((Value::Array(records), resources))
+}
+
+#[cfg(test)]
+fn extract(world: &dyn World, document: &PagedDocument) -> Result<Value, String> {
+    extract_with_resources(world, document).map(|(previews, _)| previews)
 }
 
 #[cfg(test)]

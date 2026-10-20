@@ -477,9 +477,60 @@ the numeric scale. Regression coverage: `pdfZoom*` and `pdfFitBeforePublication*
 ## Typst PDF Context Menu
 
 Edit/live preview and Read share Copy, Select page text, Clear selection, Fit width and
-Fit page only. Selection-dependent actions keep the same enablement in both modes.
+Fit page as native defaults. Resource actions augment, rather than replace, these actions.
+Selection-dependent actions keep the same enablement in both modes.
 Clearing the selection publishes pending preview updates; the status hint names that action.
 Keyboard shortcuts and host PDF APIs remain available independently of the context menu.
+
+## Typst Resource Contexts
+
+`VTypstEditor::resourceContextMenuRequested` augments the existing source menu and the
+PDF's native Copy/selection/fit menu; in-place cards expose the same typed context.
+`TypstResourceContext` can contain both an image occurrence and a link. Source contexts
+use current evaluated UTF-16 ranges, excluding comments/raw examples; preview contexts
+use their displayed snapshot's transformed/clipped geometry. Cards map their own displayed
+parts back to page points, so a nested image is not confused with a figure/table crop.
+
+The epoch/generation/snapshot plus image ID/link index identify compiler-owned records.
+Copied destination/source/editability fields are presentation only: `openContextLink`,
+`requestImageData`, and `resizeImage` resolve the real record again. Read-only and stale
+but retained displayed images remain readable. Source edits require the current writable
+active file and an official AST resize plan; aliases, computed/relative dimensions,
+ambiguous evaluations, imports, and stale source cannot be rewritten. Resize changes
+only named values/additions, preserves comments/other arguments, converts 96px to 72pt,
+uses `auto` when clearing an existing axis, and creates one native Undo step. Unchanged
+values and absent empty dimensions do not edit source.
+
+`m_linkNavigable` advertises whether Open can safely fulfill the captured target. URI
+dispatch remains available on retained snapshots. Internal navigation requires that
+snapshot's displayed PDF or the current latest compilation; a stale in-place target is
+never reinterpreted on another PDF. Its link index remains present, preventing a linked
+image from turning into plain-image double-click activation. Open rechecks the real record
+after presentation changes; callers must not infer navigability from a copied page number.
+
+Only Preview requires the `resources` capability and bounded `images`/`sourceLinks`
+sidecars. Export accepts empty/absent resource arrays. `imageDataReady` completes each
+admitted request once, asynchronously, with retained original passive image bytes or a
+standalone PNG of the full retained image; it never rereads a changed file or crops a
+page. Cancellation/error completions are explicit. Consumers must still check their own
+request/view lifetime. `resourceContextsInvalidated` closes menus and revokes host actions
+on generation/lifecycle changes. Snapshot publication does not broadcast global invalidation:
+only a menu on the retiring displayed surface closes (in-place notifications are queued).
+Current source menus, including non-resource menus, survive unrelated preview handoffs.
+Plain-image double-click emits `imageActivated`, while linked images keep link gestures.
+
+PDF and in-place publication are independent: retention keeps their two displayed IDs
+plus the latest completed snapshot (at most three), dropping the superseded newest before
+another compile; a failed compile never resurrects the dropped newest snapshot. A hidden
+in-place surface retains its helper ID while its cached displayed frame can reappear, until
+clear or handoff. This finite third document/world increases resident compiler memory; it
+is not covered by the payload budget. Payload caching still shares the existing global
+byte budget. Heap popups retain their source/pane/card parent to preserve logical host
+focus. PDF/card menus use guarded cleanup; the standard source menu clears its scoped
+owner on destruction without deleting twice. No pointers into replaceable geometry survive
+menu execution. Regression coverage: `resourceContext*`, `resourceImageData*`,
+`resourceIndependentSnapshotRetention`, `resourceInternalLinkNavigation`, `resourceResize*`,
+and `resourceMenusSurviveDeletion` in `tests/test_typsteditor/`.
 
 ## Translation Catalogs
 

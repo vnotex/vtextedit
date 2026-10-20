@@ -5,6 +5,7 @@
 #include <vtextedit/typsteditorconfig.h>
 
 #include <QFileSystemWatcher>
+#include <QHash>
 #include <QImage>
 #include <QJsonObject>
 #include <QMap>
@@ -30,9 +31,12 @@ public:
   void finishDocumentReset();
   void retry();
   void setDisplayedSnapshot(const TypstSnapshot &p_snapshot);
+  void setInplaceSnapshot(const TypstSnapshot &p_snapshot);
   void requestPdf(quint64 p_snapshot);
   void requestRaster(quint64 p_epoch, quint64 p_snapshot, int p_page, qreal p_scale);
   void requestSvg(quint64 p_epoch, quint64 p_snapshot, int p_page);
+  void requestImageData(quint64 p_epoch, quint64 p_snapshot, quint64 p_image,
+                        quint64 p_consumerRequest);
   // Zero requests explicit navigation; nonzero identifies a replaceable cursor highlight.
   void sourceToOutput(const QString &p_file, int p_offset, quint64 p_cursorRequest);
   void outputToSource(quint64 p_snapshot, int p_page, const QPointF &p_point);
@@ -55,6 +59,8 @@ signals:
   void pageSvgReady(quint64 p_epoch, quint64 p_snapshot, int p_page, const QByteArray &p_svg);
   // Superseded inputs are not failures and must not be retried against their old snapshot.
   void rasterCancelled(quint64 p_epoch, quint64 p_snapshot, int p_page, qreal p_scale);
+  void imageDataReady(quint64 p_requestId, const QByteArray &p_data, const QString &p_mime,
+                      const QString &p_error);
   void outputLocationReady(quint64 p_snapshot, int p_page, const QPointF &p_point);
   void cursorLocationReady(quint64 p_cursorRequest, quint64 p_snapshot, int p_page,
                            const QPointF &p_point);
@@ -74,6 +80,8 @@ private:
   void fail(const QString &p_message, bool p_unavailable = false);
   void finishRequest();
   void completeRaster(const QJsonObject &p_request, bool p_cancelled);
+  void completeImage(const QJsonObject &p_request, const QByteArray &p_data, const QString &p_mime,
+                     const QString &p_error);
   void updateDependencies(const QJsonArray &p_dependencies);
   QJsonObject configuration() const;
   QJsonArray retained(bool p_forCompile) const;
@@ -91,8 +99,11 @@ private:
   quint64 m_generation = 0;
   quint64 m_nextRequest = 1;
   quint64 m_displayed = 0;
+  quint64 m_inplace = 0;
   TypstSnapshot m_latest;
   QJsonObject m_request;
+  quint64 m_nextImageRequest = 1;
+  QHash<quint64, quint64> m_imageRequests;
   QVector<QJsonObject> m_queue;
   bool m_ready = false;
   bool m_failed = false;
