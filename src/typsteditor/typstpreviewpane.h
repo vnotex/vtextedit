@@ -25,6 +25,7 @@ public:
 
   void applyConfig(const TypstEditorConfig &p_config);
 
+  void resetForNewDocument();
   void setCurrentGeneration(quint64 p_epoch, quint64 p_generation);
   void setSnapshot(const TypstSnapshot &p_snapshot, const QByteArray &p_pdf);
   TypstSnapshot snapshot() const;

@@ -73,10 +73,8 @@ public:
       syncScroll(false);
     });
     auto *sourceScroll = source->getTextEdit()->verticalScrollBar();
-    QObject::connect(sourceScroll, &QScrollBar::valueChanged, q,
-                     [this]() { syncScroll(true); });
-    QObject::connect(sourceScroll, &QScrollBar::rangeChanged, q,
-                     [this]() { deferScrollSync(); });
+    QObject::connect(sourceScroll, &QScrollBar::valueChanged, q, [this]() { syncScroll(true); });
+    QObject::connect(sourceScroll, &QScrollBar::rangeChanged, q, [this]() { deferScrollSync(); });
     QObject::connect(pane->verticalScrollBar(), &QScrollBar::rangeChanged, q,
                      [this]() { deferScrollSync(); });
     QObject::connect(source->typstLayout(), &TextDocumentLayout::widgetPreviewGeometryChanged, q,
@@ -87,7 +85,8 @@ public:
                      [this]() { requestCursorHighlight(); });
     QObject::connect(source->getTextEdit(), &QTextEdit::cursorPositionChanged, q, [this]() {
       invalidateCursorHighlight();
-      cursorHighlightPending = isSideBySideActive() && !changingMode && !syncingScroll;
+      cursorHighlightPending =
+          !documentReset && isSideBySideActive() && !changingMode && !syncingScroll;
       if (cursorHighlightPending) {
         cursorHighlightTimer.start();
       }
@@ -124,8 +123,10 @@ public:
                            return;
                          }
                        }
-                       setStatus(CompileStatus::Compiling,
-                                 VTypstEditor::tr("Preview is stale; compiling changes…"));
+                       if (!documentReset) {
+                         setStatus(CompileStatus::Compiling,
+                                   VTypstEditor::tr("Preview is stale; compiling changes…"));
+                       }
                      });
     QObject::connect(bridge, &TypstCompilerBridge::stateChanged, q,
                      [this](TypstCompilerBridge::State p_state, const QString &p_message) {
@@ -246,20 +247,20 @@ public:
                      [this](quint64 p_id, int p_page, const QPointF &p_point) {
                        navigateOutput(p_id, p_page, p_point);
                      });
-    QObject::connect(bridge, &TypstCompilerBridge::cursorLocationReady, q,
-                     [this](quint64 p_request, quint64 p_snapshot, int p_page,
-                            const QPointF &p_point) {
-                       if (p_request != cursorHighlightRequest || !isSideBySideActive()) {
-                         return;
-                       }
-                       const auto snapshot = currentDisplayedSnapshot();
-                       if (!snapshot || snapshot->m_id != p_snapshot) {
-                         return;
-                       }
-                       cursorHighlightPending = false;
-                       const QScopedValueRollback<bool> guard(syncingScroll, true);
-                       pane->flashSourceLocation(p_snapshot, p_page, p_point);
-                     });
+    QObject::connect(
+        bridge, &TypstCompilerBridge::cursorLocationReady, q,
+        [this](quint64 p_request, quint64 p_snapshot, int p_page, const QPointF &p_point) {
+          if (p_request != cursorHighlightRequest || !isSideBySideActive()) {
+            return;
+          }
+          const auto snapshot = currentDisplayedSnapshot();
+          if (!snapshot || snapshot->m_id != p_snapshot) {
+            return;
+          }
+          cursorHighlightPending = false;
+          const QScopedValueRollback<bool> guard(syncingScroll, true);
+          pane->flashSourceLocation(p_snapshot, p_page, p_point);
+        });
     QObject::connect(pane, &TypstPreviewPane::externalLinkRequested, q,
                      &VTypstEditor::externalLinkRequested);
     QObject::connect(bridge, &TypstCompilerBridge::externalLinkRequested, q,
@@ -298,6 +299,9 @@ public:
   }
 
   void updateInput() {
+    if (documentReset) {
+      return;
+    }
     // toPlainText is LF source; getText applies the host's save-time line-ending policy.
     overlays.insert(activeFile, source->document()->toPlainText());
     bridge->updateProject(*config, activeFile, overlays);
@@ -359,7 +363,7 @@ public:
       }
       if (!wasSideBySide && isSideBySideActive()) {
         splitter->setSizes(splitSizes.isEmpty() ? QList<int>{q->width() / 2, q->width() / 2}
-                                               : splitSizes);
+                                                : splitSizes);
       }
       if (!hadCards && isInplacePreviewActive()) {
         if (const auto snapshot = bridge->latestSnapshot()) {
@@ -404,7 +408,8 @@ public:
     return latest && displayed && latest->m_epoch == bridge->epoch() &&
                    latest->m_generation == bridge->generation() &&
                    displayed->m_epoch == latest->m_epoch &&
-                   displayed->m_generation == latest->m_generation && displayed->m_id == latest->m_id
+                   displayed->m_generation == latest->m_generation &&
+                   displayed->m_id == latest->m_id
                ? displayed
                : TypstSnapshot();
   }
@@ -498,6 +503,7 @@ public:
   CompileStatus status = CompileStatus::Idle;
   QString message;
   bool readOnly = false;
+  bool documentReset = false;
   bool changingMode = false;
   bool syncingScroll = false;
   bool scrollLayoutChanging = false;
@@ -560,6 +566,42 @@ void VTypstEditor::setConfig(const QSharedPointer<TypstEditorConfig> &p_config) 
   d->updateInput();
 }
 
+void VTypstEditor::resetForNewDocument() {
+  d->documentReset = true;
+  const QScopedValueRollback<bool> scrollGuard(d->syncingScroll, true);
+  d->bridge->resetForNewDocument();
+  d->invalidateCursorHighlight();
+  d->cursorHighlightPending = false;
+  d->pendingNavigationSnapshot = 0;
+  d->pendingNavigationPage = 0;
+  d->pendingNavigationPoint = QPointF();
+  d->pdfDelivered = 0;
+  d->pane->resetForNewDocument();
+  d->host->clear();
+  d->source->typstHighlighter()->invalidate();
+  d->overlays.clear();
+  d->source->clearIncrementalSearchHighlight();
+  d->source->clearSearchHighlight();
+  d->source->setText(QString());
+  document()->clearUndoRedoStacks();
+  d->source->getTextEdit()->horizontalScrollBar()->setValue(0);
+  d->source->getTextEdit()->verticalScrollBar()->setValue(0);
+  emit pdfNavigationChanged();
+}
+
+void VTypstEditor::finishDocumentReset() {
+  if (!d->documentReset) {
+    return;
+  }
+  // The host's setText also applies paragraph formatting. Neither belongs in
+  // the incoming document's user history.
+  document()->clearUndoRedoStacks();
+  d->overlays.insert(d->activeFile, document()->toPlainText());
+  d->bridge->updateProject(*d->config, d->activeFile, d->overlays);
+  d->documentReset = false;
+  d->bridge->finishDocumentReset();
+}
+
 void VTypstEditor::setProject(const QString &p_root, const QString &p_mainFile) {
   const auto root = QDir(p_root).absolutePath();
   const auto mainFile = normalizedFile(p_mainFile);
@@ -579,7 +621,9 @@ void VTypstEditor::setActiveFile(const QString &p_file) {
   if (file == d->activeFile) {
     return;
   }
-  d->overlays.insert(d->activeFile, document()->toPlainText());
+  if (!d->documentReset) {
+    d->overlays.insert(d->activeFile, document()->toPlainText());
+  }
   d->activeFile = file;
   d->host->setActiveFile(file);
   d->source->typstHighlighter()->invalidate();

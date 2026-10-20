@@ -195,14 +195,24 @@ TypstSnapshot snapshotFromJson(const QJsonObject &p_header) {
 
 TypstCompilerBridge::TypstCompilerBridge(QObject *p_parent, Mode p_mode)
     : QObject(p_parent), m_mode(p_mode) {
+  m_process.setParent(this);
   m_debounce.setSingleShot(true);
   m_timeout.setSingleShot(true);
   connect(&m_debounce, &QTimer::timeout, this, [this]() {
     m_compileDue = true;
     pump();
   });
-  connect(&m_timeout, &QTimer::timeout, this,
-          [this]() { fail(tr("Typst operation timed out. Edit the source or retry.")); });
+  connect(&m_timeout, &QTimer::timeout, this, [this]() {
+    if (!m_request.isEmpty() &&
+        m_request.value(QStringLiteral("op")) != QStringLiteral("initialize") &&
+        !isCurrent(m_request)) {
+      // Keep the protocol frame/request owned until its reply arrives. Sending B now
+      // would overlap the still-running A operation; killing it would defeat reuse.
+      emit stateChanged(State::Error, tr("Waiting for the previous Typst operation to finish."));
+      return;
+    }
+    fail(tr("Typst operation timed out. Edit the source or retry."));
+  });
   connect(&m_process, &QProcess::started, this, [this]() {
     QJsonObject request{{QStringLiteral("op"), QStringLiteral("initialize")},
                         {QStringLiteral("config"), configuration()}};
@@ -249,7 +259,41 @@ void TypstCompilerBridge::updateProject(const TypstEditorConfig &p_config,
   invalidate();
 }
 
+void TypstCompilerBridge::resetForNewDocument() {
+  // Close admission before watcher removal or any cancellation signals can re-enter us.
+  m_documentReset = true;
+  m_debounce.stop();
+  m_compilePending = false;
+  m_compileDue = false;
+  ++m_generation;
+  m_displayed = 0;
+  m_latest.clear();
+  m_overlays.clear();
+  m_activeFile.clear();
+  auto queue = std::move(m_queue);
+  m_queue.clear();
+  updateDependencies({});
+  // m_request, its timeout, epoch and partially received frame remain intact.
+  emit generationChanged(m_epoch, m_generation);
+  emit diagnosticsReady({});
+  emit stateChanged(State::Idle, QString());
+  for (const auto &request : queue) {
+    completeRaster(request, true);
+  }
+}
+
+void TypstCompilerBridge::finishDocumentReset() {
+  if (!m_documentReset) {
+    return;
+  }
+  m_documentReset = false;
+  invalidate();
+}
+
 void TypstCompilerBridge::invalidate() {
+  if (m_documentReset) {
+    return;
+  }
   ++m_generation;
   m_latest.clear();
   auto queue = std::move(m_queue);
@@ -265,6 +309,9 @@ void TypstCompilerBridge::invalidate() {
 }
 
 void TypstCompilerBridge::retry() {
+  if (m_documentReset) {
+    return;
+  }
   stop();
   invalidate();
   m_debounce.stop();
@@ -367,7 +414,7 @@ QJsonArray TypstCompilerBridge::retained(bool p_forCompile) const {
 }
 
 void TypstCompilerBridge::pump() {
-  if (m_failed || !m_request.isEmpty() || m_stopping) {
+  if (m_documentReset || m_failed || !m_request.isEmpty() || m_stopping) {
     return;
   }
   if (m_process.state() == QProcess::NotRunning) {
@@ -435,7 +482,7 @@ void TypstCompilerBridge::enqueue(QJsonObject p_header) {
     p_header.insert(QStringLiteral("epoch"), static_cast<double>(m_epoch));
   }
   p_header.insert(QStringLiteral("generation"), static_cast<double>(m_generation));
-  if (m_stopping) {
+  if (m_documentReset || m_stopping) {
     completeRaster(p_header, true);
     return;
   }
@@ -626,6 +673,15 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
                            highlights(p_header.value(QStringLiteral("highlights")).toArray()),
                            m_activeFile);
     }
+    return;
+  }
+  if (!current && requested != QStringLiteral("initialize")) {
+    // Only the matching final reply releases the serial request. Parsed is intermediate.
+    auto request = std::move(m_request);
+    m_request = {};
+    m_timeout.stop();
+    completeRaster(request, true);
+    pump();
     return;
   }
   if (operation == QStringLiteral("error")) {

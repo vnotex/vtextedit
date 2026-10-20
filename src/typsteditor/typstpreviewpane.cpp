@@ -201,10 +201,14 @@ public:
     m_pending.reset();
     m_retiring.reset();
     m_displayed.reset();
+    for (auto &slot : m_resetRetiring) {
+      slot.reset();
+    }
   }
 
-  std::array<PdfSlot *, 3> allSlots() const {
-    return {{m_displayed.get(), m_pending.get(), m_retiring.get()}};
+  std::array<PdfSlot *, 5> allSlots() const {
+    return {{m_displayed.get(), m_pending.get(), m_retiring.get(), m_resetRetiring[0].get(),
+             m_resetRetiring[1].get()}};
   }
 
   bool current(const TypstSnapshot &p_snapshot) const {
@@ -222,6 +226,50 @@ public:
       emit q->updateAvailableChanged(available);
     }
     q->viewport()->update();
+  }
+
+  void resetForNewDocument() {
+    m_queuedSnapshot.clear();
+    m_queuedPdf.clear();
+    // Keep renderer/document/device ownership until each in-flight serial completes.
+    // No new slot is loaded until these two reset-only retirements have drained.
+    auto retireForReset = [](std::unique_ptr<PdfSlot> &p_slot,
+                             std::unique_ptr<PdfSlot> &p_retiring) {
+      if (!p_slot) {
+        return;
+      }
+      Q_ASSERT(!p_retiring);
+      p_slot->m_obsolete = true;
+      p_slot->m_needs.clear();
+      p_slot->m_images.clear();
+      p_retiring = std::move(p_slot);
+    };
+    retireForReset(m_displayed, m_resetRetiring[0]);
+    retireForReset(m_pending, m_resetRetiring[1]);
+    ++m_viewRevision;
+    m_anchor = ViewAnchor();
+    m_searchText.clear();
+    m_searchIndex = -1;
+    m_searchNavigatePending = false;
+    m_searchBackwards = false;
+    m_focusedPage = -1;
+    m_pressedLink = -1;
+    m_pressPosition = QPointF();
+    m_pointer = QPointF();
+    m_controlClick = false;
+    m_error.clear();
+    m_needsDirty = true;
+    q->clearSourceHighlight();
+    {
+      const QSignalBlocker horizontal(q->horizontalScrollBar());
+      const QSignalBlocker vertical(q->verticalScrollBar());
+      q->horizontalScrollBar()->setRange(0, 0);
+      q->verticalScrollBar()->setRange(0, 0);
+    }
+    q->viewport()->unsetCursor();
+    clearSelection(false);
+    notifyUpdate();
+    schedule();
   }
 
   void report(const QString &p_message) {
@@ -695,7 +743,7 @@ public:
   }
 
   void loadQueued() {
-    if (!m_queuedSnapshot || m_pending) {
+    if (!m_queuedSnapshot || m_pending || m_resetRetiring[0] || m_resetRetiring[1]) {
       return;
     }
     auto slot = std::make_unique<PdfSlot>();
@@ -757,6 +805,11 @@ public:
       return;
     }
     const QScopedValueRollback<bool> guard(m_servicing, true);
+    for (auto &slot : m_resetRetiring) {
+      if (slot && !slot->m_request) {
+        slot.reset();
+      }
+    }
     if (m_retiring && !m_retiring->m_request) {
       m_retiring.reset();
     }
@@ -1295,6 +1348,7 @@ public:
   std::unique_ptr<PdfSlot> m_displayed;
   std::unique_ptr<PdfSlot> m_pending;
   std::unique_ptr<PdfSlot> m_retiring;
+  std::array<std::unique_ptr<PdfSlot>, 2> m_resetRetiring;
   TypstSnapshot m_queuedSnapshot;
   QByteArray m_queuedPdf;
   quint64 m_epoch = 0;
@@ -1346,6 +1400,8 @@ TypstPreviewPane::TypstPreviewPane(const TypstEditorConfig &p_config, QWidget *p
 }
 
 TypstPreviewPane::~TypstPreviewPane() = default;
+
+void TypstPreviewPane::resetForNewDocument() { m_d->resetForNewDocument(); }
 
 void TypstPreviewPane::applyConfig(const TypstEditorConfig &p_config) {
   m_d->m_maxPdfBytes = qMax(qint64(0), p_config.m_maxPdfBytes);

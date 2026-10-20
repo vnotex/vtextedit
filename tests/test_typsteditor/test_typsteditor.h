@@ -97,6 +97,9 @@ private slots:
   void pdfVisiblePagesStaySharpAndRecover_data();
   void pdfVisiblePagesStaySharpAndRecover();
   void pdfBudgetFailurePreservesOutputAndRecovers();
+  void documentResetClearsPublishedState();
+  void documentResetRetiresPendingPdf();
+  void documentResetDrainsTimedOutRequest();
   void repeatedCloseDuringPendingOutput();
 };
 } // namespace tests

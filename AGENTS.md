@@ -438,6 +438,24 @@ the editor's themed config. Font and layout defaults are unchanged. Regression c
 `previewThemeDefaultsRespectAuthoredStyles`, `previewThemeSwitchAndOptOutPreserveSource`,
 and `exportsIgnorePreviewTheme` in `tests/test_typsteditor/`.
 
+## Typst Different-Document Rebinding
+
+Hosts retaining a `VTypstEditor` across file identities call `resetForNewDocument()` before
+changing project/source, then `finishDocumentReset()` only after all incoming identity and text
+are installed. Reset closes compiler admission before clearing source/history/find, diagnostics,
+outline, in-place cards and displayed/pending PDF selection/navigation. Project/active-file setters,
+source notifications, watchers and Retry cannot reopen admission during this interval. A failed
+incoming source load can leave it closed; ordinary same-document edits keep last-good output.
+
+The native/source widgets, compiler process and user preview/zoom preferences survive. In-flight
+protocol requests retain their IDs/framing until the matching obsolete reply is drained; no new
+request overlaps them. An obsolete timeout reports unavailable compilation without killing the
+process or forgetting that reply. Current-generation failure and explicit Retry retain existing
+recovery behavior. Retired render slots own outstanding renderer callbacks until completion but
+can never publish or paint the outgoing PDF. Bind completion clears load-time formatting history.
+Coverage: `documentResetClearsPublishedState`, `documentResetRetiresPendingPdf` and
+`documentResetDrainsTimedOutRequest` in `tests/test_typsteditor/`.
+
 ## Typst PDF Camera State
 
 `VTypstEditor::PdfZoomMode` (`Custom`, `Width`, `Page`) is shared with the internal PDF pane.

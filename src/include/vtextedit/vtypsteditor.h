@@ -63,6 +63,12 @@ public:
   const TypstEditorConfig &getConfig() const;
   // Use this instead of the contained editor's setConfig to refresh Typst formats too.
   void setConfig(const QSharedPointer<TypstEditorConfig> &p_config);
+  // Begin a different-document bind without replacing widgets or restarting the helper.
+  // Clears source/history/output; compilation stays suspended across all identity/text setters.
+  void resetForNewDocument();
+  // Call only after the incoming project, active file and validated source are installed.
+  // An unsuccessful source load must leave the reset unfinished. No-op outside a reset.
+  void finishDocumentReset();
   void setProject(const QString &p_root, const QString &p_mainFile);
   QString activeFile() const;
   // Changes this buffer's identity, not its contents. The host supplies the new text.

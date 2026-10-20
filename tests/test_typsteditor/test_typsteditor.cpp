@@ -25,7 +25,9 @@
 #include <QProcess>
 #include <QScrollBar>
 #include <QSet>
+#include <QSignalBlocker>
 #include <QSignalSpy>
+#include <QSplitter>
 #include <QSvgRenderer>
 #include <QSyntaxHighlighter>
 #include <QTemporaryDir>
@@ -4804,6 +4806,268 @@ void TestTypstEditor::pdfBudgetFailurePreservesOutputAndRecovers() {
   QVERIFY2(waitUntil([&]() { return published.count() == 2; }),
            qPrintable(fixture.editor.compileMessage()));
   QCOMPARE(fixture.selectPage().trimmed(), QStringLiteral("Export recovered."));
+}
+
+void TestTypstEditor::documentResetClearsPublishedState() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  QFile dependency(root.filePath(QStringLiteral("dependency.typ")));
+  QVERIFY(dependency.open(QIODevice::WriteOnly));
+  QVERIFY(dependency.write("Dependency A.") > 0);
+  dependency.close();
+  auto config = editorConfig(root.path());
+  const auto pageSetup = QStringLiteral("#set page(width: 240pt, height: 700pt, margin: 16pt)\n");
+  const auto source =
+      pageSetup +
+      QStringLiteral("= Heading A\n#include \"dependency.typ\"\n$ x^2 $\n#pagebreak()\nSearch A.");
+  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, config, true, true);
+  QSignalSpy published(fixture.pane(), SIGNAL(snapshotPublished(quint64)));
+  QVERIFY2(waitUntil([&]() {
+             return published.count() == 1 && !previewImages(fixture.editor).isEmpty();
+           }),
+           qPrintable(fixture.editor.compileMessage()));
+  auto *sourceEditor = fixture.editor.getTextEditor();
+  auto *document = fixture.editor.document();
+  auto *pane = fixture.pane();
+  auto *process = fixture.editor.findChild<QProcess *>();
+  auto *splitter = fixture.editor.findChild<QSplitter *>();
+  QVERIFY(process);
+  QVERIFY(splitter);
+  const auto pid = process->processId();
+  QVERIFY(pid > 0);
+  const auto *bridge = process->parent();
+  QSignalSpy generations(bridge, SIGNAL(generationChanged(quint64, quint64)));
+  QVERIFY(generations.isValid());
+  QSignalSpy starts(process, &QProcess::started);
+  QSignalSpy exits(process, &QProcess::finished);
+  fixture.editor.setPdfZoom(1.4);
+  splitter->setSizes({600, 400});
+  const auto sizes = splitter->sizes();
+  fixture.editor.setPdfSearchText(QStringLiteral("Search A"));
+  fixture.editor.goToPdfPage(1);
+  QCOMPARE(fixture.editor.currentPdfPage(), 1);
+  QVERIFY(fixture.selectPage().contains(QStringLiteral("Search A")));
+  QTextCursor cursor(document);
+  cursor.movePosition(QTextCursor::End);
+  cursor.insertText(QStringLiteral("\n#let broken_A = ("));
+  QVERIFY(waitUntil(
+      [&]() { return fixture.editor.compileStatus() == VTypstEditor::CompileStatus::Error; }));
+  QVERIFY(!fixture.editor.diagnostics().isEmpty());
+  QVERIFY(document->isUndoAvailable());
+  const auto zoom = fixture.editor.pdfZoom();
+  const auto zoomMode = fixture.editor.pdfZoomMode();
+  fixture.editor.resetForNewDocument();
+  QCOMPARE(fixture.editor.compileStatus(), VTypstEditor::CompileStatus::Idle);
+  QCOMPARE(fixture.editor.pdfPageCount(), 0);
+  QCOMPARE(fixture.editor.currentPdfPage(), -1);
+  QVERIFY(!fixture.editor.hasPendingPdfUpdate());
+  QVERIFY(fixture.selected().isEmpty());
+  QVERIFY(fixture.editor.diagnostics().isEmpty());
+  QVERIFY(fixture.editor.getHeadings().isEmpty());
+  QVERIFY(document->isEmpty());
+  QVERIFY(!document->isUndoAvailable());
+  QVERIFY(!document->isRedoAvailable());
+  QCOMPARE(fixture.edit()->textCursor().position(), 0);
+  QCOMPARE(fixture.edit()->textCursor().anchor(), 0);
+  QCOMPARE(pane->verticalScrollBar()->value(), 0);
+  QCOMPARE(pane->horizontalScrollBar()->value(), 0);
+  QVERIFY(fixture.editor.findChildren<QWidget *>(QStringLiteral("typstPreviewCard")).isEmpty());
+  QCOMPARE(fixture.editor.mode(), VTypstEditor::Mode::Edit);
+  QVERIFY(fixture.editor.isInplacePreviewEnabled());
+  QVERIFY(fixture.editor.isLivePreviewEnabled());
+  QCOMPARE(fixture.editor.pdfZoom(), zoom);
+  QCOMPARE(fixture.editor.pdfZoomMode(), zoomMode);
+  QCOMPARE(splitter->sizes(), sizes);
+
+  // An old dependency event, Retry and individual identity/source setters must not
+  // reopen admission. A host may fail its source load at any of these boundaries.
+  generations.clear();
+  QVERIFY(dependency.open(QIODevice::WriteOnly | QIODevice::Truncate));
+  QVERIFY(dependency.write("Changed dependency A.") > 0);
+  dependency.close();
+  fixture.editor.retryCompilation();
+  fixture.editor.setProject(root.path(), QStringLiteral("B.typ"));
+  QTest::qWait(100);
+  QCOMPARE(generations.count(), 0);
+  QCOMPARE(fixture.editor.compileStatus(), VTypstEditor::CompileStatus::Idle);
+  fixture.editor.setActiveFile(QStringLiteral("B.typ"));
+  sourceEditor->setText(QStringLiteral("#let broken_B = ("));
+  QTest::qWait(100);
+  QCOMPARE(generations.count(), 0);
+  QCOMPARE(fixture.editor.compileStatus(), VTypstEditor::CompileStatus::Idle);
+  for (int position = 0; position < document->characterCount() - 1; ++position)
+    QVERIFY(syntaxFormatAt(document, position).isEmpty());
+  fixture.editor.finishDocumentReset();
+  QVERIFY(waitUntil(
+      [&]() { return fixture.editor.compileStatus() == VTypstEditor::CompileStatus::Error; }));
+  QCOMPARE(published.count(), 1);
+  QCOMPARE(fixture.editor.pdfPageCount(), 0);
+  QCOMPARE(fixture.selectPage(), QString());
+  QVERIFY(fixture.editor.getHeadings().isEmpty());
+  QVERIFY(fixture.editor.findChildren<QWidget *>(QStringLiteral("typstPreviewCard")).isEmpty());
+  QVERIFY(fixture.editor.diagnostics().join(QLatin1Char('\n')).contains(QStringLiteral("B.typ")));
+  QVERIFY(
+      !fixture.editor.diagnostics().join(QLatin1Char('\n')).contains(QStringLiteral("main.typ")));
+
+  const auto incoming = pageSetup + QStringLiteral("= Heading B\nOnly B.\n#pagebreak()\nSearch A.");
+  sourceEditor->setText(incoming);
+  QVERIFY2(waitUntil([&]() { return published.count() == 2; }),
+           qPrintable(fixture.editor.compileMessage()));
+  QCOMPARE(fixture.editor.currentPdfPage(), 0);
+  fixture.editor.findNextPdfMatch();
+  QTest::qWait(50);
+  QCOMPARE(fixture.editor.currentPdfPage(), 0);
+  QVERIFY(fixture.selectPage().contains(QStringLiteral("Only B")));
+  QVERIFY(!fixture.selected().contains(QStringLiteral("Heading A")));
+  QCOMPARE(fixture.editor.getHeadings().size(), 1);
+  QCOMPARE(fixture.editor.getHeadings().first().m_title, QStringLiteral("Heading B"));
+  QCOMPARE(fixture.editor.getTextEditor(), sourceEditor);
+  QCOMPARE(fixture.editor.document(), document);
+  QCOMPARE(fixture.pane(), pane);
+  QCOMPARE(fixture.editor.findChild<QProcess *>(), process);
+  QCOMPARE(process->parent(), bridge);
+  QCOMPARE(process->processId(), pid);
+  QCOMPARE(starts.count(), 0);
+  QCOMPARE(exits.count(), 0);
+  QCOMPARE(fixture.editor.pdfZoom(), zoom);
+  QCOMPARE(fixture.editor.pdfZoomMode(), zoomMode);
+  QCOMPARE(splitter->sizes(), sizes);
+}
+
+void TestTypstEditor::documentResetRetiresPendingPdf() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  EditorFixture fixture(root.path(), shortSource(QStringLiteral("Published A.")));
+  QSignalSpy published(fixture.pane(), SIGNAL(snapshotPublished(quint64)));
+  QVERIFY2(waitUntil([&]() { return published.count() == 1; }),
+           qPrintable(fixture.editor.compileMessage()));
+  auto *pane = fixture.pane();
+  auto *source = fixture.editor.getTextEditor();
+  auto *process = fixture.editor.findChild<QProcess *>();
+  QVERIFY(process);
+  const auto pid = process->processId();
+  fixture.editor.fitPdfWidth();
+  fixture.editor.setInplacePreviewEnabled(false);
+  fixture.editor.setLivePreviewEnabled(true);
+  for (int round = 0; round < 3; ++round) {
+    QVERIFY(!fixture.selectPage().isEmpty());
+    source->setText(shortSource(QStringLiteral("= Pending A %1\nNever publish this.").arg(round)));
+    QVERIFY2(waitUntil([&]() { return fixture.editor.hasPendingPdfUpdate(); }),
+             qPrintable(fixture.editor.compileMessage()));
+    QCOMPARE(fixture.editor.getHeadings().size(), 1);
+    // Resize schedules fresh work against both displayed and selection-held slots.
+    fixture.editor.resize(1000 + round * 30, 650 + round * 20);
+    QCoreApplication::processEvents();
+    const int before = published.count();
+    fixture.editor.resetForNewDocument();
+    // Repeated reset before renderer completions must not destroy their devices.
+    fixture.editor.resetForNewDocument();
+    QCOMPARE(fixture.editor.pdfPageCount(), 0);
+    QVERIFY(!fixture.editor.hasPendingPdfUpdate());
+    QVERIFY(fixture.selected().isEmpty());
+    QVERIFY(fixture.editor.getHeadings().isEmpty());
+    QCOMPARE(fixture.editor.mode(), VTypstEditor::Mode::Read);
+    QVERIFY(!fixture.editor.isInplacePreviewEnabled());
+    QVERIFY(fixture.editor.isLivePreviewEnabled());
+    QCOMPARE(fixture.editor.pdfZoomMode(), VTypstEditor::PdfZoomMode::Width);
+    QTest::qWait(100);
+    QCOMPARE(published.count(), before);
+    QCOMPARE(fixture.editor.pdfPageCount(), 0);
+    const auto file = QStringLiteral("B%1.typ").arg(round);
+    fixture.editor.setProject(root.path(), file);
+    fixture.editor.setActiveFile(file);
+    source->setText(shortSource(QStringLiteral("Published B %1.").arg(round)));
+    fixture.editor.finishDocumentReset();
+    QVERIFY2(waitUntil([&]() { return published.count() == before + 1; }),
+             qPrintable(fixture.editor.compileMessage()));
+    QCOMPARE(fixture.selectPage().trimmed(), QStringLiteral("Published B %1.").arg(round));
+    QCOMPARE(fixture.pane(), pane);
+    QCOMPARE(fixture.editor.getTextEditor(), source);
+    QCOMPARE(fixture.editor.findChild<QProcess *>(), process);
+    QCOMPARE(process->processId(), pid);
+    QCOMPARE(fixture.editor.currentPdfPage(), 0);
+    QCOMPARE(fixture.editor.pdfZoomMode(), VTypstEditor::PdfZoomMode::Width);
+  }
+}
+
+void TestTypstEditor::documentResetDrainsTimedOutRequest() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  QFile diskSource(root.filePath(QStringLiteral("main.typ")));
+  QVERIFY(diskSource.open(QIODevice::WriteOnly));
+  QVERIFY(diskSource.write("Saved A dependency.") > 0);
+  diskSource.close();
+  auto config = editorConfig(root.path());
+  EditorFixture fixture(root.path(), shortSource(QStringLiteral("Unsaved A overlay.")),
+                        VTypstEditor::Mode::Read, config);
+  QSignalSpy published(fixture.pane(), SIGNAL(snapshotPublished(quint64)));
+  QVERIFY2(waitUntil([&]() { return published.count() == 1; }),
+           qPrintable(fixture.editor.compileMessage()));
+  auto *process = fixture.editor.findChild<QProcess *>();
+  QVERIFY(process);
+  const auto pid = process->processId();
+  auto *source = fixture.editor.getTextEditor();
+  auto *pane = fixture.pane();
+  QSignalSpy starts(process, &QProcess::started);
+  QSignalSpy exits(process, &QProcess::finished);
+  std::unique_ptr<QSignalBlocker> blockedReply;
+  int compiling = 0;
+  int ready = 0;
+  bool resetInFlight = false;
+  const auto connection =
+      connect(&fixture.editor, &VTypstEditor::compileStatusChanged, &fixture.editor,
+              [&](VTypstEditor::CompileStatus p_status, const QString &) {
+                if (p_status == VTypstEditor::CompileStatus::Ready)
+                  ++ready;
+                // Invalidation is first; the second event follows the real compile write.
+                if (!resetInFlight && p_status == VTypstEditor::CompileStatus::Compiling &&
+                    ++compiling == 2) {
+                  resetInFlight = true;
+                  // Delay delivery, not execution, of the real helper's response. This makes
+                  // the old request's actual timer expire deterministically after the reset.
+                  blockedReply = std::make_unique<QSignalBlocker>(process);
+                  source->setText(shortSource(QStringLiteral("Queued A must never compile.")));
+                  fixture.editor.resetForNewDocument();
+                  config->m_compileTimeoutMs = operationTimeout;
+                  fixture.editor.setConfig(config);
+                  fixture.editor.setProject(root.path(), QStringLiteral("B.typ"));
+                  fixture.editor.setActiveFile(QStringLiteral("B.typ"));
+                  source->setText(shortSource(QStringLiteral("#include \"main.typ\"\n\nOnly B.")));
+                  fixture.editor.finishDocumentReset();
+                }
+              });
+  config->m_compileTimeoutMs = 50;
+  fixture.editor.setConfig(config);
+  QVERIFY2(waitUntil([&]() {
+             return resetInFlight &&
+                    fixture.editor.compileStatus() == VTypstEditor::CompileStatus::Error;
+           }),
+           qPrintable(fixture.editor.compileMessage()));
+  QCOMPARE(fixture.editor.pdfPageCount(), 0);
+  QCOMPARE(ready, 0);
+  QCOMPARE(published.count(), 1);
+  QCOMPARE(process->state(), QProcess::Running);
+  QCOMPARE(process->processId(), pid);
+  QCOMPARE(starts.count(), 0);
+  QCOMPARE(exits.count(), 0);
+  // Blocked Qt signals are not replayed; explicitly deliver the accumulated real bytes.
+  blockedReply.reset();
+  QVERIFY(QMetaObject::invokeMethod(process, "readyReadStandardOutput", Qt::DirectConnection));
+  QVERIFY2(waitUntil([&]() { return published.count() == 2; }),
+           qPrintable(fixture.editor.compileMessage()));
+  disconnect(connection);
+  QCOMPARE(ready, 1);
+  const auto text = fixture.selectPage();
+  QVERIFY(text.contains(QStringLiteral("Saved A dependency")));
+  QVERIFY(text.contains(QStringLiteral("Only B")));
+  QVERIFY(!text.contains(QStringLiteral("Unsaved A overlay")));
+  QCOMPARE(fixture.editor.getTextEditor(), source);
+  QCOMPARE(fixture.pane(), pane);
+  QCOMPARE(fixture.editor.findChild<QProcess *>(), process);
+  QCOMPARE(process->processId(), pid);
+  QCOMPARE(starts.count(), 0);
+  QCOMPARE(exits.count(), 0);
+  QVERIFY(fixture.editor.diagnostics().isEmpty());
 }
 
 void TestTypstEditor::repeatedCloseDuringPendingOutput() {

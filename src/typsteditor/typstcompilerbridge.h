@@ -26,6 +26,8 @@ public:
 
   void updateProject(const TypstEditorConfig &p_config, const QString &p_activeFile,
                      const QMap<QString, QString> &p_overlays);
+  void resetForNewDocument();
+  void finishDocumentReset();
   void retry();
   void setDisplayedSnapshot(const TypstSnapshot &p_snapshot);
   void requestPdf(quint64 p_snapshot);
@@ -97,6 +99,7 @@ private:
   bool m_compilePending = false;
   bool m_compileDue = false;
   bool m_stopping = false;
+  bool m_documentReset = false;
   char m_prefix[8] = {};
   qint64 m_prefixRead = 0;
   QByteArray m_header;
