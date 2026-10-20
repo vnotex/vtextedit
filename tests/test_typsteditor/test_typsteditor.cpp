@@ -4876,6 +4876,108 @@ void TestTypstEditor::pdfBudgetFailurePreservesOutputAndRecovers() {
   QCOMPARE(fixture.selectPage().trimmed(), QStringLiteral("Export recovered."));
 }
 
+void TestTypstEditor::resourceRequestsAcrossDocumentReset_data() {
+  QTest::addColumn<bool>("reset");
+  QTest::newRow("ordinary-edit-keeps-inflight-displayed-image") << false;
+  QTest::newRow("document-reset-cancels-inflight-and-queued-images") << true;
+}
+
+void TestTypstEditor::resourceRequestsAcrossDocumentReset() {
+  QFETCH(bool, reset);
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto path = root.filePath(QStringLiteral("picture.png"));
+  QByteArray red, blue;
+  QVERIFY(writeResourceImage(path, Qt::red, &red));
+  const auto source =
+      shortSource(QStringLiteral("Held selection\n\n#image(\"picture.png\", width: 60pt)"));
+  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Read, {}, false, false);
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  QRect bounds;
+  QVERIFY(waitUntil(
+      [&] { return coloredPixels(widgetImage(fixture.pane()->viewport()), true, &bounds) > 20; }));
+  const auto context = resourceMenuAt(fixture.editor, fixture.pane()->viewport(), bounds.center());
+  QVERIFY(context.m_imageId);
+  QVERIFY(!fixture.selectPage().isEmpty());
+  auto *process = fixture.editor.findChild<QProcess *>();
+  QVERIFY(process);
+  const auto pid = process->processId();
+  QSignalSpy data(&fixture.editor, &VTypstEditor::imageDataReady);
+  fixture.editor.requestImageData(context, 1);
+  QVERIFY(waitUntil([&] { return data.count() == 1; }));
+  QCOMPARE(data.first()[1].toByteArray(), red);
+
+  // Delay delivery of an actual image reply, leaving its serial request in flight.
+  auto blockedReply = std::make_unique<QSignalBlocker>(process);
+  fixture.editor.requestImageData(context, 2);
+  QVERIFY(process->bytesAvailable() > 0 || process->waitForReadyRead(3000));
+  fixture.editor.requestImageData(context, 3);
+  if (reset) {
+    fixture.editor.resetForNewDocument();
+    QVERIFY(!fixture.editor.isResourceContextValid(context));
+    QCOMPARE(fixture.editor.pdfPageCount(), 0);
+    QVERIFY(writeResourceImage(path, Qt::blue, &blue));
+    fixture.editor.setProject(root.path(), QStringLiteral("B.typ"));
+    fixture.editor.setActiveFile(QStringLiteral("B.typ"));
+    fixture.editor.getTextEditor()->setText(source);
+    fixture.editor.finishDocumentReset();
+  } else {
+    fixture.editor.setFileOverlay(QStringLiteral("main.typ"),
+                                  source + QStringLiteral("\nNew source"));
+    QVERIFY(fixture.editor.isResourceContextValid(context));
+  }
+  blockedReply.reset();
+  QVERIFY(QMetaObject::invokeMethod(process, "readyReadStandardOutput", Qt::DirectConnection));
+  QVERIFY(waitUntil([&] { return data.count() == 3; }));
+  for (const auto &reply : data) {
+    const auto id = reply[0].toULongLong();
+    if (id == 1)
+      continue;
+    if (id == 2 && !reset) {
+      QCOMPARE(reply[1].toByteArray(), red);
+      QVERIFY(reply[3].toString().isEmpty());
+    } else {
+      QVERIFY(reply[1].toByteArray().isEmpty());
+      QVERIFY(!reply[3].toString().isEmpty());
+    }
+  }
+  QCOMPARE(process->processId(), pid);
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  if (reset) {
+    QVERIFY(waitUntil([&] {
+      return coloredPixels(widgetImage(fixture.pane()->viewport()), false, &bounds) > 20;
+    }));
+    const auto incoming =
+        resourceMenuAt(fixture.editor, fixture.pane()->viewport(), bounds.center());
+    QVERIFY(incoming.m_imageId);
+    QVERIFY(!fixture.editor.isResourceContextValid(context));
+    fixture.editor.requestImageData(incoming, 4);
+    QVERIFY(waitUntil([&] { return data.count() == 4; }));
+    QCOMPARE(data.last()[1].toByteArray(), blue);
+    QVERIFY(data.last()[3].toString().isEmpty());
+    QCOMPARE(fixture.editor.document()->toPlainText(), source);
+  }
+}
+
+void TestTypstEditor::documentResetInvalidationCanDestroyEditor() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  auto fixture =
+      std::make_unique<EditorFixture>(root.path(), shortSource(QStringLiteral("Old document")));
+  QVERIFY(fixture->ready());
+  QPointer<VTypstEditor> editor(&fixture->editor);
+  bool invalidated = false;
+  connect(editor, &VTypstEditor::resourceContextsInvalidated, this, [&] {
+    if (!invalidated) {
+      invalidated = true;
+      fixture.reset();
+    }
+  });
+  editor->resetForNewDocument();
+  QVERIFY(invalidated);
+  QVERIFY(editor.isNull());
+}
+
 void TestTypstEditor::documentResetClearsPublishedState() {
   QTemporaryDir root;
   QVERIFY(root.isValid());

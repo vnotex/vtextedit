@@ -453,8 +453,14 @@ request overlaps them. An obsolete timeout reports unavailable compilation witho
 process or forgetting that reply. Current-generation failure and explicit Retry retain existing
 recovery behavior. Retired render slots own outstanding renderer callbacks until completion but
 can never publish or paint the outgoing PDF. Bind completion clears load-time formatting history.
-Coverage: `documentResetClearsPublishedState`, `documentResetRetiresPendingPdf` and
-`documentResetDrainsTimedOutRequest` in `tests/test_typsteditor/`.
+Reset also revokes both displayed resource IDs before notifying consumers. Queued image requests
+complete as cancelled; in-flight image replies drain their original protocol frame and are rejected
+once their snapshot is no longer retained. Ordinary source edits still allow in-flight reads of a
+retained displayed image. Resource invalidation may synchronously destroy the editor, so reset must
+not retain rollback guards referring to its members across that notification.
+Coverage: `documentResetClearsPublishedState`, `documentResetRetiresPendingPdf`,
+`documentResetDrainsTimedOutRequest`, `resourceRequestsAcrossDocumentReset` and
+`documentResetInvalidationCanDestroyEditor` in `tests/test_typsteditor/`.
 
 ## Typst PDF Camera State
 

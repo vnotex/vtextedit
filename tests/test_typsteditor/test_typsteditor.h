@@ -100,6 +100,9 @@ private slots:
   void documentResetClearsPublishedState();
   void documentResetRetiresPendingPdf();
   void documentResetDrainsTimedOutRequest();
+  void resourceRequestsAcrossDocumentReset_data();
+  void resourceRequestsAcrossDocumentReset();
+  void documentResetInvalidationCanDestroyEditor();
   void repeatedCloseDuringPendingOutput();
   void resourceContextMetadataAndGestures();
   void resourceImageDataRetentionAndCancellation();

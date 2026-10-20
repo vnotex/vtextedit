@@ -16,8 +16,8 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QPointer>
-#include <QScopedValueRollback>
 #include <QScopeGuard>
+#include <QScopedValueRollback>
 #include <QScrollBar>
 #include <QSplitter>
 #include <QTextDocument>
