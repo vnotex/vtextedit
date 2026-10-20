@@ -458,10 +458,10 @@ the numeric scale. Regression coverage: `pdfZoom*` and `pdfFitBeforePublication*
 
 ## Typst PDF Context Menu
 
-Read mode keeps Copy, Select page text, Clear selection, Fit width and Fit page only.
-Update preview, manual zoom and search menu actions remain available in Edit/live preview;
-keyboard shortcuts and host PDF APIs are unchanged. The pane receives presentation mode
-before visibility changes, independently of source read-only state.
+Edit/live preview and Read share Copy, Select page text, Clear selection, Fit width and
+Fit page only. Selection-dependent actions keep the same enablement in both modes.
+Clearing the selection publishes pending preview updates; the status hint names that action.
+Keyboard shortcuts and host PDF APIs remain available independently of the context menu.
 
 ## Translation Catalogs
 

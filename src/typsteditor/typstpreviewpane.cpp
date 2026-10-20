@@ -1266,10 +1266,7 @@ public:
       if (!status.isEmpty()) {
         status += QLatin1Char('\n');
       }
-      status += m_readMode
-                    ? TypstPreviewPane::tr("Update available — clear the selection.")
-                    : TypstPreviewPane::tr(
-                          "Update available — clear the selection or choose Update preview.");
+      status += TypstPreviewPane::tr("Update available — clear the selection.");
     }
     if (m_displayed && m_displayed->m_resolutionLimited) {
       if (!status.isEmpty()) {
@@ -1323,7 +1320,6 @@ public:
   int m_sourceFlashPhases = 0;
   int m_sourceFlashPage = -1;
   QPointF m_sourceFlashPoint;
-  bool m_readMode = false;
   bool m_pressed = false;
   bool m_dragging = false;
   bool m_controlClick = false;
@@ -1350,11 +1346,6 @@ TypstPreviewPane::TypstPreviewPane(const TypstEditorConfig &p_config, QWidget *p
 }
 
 TypstPreviewPane::~TypstPreviewPane() = default;
-
-void TypstPreviewPane::setReadMode(bool p_readMode) {
-  m_d->m_readMode = p_readMode;
-  viewport()->update();
-}
 
 void TypstPreviewPane::applyConfig(const TypstEditorConfig &p_config) {
   m_d->m_maxPdfBytes = qMax(qint64(0), p_config.m_maxPdfBytes);
@@ -1780,24 +1771,8 @@ void TypstPreviewPane::contextMenuEvent(QContextMenuEvent *p_event) {
   auto clearAction = menu.addAction(tr("Clear selection"), this, &TypstPreviewPane::clearSelection);
   clearAction->setEnabled(hasSelection() || m_d->m_pressed);
   menu.addSeparator();
-  if (!m_d->m_readMode) {
-    auto updateAction =
-        menu.addAction(tr("Update preview"), this, &TypstPreviewPane::publishPending);
-    updateAction->setEnabled(hasPendingUpdate());
-    menu.addSeparator();
-  }
   menu.addAction(tr("Fit width"), this, &TypstPreviewPane::fitWidth);
   menu.addAction(tr("Fit page"), this, &TypstPreviewPane::fitPage);
-  if (!m_d->m_readMode) {
-    menu.addAction(tr("Zoom in"), this, [this]() { setZoom(zoom() * 1.2); });
-    menu.addAction(tr("Zoom out"), this, [this]() { setZoom(zoom() / 1.2); });
-    menu.addSeparator();
-    menu.addAction(tr("Find in preview…"), this, [this]() { m_d->showSearchDialog(); });
-    auto nextAction = menu.addAction(tr("Find next"), this, [this]() { findNext(); });
-    nextAction->setEnabled(m_d->m_displayed && !m_d->m_searchText.isEmpty());
-    auto previousAction = menu.addAction(tr("Find previous"), this, [this]() { findNext(true); });
-    previousAction->setEnabled(nextAction->isEnabled());
-  }
   menu.exec(p_event->globalPos());
   p_event->accept();
 }
