@@ -1,4 +1,4 @@
-//! Snapshot-owned resource identity and source edits from evaluated elements and official AST.
+//! Snapshot-owned resources, source edits, and parse-only image-reference safety scans.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -13,12 +13,118 @@ use typst::syntax::{Span, SyntaxKind, ast::{self, AstNode}};
 use typst::utils::Scalar;
 use typst::visualize::{ExchangeFormat, Image, ImageElem, ImageFormat, RasterFormat};
 use typst_layout::{Page, PagedDocument};
+use typst_syntax::{LinkedNode, Source};
 
 use crate::world::{Config, wire_path, wire_range};
 
 const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_IMAGE_SIDE: f64 = 8192.0;
 const MAX_IMAGE_PIXELS: usize = 16 * 1024 * 1024;
+const MAX_REFERENCE_NODES: usize = crate::MAX_HEADER / std::mem::size_of::<LinkedNode<'_>>();
+
+// Count the actual JSON encoding without allocating a second copy of the output.
+struct ImageReferenceSize(usize);
+impl std::io::Write for ImageReferenceSize {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > crate::MAX_HEADER.saturating_sub(self.0) {
+            return Err(std::io::Error::other("image references exceed the 16 MiB header limit"));
+        }
+        self.0 += bytes.len();
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+}
+
+fn append_image_reference(values: &mut Vec<Value>, value: &str, size: &mut ImageReferenceSize) -> Result<(), String> {
+    if !values.is_empty() {
+        std::io::Write::write_all(size, b",").map_err(|error| error.to_string())?;
+    }
+    serde_json::to_writer(size, value).map_err(|error| error.to_string())?;
+    values.push(Value::String(value.into()));
+    Ok(())
+}
+
+/// Collect positively identified literals without evaluating code or accessing a project.
+/// Only a complete final-source scan may be used to establish an image's absence.
+pub fn image_references(text: &str) -> Result<Value, String> {
+    if text.len() > crate::MAX_HEADER {
+        return Err("image-reference source exceeds the 16 MiB header limit".into());
+    }
+    let source = Source::detached(text);
+    let mut complete = !source.root().diagnosis().errors;
+    let mut images = Vec::new();
+    let mut strings = Vec::new();
+    let mut seen_images = HashSet::new();
+    let mut seen_strings = HashSet::new();
+    let mut image_literals = HashSet::new();
+    // `false` is the larger encoding; the two arrays are filled incrementally.
+    let mut size = ImageReferenceSize(br#"{"images":[],"strings":[],"complete":false}"#.len());
+    let mut nodes = vec![LinkedNode::new(source.root())];
+    let mut remaining_nodes = MAX_REFERENCE_NODES - 1;
+    while let Some(node) = nodes.pop() {
+        // Raw contents are examples, even when their language is Typst.
+        if node.kind() == SyntaxKind::Raw { continue; }
+        remaining_nodes = remaining_nodes.checked_sub(node.get().children().len())
+            .ok_or("image-reference traversal exceeds the protocol resource limit")?;
+
+        if matches!(node.kind(), SyntaxKind::ModuleImport | SyntaxKind::ModuleInclude
+            | SyntaxKind::FieldAccess | SyntaxKind::MathFieldAccess)
+        {
+            complete = false;
+        }
+        if matches!(node.kind(), SyntaxKind::Ident | SyntaxKind::MathIdent) {
+            match node.leaf_text().as_str() {
+                "eval" | "std" | "plugin" => complete = false,
+                "image" => {
+                    let direct_callee = node.parent().and_then(|parent| parent.cast::<ast::FuncCall>())
+                        .is_some_and(|call| matches!(call.callee(), ast::Expr::Ident(name)
+                            if name.span() == node.span()));
+                    if !direct_callee { complete = false; }
+                }
+                _ => {}
+            }
+        }
+        if let Some(call) = node.cast::<ast::FuncCall>() {
+            match call.callee() {
+                ast::Expr::Ident(name) if name.as_str() == "image" => {
+                    let mut first = None;
+                    for arg in call.args().items() {
+                        match arg {
+                            ast::Arg::Pos(expr) if first.is_none() => first = Some(expr),
+                            ast::Arg::Spread(_) => complete = false,
+                            _ => {}
+                        }
+                    }
+                    if let Some(ast::Expr::Str(literal)) = first {
+                        image_literals.insert(literal.span());
+                    } else {
+                        complete = false;
+                    }
+                }
+                ast::Expr::Ident(_) => {}
+                _ => complete = false,
+            }
+        }
+        if let Some(literal) = node.cast::<ast::Str>() {
+            let decoded = literal.get();
+            // Emit when visiting the literal, not its call: a named argument may
+            // contain an earlier nested image call before the first positional one.
+            if image_literals.remove(&node.span()) && seen_images.insert(decoded.clone()) {
+                append_image_reference(&mut images, decoded.as_str(), &mut size)?;
+            }
+            if seen_strings.insert(decoded.clone()) {
+                append_image_reference(&mut strings, decoded.as_str(), &mut size)?;
+            }
+        }
+        if node.get().children().len() != 0 {
+            nodes.extend(node.children().rev());
+        }
+    }
+    let mut result = json!({"complete":complete});
+    result["images"] = Value::Array(images);
+    result["strings"] = Value::Array(strings);
+    Ok(result)
+}
 
 pub struct ImageResource {
     loaded: Loaded,
@@ -271,6 +377,107 @@ mod tests {
     use typst::foundations::Derived;
     use typst::loading::DataSource;
     use typst::visualize::RasterImage;
+
+    #[test]
+    fn image_references_decode_literals_and_deduplicate_in_source_order() {
+        let source = r##"#image("assets/caf\u{e9}-😀-\"quoted\"-%20.png")
+#let path = "other.png"
+#image("other.png")
+#image("assets/café-😀-\"quoted\"-%20.png")
+#link("linked.png")[label]
+#image("back\\slash.png")"##;
+        assert_eq!(image_references(source).unwrap(), json!({
+            "images":["assets/café-😀-\"quoted\"-%20.png", "other.png", "back\\slash.png"],
+            "strings":["assets/café-😀-\"quoted\"-%20.png", "other.png", "linked.png", "back\\slash.png"],
+            "complete":true,
+        }));
+        let source = r#"#image(alt: image("earlier.png"), "later.png")"#;
+        assert_eq!(image_references(source).unwrap(), json!({
+            "images":["earlier.png", "later.png"],
+            "strings":["earlier.png", "later.png"], "complete":true,
+        }));
+    }
+
+    #[test]
+    fn image_references_visit_unevaluated_branches_bodies_and_content() {
+        let source = r#"#let unused() = { image("body.png") }
+#if false { image("branch.png") }
+#text[#image("nested.png")]
+#page(fill: red)[#image("page.png")]"#;
+        assert_eq!(image_references(source).unwrap(), json!({
+            "images":["body.png", "branch.png", "nested.png", "page.png"],
+            "strings":["body.png", "branch.png", "nested.png", "page.png"], "complete":true,
+        }));
+    }
+
+    #[test]
+    fn image_references_ignore_raw_comments_and_markup_text() {
+        let source = r###"image("text.png")
+// #image("comment.png")
+/* #import "other.typ": *; #image("block.png") */
+`#image("inline.png")`
+```typ
+#image("example.png")
+#let f = image
+#include "external.typ"
+```
+#image("actual.png")"###;
+        assert_eq!(image_references(source).unwrap(), json!({
+            "images":["actual.png"], "strings":["actual.png"], "complete":true,
+        }));
+        assert_eq!(image_references("").unwrap(), json!({"images":[], "strings":[], "complete":true}));
+        assert_eq!(image_references("#text(\"not an image\")").unwrap(),
+            json!({"images":[], "strings":["not an image"], "complete":true}));
+    }
+
+    #[test]
+    fn image_references_disarm_dynamic_indirect_imported_and_malformed_sources() {
+        for uncertain in [
+            "#image()",
+            "#image(path)",
+            "#image(\"dir/\" + \"dynamic.png\")",
+            "#image((\"parenthesized.png\"))",
+            "#image(\"spread.png\", ..options)",
+            "#image(..options, \"spread.png\")",
+            "#let f = image",
+            "#let image(x) = x",
+            "#text(image)",
+            "#(image)(\"indirect.png\")",
+            "#(f)(\"indirect.png\")",
+            "#factory()(\"indirect.png\")",
+            "#std.image(\"indirect.png\")",
+            "#let library = std",
+            "#properties.age",
+            "$arrow.r$",
+            "$image(\"math.png\")$",
+            "#let run = eval",
+            "#eval(\"code\")",
+            "#let load = plugin",
+            "#plugin(\"code.wasm\")",
+            "#import \"external.typ\": *",
+            "#include \"external.typ\"",
+            "#image(\"unfinished.png\"",
+            "#let invalid = (",
+            "```typ\nunterminated raw",
+        ] {
+            let source = format!("#image(\"known.png\")\n{uncertain}");
+            let result = image_references(&source).unwrap();
+            assert_eq!(result["complete"], false, "{uncertain}: {result}");
+            assert!(result["images"].as_array().unwrap().contains(&json!("known.png")), "{uncertain}: {result}");
+            assert!(result["strings"].as_array().unwrap().contains(&json!("known.png")), "{uncertain}: {result}");
+        }
+        let result = image_references("#image(\"positive.png\", ..options)").unwrap();
+        assert_eq!(result, json!({"images":["positive.png"], "strings":["positive.png"], "complete":false}));
+    }
+
+    #[test]
+    fn image_references_enforce_source_traversal_and_encoded_output_limits() {
+        assert!(image_references(&"x".repeat(crate::MAX_HEADER + 1)).unwrap_err().contains("source"));
+        let source = format!("#image(\"{}\")", "x".repeat(crate::MAX_HEADER / 2));
+        assert!(image_references(&source).unwrap_err().contains("references exceed"));
+        let source = "#none\n".repeat(MAX_REFERENCE_NODES / 2 + 1);
+        assert!(image_references(&source).unwrap_err().contains("traversal"));
+    }
 
     const RAW: &str = "#image(bytes((255, 0, 0, 255, 0, 0, 0, 0)), format: (encoding: \"rgba8\", width: 2, height: 1))";
     const SVG: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"4\"><rect x=\"2\" width=\"4\" height=\"4\" fill=\"red\"/></svg>";

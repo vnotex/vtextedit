@@ -31,6 +31,21 @@ public:
     bool isSuccess() const { return m_error.isEmpty(); }
   };
 
+  struct ImageReferences {
+    QStringList m_images;
+    QStringList m_strings;
+    bool m_complete = false;
+  };
+
+  // Parse 1–3 sources without evaluation, project access or the preview process.
+  // Only complete scans can prove absence; incomplete scans still report known literals.
+  // Requires an existing absolute helper path. Blocks without pumping GUI events,
+  // with a single 10-second process deadline and 16 MiB request/response limits.
+  // Failure returns an empty vector; p_error is cleared on entry.
+  static QVector<ImageReferences> collectImageReferences(const QStringList &p_sources,
+                                                         const QString &p_helperExecutable,
+                                                         QString *p_error = nullptr);
+
   // Copies project, helper, font/package, timeout and resource settings.
   // Editor presentation settings and debounce are unused. Empty root uses the current directory.
   explicit TypstCompiler(const TypstEditorConfig &p_config = TypstEditorConfig(),

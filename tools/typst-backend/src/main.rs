@@ -83,6 +83,36 @@ fn write_frame(writer: &mut impl Write, header: &Value, binary: &[u8]) -> Result
         .map_err(|e| e.to_string())
 }
 
+fn scan_image_references(reader: &mut impl Read, writer: &mut impl Write) -> Result<(), String> {
+    let request = read_frame(reader, MAX_HEADER).map_err(|error| error.to_string())?
+        .ok_or("missing image-reference request frame")?;
+    let object = request.as_object().ok_or("image-reference request must be an object")?;
+    if object.len() != 3 || request.get("v").and_then(Value::as_u64) != Some(1)
+        || request.get("op").and_then(Value::as_str) != Some("scanImageReferences")
+    {
+        return Err("invalid image-reference request version or operation".into());
+    }
+    let sources = request.get("sources").and_then(Value::as_array)
+        .filter(|sources| (1..=3).contains(&sources.len()) && sources.iter().all(Value::is_string))
+        .ok_or("image-reference sources must contain 1 to 3 strings")?;
+    // A one-shot request owns stdin through EOF; never silently accept another
+    // frame or an unframed suffix. The host closes stdin after its single frame.
+    let mut trailing = [0u8; 1];
+    loop {
+        match reader.read(&mut trailing) {
+            Ok(0) => break,
+            Ok(_) => return Err("trailing data after image-reference request".into()),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    let references = sources.iter().map(|source| resources::image_references(source.as_str().unwrap()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut response = json!({"v":1, "op":"imageReferences"});
+    response["sources"] = Value::Array(references);
+    write_frame(writer, &response, &[])
+}
+
 fn run() -> Result<(), String> {
     let stdin = io::stdin();
     let stdout = io::stdout();
@@ -119,7 +149,17 @@ fn run() -> Result<(), String> {
 }
 
 fn main() {
-    if let Err(error) = run() {
+    let mut arguments = std::env::args_os().skip(1);
+    let result = match arguments.next() {
+        None => run(),
+        Some(mode) if mode == "--scan-image-references" && arguments.next().is_none() => {
+            let stdin = io::stdin();
+            let stdout = io::stdout();
+            scan_image_references(&mut BufReader::new(stdin.lock()), &mut BufWriter::new(stdout.lock()))
+        }
+        _ => Err("expected no arguments or --scan-image-references".into()),
+    };
+    if let Err(error) = result {
         eprintln!("vtextedit-typst: {error}");
         std::process::exit(1);
     }
@@ -128,6 +168,90 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn reference_frame(request: &Value) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        write_frame(&mut bytes, request, &[]).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn image_reference_mode_returns_one_ordered_parse_only_frame() {
+        let request = reference_frame(&json!({"v":1, "op":"scanImageReferences", "sources":[
+            "#if false { image(\"never-read.png\") }",
+            "#image(\"literal.png\")\n#include \"never-read.typ\"",
+            "",
+        ]}));
+        let mut output = Vec::new();
+        scan_image_references(&mut &request[..], &mut output).unwrap();
+        let mut output = &output[..];
+        let response = read_frame(&mut output, MAX_HEADER).unwrap().unwrap();
+        assert_eq!(response, json!({"v":1, "op":"imageReferences", "sources":[
+            {"images":["never-read.png"], "strings":["never-read.png"], "complete":true},
+            {"images":["literal.png"], "strings":["literal.png", "never-read.typ"], "complete":false},
+            {"images":[], "strings":[], "complete":true},
+        ]}));
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn image_reference_mode_rejects_invalid_request_shapes_without_a_reply() {
+        for request in [
+            json!(null), json!([]),
+            json!({"op":"scanImageReferences", "sources":[""]}),
+            json!({"v":2, "op":"scanImageReferences", "sources":[""]}),
+            json!({"v":1.0, "op":"scanImageReferences", "sources":[""]}),
+            json!({"v":1, "op":"compile", "sources":[""]}),
+            json!({"v":1, "op":"scanImageReferences"}),
+            json!({"v":1, "op":"scanImageReferences", "sources":""}),
+            json!({"v":1, "op":"scanImageReferences", "sources":[]}),
+            json!({"v":1, "op":"scanImageReferences", "sources":["", "", "", ""]}),
+            json!({"v":1, "op":"scanImageReferences", "sources":["", 1]}),
+            json!({"v":1, "op":"scanImageReferences", "sources":[null]}),
+            json!({"v":1, "op":"scanImageReferences", "sources":[""], "extra":true}),
+        ] {
+            let bytes = reference_frame(&request);
+            let mut output = Vec::new();
+            assert!(scan_image_references(&mut &bytes[..], &mut output).is_err(), "{request}");
+            assert!(output.is_empty(), "{request}");
+        }
+    }
+
+    #[test]
+    fn image_reference_mode_rejects_truncation_binary_trailing_and_oversized_frames() {
+        let request = reference_frame(&json!({"v":1, "op":"scanImageReferences", "sources":[""]}));
+        for length in 0..request.len() {
+            let mut output = Vec::new();
+            assert!(scan_image_references(&mut &request[..length], &mut output).is_err(), "{length}");
+            assert!(output.is_empty());
+        }
+        let mut binary = request.clone();
+        binary[4..8].copy_from_slice(&1u32.to_be_bytes());
+        binary.push(0);
+        let mut trailing = request.clone();
+        trailing.push(0);
+        let mut second_frame = request.clone();
+        second_frame.extend_from_slice(&request);
+        let mut oversized = vec![0u8; 8];
+        oversized[..4].copy_from_slice(&((MAX_HEADER + 1) as u32).to_be_bytes());
+        let mut malformed = request;
+        malformed[8] = b'!';
+        for bytes in [binary, trailing, second_frame, oversized, malformed, vec![0u8; 8]] {
+            let mut output = Vec::new();
+            assert!(scan_image_references(&mut &bytes[..], &mut output).is_err());
+            assert!(output.is_empty());
+        }
+    }
+
+    #[test]
+    fn image_reference_mode_bounds_the_entire_batch_response_before_writing() {
+        let source = format!("#image(\"{}\")", "x".repeat(MAX_HEADER / 4));
+        let request = reference_frame(&json!({"v":1, "op":"scanImageReferences", "sources":[source, source]}));
+        let mut output = Vec::new();
+        let error = scan_image_references(&mut &request[..], &mut output).unwrap_err();
+        assert!(error.contains("response header exceeds"), "{error}");
+        assert!(output.is_empty());
+    }
 
     #[test]
     fn rejects_oversize_frames_before_reading_payload() {

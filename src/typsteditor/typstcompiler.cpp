@@ -3,7 +3,15 @@
 #include "typstcompilerbridge.h"
 
 #include <QDir>
+#include <QElapsedTimer>
+#include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QProcess>
+#include <QScopeGuard>
 #include <QTimer>
+#include <QtEndian>
 
 #include <cmath>
 #include <utility>
@@ -193,3 +201,175 @@ bool TypstCompiler::compileToBitmap(const QString &p_text, qreal p_pixelsPerPoin
 }
 
 bool TypstCompiler::isCompiling() const { return d->m_busy; }
+
+QVector<TypstCompiler::ImageReferences>
+TypstCompiler::collectImageReferences(const QStringList &p_sources,
+                                      const QString &p_helperExecutable, QString *p_error) {
+  if (p_error) {
+    p_error->clear();
+  }
+  const auto fail = [p_error](const QString &p_message) {
+    if (p_error) {
+      *p_error = p_message;
+    }
+    return QVector<ImageReferences>();
+  };
+  constexpr qsizetype c_headerLimit = 16 * 1024 * 1024;
+  constexpr qint64 c_chunkSize = 64 * 1024;
+  const QFileInfo executable(p_helperExecutable);
+  if (p_helperExecutable.contains(QChar::Null) || !executable.isAbsolute() ||
+      !executable.isFile() || p_sources.isEmpty() || p_sources.size() > 3) {
+    return fail(tr("Image reference scan requires 1–3 sources and an explicit helper file"));
+  }
+
+  // Bound the encoded JSON before QJsonDocument allocates its serialized header.
+  qsizetype size =
+      QByteArrayLiteral("{\"v\":1,\"op\":\"scanImageReferences\",\"sources\":[]}").size() +
+      3 * p_sources.size() - 1;
+  for (const auto &source : p_sources) {
+    for (qsizetype idx = 0; idx < source.size(); ++idx) {
+      const auto ch = source.at(idx);
+      const auto code = ch.unicode();
+      if (ch.isNull()) {
+        return fail(tr("Image reference source contains a NUL"));
+      }
+      if (ch.isHighSurrogate() && idx + 1 < source.size() && source.at(idx + 1).isLowSurrogate()) {
+        size += 4;
+        ++idx;
+      } else if (ch.isSurrogate()) {
+        return fail(tr("Image reference source contains invalid Unicode"));
+      } else if (code == '"' || code == '\\' || code == '\b' || code == '\f' || code == '\n' ||
+                 code == '\r' || code == '\t') {
+        size += 2;
+      } else {
+        size += code < 0x20 ? 6 : code < 0x80 ? 1 : code < 0x800 ? 2 : 3;
+      }
+      if (size > c_headerLimit) {
+        return fail(tr("Image reference request exceeds 16 MiB"));
+      }
+    }
+  }
+  const auto header =
+      QJsonDocument(QJsonObject{{QStringLiteral("v"), 1},
+                                {QStringLiteral("op"), QStringLiteral("scanImageReferences")},
+                                {QStringLiteral("sources"), QJsonArray::fromStringList(p_sources)}})
+          .toJson(QJsonDocument::Compact);
+  if (header.size() > c_headerLimit) {
+    return fail(tr("Image reference request exceeds 16 MiB"));
+  }
+  char lengths[8] = {};
+  qToBigEndian<quint32>(quint32(header.size()), lengths);
+  QElapsedTimer deadline;
+  deadline.start();
+  const auto remaining = [&] { return int(qMax(qint64(0), 10000 - deadline.elapsed())); };
+  QProcess scanner;
+  // Scanner errors are reported as failures, never parsed as protocol bytes. Avoid an
+  // unbounded stderr buffer even if an explicit but broken executable is supplied.
+  scanner.setStandardErrorFile(QProcess::nullDevice());
+  const auto reap = qScopeGuard([&] {
+    if (scanner.state() != QProcess::NotRunning) {
+      scanner.kill();
+      scanner.waitForFinished(1000);
+    }
+  });
+  scanner.start(p_helperExecutable, {QStringLiteral("--scan-image-references")});
+  if (!scanner.waitForStarted(remaining())) {
+    return fail(tr("Unable to start image reference scanner: %1").arg(scanner.errorString()));
+  }
+  const auto send = [&](const char *p_data, qint64 p_size) {
+    while (p_size > 0) {
+      if (remaining() == 0) {
+        return false;
+      }
+      const auto chunk = qMin(p_size, c_chunkSize);
+      if (scanner.write(p_data, chunk) != chunk) {
+        return false;
+      }
+      while (scanner.bytesToWrite() > 0) {
+        if (remaining() == 0 || !scanner.waitForBytesWritten(remaining())) {
+          return false;
+        }
+      }
+      p_data += chunk;
+      p_size -= chunk;
+    }
+    return true;
+  };
+  if (!send(lengths, sizeof(lengths)) || !send(header.constData(), header.size())) {
+    return fail(tr("Unable to write image reference request within its deadline"));
+  }
+  scanner.closeWriteChannel();
+  QByteArray response;
+  qsizetype expected = 8;
+  bool haveLengths = false;
+  while (scanner.state() != QProcess::NotRunning || scanner.bytesAvailable() > 0) {
+    if (remaining() == 0) {
+      return fail(tr("Image reference scan timed out"));
+    }
+    if (scanner.bytesAvailable() == 0) {
+      scanner.waitForReadyRead(remaining());
+      continue;
+    }
+    if (response.size() == expected) {
+      return fail(tr("Image reference scanner returned trailing data"));
+    }
+    const auto chunk = scanner.read(qMin(c_chunkSize, qint64(expected - response.size())));
+    if (chunk.isEmpty()) {
+      return fail(tr("Unable to read image reference response"));
+    }
+    response.append(chunk);
+    if (!haveLengths && response.size() == 8) {
+      const auto jsonSize = qFromBigEndian<quint32>(response.constData());
+      const auto binarySize = qFromBigEndian<quint32>(response.constData() + 4);
+      if (jsonSize == 0 || jsonSize > c_headerLimit || binarySize != 0) {
+        return fail(tr("Invalid image reference response lengths"));
+      }
+      expected += jsonSize;
+      response.reserve(expected);
+      haveLengths = true;
+    }
+  }
+  if (remaining() == 0 || scanner.exitStatus() != QProcess::NormalExit || scanner.exitCode() != 0 ||
+      !haveLengths || response.size() != expected) {
+    return fail(tr("Image reference scanner failed or returned an incomplete response"));
+  }
+  QJsonParseError parseError;
+  const auto document = QJsonDocument::fromJson(
+      QByteArray::fromRawData(response.constData() + 8, response.size() - 8), &parseError);
+  const auto object = document.object();
+  const auto sources = object.value(QStringLiteral("sources"));
+  if (parseError.error != QJsonParseError::NoError || !document.isObject() ||
+      object.value(QStringLiteral("v")) != QJsonValue(1) ||
+      object.value(QStringLiteral("op")) != QJsonValue(QStringLiteral("imageReferences")) ||
+      !sources.isArray() || sources.toArray().size() != p_sources.size()) {
+    return fail(tr("Invalid image reference response"));
+  }
+  const auto strings = [](const QJsonValue &p_value, QStringList &p_output) {
+    if (!p_value.isArray()) {
+      return false;
+    }
+    const auto array = p_value.toArray();
+    p_output.reserve(array.size());
+    for (const auto &entry : array) {
+      if (!entry.isString() || entry.toString().contains(QChar::Null)) {
+        return false;
+      }
+      p_output.append(entry.toString());
+    }
+    return true;
+  };
+  QVector<ImageReferences> result;
+  result.reserve(p_sources.size());
+  for (const auto &entry : sources.toArray()) {
+    const auto source = entry.toObject();
+    ImageReferences references;
+    if (!entry.isObject() || !source.value(QStringLiteral("complete")).isBool() ||
+        !strings(source.value(QStringLiteral("images")), references.m_images) ||
+        !strings(source.value(QStringLiteral("strings")), references.m_strings)) {
+      return fail(tr("Invalid image reference result fields"));
+    }
+    references.m_complete = source.value(QStringLiteral("complete")).toBool();
+    result.append(std::move(references));
+  }
+  return result;
+}
