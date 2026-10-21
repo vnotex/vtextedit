@@ -202,16 +202,20 @@ struct ImageLinkInfo {
 // token content, dropping breaks entirely and preserving boundary whitespace,
 // so its slug matches the preview's id.
 //
-// Both are derived from cmark, so neither is a universal match for the preview:
-// preview-only markdown-it plugins (emoji, texmath, footnote markers) and the
-// `html: enableHtmlTag` option are invisible here. The authoritative path for
-// anything the user copies as a link stays
-// MarkdownViewerAdapter::fetchHeadingAnchor.
+// The editor and immutable MarkdownDocument use this same extraction with the
+// effective parser profile. Native rendering supplies final unique heading IDs.
 struct HeadingInfo {
   // Absolute, half-open UTF-16 document offsets, same convention as
   // ElementRegion.
   int m_startPos = 0;
   int m_endPos = 0;
+
+  // Zero-based source line, including enclosing block-container offsets.
+  int m_startLine = -1;
+
+  // Zero-based final HTML order: main body, then referenced footnotes by
+  // assigned number. Hidden definitions have -1 and must not reserve IDs.
+  int m_renderOrder = -1;
 
   // 1..6, as reported by cmark.
   int m_level = -1;

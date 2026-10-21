@@ -94,15 +94,21 @@ owns exactly two `MarkdownParserWorker` threads. A new request replaces the pend
 both workers are busy, one is asked to stop; cancellation is cooperative after
 `walkAndConvert()` returns rather than interrupting cmark itself.
 
-`walkAndConvert()` parses with `CMARK_OPT_DEFAULT`, walks the AST once, and produces both
+`walkAndConvert()` parses with the effective `MarkdownParseConfig::m_parseOptions`, walks
+the AST once, and produces both
 per-block highlight units and semantic regions. cmark reports one-based lines and byte-based
 columns. `LineOffsetTable` converts those positions into Qt UTF-16 positions, including
 two-`QChar` surrogate pairs, before document-global offsets are formed.
 
-`MarkdownParseConfig::m_extensions` is populated on both parse paths, but
-`walkAndConvert()` does not consume it. The bundled cmark behavior therefore determines what
-the AST recognizes. Separately, `MarkdownHighlighter::m_parserExts` and `isMathEnabled()` gate
-downstream math processing and signals.
+The effective parse profile reaches both full and fast parses, list helpers and table snippets.
+Standalone callers retain `CMARK_OPT_DEFAULT`; VNote opts into the viewer feature union.
+`HighlighterConfig::m_mathExtEnabled` and `isMathEnabled()` separately gate downstream math signals.
+
+Full parse results can retain a shared immutable `MarkdownDocument` on demand. The highlighter
+accepts it only for its exact source generation/profile and exposes it through `currentDocument()`
+and `documentReady`. `requestDocument()` joins pending work rather than forcing synchronous
+highlighting. Retention is normally disabled for EditOnly. Direct document parsing and HTML
+rendering omit editor projections; render-only option changes can reuse the same tree.
 
 `MarkdownHighlighter::handleParseResult()` rejects a result whose timestamp no longer matches
 the document. A current result updates `TextBlockData`-backed highlight state, code-block user

@@ -6,6 +6,7 @@
 #include <QVector>
 
 #include <vtextedit/global.h>
+#include <vtextedit/markdowndocument.h>
 
 #include "markdownparser.h"
 #include <vtextedit/markdownhighlighterdata.h>
@@ -64,6 +65,9 @@ public:
   TimeStamp m_timeStamp = 0;
 
   int m_numOfBlocks = 0;
+
+  int m_parseOptions = 0;
+  MarkdownDocumentPtr m_document;
 
   // Highlights of all blocks.
   QVector<QVector<md::HLUnit>> m_blocksHighlights;

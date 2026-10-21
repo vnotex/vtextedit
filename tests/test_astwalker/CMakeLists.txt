@@ -10,6 +10,7 @@ set(MARKDOWNEDITOR_FOLDER ${SRC_FOLDER}/markdowneditor)
 set(LIBS_FOLDER ../../libs)
 
 add_executable(test_astwalker
+    ${MARKDOWNEDITOR_FOLDER}/markdowndocument.cpp
     ${MARKDOWNEDITOR_FOLDER}/markdownastwalker.cpp ${MARKDOWNEDITOR_FOLDER}/markdownastwalker.h
     ${MARKDOWNEDITOR_FOLDER}/cmarkadapter.cpp ${MARKDOWNEDITOR_FOLDER}/cmarkadapter.h
     ${SRC_FOLDER}/utils/htmlimgscanner.cpp ${SRC_FOLDER}/include/vtextedit/htmlimgscanner.h

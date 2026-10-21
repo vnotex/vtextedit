@@ -4,6 +4,7 @@
 #include <QFile>
 
 #include "markdownastwalker.h"
+#include "cmarkadapter.h"
 #include "markdownsyntaxstyles.h"
 
 using namespace tests;
@@ -793,11 +794,8 @@ void TestASTWalker::testHeadingElements() {
   }
 }
 
-void TestASTWalker::testHeadingElementsDivergence() {
-  // Preview-only markdown-it plugins are invisible to cmark, so the anchor
-  // text keeps the literal source here where markdown-it-anchor would not.
-  // Pinned so a future change to either side is deliberate rather than
-  // discovered.
+void TestASTWalker::testHeadingSpecialInlineText() {
+  // Emoji substitution is intentionally absent from both native profiles.
   {
     auto result = vte::md::walkAndConvert(QByteArray("## :smile:\n"), 1);
     QCOMPARE(result.headingElements.size(), 1);
@@ -805,9 +803,7 @@ void TestASTWalker::testHeadingElementsDivergence() {
     QCOMPARE(result.headingElements.first().m_anchorText, QStringLiteral(":smile:"));
   }
 
-  // Inline math is a fork extension node: cmark strips the `$` delimiters and
-  // the literal is the expression source. markdown-it's texmath produces a
-  // token type the anchor plugin drops entirely, so the two disagree here.
+  // Formula literals contribute to both native and viewer heading anchors.
   {
     auto result = vte::md::walkAndConvert(QByteArray("## $x$\n"), 1);
     QCOMPARE(result.headingElements.size(), 1);
@@ -815,10 +811,8 @@ void TestASTWalker::testHeadingElementsDivergence() {
     QCOMPARE(result.headingElements.first().m_anchorText, QStringLiteral("x"));
   }
 
-  // Footnotes: the preview renders a numbered `[n]` marker, which cmark cannot
-  // reproduce here, and markdown-it-anchor drops the token from the slug. Both
-  // node forms are skipped; in particular the inline form must NOT splice its
-  // body into the heading.
+  // Footnote markers contribute no anchor text. Neither form may splice the
+  // note body into the heading.
   {
     auto result = vte::md::walkAndConvert(QByteArray("## Head [^x]\n\n[^x]: note\n"), 3);
     QCOMPARE(result.headingElements.size(), 1);
@@ -831,6 +825,75 @@ void TestASTWalker::testHeadingElementsDivergence() {
     QCOMPARE(result.headingElements.first().m_title, QStringLiteral("Head"));
     QCOMPARE(result.headingElements.first().m_anchorText, QStringLiteral("Head "));
   }
+}
+
+void TestASTWalker::testDocumentProfileProjections() {
+  const QByteArray source = "# $x$ H~2~ ^up^\n\n<img src=\"image.png\">\n\nhttps://example.org\n";
+  const int options = vte::MarkdownDocument::viewerParseOptions(false, true);
+  const auto full =
+      vte::md::walkAndConvert(source, source.count('\n') + 1, 0, 0, false, true, options);
+  const auto fast =
+      vte::md::walkAndConvert(source, source.count('\n') + 1, 0, 0, true, false, options);
+  QCOMPARE(full.blocksHighlights, fast.blocksHighlights);
+  QVERIFY(full.imageElements.isEmpty());
+  QVERIFY(fast.headingElements.isEmpty());
+  QCOMPARE(full.headingElements.size(), 1);
+  QCOMPARE(full.headingElements.first().m_title, QStringLiteral("x H2 up"));
+  QCOMPARE(full.headingElements.first().m_anchorText, QStringLiteral("x H2 up"));
+  const auto document = vte::MarkdownDocument::parse(source, options);
+  QVERIFY(document);
+  QCOMPARE(document->headings().first().m_anchorText, full.headingElements.first().m_anchorText);
+
+  const auto partial = vte::md::walkAndConvert("## title", 6, 20, 4, false, false, options);
+  QCOMPARE(partial.headingElements.size(), 1);
+  QCOMPARE(partial.headingElements.first().m_startLine, 4);
+  QCOMPARE(partial.headingElements.first().m_startPos, 20);
+
+  const QByteArray definitionHeading = "[ref]: target.md\nTitle\n=====\n";
+  const auto defined = vte::md::walkAndConvert(definitionHeading, 4, 0, 0, false, false, options);
+  const auto definedDocument = vte::MarkdownDocument::parse(definitionHeading, options);
+  QCOMPARE(defined.headingElements.size(), 1);
+  QVERIFY(definedDocument);
+  QCOMPARE(definedDocument->headings().size(), 1);
+  QCOMPARE(defined.headingElements.first().m_startLine, 1);
+  QCOMPARE(definedDocument->headings().first().m_startLine, 1);
+  QCOMPARE(definedDocument->headings().first().m_title, QStringLiteral("Title"));
+
+  const auto htmlSnippet =
+      vte::md::parseInlineSnippet(QStringLiteral("<img src=\"image.png\">"),
+                                  vte::MarkdownDocument::viewerParseOptions(true, false));
+  const auto literalSnippet =
+      vte::md::parseInlineSnippet(QStringLiteral("<img src=\"image.png\">"),
+                                  vte::MarkdownDocument::viewerParseOptions(false, false));
+  QCOMPARE(htmlSnippet.imageElements.size(), 1);
+  QVERIFY(literalSnippet.imageElements.isEmpty());
+
+  vte::md::MarkdownDocumentRequest request;
+  QVERIFY(request.request());
+  vte::md::walkAndConvert(source, source.count('\n') + 1, 0, 0, true, false, options, &request);
+  QVERIFY(!request.takeDocument());
+  vte::md::walkAndConvert(source, source.count('\n') + 5, 20, 4, false, false, options, &request);
+  QVERIFY(!request.takeDocument());
+}
+
+void TestASTWalker::testViewerOptionalTableEdges() {
+  const QByteArray source = "> a | b\n> --- | ---\n> c | d\n";
+  const auto generic = vte::md::walkAndConvert(source, 4);
+  QVERIFY(generic.tableElements.isEmpty());
+  const int options = vte::MarkdownDocument::viewerParseOptions(true, false);
+  const auto viewer = vte::md::walkAndConvert(source, 4, 0, 0, false, false, options);
+  QCOMPARE(viewer.tableElements.size(), 1);
+  const auto &table = viewer.tableElements.first();
+  QCOMPARE(table.m_columns, 2);
+  QCOMPARE(table.m_rows.size(), 3);
+  QCOMPARE(table.m_rows.first().m_prefix, QStringLiteral("> "));
+  QCOMPARE(table.m_rows.first().m_cells,
+           QVector<QString>({QStringLiteral("a"), QStringLiteral("b")}));
+  QCOMPARE(table.m_rows.first().m_cellOffsets, QVector<int>({2, 6}));
+  QCOMPARE(table.m_rows.last().m_cells,
+           QVector<QString>({QStringLiteral("c"), QStringLiteral("d")}));
+  QCOMPARE(table.m_startPos, 0);
+  QCOMPARE(table.m_endPos, source.size() - 1);
 }
 
 QTEST_MAIN(tests::TestASTWalker)

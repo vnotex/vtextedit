@@ -28,6 +28,7 @@
 #include <QUrl>
 
 #include <vtextedit/htmltablescanner.h>
+#include <vtextedit/markdowndocument.h>
 #include <vtextedit/preview.h>
 #include <vtextedit/vmarkdowneditor.h>
 
@@ -6539,6 +6540,55 @@ void TestTablePreview::testInlineBindingsOrderMultipleImagesInOneCell() {
                QStringLiteral(" ") + image + QChar::ObjectReplacementCharacter);
   QCOMPARE(document.cells()[1][0], source);
   QCOMPARE(document.cells()[1][1], image);
+}
+
+void TestTablePreview::testCellGrammarProfileInvalidatesCache() {
+  const QString source = QStringLiteral("<b>tag</b> https://example.org");
+  const auto snapshot =
+      makeSnapshot({{QStringLiteral("header")}, {source}}, {PreviewTableAlignment::Left});
+  auto styles = makeSyntaxStyles(Qt::red);
+  styles[STYLE_HTML].setForeground(Qt::magenta);
+  styles[STYLE_LINK].setForeground(Qt::blue);
+  const int enabled = MarkdownDocument::viewerParseOptions(true, true);
+  const int disabled = MarkdownDocument::viewerParseOptions(false, false);
+  TablePreviewWidget widget(nullptr, nullptr);
+  widget.setSyntaxStyles(styles, enabled);
+  QVERIFY(widget.setPreview(snapshot));
+  auto sheet = sheetOf(widget);
+  QVERIFY(sheet);
+  auto document = sheet->tableDocument();
+  QVERIFY(document);
+  putCaretIn(sheet, 1, 0);
+  const auto cursor = sheet->textCursor();
+  const QString markdown = document->toMarkdown();
+  const int undoDepth = sheet->undoRingDepth();
+  const int redoDepth = sheet->redoRingDepth();
+  const int urlOffset = source.indexOf(QStringLiteral("https://"));
+  QCOMPARE(formatAt(sheet->document(), 1, 0, 0).foreground().color(), QColor(Qt::magenta));
+  QCOMPARE(formatAt(sheet->document(), 1, 0, urlOffset).foreground().color(), QColor(Qt::blue));
+  QVERIFY(document->toHtml().contains(QStringLiteral("href=\"https://example.org\"")));
+  const quint64 parsed = md::inlineSnippetParseCount();
+
+  widget.setSyntaxStyles(styles, disabled);
+  QCOMPARE(md::inlineSnippetParseCount(), parsed + 2);
+  QVERIFY(formatAt(sheet->document(), 1, 0, 0).foreground().color() != QColor(Qt::magenta));
+  QVERIFY(formatAt(sheet->document(), 1, 0, urlOffset).foreground().color() != QColor(Qt::blue));
+  const QString html = document->toHtml();
+  QVERIFY(html.contains(QStringLiteral("&lt;b&gt;tag&lt;/b&gt;")));
+  QVERIFY(!html.contains(QStringLiteral("href=\"https://example.org\"")));
+  widget.setSyntaxStyles(styles, disabled);
+  QCOMPARE(md::inlineSnippetParseCount(), parsed + 2);
+
+  widget.setSyntaxStyles(styles, enabled);
+  QCOMPARE(md::inlineSnippetParseCount(), parsed + 4);
+  QCOMPARE(formatAt(sheet->document(), 1, 0, 0).foreground().color(), QColor(Qt::magenta));
+  QCOMPARE(formatAt(sheet->document(), 1, 0, urlOffset).foreground().color(), QColor(Qt::blue));
+  QCOMPARE(document->toMarkdown(), markdown);
+  QCOMPARE(document->cells().at(1).at(0), source);
+  QCOMPARE(sheet->textCursor().position(), cursor.position());
+  QCOMPARE(sheet->textCursor().anchor(), cursor.anchor());
+  QCOMPARE(sheet->undoRingDepth(), undoDepth);
+  QCOMPARE(sheet->redoRingDepth(), redoDepth);
 }
 
 QTEST_MAIN(tests::TestTablePreview)

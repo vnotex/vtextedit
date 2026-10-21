@@ -4,6 +4,7 @@
 
 #include <node.h>
 
+#include <algorithm>
 #include <cstring>
 
 #ifdef VTE_DEBUG_HIGHLIGHT
@@ -543,4 +544,162 @@ bool resolveHtmlNodeSpan(const QString &p_content, cmark_node *p_node,
   p_startQChar = lineStart + first;
   p_endQChar = p_startQChar + literal.size();
   return true;
+}
+
+// Accumulate the rendered text of a heading's inline subtree.
+//
+// @p_title is what the reader sees (approximates the browser's textContent of
+// the rendered <h1..h6>); @p_anchorText preserves the viewer's concatenated
+// text, inline-code and formula content, excluding images, raw tags and footnotes.
+// Editor and reader share this walk, but the outputs use different whitespace
+// rules and only @p_title may be trimmed afterwards: the anchor policy
+// concatenates raw token content, so a heading like `# a ![x](y)` keeps the
+// trailing space of its text token and slugs to `a-`, and a soft break
+// contributes nothing at all (`Foo\nbar` under a setext rule slugs to `foobar`).
+//
+// Literals are owned by cmark and follow its parser profile. Do not escape,
+// unescape or free them here (code and formula literals can intentionally be raw).
+//
+static void appendHeadingText(cmark_node *p_node, QString &p_title, QString &p_anchorText) {
+  // Deep emphasis is valid input. Walk links instead of consuming the native stack.
+  auto *child = cmark_node_first_child(p_node);
+  while (child) {
+    bool descend = true;
+    const cmark_node_type type = cmark_node_get_type(child);
+    switch (type) {
+    case CMARK_NODE_TEXT:
+    case CMARK_NODE_CODE:
+    case CMARK_NODE_FORMULA_INLINE: {
+      const char *literal = cmark_node_get_literal(child);
+      if (literal) {
+        const QString text = QString::fromUtf8(literal);
+        p_title += text;
+        p_anchorText += text;
+      }
+      break;
+    }
+
+    case CMARK_NODE_SOFTBREAK:
+    case CMARK_NODE_LINEBREAK:
+      // A break is whitespace in the rendered heading, but markdown-it-anchor
+      // drops the token entirely, so it must NOT reach the anchor input.
+      p_title += QStringLiteral(" ");
+      break;
+
+    case CMARK_NODE_IMAGE:
+      // The alt text is not part of the rendered textContent.
+      descend = false;
+      break;
+
+    case CMARK_NODE_HTML_INLINE:
+      // A leaf whose literal is the tag itself: `## <b>x</b>` renders as `x`.
+      descend = false;
+      break;
+
+    case CMARK_NODE_FOOTNOTE_REFERENCE:
+    case CMARK_NODE_INLINE_FOOTNOTE:
+      // Footnote bodies are not part of the heading title or its anchor input.
+      descend = false;
+      break;
+
+    default:
+      // Formatting and links contribute their children; unknown leaves contribute nothing.
+      break;
+    }
+    auto *nested = descend ? cmark_node_first_child(child) : nullptr;
+    if (nested) {
+      child = nested;
+      continue;
+    }
+    cmark_node *next = nullptr;
+    while (child && child != p_node && !(next = cmark_node_next(child))) {
+      child = cmark_node_parent(child);
+    }
+    child = child && child != p_node ? next : nullptr;
+  }
+}
+
+// Viewer HTML emits the main body first and defers each referenced definition
+// until its assigned footnote number. Nested definitions have their own turn.
+static int headingFootnoteGroup(cmark_node *p_node) {
+  for (auto parent = p_node->parent; parent; parent = parent->parent) {
+    if (parent->type == CMARK_NODE_FOOTNOTE_DEFINITION) {
+      return parent->as.footnote_def.number > 0 ? parent->as.footnote_def.number : -1;
+    }
+  }
+  return 0;
+}
+
+// The viewer renders a sole image's alt subtree as its figure caption. Ordinary
+// image alt text is plain, so footnote markers there do not render a definition.
+static bool isHeadingFigureImage(cmark_node *p_image) {
+  cmark_node *child = p_image;
+  cmark_node *parent = child->parent;
+  if (parent && (parent->type == CMARK_NODE_LINK || parent->type == CMARK_NODE_WIKILINK)) {
+    if (parent->first_child != child || child->next) {
+      return false;
+    }
+    child = parent;
+    parent = child->parent;
+  }
+  return parent && parent->type == CMARK_NODE_PARAGRAPH && parent->first_child == child &&
+         !child->next &&
+         !(parent->parent && parent == parent->parent->first_child &&
+           cmark_node_get_task_checked(parent->parent) >= 0);
+}
+
+void vte::md::HeadingRenderOrder::observe(cmark_node *p_node) {
+  if ((p_node->type != CMARK_NODE_FOOTNOTE_REFERENCE &&
+       p_node->type != CMARK_NODE_INLINE_FOOTNOTE) ||
+      p_node->as.footnote_ref.number <= 0 || headingFootnoteGroup(p_node) < 0) {
+    return;
+  }
+  for (auto parent = p_node->parent; parent; parent = parent->parent) {
+    if (parent->type == CMARK_NODE_IMAGE && !isHeadingFigureImage(parent)) {
+      return;
+    }
+  }
+  m_referencedFootnotes.insert(p_node->as.footnote_ref.number);
+}
+
+void vte::md::HeadingRenderOrder::finish(QVector<HeadingInfo> &p_headings) const {
+  // Until this boundary m_renderOrder is the temporary enclosing footnote
+  // group, never a published rank. Hidden headings retain their source slots.
+  for (auto &heading : p_headings) {
+    if (heading.m_renderOrder > 0 && !m_referencedFootnotes.contains(heading.m_renderOrder)) {
+      heading.m_renderOrder = -1;
+    }
+  }
+  std::sort(p_headings.begin(), p_headings.end(),
+            [](const HeadingInfo &p_left, const HeadingInfo &p_right) {
+              return p_left.m_renderOrder == p_right.m_renderOrder
+                         ? p_left.m_startPos < p_right.m_startPos
+                         : p_left.m_renderOrder < p_right.m_renderOrder;
+            });
+  int rank = 0;
+  for (auto &heading : p_headings) {
+    if (heading.m_renderOrder >= 0) {
+      heading.m_renderOrder = rank++;
+    }
+  }
+  std::sort(p_headings.begin(), p_headings.end(),
+            [](const HeadingInfo &p_left, const HeadingInfo &p_right) {
+              return p_left.m_startPos < p_right.m_startPos;
+            });
+}
+
+vte::md::HeadingInfo vte::md::headingInfo(cmark_node *p_node, int p_absStart, int p_absEnd,
+                                          int p_startBlock) {
+  HeadingInfo heading;
+  heading.m_startPos = p_absStart;
+  heading.m_endPos = p_absEnd;
+  heading.m_startLine = p_startBlock + cmark_node_get_content_start_line(p_node) - 1;
+  heading.m_renderOrder = headingFootnoteGroup(p_node);
+  heading.m_level = cmark_node_get_heading_level(p_node);
+  heading.m_isEmpty = cmark_node_first_child(p_node) == nullptr;
+  appendHeadingText(p_node, heading.m_title, heading.m_anchorText);
+  // Only the display title is trimmed; see the note above on why the anchor
+  // input must keep markdown-it-anchor's raw concatenation.
+  heading.m_title = heading.m_title.trimmed();
+  return heading;
 }

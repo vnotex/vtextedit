@@ -9,6 +9,8 @@ set(SRC_FOLDER ../../src)
 set(MARKDOWNEDITOR_FOLDER ${SRC_FOLDER}/markdowneditor)
 set(LIBS_FOLDER ../../libs)
 
+# Internal projections are compiled locally; MarkdownDocument and its ownership
+# handoff use the single DLL implementation, alongside the real editor APIs.
 add_executable(test_markdownparser
     ${MARKDOWNEDITOR_FOLDER}/markdownparser.cpp ${MARKDOWNEDITOR_FOLDER}/markdownparser.h
     ${MARKDOWNEDITOR_FOLDER}/markdownastwalker.cpp ${MARKDOWNEDITOR_FOLDER}/markdownastwalker.h

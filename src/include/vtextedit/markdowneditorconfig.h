@@ -29,6 +29,9 @@ public:
 
   QSharedPointer<TextEditorConfig> m_textEditorConfig;
 
+  // Effective cmark grammar; 0 preserves standalone native defaults.
+  int m_documentParseOptions = 0;
+
   // Whether constrain the width of in-place preview.
   bool m_constrainInplacePreviewWidthEnabled = false;
 

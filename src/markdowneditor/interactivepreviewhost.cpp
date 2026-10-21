@@ -199,8 +199,11 @@ InteractivePreviewHost::InteractivePreviewHost(VMarkdownEditor *p_editor)
 
   // Built-in renderers use priority 0 so applications can override them.
   m_tableFactory = new TablePreviewWidgetFactory(this);
-  m_tableFactory->setSyntaxStyles(m_editor->getHighlighter()->getSyntaxStyles());
+  m_tableFactory->setSyntaxStyles(m_editor->getHighlighter()->getSyntaxStyles(),
+                                  m_editor->getHighlighter()->documentParseOptions());
   connect(m_editor->getHighlighter(), &MarkdownHighlighter::syntaxStylesChanged, this,
+          &InteractivePreviewHost::schedulePublish);
+  connect(m_editor->getHighlighter(), &MarkdownHighlighter::documentParseOptionsChanged, this,
           &InteractivePreviewHost::schedulePublish);
   connect(m_tableFactory.data(), &TablePreviewWidgetFactory::focusEscapeRequested, this,
           [this](TablePreviewWidget *p_widget, FocusEscapeDirection p_direction) {
@@ -2110,7 +2113,8 @@ bool InteractivePreviewHost::completeImageInsertion(quint64 p_requestId,
       return false;
     }
   }
-  const auto parsed = md::walkAndConvert(p_imageSource.toUtf8(), 1, 0, 0, false);
+  const auto parsed = md::walkAndConvert(p_imageSource.toUtf8(), 1, 0, 0, false, false,
+                                         m_editor->getHighlighter()->documentParseOptions());
   if (parsed.imageElements.size() != 1) {
     return false;
   }
@@ -3016,7 +3020,8 @@ void InteractivePreviewHost::publish() {
   ++m_publishes;
 
   if (m_tableFactory &&
-      m_tableFactory->setSyntaxStyles(m_editor->getHighlighter()->getSyntaxStyles())) {
+      m_tableFactory->setSyntaxStyles(m_editor->getHighlighter()->getSyntaxStyles(),
+                                      m_editor->getHighlighter()->documentParseOptions())) {
     for (auto &item : m_items) {
       if (qobject_cast<TablePreviewWidget *>(item.m_widget.data())) {
         item.m_measureDirty = true;
@@ -4118,7 +4123,8 @@ bool InteractivePreviewHost::validateReplacement(const QSharedPointer<const Prev
 
   const QByteArray utf8 = probe.toUtf8();
   const int lines = probe.count(QLatin1Char('\n')) + 1;
-  const auto walk = md::walkAndConvert(utf8, lines, 0, 0, false);
+  const auto walk = md::walkAndConvert(utf8, lines, 0, 0, false, false,
+                                       m_editor->getHighlighter()->documentParseOptions());
 
   const int matchedIndex = findSoleMatchingElement(
       walk, probe, prefixLength, prefixLength + p_text.size(), type, p_status, p_diagnostic);

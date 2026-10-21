@@ -7548,4 +7548,125 @@ void TestMarkdownEditor::testHeadingSourceRemovalUnavailable() {
   QCOMPARE(fixture.text(), source);
 }
 
+void TestMarkdownEditor::testMarkdownDocumentDemandAndReuse() {
+  auto config = makeConfig();
+  config->m_documentParseOptions = MarkdownDocument::viewerParseOptions(true, true);
+  Fixture fixture(QStringLiteral("# Draft\n\nfirst\nsecond"), -1, -1, config);
+  auto highlighter = fixture.editor()->getHighlighter();
+  fixture.waitForFreshListAst();
+  QVERIFY(!highlighter->currentDocument());
+  const auto generation = highlighter->documentGeneration();
+  const auto text = fixture.text();
+  const int undoSteps = fixture.editor()->document()->availableUndoSteps();
+  const auto cursor = fixture.edit()->textCursor();
+  int ready = 0;
+  connect(highlighter, &MarkdownHighlighter::documentReady, highlighter,
+          [&](quint64 p_generation, const MarkdownDocumentPtr &p_document) {
+            QCOMPARE(p_generation, highlighter->documentGeneration());
+            QVERIFY(p_document);
+            QCOMPARE(p_document->source(), fixture.text().toUtf8());
+            ++ready;
+          });
+  highlighter->requestDocument();
+  highlighter->requestDocument();
+  QCOMPARE(ready, 0);
+  QTRY_VERIFY(highlighter->currentDocument());
+  QCOMPARE(ready, 1);
+  const auto document = highlighter->currentDocument();
+  QCOMPARE(document->parseOptions(), config->m_documentParseOptions);
+  QCOMPARE(highlighter->documentGeneration(), generation);
+  QVERIFY(
+      document->renderHtml({QStringLiteral("draft")}, true, true).contains(QStringLiteral("<br")));
+  highlighter->requestDocument();
+  QCOMPARE(ready, 1);
+  QTRY_COMPARE(ready, 2);
+  QCOMPARE(highlighter->currentDocument().data(), document.data());
+  QCOMPARE(fixture.text(), text);
+  QCOMPARE(fixture.editor()->document()->availableUndoSteps(), undoSteps);
+  QCOMPARE(fixture.edit()->textCursor().position(), cursor.position());
+  QCOMPARE(fixture.edit()->textCursor().anchor(), cursor.anchor());
+}
+
+void TestMarkdownEditor::testMarkdownDocumentInvalidation() {
+  auto config = makeConfig();
+  config->m_documentParseOptions = MarkdownDocument::viewerParseOptions(true, true);
+  Fixture fixture(QStringLiteral("# <b>draft</b>"), -1, -1, config);
+  auto highlighter = fixture.editor()->getHighlighter();
+  highlighter->requestDocument();
+  QTRY_VERIFY(highlighter->currentDocument());
+  const auto old = highlighter->currentDocument();
+  const auto oldGeneration = highlighter->documentGeneration();
+  QCOMPARE(old->headings().first().m_title, QStringLiteral("draft"));
+
+  auto cursor = fixture.edit()->textCursor();
+  cursor.insertText(QStringLiteral(" changed"));
+  QVERIFY(!highlighter->currentDocument());
+  QVERIFY(highlighter->documentGeneration() > oldGeneration);
+  const auto typedGeneration = highlighter->documentGeneration();
+  highlighter->requestDocument();
+  fixture.edit()->undo();
+  QVERIFY(highlighter->documentGeneration() > typedGeneration);
+  QVERIFY(!highlighter->currentDocument());
+  highlighter->requestDocument();
+  QTRY_VERIFY(highlighter->currentDocument());
+  QCOMPARE(highlighter->currentDocument()->source(), old->source());
+  QVERIFY(highlighter->currentDocument().data() != old.data());
+
+  const int undoSteps = fixture.editor()->document()->availableUndoSteps();
+  const int options = MarkdownDocument::viewerParseOptions(false, false);
+  const auto beforeProfile = highlighter->documentGeneration();
+  highlighter->setDocumentParseOptions(options);
+  QVERIFY(!highlighter->currentDocument());
+  QVERIFY(highlighter->documentGeneration() > beforeProfile);
+  highlighter->requestDocument();
+  QTRY_VERIFY(highlighter->currentDocument());
+  QCOMPARE(highlighter->currentDocument()->parseOptions(), options);
+  QCOMPARE(highlighter->currentDocument()->headings().first().m_title,
+           QStringLiteral("<b>draft</b>"));
+  QCOMPARE(old->headings().first().m_title, QStringLiteral("draft"));
+  QCOMPARE(fixture.editor()->document()->availableUndoSteps(), undoSteps);
+
+  fixture.editor()->setText(QStringLiteral("# replacement"));
+  QVERIFY(!highlighter->currentDocument());
+  highlighter->requestDocument();
+  fixture.editor()->setText(QString());
+  QVERIFY(!highlighter->currentDocument());
+  highlighter->requestDocument();
+  QTRY_VERIFY(highlighter->currentDocument());
+  QVERIFY(highlighter->currentDocument()->source().isEmpty());
+  QVERIFY(highlighter->currentDocument()->headings().isEmpty());
+  QCOMPARE(highlighter->currentDocument()->renderHtml({}, false, false), QStringLiteral(""));
+}
+
+void TestMarkdownEditor::testMarkdownDocumentRetentionEviction() {
+  Fixture fixture(QStringLiteral("# ephemeral"));
+  auto highlighter = fixture.editor()->getHighlighter();
+  int ready = 0;
+  connect(highlighter, &MarkdownHighlighter::documentReady, highlighter,
+          [&](quint64, const MarkdownDocumentPtr &) { ++ready; });
+  highlighter->requestDocument();
+  QTRY_VERIFY(highlighter->currentDocument());
+  QCOMPARE(ready, 1);
+  QWeakPointer<const MarkdownDocument> weak(highlighter->currentDocument());
+  highlighter->requestDocument(); // Queue a cached completion, then evict it.
+  highlighter->setDocumentRetentionEnabled(false);
+  QVERIFY(!highlighter->currentDocument());
+  QVERIFY(weak.isNull());
+  QCoreApplication::processEvents();
+  QCOMPARE(ready, 1);
+
+  // Invalidate while a real full parse or its completion is in flight. A later
+  // accepted highlighting result must not restore the explicitly released tree.
+  fixture.editor()->setText(QStringLiteral("# not retained"));
+  highlighter->requestDocument();
+  highlighter->setDocumentRetentionEnabled(false);
+  fixture.waitForFreshListAst();
+  QVERIFY(!highlighter->currentDocument());
+  QCOMPARE(ready, 1);
+  highlighter->requestDocument();
+  QTRY_VERIFY(highlighter->currentDocument());
+  QCOMPARE(ready, 2);
+  QCOMPARE(highlighter->currentDocument()->source(), fixture.text().toUtf8());
+}
+
 QTEST_MAIN(tests::TestMarkdownEditor)

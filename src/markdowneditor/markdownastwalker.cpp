@@ -515,8 +515,8 @@ public:
         item.m_contentStart += m_offset;
       }
       cmark_node *child = cmark_node_first_child(p_node);
-      // The checkbox is literal paragraph content in this cmark fork. Only
-      // that single opening-line paragraph may coexist with an empty task.
+      // A checkbox-only item may retain an empty opening-line paragraph,
+      // whether its checkbox is literal text or native task metadata.
       item.m_empty =
           item.m_sourceValid && item.m_empty &&
           (!child || (item.m_task && cmark_node_get_type(child) == CMARK_NODE_PARAGRAPH &&
@@ -617,14 +617,15 @@ private:
   QVector<ListPrefixSegment> m_segments;
 };
 
-ListStructure parseListStructure(const QByteArray &p_utf8Text, int p_offset, int p_startBlock) {
+ListStructure parseListStructure(const QByteArray &p_utf8Text, int p_offset, int p_startBlock,
+                                 int p_parseOptions) {
   ListStructure result;
+  result.m_parseOptions = p_parseOptions;
   if (p_utf8Text.isEmpty()) {
     result.m_valid = true;
     return result;
   }
-  cmark_node *doc =
-      cmark_parse_document(p_utf8Text.constData(), p_utf8Text.size(), CMARK_OPT_DEFAULT);
+  cmark_node *doc = cmark_parse_document(p_utf8Text.constData(), p_utf8Text.size(), p_parseOptions);
   if (!doc) {
     return result;
   }
@@ -1184,13 +1185,15 @@ bool buildListNumberEdits(const QString &p_source, const ListStructure &p_struct
     return false;
   }
   ListNumberTree original(cmark_parse_document(p_structure.m_source.constData(),
-                                               p_structure.m_source.size(), CMARK_OPT_DEFAULT),
+                                               p_structure.m_source.size(),
+                                               p_structure.m_parseOptions),
                           &cmark_node_free);
   if (!original || listNumberInterrupted()) {
     return false;
   }
   LineOffsetTable offsets(p_structure.m_source);
   ListStructure working;
+  working.m_parseOptions = p_structure.m_parseOptions;
   ListMarkerReader markers(p_structure.m_source, offsets);
   ListCollector collector(working, p_structure.m_source, offsets, markers, 0, 0);
   QVector<cmark_node *> lists;
@@ -1347,14 +1350,15 @@ bool buildListNumberEdits(const QString &p_source, const ListStructure &p_struct
   if (listNumberInterrupted()) {
     return false;
   }
-  ListNumberTree proposed(
-      cmark_parse_document(candidateUtf8.constData(), candidateUtf8.size(), CMARK_OPT_DEFAULT),
-      &cmark_node_free);
+  ListNumberTree proposed(cmark_parse_document(candidateUtf8.constData(), candidateUtf8.size(),
+                                               p_structure.m_parseOptions),
+                          &cmark_node_free);
   if (!proposed || listNumberInterrupted()) {
     return false;
   }
   LineOffsetTable candidateOffsets(candidateUtf8);
   ListStructure after;
+  after.m_parseOptions = p_structure.m_parseOptions;
   ListMarkerReader candidateMarkers(candidateUtf8, candidateOffsets);
   ListCollector candidateCollector(after, candidateUtf8, candidateOffsets, candidateMarkers, 0, 0);
   if (!sameListNumberBlocks(original.get(), proposed.get(), p_structure.m_source, candidateUtf8,
@@ -1602,15 +1606,18 @@ static QString lineText(const QByteArray &p_utf8Text, const LineOffsetTable &p_o
 // starts with '|' right after the prefix, a pipe preceded by an odd number of
 // backslashes is escaped, and only whitespace may follow the trailing pipe.
 bool splitTableRow(const QString &p_line, QString &p_prefix, QVector<QString> &p_cells,
-                   QVector<int> *p_cellOffsets, QVector<int> *p_cellBorders) {
-  const int firstPipe = p_line.indexOf(QLatin1Char('|'));
-  if (firstPipe < 0) {
+                   QVector<int> *p_cellOffsets, QVector<int> *p_cellBorders, int p_contentStart) {
+  // An AST row supplies its verified content start for viewer-profile optional
+  // edges. Context-free editing callers keep the original mandatory-edge rule.
+  const bool optionalEdges = p_contentStart >= 0;
+  const int start = optionalEdges ? p_contentStart : p_line.indexOf(QLatin1Char('|'));
+  if (start < 0 || start >= p_line.size()) {
     return false;
   }
-
-  p_prefix = p_line.left(firstPipe);
+  const bool leadingPipe = p_line.at(start) == QLatin1Char('|');
+  p_prefix = p_line.left(start);
   if (p_cellBorders) {
-    p_cellBorders->append(firstPipe);
+    p_cellBorders->append(leadingPipe ? start : start - 1);
   }
 
   // Offset of the first character of the trimmed slice [p_start, p_end).
@@ -1623,7 +1630,7 @@ bool splitTableRow(const QString &p_line, QString &p_prefix, QVector<QString> &p
     return i;
   };
 
-  int cellStart = firstPipe + 1;
+  int cellStart = start + (leadingPipe ? 1 : 0);
   bool escaped = false;
   bool closed = false;
   for (int i = cellStart; i < p_line.size(); ++i) {
@@ -1651,11 +1658,19 @@ bool splitTableRow(const QString &p_line, QString &p_prefix, QVector<QString> &p
     }
   }
 
-  if (!closed) {
-    return false;
+  if (optionalEdges) {
+    if (!closed || !p_line.mid(cellStart).trimmed().isEmpty()) {
+      p_cells.append(p_line.mid(cellStart).trimmed());
+      if (p_cellOffsets) {
+        p_cellOffsets->append(trimmedOffset(cellStart, p_line.size()));
+      }
+      if (p_cellBorders) {
+        p_cellBorders->append(p_line.size());
+      }
+    }
+    return !p_cells.isEmpty();
   }
-
-  return p_line.mid(cellStart).trimmed().isEmpty();
+  return closed && p_line.mid(cellStart).trimmed().isEmpty();
 }
 
 // Collect the concatenated literal text of all descendants.
@@ -1760,8 +1775,14 @@ static void extractTable(cmark_node *p_tableNode, const LineOffsetTable &p_offse
       break;
     }
 
+    int rowStart = 0;
+    int rowEnd = 0;
+    if (!cmarkNodeSpan(row, p_offsets, rowStart, rowEnd)) {
+      return;
+    }
+    const int contentStart = rowStart - p_offsets.lineStartQCharOffset(expectedLine - 1);
     if (!splitTableRow(lineText(p_utf8Text, p_offsets, expectedLine - 1), rowElement.m_prefix,
-                       rowElement.m_cells, &rowElement.m_cellOffsets)) {
+                       rowElement.m_cells, &rowElement.m_cellOffsets, nullptr, contentStart)) {
       return;
     }
     table.m_rows.append(rowElement);
@@ -1954,90 +1975,6 @@ static void extractHtmlImages(const QString &p_slice, int p_sliceStart, const QS
                                          tag.m_tagStart, tag.m_tagEnd);
     p_result.imageElements.append(image);
   }
-}
-
-// Accumulate the rendered text of a heading's inline subtree.
-//
-// @p_title is what the reader sees (approximates the browser's textContent of
-// the rendered <h1..h6>); @p_anchorText mirrors markdown-it-anchor, which slugs
-// the concatenated content of only the `text` and `code_inline` tokens of the
-// heading's inlines. The two are therefore built with DIFFERENT whitespace
-// rules and only @p_title may be trimmed afterwards: markdown-it-anchor
-// concatenates raw token content, so a heading like `# a ![x](y)` keeps the
-// trailing space of its text token and slugs to `a-`, and a soft break
-// contributes nothing at all (`Foo\nbar` under a setext rule slugs to `foobar`).
-//
-// All literals come from cmark_node_get_literal(), which is already
-// entity-decoded and owned by the node, so there is no escaping, unescaping or
-// freeing anywhere in this path.
-//
-// Known limitation: cmark is always run with CMARK_OPT_DEFAULT, i.e. raw inline
-// HTML is always recognized as such. The preview passes markdown-it
-// `html: enableHtmlTag`, so with that setting OFF the preview shows the escaped
-// tags as visible text while this extractor still drops them. Same class of
-// divergence as the preview-only plugins (emoji, texmath, footnotes) documented
-// in the plan: the authoritative path for a user-visible link stays
-// MarkdownViewerAdapter::fetchHeadingAnchor.
-static void appendHeadingText(cmark_node *p_node, QString &p_title, QString &p_anchorText) {
-  for (cmark_node *child = cmark_node_first_child(p_node); child; child = cmark_node_next(child)) {
-    const cmark_node_type type = cmark_node_get_type(child);
-    switch (type) {
-    case CMARK_NODE_TEXT:
-    case CMARK_NODE_CODE:
-    case CMARK_NODE_FORMULA_INLINE: {
-      const char *literal = cmark_node_get_literal(child);
-      if (literal) {
-        const QString text = QString::fromUtf8(literal);
-        p_title += text;
-        p_anchorText += text;
-      }
-      break;
-    }
-
-    case CMARK_NODE_SOFTBREAK:
-    case CMARK_NODE_LINEBREAK:
-      // A break is whitespace in the rendered heading, but markdown-it-anchor
-      // drops the token entirely, so it must NOT reach the anchor input.
-      p_title += QStringLiteral(" ");
-      break;
-
-    case CMARK_NODE_IMAGE:
-      // The alt text is not part of the rendered textContent.
-      break;
-
-    case CMARK_NODE_HTML_INLINE:
-      // A leaf whose literal is the tag itself: `## <b>x</b>` renders as `x`.
-      break;
-
-    case CMARK_NODE_FOOTNOTE_REFERENCE:
-    case CMARK_NODE_INLINE_FOOTNOTE:
-      // Rendered as a numbered `[n]` marker, never as the footnote body, and
-      // dropped from the slug input by markdown-it-anchor. Recursing into the
-      // inline form would splice the note body into the heading title, so both
-      // forms are skipped explicitly rather than left to the default branch.
-      break;
-
-    default:
-      // Emphasis, strong, links, strikethrough and any fork extension with
-      // children: recurse. Unknown leaves contribute nothing.
-      appendHeadingText(child, p_title, p_anchorText);
-      break;
-    }
-  }
-}
-
-static void extractHeading(cmark_node *p_node, ASTWalkResult &p_result, int p_absStart,
-                           int p_absEnd) {
-  HeadingInfo heading;
-  heading.m_startPos = p_absStart;
-  heading.m_endPos = p_absEnd;
-  heading.m_level = cmark_node_get_heading_level(p_node);
-  heading.m_isEmpty = cmark_node_first_child(p_node) == nullptr;
-  appendHeadingText(p_node, heading.m_title, heading.m_anchorText);
-  // Only the display title is trimmed; see the note above on why the anchor
-  // input must keep markdown-it-anchor's raw concatenation.
-  heading.m_title = heading.m_title.trimmed();
-  p_result.headingElements.append(heading);
 }
 
 static int alignmentOrdinal(const QString &p_align) {
@@ -2544,33 +2481,35 @@ static void extractTypedElement(cmark_node *p_node, cmark_node_type p_type, int 
     break;
   }
 
-  case CMARK_NODE_HEADING: {
-    // Reached exactly once per heading: headings are non-leaf, so the walk
-    // loop's ENTER guard lets only the enter event through.
-    extractHeading(p_node, p_result, p_absStart, p_absEnd);
-    break;
-  }
-
   default:
     break;
   }
 }
 
 ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int p_offset,
-                             int p_startBlock, bool p_fast, bool p_collectLists) {
+                             int p_startBlock, bool p_fast, bool p_collectLists, int p_parseOptions,
+                             MarkdownDocumentRequest *p_documentRequest) {
   const bool collectLists = p_collectLists && !p_fast;
   ASTWalkResult result;
   result.blocksHighlights.resize(p_numBlocks);
+  result.listStructure.m_parseOptions = p_parseOptions;
+  // Partial and fast walks can never become a document snapshot.
+  if (p_fast || p_offset != 0 || p_startBlock != 0) {
+    p_documentRequest = nullptr;
+  }
 
-  if (p_utf8Text.isEmpty()) {
+  if (p_utf8Text.isEmpty() && !p_documentRequest) {
     result.listStructure.m_valid = collectLists;
     return result;
   }
 
   LineOffsetTable offsets(p_utf8Text);
   ReferenceConcealContext referenceContext{p_utf8Text, offsets, result.concealRanges, p_offset};
-  cmark_parser *parser = cmark_parser_new(CMARK_OPT_DEFAULT);
+  cmark_parser *parser = cmark_parser_new(p_parseOptions);
   if (!parser) {
+    if (p_documentRequest) {
+      p_documentRequest->finish(nullptr, p_utf8Text, p_parseOptions, {});
+    }
     return result;
   }
   if (!p_fast) {
@@ -2581,6 +2520,9 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
   cmark_node *doc = cmark_parser_finish(parser);
   cmark_parser_free(parser);
   if (!doc) {
+    if (p_documentRequest) {
+      p_documentRequest->finish(nullptr, p_utf8Text, p_parseOptions, {});
+    }
     result.concealRanges.clear();
     return result;
   }
@@ -2600,14 +2542,21 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
   cmark_iter *iter = cmark_iter_new(doc);
   if (!iter) {
     cmark_node_free(doc);
+    if (p_documentRequest) {
+      p_documentRequest->finish(nullptr, p_utf8Text, p_parseOptions, {});
+    }
     result.concealRanges.clear();
     return result;
   }
   cmark_event_type ev;
+  HeadingRenderOrder headingOrder;
 
   while ((ev = cmark_iter_next(iter)) != CMARK_EVENT_DONE) {
     cmark_node *node = cmark_iter_get_node(iter);
     cmark_node_type type = cmark_node_get_type(node);
+    if (!p_fast && ev == CMARK_EVENT_ENTER) {
+      headingOrder.observe(node);
+    }
 
     if (collectLists && ev == CMARK_EVENT_ENTER) {
       lists.enter(node);
@@ -2731,7 +2680,9 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
       int absEnd = p_offset + docEnd;
       addRegion(result, style, absStart, absEnd);
 
-      if (type == CMARK_NODE_TABLE) {
+      if (type == CMARK_NODE_HEADING) {
+        result.headingElements.append(headingInfo(node, absStart, absEnd, p_startBlock));
+      } else if (type == CMARK_NODE_TABLE) {
         extractTable(node, offsets, p_utf8Text, result, p_offset, p_startBlock);
       } else {
         extractTypedElement(node, type, style, p_utf8Text, offsets, result, sl, el, docStart,
@@ -2793,12 +2744,14 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
     std::sort(result.codeElements.begin(), result.codeElements.end(), byStart);
     std::sort(result.mathElements.begin(), result.mathElements.end(), byStart);
     std::sort(result.tableElements.begin(), result.tableElements.end(), byStart);
-    std::sort(
-        result.headingElements.begin(), result.headingElements.end(),
-        [](const HeadingInfo &a, const HeadingInfo &b) { return a.m_startPos < b.m_startPos; });
+    headingOrder.finish(result.headingElements);
   }
 
-  cmark_node_free(doc);
+  if (p_documentRequest) {
+    p_documentRequest->finish(doc, p_utf8Text, p_parseOptions, result.headingElements);
+  } else {
+    cmark_node_free(doc);
+  }
   return result;
 }
 
@@ -2816,12 +2769,12 @@ QVector<ImageLinkInfo> buildImageLinks(const QVector<ImageElement> &p_elements) 
   return links;
 }
 
-ASTWalkResult parseInlineSnippet(const QString &p_snippet) {
+ASTWalkResult parseInlineSnippet(const QString &p_snippet, int p_parseOptions) {
   if (p_snippet.isEmpty()) {
     return ASTWalkResult();
   }
   ++s_inlineSnippetParses;
-  return walkAndConvert(p_snippet.toUtf8(), 1, 0, 0, false);
+  return walkAndConvert(p_snippet.toUtf8(), 1, 0, 0, false, false, p_parseOptions);
 }
 
 quint64 inlineSnippetParseCount() { return s_inlineSnippetParses; }

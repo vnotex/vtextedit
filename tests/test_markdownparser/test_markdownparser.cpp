@@ -3774,4 +3774,353 @@ void TestMarkdownParser::testWalkerHtmlTableFoldingRegion() {
     QCOMPARE(regions.first(), qMakePair(0, 2));
   }
 }
+
+void TestMarkdownParser::testMarkdownDocumentSnapshot() {
+  const QByteArray source = QStringLiteral("# Héllo **world**\r\n\r\n##\r\n\r\n"
+                                           "[label][ref]\r\n\r\n[ref]: <target.md>\r\n")
+                                .toUtf8();
+  const int options = vte::MarkdownDocument::viewerParseOptions(true, true);
+  auto config = QSharedPointer<vte::md::MarkdownParseConfig>::create();
+  config->m_data = source;
+  config->m_numOfBlocks = countBlocks(source);
+  config->m_parseOptions = options;
+  config->m_retainDocument = true;
+  vte::md::MarkdownParser parser;
+  auto result = parser.parse(config);
+  QVERIFY(result->m_documentRequest);
+  auto retained = result->m_documentRequest->takeDocument();
+  QVERIFY(retained);
+  QCOMPARE(retained->source(), source);
+  QCOMPARE(retained->parseOptions(), options);
+  QCOMPARE(retained->headings().size(), 2);
+  QCOMPARE(retained->headings().at(0).m_startLine, 0);
+  QCOMPARE(retained->headings().at(0).m_title, QStringLiteral("Héllo world"));
+  QCOMPARE(retained->headings().at(1).m_startLine, 2);
+  QVERIFY(retained->headings().at(1).m_isEmpty);
+  bool referenceConcealed = false;
+  for (const auto &range : result->m_concealRanges) {
+    if (range.m_element == vte::MarkdownConcealElement::ReferenceUrl) {
+      QCOMPARE(QString::fromUtf8(source).mid(range.m_startPos, range.m_endPos - range.m_startPos),
+               QStringLiteral("target.md"));
+      referenceConcealed = true;
+    }
+  }
+  QVERIFY(referenceConcealed);
+
+  const auto direct = vte::MarkdownDocument::parse(source, options);
+  QVERIFY(direct);
+  QCOMPARE(direct->headings().size(), result->m_headingElements.size());
+  for (int index = 0; index < direct->headings().size(); ++index) {
+    const auto &heading = direct->headings().at(index);
+    const auto &projection = result->m_headingElements.at(index);
+    QCOMPARE(heading.m_startPos, projection.m_startPos);
+    QCOMPARE(heading.m_endPos, projection.m_endPos);
+    QCOMPARE(heading.m_startLine, projection.m_startLine);
+    QCOMPARE(heading.m_renderOrder, projection.m_renderOrder);
+    QCOMPARE(heading.m_title, projection.m_title);
+    QCOMPARE(heading.m_anchorText, projection.m_anchorText);
+  }
+  const QStringList ids = {QStringLiteral("héllo-world"), QStringLiteral("empty")};
+  const QString html = direct->renderHtml(ids, false, true);
+  QVERIFY(!html.isNull());
+  QVERIFY(html.contains(QStringLiteral("id=\"héllo-world\"")));
+  QCOMPARE(retained->renderHtml(ids, false, true), html);
+  result.clear();
+  config.clear();
+  QCOMPARE(retained->renderHtml(ids, false, true), html);
+}
+
+void TestMarkdownParser::testMarkdownDocumentEmptyAndOptions() {
+  const auto empty = vte::MarkdownDocument::parse({}, CMARK_OPT_DEFAULT);
+  QVERIFY(empty);
+  QVERIFY(empty->source().isEmpty());
+  QVERIFY(empty->headings().isEmpty());
+  const QString emptyHtml = empty->renderHtml({}, false, true);
+  QVERIFY(!emptyHtml.isNull());
+  QVERIFY(emptyHtml.isEmpty());
+
+  const QByteArray source = "# <b>title</b>\n\nfirst\nsecond\n\nhttps://example.org\n";
+  const int enabledOptions = vte::MarkdownDocument::viewerParseOptions(true, true);
+  const int disabledOptions = vte::MarkdownDocument::viewerParseOptions(false, false);
+  const auto enabled = vte::MarkdownDocument::parse(source, enabledOptions);
+  const auto disabled = vte::MarkdownDocument::parse(source, disabledOptions);
+  QVERIFY(enabled);
+  QVERIFY(disabled);
+  QCOMPARE(enabled->headings().first().m_anchorText, QStringLiteral("title"));
+  QCOMPARE(disabled->headings().first().m_anchorText, QStringLiteral("<b>title</b>"));
+  const QString normal = enabled->renderHtml({QStringLiteral("title")}, false, true);
+  const QString breaks = enabled->renderHtml({QStringLiteral("title")}, true, true);
+  QVERIFY(normal.contains(QStringLiteral("<b>title</b>")));
+  QVERIFY(!normal.contains(QStringLiteral("<br")));
+  QVERIFY(breaks.contains(QStringLiteral("<br")));
+  QVERIFY(normal.contains(QStringLiteral("href=\"https://example.org\"")));
+  const QString literal = disabled->renderHtml({QStringLiteral("title")}, false, false);
+  QVERIFY(literal.contains(QStringLiteral("&lt;b&gt;title&lt;/b&gt;")));
+  QVERIFY(!literal.contains(QStringLiteral("href=\"https://example.org\"")));
+  QCOMPARE(enabled->source(), source);
+  QCOMPARE(enabled->parseOptions(), enabledOptions);
+}
+
+void TestMarkdownParser::testMarkdownDocumentAsyncJoinAndEviction() {
+  vte::md::MarkdownParser parser;
+  auto config = QSharedPointer<vte::md::MarkdownParseConfig>::create();
+  config->m_timeStamp = 7;
+  config->m_data = "# pending\n";
+  config->m_numOfBlocks = 2;
+  config->m_parseOptions = vte::MarkdownDocument::viewerParseOptions(true, true);
+  int completions = 0;
+  vte::MarkdownDocumentPtr document;
+  connect(&parser, &vte::md::MarkdownParser::parseResultReady, &parser,
+          [&](const QSharedPointer<vte::md::MarkdownParseResult> &p_result) {
+            ++completions;
+            document = p_result->m_documentRequest->takeDocument();
+          });
+  parser.parseAsync(config);
+  // Finish the real worker without delivering its GUI event. Demand arriving
+  // here must join that completion, not discard/reparse a just-completed tree.
+  const auto workers = parser.findChildren<vte::md::MarkdownParserWorker *>();
+  QVERIFY(!workers.isEmpty());
+  for (const auto worker : workers) {
+    QVERIFY(worker->wait(5000));
+  }
+  QVERIFY(!parser.requestDocument(8, config->m_parseOptions));
+  QVERIFY(!parser.requestDocument(7, CMARK_OPT_DEFAULT));
+  parser.setDocumentRetentionEnabled(true);
+  QVERIFY(parser.requestDocument(7, config->m_parseOptions));
+  QVERIFY(parser.requestDocument(7, config->m_parseOptions));
+  QTRY_COMPARE(completions, 1);
+  QVERIFY(document);
+  QCOMPARE(document->source(), config->m_data);
+  QVERIFY(!parser.hasParse(7, config->m_parseOptions));
+
+  auto next = QSharedPointer<vte::md::MarkdownParseConfig>::create();
+  next->m_timeStamp = 8;
+  next->m_data = "# evicted\n";
+  next->m_numOfBlocks = 2;
+  next->m_parseOptions = config->m_parseOptions;
+  parser.parseAsync(next);
+  parser.setDocumentRetentionEnabled(false);
+  for (const auto worker : workers) {
+    QVERIFY(worker->wait(5000));
+  }
+  QTRY_COMPARE(completions, 2);
+  QVERIFY(!document);
+  QVERIFY(!next->m_documentRequest->request());
+}
+
+void TestMarkdownParser::testMarkdownDocumentHeadingOrder() {
+  const QByteArray source = "# first title\n\n[^note]: # footnote title\n\n# last title\n\n"
+                            "Reference [^note].\n";
+  const int options = vte::MarkdownDocument::viewerParseOptions(true, false);
+  auto config = QSharedPointer<vte::md::MarkdownParseConfig>::create();
+  config->m_data = source;
+  config->m_numOfBlocks = countBlocks(source);
+  config->m_parseOptions = options;
+  config->m_retainDocument = true;
+  vte::md::MarkdownParser parser;
+  const auto parsed = parser.parse(config);
+  const auto retained = parsed->m_documentRequest->takeDocument();
+  const auto direct = vte::MarkdownDocument::parse(source, options);
+  QVERIFY(retained);
+  QVERIFY(direct);
+  const QStringList titles = {QStringLiteral("first title"), QStringLiteral("footnote title"),
+                              QStringLiteral("last title")};
+  const QStringList ids = {QStringLiteral("first-id"), QStringLiteral("note-id"),
+                           QStringLiteral("last-id")};
+  // Footnote blocks render after the main document, but the published heading
+  // vectors remain source ordered for editor navigation and source-line lookup.
+  const QVector<int> renderOrder = {0, 2, 1};
+  QCOMPARE(direct->headings().size(), titles.size());
+  QCOMPARE(retained->headings().size(), titles.size());
+  const QString html = direct->renderHtml(ids, false, true);
+  QCOMPARE(retained->renderHtml(ids, false, true), html);
+  for (int index = 0; index < titles.size(); ++index) {
+    QCOMPARE(direct->headings().at(index).m_title, titles.at(index));
+    QCOMPARE(retained->headings().at(index).m_title, titles.at(index));
+    QCOMPARE(direct->headings().at(index).m_renderOrder, renderOrder.at(index));
+    QCOMPARE(retained->headings().at(index).m_renderOrder, renderOrder.at(index));
+    QCOMPARE(parsed->m_headingElements.at(index).m_renderOrder, renderOrder.at(index));
+    const int idStart = html.indexOf(QStringLiteral("id=\"%1\"").arg(ids.at(index)));
+    QVERIFY(idStart >= 0);
+    const int headingEnd = html.indexOf(QStringLiteral("</h"), idStart);
+    QVERIFY(headingEnd > idStart);
+    QVERIFY(html.mid(idStart, headingEnd - idStart).contains(titles.at(index)));
+  }
+}
+
+void TestMarkdownParser::testMarkdownDocumentFootnoteRanks_data() {
+  QTest::addColumn<QByteArray>("source");
+  QTest::addColumn<QVector<int>>("ranks");
+  QTest::newRow("definition-before-body")
+      << QByteArray("[^a]: # Same\n\n# Same\n\nUse[^a]\n") << QVector<int>({1, 0});
+  QTest::newRow("reference-number-order")
+      << QByteArray("[^a]: # Same\n\n[^b]: # Same\n\n# Same\n\nUse[^b] and[^a]\n")
+      << QVector<int>({2, 1, 0});
+  QTest::newRow("unused-definition")
+      << QByteArray("[^a]: # Same\n\n# Same\n") << QVector<int>({-1, 0});
+  QTest::newRow("reference-only-in-unused-definition")
+      << QByteArray("[^a]: # Same\n\n    Hidden[^b]\n\n[^b]: # Same\n\n# Same\n")
+      << QVector<int>({-1, -1, 0});
+  QTest::newRow("reference-in-rendered-definition")
+      << QByteArray("[^a]: # Same\n\n    Visible[^b]\n\n[^b]: # Same\n\n# Same\n\nUse[^a]\n")
+      << QVector<int>({1, 2, 0});
+  QTest::newRow("inline-image-alt-is-not-visible")
+      << QByteArray("[^a]: # Same\n\n# Same\n\nText ![note[^a]](image.png)\n")
+      << QVector<int>({-1, 0});
+  QTest::newRow("figure-caption-is-visible")
+      << QByteArray("[^a]: # Same\n\n# Same\n\n![note[^a]](image.png)\n") << QVector<int>({1, 0});
+  QTest::newRow("task-image-has-no-caption")
+      << QByteArray("[^a]: # Same\n\n# Same\n\n- [ ] ![note[^a]](image.png)\n")
+      << QVector<int>({-1, 0});
+  QTest::newRow("referenced-nested-definition")
+      << QByteArray("[^unused]: # Same\n\n    [^a]: # Same\n\n# Same\n\nUse[^a]\n")
+      << QVector<int>({-1, 1, 0});
+}
+
+void TestMarkdownParser::testMarkdownDocumentFootnoteRanks() {
+  QFETCH(QByteArray, source);
+  QFETCH(QVector<int>, ranks);
+  const int options = vte::MarkdownDocument::viewerParseOptions(true, false);
+  auto config = QSharedPointer<vte::md::MarkdownParseConfig>::create();
+  config->m_data = source;
+  config->m_numOfBlocks = countBlocks(source);
+  config->m_parseOptions = options;
+  config->m_retainDocument = true;
+  vte::md::MarkdownParser parser;
+  const auto parsed = parser.parse(config);
+  const auto retained = parsed->m_documentRequest->takeDocument();
+  const auto direct = vte::MarkdownDocument::parse(source, options);
+  QVERIFY(retained);
+  QVERIFY(direct);
+  QCOMPARE(direct->headings().size(), ranks.size());
+  QCOMPARE(retained->headings().size(), ranks.size());
+  QStringList ids;
+  for (int index = 0; index < ranks.size(); ++index) {
+    QCOMPARE(direct->headings().at(index).m_renderOrder, ranks.at(index));
+    QCOMPARE(retained->headings().at(index).m_renderOrder, ranks.at(index));
+    QCOMPARE(parsed->m_headingElements.at(index).m_renderOrder, ranks.at(index));
+    ids.append(QStringLiteral("source-heading-%1").arg(index));
+  }
+  const QString html = direct->renderHtml(ids, false, true);
+  QCOMPARE(retained->renderHtml(ids, false, true), html);
+  QVector<int> renderedPositions(ranks.size(), -1);
+  for (int index = 0; index < ranks.size(); ++index) {
+    const int position = html.indexOf(QStringLiteral("id=\"%1\"").arg(ids.at(index)));
+    if (ranks.at(index) < 0) {
+      QCOMPARE(position, -1);
+    } else {
+      QVERIFY(position >= 0);
+      renderedPositions[ranks.at(index)] = position;
+    }
+  }
+  int previous = -1;
+  for (const auto position : renderedPositions) {
+    if (position >= 0) {
+      QVERIFY(position > previous);
+      previous = position;
+    }
+  }
+}
+
+void TestMarkdownParser::testViewerMathPlacement_data() {
+  QTest::addColumn<QString>("input");
+  QTest::addColumn<QString>("formulaSource");
+  QTest::addColumn<bool>("block");
+  const QString inlineFormula = QStringLiteral("$$x^2$$");
+  QTest::newRow("standalone") << inlineFormula + QLatin1Char('\n') << inlineFormula << false;
+  QTest::newRow("paragraph") << QStringLiteral("before $$x^2$$ after\n") << inlineFormula << false;
+  QTest::newRow("list") << QStringLiteral("- $$x^2$$\n") << inlineFormula << false;
+  QTest::newRow("table") << QStringLiteral("| head |\n| --- |\n| $$x^2$$ |\n") << inlineFormula
+                         << false;
+  QTest::newRow("standalone-tagged")
+      << QStringLiteral("$$x^2$$ (equation-name)\n") << inlineFormula << false;
+  QTest::newRow("list-tagged") << QStringLiteral("- $$x^2$$ (equation-name)\n") << inlineFormula
+                               << false;
+  QTest::newRow("table-tagged") << QStringLiteral(
+                                       "| head |\n| --- |\n| $$x^2$$ (equation-name) |\n")
+                                << inlineFormula << false;
+  const QString blockFormula = QStringLiteral("$$\nx^2\n$$");
+  QTest::newRow("multiline") << blockFormula + QLatin1Char('\n') << blockFormula << true;
+  QTest::newRow("list-multiline") << QStringLiteral("- $$\n  x^2\n  $$\n")
+                                  << QStringLiteral("$$\n  x^2\n  $$") << true;
+}
+
+void TestMarkdownParser::testViewerMathPlacement() {
+  QFETCH(QString, input);
+  QFETCH(QString, formulaSource);
+  QFETCH(bool, block);
+  const QByteArray source = input.toUtf8();
+  const int options = vte::MarkdownDocument::viewerParseOptions(true, true);
+  const auto full =
+      vte::md::walkAndConvert(source, countBlocks(source), 0, 0, false, true, options);
+  const auto fast =
+      vte::md::walkAndConvert(source, countBlocks(source), 0, 0, true, false, options);
+  QCOMPARE(full.blocksHighlights, fast.blocksHighlights);
+  QCOMPARE(full.mathElements.size(), 1);
+  const auto &math = full.mathElements.first();
+  QVERIFY(math.m_display);
+  QCOMPARE(math.m_block, block);
+  QCOMPARE(math.m_expression.trimmed(), QStringLiteral("x^2"));
+  const int start = input.indexOf(formulaSource);
+  QVERIFY(start >= 0);
+  QCOMPARE(math.m_startPos, start);
+  QCOMPARE(math.m_endPos, start + formulaSource.size());
+  QCOMPARE(input.mid(math.m_startPos, math.m_endPos - math.m_startPos), formulaSource);
+  const auto &regions = block ? full.displayFormulaRegions : full.inlineEquationRegions;
+  QCOMPARE(regions.size(), 1);
+  QCOMPARE(regions.first().m_startPos, math.m_startPos);
+  QCOMPARE(regions.first().m_endPos, math.m_endPos);
+  QVERIFY((block ? full.inlineEquationRegions : full.displayFormulaRegions).isEmpty());
+  if (!block) {
+    QCOMPARE(countElements(full, HLT_DISPLAYFORMULA), 0);
+    QCOMPARE(findElements(full, HLT_INLINEEQUATION, input),
+             (QVector<QPair<unsigned long, unsigned long>>{
+                 qMakePair(static_cast<unsigned long>(start),
+                           static_cast<unsigned long>(start + formulaSource.size()))}));
+    // Table-cell snippets and whole-document parsing preserve the same source
+    // boundary; equation labels must never become part of preview replacement.
+    const auto local =
+        vte::md::parseInlineSnippet(formulaSource + QStringLiteral(" (equation-name)"), options);
+    QCOMPARE(local.mathElements.size(), 1);
+    QVERIFY(!local.mathElements.first().m_block);
+    QVERIFY(local.mathElements.first().m_display);
+    QCOMPARE(local.mathElements.first().m_startPos, 0);
+    QCOMPARE(local.mathElements.first().m_endPos, formulaSource.size());
+    QCOMPARE(local.mathElements.first().m_expression, math.m_expression);
+  }
+}
+
+void TestMarkdownParser::testViewerInlineMathBoundaries() {
+  const struct {
+    QString input;
+    QString expression;
+    QString formulaSource;
+  } cases[] = {
+      // Viewer rules retry a rejected $$ opener as $. The later $$ may start
+      // valid single-dollar math, but must never consume the preceding line.
+      {QStringLiteral("before $$x\n+y$$ after $z$\n"), QStringLiteral("$ after $z"),
+       QStringLiteral("$$ after $z$")},
+      {QStringLiteral("before $x\n+y$ after $z$\n"), QStringLiteral("z"), QStringLiteral("$z$")},
+      {QStringLiteral("| head |\n| --- |\n| $$x |\n| y$$ |\n| $z$ |\n"), QStringLiteral("z"),
+       QStringLiteral("$z$")},
+      {QStringLiteral("| head | other |\n| --- | --- |\n| $$x | y$$ |\n| $z$ | |\n"),
+       QStringLiteral("z"), QStringLiteral("$z$")}};
+  const int options = vte::MarkdownDocument::viewerParseOptions(true, true);
+  for (const auto &item : cases) {
+    const auto source = item.input.toUtf8();
+    const auto result =
+        vte::md::walkAndConvert(source, countBlocks(source), 0, 0, false, false, options);
+    QCOMPARE(result.mathElements.size(), 1);
+    const auto &math = result.mathElements.first();
+    QCOMPARE(math.m_expression, item.expression);
+    QCOMPARE(math.m_startPos, item.input.indexOf(item.formulaSource));
+    QCOMPARE(math.m_endPos, math.m_startPos + item.formulaSource.size());
+    QCOMPARE(item.input.mid(math.m_startPos, math.m_endPos - math.m_startPos), item.formulaSource);
+    QVERIFY(!math.m_expression.contains(QLatin1Char('\n')));
+    QVERIFY(!math.m_display);
+    QVERIFY(!math.m_block);
+    QVERIFY(result.displayFormulaRegions.isEmpty());
+  }
+}
+
 QTEST_MAIN(tests::TestMarkdownParser)

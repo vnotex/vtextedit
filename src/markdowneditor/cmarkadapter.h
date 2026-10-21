@@ -2,10 +2,13 @@
 #define CMARKADAPTER_H
 
 #include <QByteArray>
+#include <QMutex>
+#include <QSet>
 #include <QString>
 #include <QVector>
 
 #include <cmark.h>
+#include <vtextedit/markdowndocument.h>
 
 class LineOffsetTable {
 public:
@@ -143,5 +146,41 @@ bool cmarkNodeUrlSpan(cmark_node *p_node, const LineOffsetTable &p_offsets, int 
 // walker, so the two cannot drift.
 bool resolveHtmlNodeSpan(const QString &p_content, cmark_node *p_node,
                          const LineOffsetTable &p_offsets, int &p_startQChar, int &p_endQChar);
+
+namespace vte {
+namespace md {
+// Call finish() before publishing headingInfo() records. It ranks only rendered
+// headings, then restores source order without dropping editor-only definitions.
+class HeadingRenderOrder {
+public:
+  void observe(cmark_node *p_node); // Every ENTER event, including non-headings.
+  void finish(QVector<HeadingInfo> &p_headings) const;
+
+private:
+  QSet<int> m_referencedFootnotes;
+};
+
+HeadingInfo headingInfo(cmark_node *p_node, int p_absStart, int p_absEnd, int p_startBlock);
+
+// One full parse owns this handoff. Demand may join while the parser runs,
+// and eviction can release completed-but-not-delivered trees without races.
+// Export only this internal ownership seam for DLL-linked parser tests; this
+// header is not installed and the public snapshot exposes no mutable tree.
+class MarkdownDocumentRequest {
+public:
+  VTEXTEDIT_EXPORT bool request();
+  VTEXTEDIT_EXPORT void clear();
+  VTEXTEDIT_EXPORT MarkdownDocumentPtr takeDocument();
+  VTEXTEDIT_EXPORT void finish(cmark_node *p_root, const QByteArray &p_source, int p_parseOptions,
+                               const QVector<HeadingInfo> &p_headings);
+
+private:
+  QMutex m_mutex;
+  bool m_discarded = false;
+  bool m_finished = false;
+  MarkdownDocumentPtr m_document;
+};
+} // namespace md
+} // namespace vte
 
 #endif

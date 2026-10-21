@@ -142,7 +142,7 @@ public:
   // inside preformatted text.
   //
   // Returns an empty string when the result is still not single-line.
-  static QString renderCellHtml(const QString &p_markdown);
+  static QString renderCellHtml(const QString &p_markdown, int p_parseOptions = 0);
 
   // `<!--vte-md:PAYLOAD-->` for @p_text (decision D-b).
   static QString payloadComment(const QString &p_text);
@@ -161,7 +161,7 @@ public:
                            const QVector<QVector<QString>> &p_cellTags,
                            const QVector<QString> &p_rowTags, const QString &p_openTag,
                            const QVector<PreviewTableAlignment> &p_alignments, bool p_hasHeaderRow,
-                           bool p_markdownBacked);
+                           bool p_markdownBacked, int p_parseOptions = 0);
 };
 
 // One origin cell of the logical grid, as the document holds it.
@@ -540,7 +540,7 @@ public:
   // syntax after the complete mutation, without rebuilding the document.
   void applyCellFormats();
 
-  void setSyntaxStyles(const QVector<QTextCharFormat> &p_styles);
+  void setSyntaxStyles(const QVector<QTextCharFormat> &p_styles, int p_parseOptions = 0);
 
   // Inclusive document interval; either negative endpoint repaints all origins.
   // Structure/style changes also force a full repaint. Returns whether any
@@ -687,6 +687,7 @@ private:
   // Exact live strings only, shared by duplicate origins and retained on rebuild.
   QHash<QString, CellHighlightCacheEntry> m_cellHighlightCache;
   QVector<QTextCharFormat> m_syntaxStyles;
+  int m_parseOptions = 0;
   quint64 m_highlightedStructureGeneration = 0;
   bool m_syntaxStylesDirty = true;
 
@@ -1444,7 +1445,7 @@ public:
 
   bool setPreview(const QSharedPointer<const Preview> &p_preview) Q_DECL_OVERRIDE;
 
-  void setSyntaxStyles(const QVector<QTextCharFormat> &p_styles);
+  void setSyntaxStyles(const QVector<QTextCharFormat> &p_styles, int p_parseOptions = 0);
   void setInlinePreviews(PreviewData::Source p_source,
                          const QVector<TableCellInlinePreview> &p_previews);
   void revalidateInlinePreviews();
@@ -1704,7 +1705,7 @@ public:
   // sheet created afterwards.
   void setSourceAlignEnabled(bool p_enabled);
 
-  bool setSyntaxStyles(const QVector<QTextCharFormat> &p_styles);
+  bool setSyntaxStyles(const QVector<QTextCharFormat> &p_styles, int p_parseOptions = 0);
 
 signals:
   // Relayed from a live sheet, carrying the widget so the host can resolve the
@@ -1734,6 +1735,7 @@ private:
   bool m_alignSource = false;
 
   QVector<QTextCharFormat> m_syntaxStyles;
+  int m_parseOptions = 0;
 
   QVector<QPointer<TablePreviewWidget>> m_widgets;
 };

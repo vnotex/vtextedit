@@ -24,7 +24,9 @@ private slots:
   void testTableCellOffsetsInBlockquote();
   void testTableCellOffsetsInListAndRaggedRow();
   void testHeadingElements();
-  void testHeadingElementsDivergence();
+  void testHeadingSpecialInlineText();
+  void testDocumentProfileProjections();
+  void testViewerOptionalTableEdges();
 };
 
 } // namespace tests

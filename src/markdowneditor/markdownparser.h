@@ -27,7 +27,11 @@ struct MarkdownParseConfig {
   // Offset of m_data in the document.
   int m_offset = 0;
 
-  int m_extensions = 0;
+  int m_parseOptions = 0;
+
+  // Mutable handoff only; the published document itself is immutable.
+  bool m_retainDocument = false;
+  QSharedPointer<MarkdownDocumentRequest> m_documentRequest;
 
   // Fast parse.
   bool m_fast = false;
@@ -43,7 +47,8 @@ struct MarkdownParseConfig {
 struct MarkdownParseResult {
   MarkdownParseResult(const QSharedPointer<MarkdownParseConfig> &p_config)
       : m_timeStamp(p_config->m_timeStamp), m_numOfBlocks(p_config->m_numOfBlocks),
-        m_offset(p_config->m_offset) {}
+        m_offset(p_config->m_offset), m_parseOptions(p_config->m_parseOptions),
+        m_documentRequest(p_config->m_documentRequest) {}
 
   ~MarkdownParseResult() = default;
 
@@ -60,6 +65,9 @@ struct MarkdownParseResult {
   int m_numOfBlocks = 0;
 
   int m_offset = 0;
+
+  int m_parseOptions = 0;
+  QSharedPointer<MarkdownDocumentRequest> m_documentRequest;
 
   QVector<QVector<HLUnit>> m_blocksHighlights;
 
@@ -126,7 +134,9 @@ public:
 
   void reset();
 
-  int state() const { return m_state; }
+  int state() const { return m_state.loadAcquire(); }
+
+  bool isAskedToStop() const { return m_stop.loadAcquire() == 1; }
 
   TimeStamp workTimeStamp() const {
     if (m_parseConfig.isNull()) {
@@ -150,11 +160,9 @@ private:
   QSharedPointer<MarkdownParseResult>
   parseMarkdown(const QSharedPointer<MarkdownParseConfig> &p_config, QAtomicInt &p_stop);
 
-  bool isAskedToStop() const { return m_stop.loadAcquire() == 1; }
-
   QAtomicInt m_stop = 0;
 
-  int m_state = WorkerState::Idle;
+  QAtomicInt m_state = WorkerState::Idle;
 
   QSharedPointer<MarkdownParseConfig> m_parseConfig;
 
@@ -171,6 +179,12 @@ public:
   QSharedPointer<MarkdownParseResult> parse(const QSharedPointer<MarkdownParseConfig> &p_config);
 
   void parseAsync(const QSharedPointer<MarkdownParseConfig> &p_config);
+
+  void setDocumentRetentionEnabled(bool p_enabled);
+  bool documentRetentionEnabled() const { return m_documentRetentionEnabled; }
+  void discardDocuments();
+  bool hasParse(TimeStamp p_generation, int p_parseOptions) const;
+  bool requestDocument(TimeStamp p_generation, int p_parseOptions);
 
   static QVector<ElementRegion>
   parseImageRegions(const QSharedPointer<MarkdownParseConfig> &p_config);
@@ -197,6 +211,7 @@ private:
   QVector<MarkdownParserWorker *> m_workers;
 
   QSharedPointer<MarkdownParseConfig> m_pendingWork;
+  bool m_documentRetentionEnabled = false;
 };
 
 } // namespace md

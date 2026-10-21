@@ -69,6 +69,7 @@ private slots:
   void testCellFontColorsSurviveCacheRefresh();
   void testSyntaxStylesRepaintTheCells();
   void testCellHighlightingOnlyParsesChangedText();
+  void testCellGrammarProfileInvalidatesCache();
   void testIdenticalCellReplacementKeepsHighlighting();
   void testStructuralChangesReuseCellHighlighting();
   void testResolveFormatRunsMergesOverlaps();

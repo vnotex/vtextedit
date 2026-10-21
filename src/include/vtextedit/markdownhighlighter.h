@@ -6,6 +6,7 @@
 
 #include <vtextedit/codeblockhighlighter.h>
 #include <vtextedit/markdownhighlighterdata.h>
+#include <vtextedit/markdowndocument.h>
 #include <vtextedit/preview.h>
 #include <vtextedit/vsyntaxhighlighter.h>
 
@@ -59,6 +60,15 @@ public:
 
   void setTheme(const QSharedPointer<Theme> &p_theme);
 
+  void setDocumentParseOptions(int p_options);
+  int documentParseOptions() const;
+  void setDocumentRetentionEnabled(bool p_enabled);
+  MarkdownDocumentPtr currentDocument() const;
+  // A full parse of this source/profile is scheduled or in flight.
+  bool hasCurrentDocumentParse() const;
+  void requestDocument();
+  quint64 documentGeneration() const;
+
   // Refresh code and math formats without reparsing or editing the document.
   void invalidateHighlightCaches();
 
@@ -100,6 +110,11 @@ public slots:
 
 signals:
   void syntaxStylesChanged();
+
+  void documentParseOptionsChanged(int p_options);
+
+  // Full, exact-current source/profile only; null reports a parse failure.
+  void documentReady(quint64 p_generation, const vte::MarkdownDocumentPtr &p_document);
 
   void highlightCompleted();
 
@@ -231,9 +246,8 @@ private:
 
   TimeStamp m_codeBlockTimeStamp = 0;
 
-  // Extensions for markdown parser.
-  // Init it in the CPP to avoid including extra header.
-  int m_parserExts = 0;
+  // Effective native grammar options; standalone defaults remain unchanged.
+  int m_parseOptions = 0;
 
   // Timer interval to trigger a new parse.
   int m_parseInterval = 150;

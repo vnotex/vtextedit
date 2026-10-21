@@ -53,6 +53,9 @@ private slots:
   void testInlineDisplayEquation_data();
   void testInlineDisplayEquation();
   void testInlineDisplayEquationDoesNotCrossLines();
+  void testViewerMathPlacement_data();
+  void testViewerMathPlacement();
+  void testViewerInlineMathBoundaries();
 
   // T7: Edge case tests
   void testSurrogatePairs();
@@ -76,6 +79,12 @@ private slots:
   void testTableElementInvalid();
   void testImageCodeMathElements();
   void testHeadingElementsPublished();
+  void testMarkdownDocumentSnapshot();
+  void testMarkdownDocumentHeadingOrder();
+  void testMarkdownDocumentFootnoteRanks_data();
+  void testMarkdownDocumentFootnoteRanks();
+  void testMarkdownDocumentEmptyAndOptions();
+  void testMarkdownDocumentAsyncJoinAndEviction();
 
   // Shared cmark source-position mapping, and the `=WxH` size extension.
   void testCmarkNodeSpans();

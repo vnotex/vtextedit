@@ -1,6 +1,7 @@
 #include "markdownparser.h"
 
 #include "markdownastwalker.h"
+#include "cmarkadapter.h"
 
 using namespace vte;
 using namespace vte::md;
@@ -21,7 +22,12 @@ void MarkdownParserWorker::reset() {
   m_state = WorkerState::Idle;
 }
 
-void MarkdownParserWorker::stop() { m_stop.storeRelaxed(1); }
+void MarkdownParserWorker::stop() {
+  m_stop.storeRelease(1);
+  if (m_parseConfig && m_parseConfig->m_documentRequest) {
+    m_parseConfig->m_documentRequest->clear();
+  }
+}
 
 void MarkdownParserWorker::run() {
   Q_ASSERT(m_state == WorkerState::Busy);
@@ -29,6 +35,10 @@ void MarkdownParserWorker::run() {
   m_parseResult = parseMarkdown(m_parseConfig, m_stop);
 
   if (isAskedToStop()) {
+    if (m_parseConfig->m_documentRequest) {
+      m_parseConfig->m_documentRequest->clear();
+    }
+    m_parseResult.reset();
     m_state = WorkerState::Cancelled;
     return;
   }
@@ -41,15 +51,14 @@ MarkdownParserWorker::parseMarkdown(const QSharedPointer<MarkdownParseConfig> &p
                                     QAtomicInt &p_stop) {
   QSharedPointer<MarkdownParseResult> result(new MarkdownParseResult(p_config));
 
-  if (p_config->m_data.isEmpty()) {
-    result->m_listStructure.m_valid = !p_config->m_fast;
-    return result;
-  }
-
   auto walkResult = walkAndConvert(p_config->m_data, p_config->m_numOfBlocks, p_config->m_offset, 0,
-                                   p_config->m_fast, !p_config->m_fast);
+                                   p_config->m_fast, !p_config->m_fast, p_config->m_parseOptions,
+                                   p_config->m_documentRequest.data());
 
   if (p_stop.loadAcquire() == 1) {
+    if (p_config->m_documentRequest) {
+      p_config->m_documentRequest->clear();
+    }
     return result;
   }
 
@@ -96,6 +105,7 @@ void MarkdownParser::clear() {
   m_pendingWork.reset();
 
   for (auto const &th : m_workers) {
+    th->stop();
     th->quit();
     th->wait();
 
@@ -108,6 +118,13 @@ void MarkdownParser::clear() {
 MarkdownParser::~MarkdownParser() { clear(); }
 
 void MarkdownParser::parseAsync(const QSharedPointer<MarkdownParseConfig> &p_config) {
+  p_config->m_documentRequest.clear();
+  if (!p_config->m_fast) {
+    p_config->m_documentRequest = QSharedPointer<MarkdownDocumentRequest>::create();
+    if (m_documentRetentionEnabled || p_config->m_retainDocument) {
+      p_config->m_documentRequest->request();
+    }
+  }
   m_pendingWork = p_config;
 
   pickWorker();
@@ -115,15 +132,16 @@ void MarkdownParser::parseAsync(const QSharedPointer<MarkdownParseConfig> &p_con
 
 QSharedPointer<MarkdownParseResult>
 MarkdownParser::parse(const QSharedPointer<MarkdownParseConfig> &p_config) {
+  p_config->m_documentRequest.clear();
+  if (!p_config->m_fast && p_config->m_retainDocument) {
+    p_config->m_documentRequest = QSharedPointer<MarkdownDocumentRequest>::create();
+    p_config->m_documentRequest->request();
+  }
   QSharedPointer<MarkdownParseResult> result(new MarkdownParseResult(p_config));
 
-  if (p_config->m_data.isEmpty()) {
-    result->m_listStructure.m_valid = !p_config->m_fast;
-    return result;
-  }
-
   auto walkResult = walkAndConvert(p_config->m_data, p_config->m_numOfBlocks, p_config->m_offset, 0,
-                                   p_config->m_fast, !p_config->m_fast);
+                                   p_config->m_fast, !p_config->m_fast, p_config->m_parseOptions,
+                                   p_config->m_documentRequest.data());
 
   result->m_blocksHighlights = std::move(walkResult.blocksHighlights);
   result->m_blockOverlays = std::move(walkResult.blockOverlays);
@@ -211,9 +229,63 @@ MarkdownParser::parseImageRegions(const QSharedPointer<MarkdownParseConfig> &p_c
     return {};
   }
 
-  auto walkResult =
-      walkAndConvert(p_config->m_data, p_config->m_numOfBlocks, p_config->m_offset, 0, false);
+  auto walkResult = walkAndConvert(p_config->m_data, p_config->m_numOfBlocks, p_config->m_offset, 0,
+                                   false, false, p_config->m_parseOptions);
   return walkResult.imageRegions;
 }
 
 int MarkdownParser::getNumberOfStyles() { return 33; }
+
+void MarkdownParser::setDocumentRetentionEnabled(bool p_enabled) {
+  m_documentRetentionEnabled = p_enabled;
+  if (!p_enabled) {
+    discardDocuments();
+  }
+}
+
+void MarkdownParser::discardDocuments() {
+  const auto clear = [](const QSharedPointer<MarkdownParseConfig> &p_config) {
+    if (p_config && p_config->m_documentRequest) {
+      p_config->m_documentRequest->clear();
+    }
+  };
+  clear(m_pendingWork);
+  for (const auto worker : m_workers) {
+    clear(worker->parseConfig());
+  }
+}
+
+static bool matchesFullParse(const QSharedPointer<MarkdownParseConfig> &p_config,
+                             TimeStamp p_generation, int p_parseOptions) {
+  return p_config && !p_config->m_fast && p_config->m_offset == 0 &&
+         p_config->m_timeStamp == p_generation && p_config->m_parseOptions == p_parseOptions;
+}
+
+bool MarkdownParser::hasParse(TimeStamp p_generation, int p_parseOptions) const {
+  if (matchesFullParse(m_pendingWork, p_generation, p_parseOptions)) {
+    return true;
+  }
+  for (const auto worker : m_workers) {
+    if (!worker->isAskedToStop() &&
+        matchesFullParse(worker->parseConfig(), p_generation, p_parseOptions)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool MarkdownParser::requestDocument(TimeStamp p_generation, int p_parseOptions) {
+  const auto request = [=](const QSharedPointer<MarkdownParseConfig> &p_config) {
+    return matchesFullParse(p_config, p_generation, p_parseOptions) &&
+           p_config->m_documentRequest && p_config->m_documentRequest->request();
+  };
+  if (request(m_pendingWork)) {
+    return true;
+  }
+  for (const auto worker : m_workers) {
+    if (!worker->isAskedToStop() && request(worker->parseConfig())) {
+      return true;
+    }
+  }
+  return false;
+}

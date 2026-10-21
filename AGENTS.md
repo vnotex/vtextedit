@@ -93,6 +93,24 @@ Note: actual ordering varies slightly between files. Follow the pattern in the f
 * Defined as `Q_DECL_EXPORT` when building (`VTEXTEDIT_LIB` defined), `Q_DECL_IMPORT` when consuming
 * Tests compile with `VTEXTEDIT_STATIC_DEFINE` (empty macro) to link sources directly
 
+## Immutable Markdown documents
+
+`MarkdownDocumentPtr` shares a read-only cmark tree, source bytes, effective parse options and
+heading records. Direct `MarkdownDocument::parse()` does not run editor projections. Rendering
+keeps all output state local and exposes no mutable AST pointer. Standalone grammar defaults
+remain unchanged; hosts opt into `viewerParseOptions()` separately from HTML output options.
+
+`MarkdownHighlighter` retains full trees only on demand. `currentDocument()` requires an exact
+current full parse/profile; partial/fast parses never qualify. `requestDocument()` joins a
+scheduled/in-flight full parse, and `documentReady` carries the highlighter's generation, not a
+host buffer revision. Replacing source/profile or disabling retention releases accepted trees;
+workers retain their own immutable inputs until completion. Existing metadata can remain valid
+without retaining a tree, allowing hosts to perform a direct render-only parse.
+
+Heading records include zero-based source lines and rendered order. Unreferenced footnote
+headings have no rendered rank and must not reserve reader slugs. Shared title extraction is
+iterative so deeply nested inline formatting does not overflow the native stack.
+
 ## Empty Heading Metadata
 
 `md::HeadingInfo::m_isEmpty` records that the cmark heading has no inline AST children.

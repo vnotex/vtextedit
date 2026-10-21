@@ -438,16 +438,16 @@ QString alignmentAttrValue(PreviewTableAlignment p_alignment) {
 }
 } // namespace
 
-QString TablePreviewHtmlSerializer::renderCellHtml(const QString &p_markdown) {
+QString TablePreviewHtmlSerializer::renderCellHtml(const QString &p_markdown, int p_parseOptions) {
   if (p_markdown.isEmpty()) {
     return QString();
   }
 
   const QByteArray utf8 = p_markdown.toUtf8();
-  // CMARK_OPT_DEFAULT is the safe mode: raw inline HTML inside a cell is
-  // replaced with an "omitted" comment rather than passed through.
+  // Parsing follows the editor profile; output remains safe generic HTML.
   std::unique_ptr<char, decltype(&std::free)> rendered(
-      cmark_markdown_to_html(utf8.constData(), static_cast<size_t>(utf8.size()), CMARK_OPT_DEFAULT),
+      cmark_markdown_to_html(utf8.constData(), static_cast<size_t>(utf8.size()),
+                             p_parseOptions & ~CMARK_OPT_UNSAFE),
       &std::free);
   if (!rendered) {
     return QString();
@@ -501,13 +501,11 @@ QString TablePreviewHtmlSerializer::payloadComment(const QString &p_text) {
          QStringLiteral("-->");
 }
 
-QString TablePreviewHtmlSerializer::serialize(const QVector<QVector<QString>> &p_cells,
-                                              const QVector<QVector<QPoint>> &p_spans,
-                                              const QVector<QVector<QString>> &p_cellTags,
-                                              const QVector<QString> &p_rowTags,
-                                              const QString &p_openTag,
-                                              const QVector<PreviewTableAlignment> &p_alignments,
-                                              bool p_hasHeaderRow, bool p_markdownBacked) {
+QString TablePreviewHtmlSerializer::serialize(
+    const QVector<QVector<QString>> &p_cells, const QVector<QVector<QPoint>> &p_spans,
+    const QVector<QVector<QString>> &p_cellTags, const QVector<QString> &p_rowTags,
+    const QString &p_openTag, const QVector<PreviewTableAlignment> &p_alignments,
+    bool p_hasHeaderRow, bool p_markdownBacked, int p_parseOptions) {
   const int rows = p_cells.size();
   if (rows <= 0 || p_spans.size() != rows) {
     return QString();
@@ -570,7 +568,8 @@ QString TablePreviewHtmlSerializer::serialize(const QVector<QVector<QString>> &p
       if (p_markdownBacked) {
         // Decision D-b/D-c: the comment carries the source and always wins. A
         // hand edit to the rendered half is destroyed at the next commit.
-        const QString renderedHtml = TablePreviewHtmlSerializer::renderCellHtml(text);
+        const QString renderedHtml =
+            TablePreviewHtmlSerializer::renderCellHtml(text, p_parseOptions);
         if (!text.isEmpty() && renderedHtml.isEmpty()) {
           // The payload could not be rendered to a single line. Fail closed.
           return QString();
@@ -1588,7 +1587,7 @@ QString TablePreviewDocument::toMarkdown(bool p_align) const {
     // conversion emits a payload comment for every cell.
     return TablePreviewHtmlSerializer::serialize(grid.m_source, grid.m_spans, cellTagGrid(),
                                                  m_rowTags, m_openTag, m_alignments, m_hasHeaderRow,
-                                                 m_markdownBacked);
+                                                 m_markdownBacked, m_parseOptions);
   }
 
   return TablePreviewSerializer::serialize(cells(), m_alignments, m_rowPrefixes, m_delimiterPrefix,
@@ -1633,7 +1632,7 @@ QString TablePreviewDocument::toHtml() const {
     const GridSnapshot grid = captureGrid();
     return TablePreviewHtmlSerializer::serialize(grid.m_source, grid.m_spans, cellTagGrid(),
                                                  m_rowTags, m_openTag, m_alignments, m_hasHeaderRow,
-                                                 m_markdownBacked);
+                                                 m_markdownBacked, m_parseOptions);
   }
 
   // Never padded: the rendered HTML is layout independent, so alignment
@@ -1645,11 +1644,10 @@ QString TablePreviewDocument::toHtml() const {
   }
 
   const QByteArray utf8 = markdown.toUtf8();
-  // CMARK_OPT_DEFAULT is the safe mode: raw inline HTML inside a cell is
-  // replaced with an "omitted" comment rather than passed through into a
-  // payload which lands in another application.
+  // Preserve the editor grammar without allowing unsafe clipboard HTML.
   std::unique_ptr<char, decltype(&std::free)> rendered(
-      cmark_markdown_to_html(utf8.constData(), static_cast<size_t>(utf8.size()), CMARK_OPT_DEFAULT),
+      cmark_markdown_to_html(utf8.constData(), static_cast<size_t>(utf8.size()),
+                             m_parseOptions & ~CMARK_OPT_UNSAFE),
       &std::free);
   if (!rendered) {
     return QString();
@@ -1710,7 +1708,13 @@ void TablePreviewDocument::applyCellFormat(int p_row, int p_column) {
   applySourceCharFormat(cell.firstPosition(), cell.lastPosition(), headerFormat, true);
 }
 
-void TablePreviewDocument::setSyntaxStyles(const QVector<QTextCharFormat> &p_styles) {
+void TablePreviewDocument::setSyntaxStyles(const QVector<QTextCharFormat> &p_styles,
+                                           int p_parseOptions) {
+  if (m_parseOptions != p_parseOptions) {
+    m_parseOptions = p_parseOptions;
+    m_cellHighlightCache.clear();
+    m_syntaxStylesDirty = true;
+  }
   if (m_syntaxStyles != p_styles) {
     m_syntaxStyles = p_styles;
     m_syntaxStylesDirty = true;
@@ -1780,7 +1784,7 @@ TablePreviewDocument::CellHighlightCacheEntry &
 TablePreviewDocument::cellInlineData(const QString &p_source) {
   auto it = m_cellHighlightCache.find(p_source);
   if (it == m_cellHighlightCache.end()) {
-    auto parsed = md::parseInlineSnippet(p_source);
+    auto parsed = md::parseInlineSnippet(p_source, m_parseOptions);
     CellHighlightCacheEntry entry;
     if (!parsed.blocksHighlights.isEmpty()) {
       entry.m_units = std::move(parsed.blocksHighlights.first());
@@ -5084,9 +5088,10 @@ QVector<PreviewElementType> TablePreviewWidget::supportedTypes() const {
   return QVector<PreviewElementType>() << PreviewElementType::Table;
 }
 
-void TablePreviewWidget::setSyntaxStyles(const QVector<QTextCharFormat> &p_styles) {
+void TablePreviewWidget::setSyntaxStyles(const QVector<QTextCharFormat> &p_styles,
+                                         int p_parseOptions) {
   QScopedValueRollback<bool> applying(m_applyingSource, true);
-  m_document->setSyntaxStyles(p_styles);
+  m_document->setSyntaxStyles(p_styles, p_parseOptions);
   if (m_document->refreshCellSyntaxFormats()) {
     updateGeometry();
   }
@@ -6004,7 +6009,7 @@ TablePreviewWidgetFactory::createWidget(PreviewWidgetContext *p_context,
   auto widget = new TablePreviewWidget(p_context, p_parent);
   widget->setReadOnly(m_readOnly);
   widget->setSourceAlignEnabled(m_alignSource);
-  widget->setSyntaxStyles(m_syntaxStyles);
+  widget->setSyntaxStyles(m_syntaxStyles, m_parseOptions);
   // Before any of the relays below, so a sheet created while the editor is
   // already in Vi mode does not spend its first keystrokes without one.
   widget->setInputMode(m_inputMode);
@@ -6067,15 +6072,17 @@ void TablePreviewWidgetFactory::setInputMode(InputMode p_mode) {
   }
 }
 
-bool TablePreviewWidgetFactory::setSyntaxStyles(const QVector<QTextCharFormat> &p_styles) {
-  if (m_syntaxStyles == p_styles) {
+bool TablePreviewWidgetFactory::setSyntaxStyles(const QVector<QTextCharFormat> &p_styles,
+                                                int p_parseOptions) {
+  if (m_syntaxStyles == p_styles && m_parseOptions == p_parseOptions) {
     return false;
   }
 
   m_syntaxStyles = p_styles;
+  m_parseOptions = p_parseOptions;
   pruneWidgets();
   for (auto &widget : m_widgets) {
-    widget->setSyntaxStyles(p_styles);
+    widget->setSyntaxStyles(p_styles, p_parseOptions);
   }
   return true;
 }

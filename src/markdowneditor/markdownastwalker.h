@@ -11,6 +11,7 @@
 
 namespace vte {
 namespace md {
+class MarkdownDocumentRequest;
 
 // Typed data of one parsed element, captured while the cmark AST and the
 // original input are still alive. Positions are absolute UTF-16 document
@@ -53,7 +54,8 @@ struct MathElement : public TypedPreviewElement {
 // Split raw source without decoding escapes. Optional borders contain the leading
 // pipe and each unescaped closing pipe: one more entry than cells on success.
 bool splitTableRow(const QString &p_line, QString &p_prefix, QVector<QString> &p_cells,
-                   QVector<int> *p_cellOffsets = nullptr, QVector<int> *p_cellBorders = nullptr);
+                   QVector<int> *p_cellOffsets = nullptr, QVector<int> *p_cellBorders = nullptr,
+                   int p_contentStart = -1);
 
 enum class TableRowType { Header, Delimiter, Data };
 
@@ -190,6 +192,7 @@ struct ListParagraphInfo {
 
 struct ListStructure {
   bool m_valid = false;
+  int m_parseOptions = 0;
   // Implicitly shared original UTF-8, retained only when there are lists.
   QByteArray m_source;
   QVector<ListContainerInfo> m_containers;
@@ -210,7 +213,7 @@ struct ListSourceEdit {
 // Anchored, line-local lexical fields only; membership/verification stay unset.
 bool scanListMarker(const QString &p_line, int p_start, ListItemInfo &p_marker);
 ListStructure parseListStructure(const QByteArray &p_utf8Text, int p_offset = 0,
-                                 int p_startBlock = 0);
+                                 int p_startBlock = 0, int p_parseOptions = 0);
 // Constant-time access to the prefix verified and cached during projection.
 bool listContinuationPrefix(const ListStructure &p_structure, int p_item, QString &p_prefix);
 bool buildListNumberEdits(const QString &p_source, const ListStructure &p_structure,
@@ -258,8 +261,9 @@ struct ASTWalkResult {
 // p_startBlock) p_fast: if true, skip region collection (retain highlights and overlays)
 // p_collectLists: collect the editing projection only for a non-fast walk
 ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int p_offset = 0,
-                             int p_startBlock = 0, bool p_fast = false,
-                             bool p_collectLists = false);
+                             int p_startBlock = 0, bool p_fast = false, bool p_collectLists = false,
+                             int p_parseOptions = 0,
+                             MarkdownDocumentRequest *p_documentRequest = nullptr);
 
 // Project the walker's image elements onto what the highlighter publishes:
 // region, destination and declared size. Order is preserved, one entry per
@@ -274,7 +278,7 @@ QVector<ImageLinkInfo> buildImageLinks(const QVector<ImageElement> &p_elements);
 // source is by definition detached from its surrounding block context, so this
 // is the closest honest answer. Used by the live table document's cache for
 // Markdown and Markdown-backed HTML cells; an HTML-only table gets no runs.
-ASTWalkResult parseInlineSnippet(const QString &p_snippet);
+ASTWalkResult parseInlineSnippet(const QString &p_snippet, int p_parseOptions = 0);
 
 // Total number of nonempty snippet parse attempts parseInlineSnippet() has
 // performed since the last reset. Measures live-cell cache misses. Diagnostics

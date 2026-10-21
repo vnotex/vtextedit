@@ -56,6 +56,7 @@ add_library(VTextEdit SHARED
     include/vtextedit/markdowneditorconfig.h
     include/vtextedit/markdownutils.h
     include/vtextedit/orderedintset.h
+    include/vtextedit/markdowndocument.h
     include/vtextedit/markdownhighlighter.h
     include/vtextedit/markdownhighlighterdata.h
     include/vtextedit/preview.h
@@ -98,6 +99,7 @@ add_library(VTextEdit SHARED
     markdowneditor/markdowneditorconfig.cpp
     markdowneditor/markdownhighlightblockdata.h
     markdowneditor/markdownhighlighterresult.cpp markdowneditor/markdownhighlighterresult.h
+    markdowneditor/markdowndocument.cpp
     markdowneditor/markdownhighlighter.cpp
     markdowneditor/markdownparser.cpp markdowneditor/markdownparser.h
     markdowneditor/cmarkadapter.cpp markdowneditor/cmarkadapter.h

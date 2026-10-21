@@ -13,6 +13,7 @@
 #include <vtextedit/textutils.h>
 #include <vtextedit/theme.h>
 
+#include "cmarkadapter.h"
 #include "hlformatresolver.h"
 #include "interactivepreviewhost.h"
 #include "markdownastwalker.h"
@@ -22,19 +23,6 @@
 #include "markdownsyntaxstyles.h"
 #include "mathblockhighlighter.h"
 #include "previewlogging.h"
-
-// Extension flags (replacing pmh_EXT_* constants).
-// These are kept for config compatibility but cmark enables all extensions by default.
-enum {
-  EXT_NONE = 0,
-  EXT_NOTES = 0x01,
-  EXT_STRIKE = 0x02,
-  EXT_FRONTMATTER = 0x04,
-  EXT_MARK = 0x08,
-  EXT_TABLE = 0x10,
-  EXT_MATH = 0x20,
-  EXT_MATH_RAW = 0x40,
-};
 
 #define LARGE_BLOCK_NUMBER 1000
 
@@ -47,13 +35,8 @@ MarkdownHighlighter::MarkdownHighlighter(MarkdownHighlighterInterface *p_interfa
                                          MathBlockHighlighter *p_mathBlockHighlighter)
     : VSyntaxHighlighter(p_doc), m_interface(p_interface), m_config(p_config),
       m_codeBlockHighlighter(p_codeBlockHighlighter),
-      m_mathBlockHighlighter(p_mathBlockHighlighter),
-      m_parserExts(EXT_NOTES | EXT_STRIKE | EXT_FRONTMATTER | EXT_MARK | EXT_TABLE) {
+      m_mathBlockHighlighter(p_mathBlockHighlighter) {
   setTheme(p_theme);
-
-  if (p_config->m_mathExtEnabled) {
-    m_parserExts |= (EXT_MATH | EXT_MATH_RAW);
-  }
 
   m_parser = new md::MarkdownParser(this);
   connect(m_parser, &md::MarkdownParser::parseResultReady, this,
@@ -297,6 +280,8 @@ void MarkdownHighlighter::handleContentsChange(int p_position, int p_charsRemove
   }
 
   ++m_timeStamp;
+  m_result->m_document.clear();
+  m_parser->discardDocuments();
 
   m_parseTimer->stop();
 
@@ -312,11 +297,15 @@ void MarkdownHighlighter::handleContentsChange(int p_position, int p_charsRemove
 }
 
 void MarkdownHighlighter::startParse() {
+  if (m_parser->documentRetentionEnabled() ? m_parser->requestDocument(m_timeStamp, m_parseOptions)
+                                           : m_parser->hasParse(m_timeStamp, m_parseOptions)) {
+    return;
+  }
   QSharedPointer<md::MarkdownParseConfig> config(new md::MarkdownParseConfig());
   config->m_timeStamp = m_timeStamp;
   config->m_data = document()->toPlainText().toUtf8();
   config->m_numOfBlocks = document()->blockCount();
-  config->m_extensions = m_parserExts;
+  config->m_parseOptions = m_parseOptions;
 
   qCDebug(previewSnapshotLog) << "parse scheduled" << "timestamp" << m_timeStamp
                               << "document revision" << document()->revision() << "removed"
@@ -362,14 +351,15 @@ void MarkdownHighlighter::startFastParse(int p_position, int p_charsRemoved, int
   // are at global block indices (firstBlockNum..lastBlockNum), not 0-based.
   QByteArray utf8Data = text.toUtf8();
   int docBlockCount = document()->blockCount();
-  auto walkResult = md::walkAndConvert(utf8Data, docBlockCount, offset, firstBlockNum, true);
+  auto walkResult = md::walkAndConvert(utf8Data, docBlockCount, offset, firstBlockNum, true, false,
+                                       m_parseOptions);
 
   QSharedPointer<md::MarkdownParseConfig> config(new md::MarkdownParseConfig());
   config->m_timeStamp = m_timeStamp;
   config->m_data = utf8Data;
   config->m_numOfBlocks = docBlockCount;
   config->m_offset = offset;
-  config->m_extensions = m_parserExts;
+  config->m_parseOptions = m_parseOptions;
   config->m_fast = true;
 
   QSharedPointer<md::MarkdownParseResult> parseRes(new md::MarkdownParseResult(config));
@@ -451,7 +441,10 @@ void MarkdownHighlighter::invalidateHighlightCaches() {
 
 void MarkdownHighlighter::handleParseResult(
     const QSharedPointer<md::MarkdownParseResult> &p_result) {
-  if (!m_result.isNull() && p_result->m_timeStamp != m_timeStamp) {
+  if (p_result->m_timeStamp != m_timeStamp || p_result->m_parseOptions != m_parseOptions) {
+    if (p_result->m_documentRequest) {
+      p_result->m_documentRequest->clear();
+    }
     // Directly skip non-matched results to avoid highlight noise.
     qCDebug(previewSnapshotLog) << "parse stale" << "timestamp" << p_result->m_timeStamp
                                 << "current timestamp" << m_timeStamp << "document revision"
@@ -464,6 +457,12 @@ void MarkdownHighlighter::handleParseResult(
   clearFastParseResult();
 
   m_result.reset(new MarkdownHighlighterResult(this, p_result, m_timeStamp, m_lastContentsChange));
+  if (p_result->m_documentRequest) {
+    auto snapshot = p_result->m_documentRequest->takeDocument();
+    if (m_parser->documentRetentionEnabled()) {
+      m_result->m_document = std::move(snapshot);
+    }
+  }
 
   m_result->m_codeBlockTimeStamp = nextCodeBlockTimeStamp();
 
@@ -495,6 +494,12 @@ void MarkdownHighlighter::handleParseResult(
                                 << m_lastContentsChange.m_charsAdded;
 
     completeHighlight(m_result);
+    // Heading-number publication may itself edit the source. Never publish the
+    // tree from before such a reentrant change as the current document.
+    if (p_result->m_timeStamp == m_timeStamp && m_parser->documentRetentionEnabled()) {
+      const auto snapshot = currentDocument();
+      emit documentReady(m_timeStamp, snapshot);
+    }
   }
 }
 
@@ -894,7 +899,7 @@ void MarkdownHighlighter::completeHighlight(QSharedPointer<MarkdownHighlighterRe
                               p_result->buildPreviews(document(), typeMask));
 }
 
-bool MarkdownHighlighter::isMathEnabled() const { return m_parserExts & EXT_MATH; }
+bool MarkdownHighlighter::isMathEnabled() const { return m_config->m_mathExtEnabled; }
 
 void MarkdownHighlighter::rehighlightSensitiveBlocks() {
   QTextBlock cb = m_interface->textCursor().block();
@@ -1166,3 +1171,59 @@ void MarkdownHighlighter::updateStylesFontSize(int p_delta) {
 
   rehighlight();
 }
+
+void MarkdownHighlighter::setDocumentParseOptions(int p_options) {
+  if (m_parseOptions == p_options) {
+    return;
+  }
+  m_parseOptions = p_options;
+  ++m_timeStamp;
+  m_result->m_document.clear();
+  m_parser->discardDocuments();
+  clearFastParseResult();
+  m_fastParseTimer->stop();
+  m_parseTimer->start(0);
+  emit documentParseOptionsChanged(p_options);
+}
+
+int MarkdownHighlighter::documentParseOptions() const { return m_parseOptions; }
+
+void MarkdownHighlighter::setDocumentRetentionEnabled(bool p_enabled) {
+  m_parser->setDocumentRetentionEnabled(p_enabled);
+  if (!p_enabled) {
+    m_result->m_document.clear();
+  }
+}
+
+MarkdownDocumentPtr MarkdownHighlighter::currentDocument() const {
+  if (!m_parser->documentRetentionEnabled() || !m_result->matched(m_timeStamp) ||
+      m_result->m_parseOptions != m_parseOptions) {
+    return {};
+  }
+  return m_result->m_document;
+}
+
+bool MarkdownHighlighter::hasCurrentDocumentParse() const {
+  return m_parseTimer->isActive() || m_parser->hasParse(m_timeStamp, m_parseOptions);
+}
+
+void MarkdownHighlighter::requestDocument() {
+  setDocumentRetentionEnabled(true);
+  if (currentDocument()) {
+    const auto generation = m_timeStamp;
+    // Do not capture a snapshot in the queue: eviction must release it now.
+    QTimer::singleShot(0, this, [this, generation]() {
+      if (generation == m_timeStamp) {
+        const auto snapshot = currentDocument();
+        if (snapshot) {
+          emit documentReady(generation, snapshot);
+        }
+      }
+    });
+    return;
+  }
+  m_parseTimer->stop();
+  startParse();
+}
+
+quint64 MarkdownHighlighter::documentGeneration() const { return m_timeStamp; }

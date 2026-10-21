@@ -111,7 +111,8 @@ static QVector<md::ListItemRange> buildListItemRanges(const md::ListStructure &p
 MarkdownHighlighterResult::MarkdownHighlighterResult(
     const MarkdownHighlighter *p_peg, const QSharedPointer<md::MarkdownParseResult> &p_result,
     TimeStamp p_curTimeStamp, const ContentsChange &p_lastContentsChange)
-    : m_timeStamp(p_result->m_timeStamp), m_numOfBlocks(p_result->m_numOfBlocks) {
+    : m_timeStamp(p_result->m_timeStamp), m_numOfBlocks(p_result->m_numOfBlocks),
+      m_parseOptions(p_result->m_parseOptions) {
   // TODO: use @p_curTimeStamp and @p_lastContentsChange to fix the position of
   // results. Now we will ignore unmatched results in MarkdownHighlighter to
   // avoid blinking.

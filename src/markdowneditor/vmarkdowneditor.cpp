@@ -58,7 +58,7 @@ public:
 
   void prepare(Work p_work, quint64 p_epoch, quint64 p_generation,
                const md::ListStructure &p_structure, const QByteArray &p_seed,
-               const QHash<int, int> &p_listStarts) {
+               const QHash<int, int> &p_listStarts, int p_parseOptions = 0) {
     Q_ASSERT(!isRunning());
     m_work = p_work;
     m_epoch = p_epoch;
@@ -66,6 +66,7 @@ public:
     m_structure = p_structure;
     m_seed = p_seed;
     m_starts = p_listStarts;
+    m_parseOptions = p_parseOptions;
     m_edits.clear();
     m_succeeded = false;
   }
@@ -80,7 +81,7 @@ protected:
       return;
     }
     if (m_work == Work::Baseline) {
-      m_structure = md::parseListStructure(m_seed);
+      m_structure = md::parseListStructure(m_seed, 0, 0, m_parseOptions);
       m_seed.clear();
       m_succeeded = m_structure.m_valid && !isInterruptionRequested();
       return;
@@ -107,6 +108,7 @@ private:
   quint64 m_generation = 0;
   md::ListStructure m_structure;
   QByteArray m_seed;
+  int m_parseOptions = 0;
   QHash<int, int> m_starts;
   QVector<md::ListSourceEdit> m_edits;
   bool m_succeeded = false;
@@ -121,6 +123,8 @@ public:
       : QObject(p_editor), m_editor(p_editor), m_doc(p_editor->document()),
         m_worker(new ListSourceWorker(this)) {
     setObjectName(QStringLiteral("vte_markdown_source_formatter"));
+    connect(p_editor->getHighlighter(), &MarkdownHighlighter::documentParseOptionsChanged, this,
+            [this]() { setEnabled(m_enabled, m_listsEnabled); });
     m_timer.setSingleShot(true);
     m_timer.setTimerType(Qt::PreciseTimer);
     m_timer.setInterval(500);
@@ -320,6 +324,7 @@ private:
   int m_characters = 1;
   int m_undoSteps = 0;
   int m_redoSteps = 0;
+  int m_parseOptions = 0;
   bool m_enabled = false;
   bool m_listsEnabled = false;
   bool m_pending = false;
@@ -337,10 +342,13 @@ private:
 };
 
 void MarkdownSourceFormatter::setEnabled(bool p_tablesEnabled, bool p_listsEnabled) {
-  if (m_enabled == p_tablesEnabled && m_listsEnabled == p_listsEnabled) {
+  const int options = m_editor->getHighlighter()->documentParseOptions();
+  const bool profileChanged = m_parseOptions != options;
+  m_parseOptions = options;
+  if (!profileChanged && m_enabled == p_tablesEnabled && m_listsEnabled == p_listsEnabled) {
     return;
   }
-  if (m_enabled != p_tablesEnabled) {
+  if (profileChanged || m_enabled != p_tablesEnabled) {
     m_enabled = p_tablesEnabled;
     m_pending = false;
     m_baseline.clear();
@@ -349,7 +357,7 @@ void MarkdownSourceFormatter::setEnabled(bool p_tablesEnabled, bool p_listsEnabl
       captureBaseline();
     }
   }
-  if (m_listsEnabled != p_listsEnabled) {
+  if (profileChanged || m_listsEnabled != p_listsEnabled) {
     m_listsEnabled = p_listsEnabled;
     beginListEpoch();
   }
@@ -596,7 +604,7 @@ void MarkdownSourceFormatter::startSeed() {
   m_jobWork = ListSourceWorker::Work::Baseline;
   m_jobEpoch = m_epoch;
   m_jobGeneration = m_generation;
-  m_worker->prepare(m_jobWork, m_jobEpoch, m_jobGeneration, {}, m_seed, {});
+  m_worker->prepare(m_jobWork, m_jobEpoch, m_jobGeneration, {}, m_seed, {}, m_parseOptions);
   m_seed.clear();
   m_workerActive = true;
   m_worker->start();
@@ -2283,6 +2291,8 @@ void VMarkdownEditor::setConfig(const QSharedPointer<MarkdownEditorConfig> &p_co
 
 void VMarkdownEditor::updateFromConfig() {
   Q_ASSERT(m_config);
+
+  getHighlighter()->setDocumentParseOptions(m_config->m_documentParseOptions);
 
   documentLayout()->setConstrainPreviewWidthEnabled(
       m_config->m_constrainInplacePreviewWidthEnabled);

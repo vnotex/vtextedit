@@ -23,6 +23,10 @@ private slots:
   void testKSyntaxThemeRefreshesCachedCode();
   void testKSyntaxThemeFileSnapshot();
 
+  void testMarkdownDocumentDemandAndReuse();
+  void testMarkdownDocumentInvalidation();
+  void testMarkdownDocumentRetentionEviction();
+
   // Source-preserving Markdown concealment through the real editor and Vi input.
   void testConcealMarkdownConfig();
   void testConcealHoverToolTip();
