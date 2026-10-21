@@ -1648,13 +1648,18 @@ void TypstPreviewPane::resizeEvent(QResizeEvent *p_event) {
   m_d->notifyZoomChanged();
 }
 
-void TypstPreviewPane::scrollContentsBy(int, int) {
+void TypstPreviewPane::scrollContentsBy(int p_dx, int p_dy) {
   if (!m_d || m_d->m_settingScrollBars || !m_d->m_displayed) {
     return;
   }
   const QPointF maximum = m_d->maximumOffset(m_d->m_displayed->m_layout);
-  m_d->setOffset(QPointF(fromScrollValue(horizontalScrollBar()->value(), maximum.x()),
-                         fromScrollValue(verticalScrollBar()->value(), maximum.y())));
+  auto offset = m_d->m_displayed->m_layout.m_offset;
+  // Do not quantize an unchanged axis through its integer scrollbar.
+  if (p_dx)
+    offset.setX(fromScrollValue(horizontalScrollBar()->value(), maximum.x()));
+  if (p_dy)
+    offset.setY(fromScrollValue(verticalScrollBar()->value(), maximum.y()));
+  m_d->setOffset(offset);
 }
 
 void TypstPreviewPane::mousePressEvent(QMouseEvent *p_event) {

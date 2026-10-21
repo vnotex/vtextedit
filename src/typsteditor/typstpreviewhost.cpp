@@ -912,6 +912,23 @@ TypstPreviewHost::TypstPreviewHost(TypstSourceEditor *p_editor, const TypstEdito
           [this](int p_position, int p_removed, int p_added) {
             if (!p_removed && !p_added)
               return;
+            // Qt temporarily detaches its cursor registry while clear() inserts an empty
+            // paragraph. Releasing anchors there leaves dangling entries in the saved registry.
+            // The following removal notification is the safe reset point.
+            if (!d->m_doc->isUndoRedoEnabled() && p_position == 0 && p_removed == 0 &&
+                p_added == 1 && d->m_doc->characterCount() == 1)
+              return;
+            // clear()/setPlainText include the terminal paragraph in their removal/insertion.
+            // Viewport cursors from the old document otherwise drift to the end of the new one.
+            const bool cleared =
+                p_position == 0 && p_removed > 0 && p_added == 0 && d->m_doc->characterCount() == 1;
+            const bool loaded =
+                p_position == 0 && p_removed == 0 && p_added == d->m_doc->characterCount();
+            if (cleared || loaded) {
+              d->m_anchor = {};
+              d->m_lastAnchor = {};
+              d->m_restoreAnchor = false;
+            }
             d->m_pending.reset();
             const int removedEnd = p_position + p_removed;
             const int delta = p_added - p_removed;
@@ -948,6 +965,19 @@ TypstPreviewHost::TypstPreviewHost(TypstSourceEditor *p_editor, const TypstEdito
     if (!d->m_draining && !d->m_layout->isBusy() && !d->m_restoreAnchor)
       d->m_lastAnchor = d->captureAnchor();
     d->schedule();
+  });
+  connect(d->m_edit, &QTextEdit::cursorPositionChanged, this, [this]() {
+    // Explicit caret navigation (including session restore) wins over deferred layout work.
+    // Layout/range clamping does not move the caret, and our own restoration is guarded.
+    if (d->m_enabled && d->m_restoreAnchor && !d->m_draining && !d->m_measuring &&
+        !d->m_layout->isBusy()) {
+      d->m_anchor.m_cursor = d->m_edit->textCursor();
+      d->m_anchor.m_cursor.clearSelection();
+      const auto rect = d->m_edit->cursorRect();
+      d->m_anchor.m_y =
+          qBound(0, rect.top(), qMax(0, d->m_edit->viewport()->height() - rect.height()));
+      d->m_lastAnchor = d->m_anchor;
+    }
   });
   connect(d->m_edit->horizontalScrollBar(), &QScrollBar::valueChanged, this, [this]() {
     if (d->m_measuring)

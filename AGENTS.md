@@ -462,6 +462,13 @@ Coverage: `documentResetClearsPublishedState`, `documentResetRetiresPendingPdf`,
 `documentResetDrainsTimedOutRequest`, `resourceRequestsAcrossDocumentReset` and
 `documentResetInvalidationCanDestroyEditor` in `tests/test_typsteditor/`.
 
+Viewport anchors do not survive whole-document source loads. `TypstPreviewHost` discards them
+on safe clear/load notifications, including first load into an empty editor, but must ignore
+Qt's synthetic empty-paragraph insertion while its cursor registry is detached. Navigation
+supersedes a pending layout anchor with the actual caret and a visible vertical position;
+ordinary caret movement must not start a new deferred scroll. `openingPreservesSourcePosition`
+covers first load, immediate line restoration, rebinding and same-document reload.
+
 ## Typst PDF Camera State
 
 `VTypstEditor::PdfZoomMode` (`Custom`, `Width`, `Page`) is shared with the internal PDF pane.

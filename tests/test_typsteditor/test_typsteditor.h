@@ -75,6 +75,8 @@ private slots:
   void hiddenSourceAndImportChangesReachPdf();
   void diagnosticsPreserveLastGoodOutput();
   void selectionDefersPublicationAcrossScrollAndModes();
+  void openingPreservesSourcePosition_data();
+  void openingPreservesSourcePosition();
   void sideBySideScrollSync();
   void scrollSyncWithNonScrollableSource();
   void cursorLocationFlashesThreeTimes();

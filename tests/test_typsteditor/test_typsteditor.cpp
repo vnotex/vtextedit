@@ -2667,6 +2667,61 @@ void TestTypstEditor::selectionDefersPublicationAcrossScrollAndModes() {
   QCOMPARE(fixture.selectPage().trimmed(), QStringLiteral("Last page."));
 }
 
+void TestTypstEditor::openingPreservesSourcePosition_data() {
+  QTest::addColumn<int>("line");
+  QTest::addColumn<bool>("reset");
+  QTest::newRow("fresh-start") << 0 << false;
+  QTest::newRow("restored-line") << 80 << false;
+  QTest::newRow("rebound-start") << 0 << true;
+  QTest::newRow("rebound-line") << 80 << true;
+}
+
+void TestTypstEditor::openingPreservesSourcePosition() {
+  QFETCH(int, line);
+  QFETCH(bool, reset);
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  QString source = QStringLiteral("#set page(width: 320pt, height: 440pt, margin: 20pt)\n");
+  for (int index = 0; index < 120; ++index) {
+    source += QStringLiteral("Line %1: remembered source position. $x^2$\n\n").arg(index);
+  }
+  EditorFixture fixture(root.path(), reset ? shortSource(QStringLiteral("Outgoing")) : source,
+                        VTypstEditor::Mode::Edit, {}, true, true);
+  if (reset) {
+    QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+    fixture.editor.resetForNewDocument();
+    fixture.editor.getTextEditor()->setText(source);
+    fixture.editor.finishDocumentReset();
+  }
+  auto *edit = fixture.edit();
+  auto *text = fixture.editor.getTextEditor();
+  if (line > 0)
+    text->scrollToLine(line, true);
+  QCOMPARE(edit->textCursor().blockNumber(), line);
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  QVERIFY(waitUntil([&]() { return fixture.editor.pdfPageCount() > 1; }));
+  // Compilation, card publication, and cursor-to-PDF mapping are all asynchronous.
+  QTest::qWait(500);
+  QCOMPARE(edit->textCursor().blockNumber(), line);
+  QVERIFY2(edit->viewport()->rect().intersects(edit->cursorRect()),
+           qPrintable(QStringLiteral("line=%1 cursorY=%2 scroll=%3/%4")
+                          .arg(line)
+                          .arg(edit->cursorRect().y())
+                          .arg(edit->verticalScrollBar()->value())
+                          .arg(edit->verticalScrollBar()->maximum())));
+  if (line == 0)
+    QCOMPARE(edit->verticalScrollBar()->value(), 0);
+
+  // Same-document reload, then immediate explicit navigation, must supersede old anchors.
+  text->setText(source);
+  text->scrollToLine(40, true);
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  QTest::qWait(500);
+  QCOMPARE(edit->textCursor().blockNumber(), 40);
+  QVERIFY(edit->viewport()->rect().intersects(edit->cursorRect()));
+  QCOMPARE(fixture.editor.document()->toPlainText(), source);
+}
+
 void TestTypstEditor::sideBySideScrollSync() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
