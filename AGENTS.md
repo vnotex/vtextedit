@@ -510,7 +510,8 @@ the numeric scale. Regression coverage: `pdfZoom*` and `pdfFitBeforePublication*
 Edit/live preview and Read share Copy, Select page text, Clear selection, Fit width and
 Fit page as native defaults. Resource actions augment, rather than replace, these actions.
 Selection-dependent actions keep the same enablement in both modes.
-Clearing the selection publishes pending preview updates; the status hint names that action.
+Clearing the selection publishes pending preview updates. The PDF canvas has no top-left
+informational overlay; preview errors and compiler diagnostics remain visible.
 Keyboard shortcuts and host PDF APIs remain available independently of the context menu.
 
 ## Typst Resource Contexts

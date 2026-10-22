@@ -440,9 +440,9 @@ Both PDF modes use Qt Pdf text extraction for **page-local** drag selection, Cop
 Select page text, search, zoom/fit and links. A drag is clamped to its owning page;
 Select page text is not whole-document Select All. Math copies as PDF-extracted plain
 text, not Typst or LaTeX source; reading order, ligatures and equations follow the PDF
-text model. Active selection defers new output with an Update available indication until
-the selection is cleared, Update is chosen, or focus returns to source editing. Switching
-between read and side-by-side keeps the same pane and selection.
+text model. Active selection defers new output until the selection is cleared, pending
+output is explicitly published, or focus returns to source editing. Switching between
+read and side-by-side keeps the same pane and selection.
 
 Visible PDF pages request physical screen resolution at the current zoom and display DPI.
 Off-screen prefetch uses only spare capacity after visible pages are sharp; it does not

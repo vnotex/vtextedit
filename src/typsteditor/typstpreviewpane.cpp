@@ -145,7 +145,6 @@ struct PdfSlot {
   bool m_obsolete = false;
   bool m_failed = false;
   bool m_resourceFailure = false;
-  bool m_resolutionLimited = false;
 };
 
 struct OwnedSelection {
@@ -870,11 +869,6 @@ public:
         }
       }
     }
-    for (auto slot : {m_displayed.get(), m_pending.get()}) {
-      if (slot) {
-        updateResolutionLimited(*slot);
-      }
-    }
     notifyUpdate();
   }
 
@@ -951,23 +945,6 @@ public:
     // the actual unreserved capacity proportionally to the ideal sizes.
     return qMin(p_key.pixels(), 1 + static_cast<qint64>((spare - missingPages) *
                                                         (qreal(p_key.pixels()) / missingPixels)));
-  }
-
-  void updateResolutionLimited(PdfSlot &p_slot) {
-    p_slot.m_resolutionLimited = false;
-    for (const auto &need : p_slot.m_needs) {
-      if (!need.m_firstPaint) {
-        continue;
-      }
-      const int index = bestImageIndex(p_slot, need.m_key.m_page);
-      const QSize size = index < 0 ? need.m_key.m_size : p_slot.m_images.at(index).m_key.m_size;
-      const QSizeF desired =
-          p_slot.m_layout.m_pages.at(need.m_key.m_page).size() * p_slot.m_layout.m_dpr;
-      if (size.width() < desired.width() || size.height() < desired.height()) {
-        p_slot.m_resolutionLimited = true;
-        return;
-      }
-    }
   }
 
   void submit(PdfSlot &p_slot, RenderPass p_pass) {
@@ -1308,35 +1285,13 @@ public:
         }
       }
     }
-    QString status;
     if (!m_error.isEmpty()) {
-      status = m_error;
-    } else if (m_displayed && !current(m_displayed->m_snapshot)) {
-      status = TypstPreviewPane::tr("Preview is out of date. Source navigation is disabled.");
-    } else if (!m_displayed) {
-      status = pendingUpdate() ? TypstPreviewPane::tr("Preparing PDF preview…")
-                               : TypstPreviewPane::tr("No PDF preview available.");
-    }
-    if (pendingUpdate() && m_displayed) {
-      if (!status.isEmpty()) {
-        status += QLatin1Char('\n');
-      }
-      status += TypstPreviewPane::tr("Update available — clear the selection.");
-    }
-    if (m_displayed && m_displayed->m_resolutionLimited) {
-      if (!status.isEmpty()) {
-        status += QLatin1Char('\n');
-      }
-      status +=
-          TypstPreviewPane::tr("Raster resolution is limited by the preview resource settings.");
-    }
-    if (!status.isEmpty()) {
       const QRect bounds = q->viewport()->rect().adjusted(8, 8, -8, -8);
       const QRect text =
-          painter.boundingRect(bounds, Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, status);
+          painter.boundingRect(bounds, Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, m_error);
       painter.fillRect(text.adjusted(-4, -3, 4, 3), q->palette().brush(QPalette::ToolTipBase));
       painter.setPen(q->palette().color(QPalette::ToolTipText));
-      painter.drawText(bounds, Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, status);
+      painter.drawText(bounds, Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, m_error);
     }
   }
 
