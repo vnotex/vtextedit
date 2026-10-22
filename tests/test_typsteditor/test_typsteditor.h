@@ -6,6 +6,8 @@
 
 #include <functional>
 
+#include <vtextedit/typstruntime.h>
+
 namespace tests {
 // Runtime signal connections keep GUI regressions independent of private DLL symbols.
 class TypstRasterObserver : public QObject {
@@ -44,7 +46,20 @@ public slots:
 class TestTypstEditor : public QObject {
   Q_OBJECT
 private slots:
+  void nativeReplySurvivesSessionRetirement();
+  void nativeCallbackFailureRetiresRequest();
+  void unavailableRuntimePreservesSource_data();
+  void unavailableRuntimePreservesSource();
+  void runtimeSessionsRemainIndependent();
+  void scannerFailsClosedWithoutEvaluation();
+  void scannerDeadlineAndBusyFailClosed();
+  void runtimeDrainsRunningNativeCall();
+  void runtimeShutdownCompletesAdmittedExport();
+  void deadlineRetryKeepsDispatchIdentityUntilCompletion();
+  void runtimeDropsRepliesForDeletedReceiver();
+  void compilerCompletionCanDestroyReceiver();
   void compilerGeometryAndScale();
+  void compilerBitmapOutlivesRuntime();
   void previewThemeDefaultsRespectAuthoredStyles();
   void previewThemeSwitchAndOptOutPreserveSource();
   void exportsIgnorePreviewTheme();
@@ -73,6 +88,7 @@ private slots:
   void independentEditPreviews();
   void combinedPreviewsAdvanceWhilePdfSelectionIsDeferred();
   void hiddenSourceAndImportChangesReachPdf();
+  void diskDependenciesRecoverAfterReplacementAndRecreation();
   void diagnosticsPreserveLastGoodOutput();
   void selectionDefersPublicationAcrossScrollAndModes();
   void openingPreservesSourcePosition_data();
@@ -120,6 +136,9 @@ private slots:
   void resourceMenusSurviveDeletion();
   void resourceImageCompletionSurvivesDeletion_data();
   void resourceImageCompletionSurvivesDeletion();
+
+private:
+  vte::TypstRuntime m_runtime;
 };
 } // namespace tests
 

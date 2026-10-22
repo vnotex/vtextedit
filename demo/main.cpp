@@ -38,6 +38,7 @@
 #include <QToolButton>
 #include <cstdio>
 #include <vtextedit/typsteditorconfig.h>
+#include <vtextedit/typstruntime.h>
 #include <vtextedit/vtextedit.h>
 #include <vtextedit/vtypsteditor.h>
 #endif
@@ -159,9 +160,10 @@ static std::function<void()> setupRichTextEditor(QMainWindow *p_win) {
 }
 
 #ifdef VTEXTEDIT_ENABLE_TYPST
-static VTypstEditor *setupTypstEditor(QMainWindow *p_window, const QStringList &p_arguments) {
+static VTypstEditor *setupTypstEditor(QMainWindow *p_window, const QStringList &p_arguments,
+                                      TypstRuntime &p_runtime) {
   auto config = QSharedPointer<TypstEditorConfig>::create();
-  config->m_helperExecutable = qEnvironmentVariable("VTEXTEDIT_TYPST_HELPER");
+  config->m_runtime = &p_runtime;
   config->m_projectRoot = QDir::currentPath();
   QString contents;
   const int fileIndex = p_arguments.indexOf(QStringLiteral("--typst-file"));
@@ -314,7 +316,7 @@ static VTypstEditor *setupTypstEditor(QMainWindow *p_window, const QStringList &
   return editor;
 }
 
-// Installed-layout smoke drives the actual widget, process and native PDF surface.
+// Installed-layout smoke drives the actual widget, shared backend and native PDF surface.
 // It is opt-in; ordinary demo use never writes files or edits its initial source.
 static void runTypstSmoke(VTypstEditor *p_editor, const QStringList &p_arguments) {
   struct SmokeState {
@@ -483,6 +485,9 @@ int main(int p_argc, char *p_argv[]) {
 
   qInstallMessageHandler(&Logger::log);
 
+#ifdef VTEXTEDIT_ENABLE_TYPST
+  TypstRuntime typstRuntime;
+#endif
   QMainWindow win;
 
   setupSpellChecker();
@@ -508,7 +513,7 @@ int main(int p_argc, char *p_argv[]) {
   const bool useTypst = app.arguments().contains(QStringLiteral("--typst"));
 #endif
   if (useTypst) {
-    auto *typstEditor = setupTypstEditor(&win, app.arguments());
+    auto *typstEditor = setupTypstEditor(&win, app.arguments(), typstRuntime);
     if (!typstEditor) {
       return 2;
     }

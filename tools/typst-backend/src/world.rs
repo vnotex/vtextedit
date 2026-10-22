@@ -30,6 +30,7 @@ pub struct Config {
     pub allow_downloads: bool,
     pub max_pdf_bytes: usize,
     pub max_raster_pixels: usize,
+    // Per-session input/output/cache policies, not a process-wide memory limit.
     pub max_cache_bytes: usize,
     pub preview_background: Option<[u8; 4]>,
     pub preview_foreground: Option<[u8; 4]>,
@@ -74,7 +75,7 @@ impl Config {
             || self.max_raster_pixels == 0 || self.max_raster_pixels > crate::MAX_BINARY / 4
             || self.max_cache_bytes == 0 || self.max_cache_bytes as u64 > crate::MAX_ID
         {
-            return Err("resource limits must be positive and fit the protocol ceilings".into());
+            return Err("resource limits must be positive and fit the ABI ceilings".into());
         }
         Ok(self)
     }
@@ -124,6 +125,8 @@ fn is_lf_source(source: &Source) -> bool {
 struct Fonts { book: LazyHash<FontBook>, fonts: Vec<Font> }
 impl Fonts {
     fn bundled() -> Arc<Self> {
+        // Immutable embedded fonts are shared across sessions. OnceLock retries
+        // initialization after an unwind; it does not poison later sessions.
         static BUNDLED: OnceLock<Arc<Fonts>> = OnceLock::new();
         BUNDLED.get_or_init(|| {
             let mut book = FontBook::new();

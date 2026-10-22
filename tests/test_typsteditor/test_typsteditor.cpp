@@ -22,10 +22,10 @@
 #include <QPdfSelection>
 #include <QPixmap>
 #include <QPointer>
-#include <QProcess>
+#include <QScopeGuard>
 #include <QScrollBar>
+#include <QSemaphore>
 #include <QSet>
-#include <QSignalBlocker>
 #include <QSignalSpy>
 #include <QSplitter>
 #include <QSvgRenderer>
@@ -35,21 +35,24 @@
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextLayout>
+#include <QThread>
 #include <QTimer>
 #include <QWheelEvent>
-#include <QtEndian>
 
 #include <algorithm>
 #include <cmath>
 #include <functional>
 #include <limits>
 #include <memory>
+#include <thread>
 
 #include <vtextedit/typstcompiler.h>
 #include <vtextedit/typsteditorconfig.h>
+#include <vtextedit/typstruntime.h>
 #include <vtextedit/vtextedit.h>
 #include <vtextedit/vtexteditor.h>
 #include <vtextedit/vtypsteditor.h>
+#include <vtextedit_typst.h>
 
 using namespace tests;
 using namespace vte;
@@ -69,19 +72,6 @@ bool waitUntil(const std::function<bool()> &p_condition, int p_timeout = operati
   return true;
 }
 
-QString helperPath() {
-#ifdef VTEXTEDIT_TYPST_HELPER
-  return QString::fromUtf8(VTEXTEDIT_TYPST_HELPER);
-#else
-#ifdef Q_OS_WIN
-  return QDir(QCoreApplication::applicationDirPath())
-      .filePath(QStringLiteral("vtextedit-typst.exe"));
-#else
-  return QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("vtextedit-typst"));
-#endif
-#endif
-}
-
 QJsonObject wireConfig(const QString &p_root) {
   return {{QStringLiteral("projectRoot"), p_root},
           {QStringLiteral("mainFile"), QStringLiteral("main.typ")},
@@ -94,38 +84,34 @@ QJsonObject wireConfig(const QString &p_root) {
 }
 
 struct Reply {
+  std::shared_ptr<VteTypstReply> owner;
   QJsonObject header;
   QByteArray payload;
 };
 
-// Every read/write shares one operation deadline. In particular, parsed is an
-// intermediate frame, not the end of a compile, and stderr cannot fill a pipe.
-class Helper {
+// Exercise the production ABI directly, including streamed parsed replies and
+// owned binary payloads. No transport framing or substitute compiler is involved.
+class NativeSession {
 public:
-  explicit Helper(const QString &p_root) : config(wireConfig(p_root)) {}
-  ~Helper() {
-    if (process.state() != QProcess::NotRunning) {
-      process.closeWriteChannel();
-      if (!process.waitForFinished(1000)) {
-        process.kill();
-        process.waitForFinished(5000);
-      }
-    }
-  }
+  explicit NativeSession(const QString &p_root) : config(wireConfig(p_root)) {}
+  ~NativeSession() { close(); }
+  NativeSession(const NativeSession &) = delete;
+  NativeSession &operator=(const NativeSession &) = delete;
 
   bool start() {
-    if (!QFileInfo(helperPath()).isFile())
-      return fail(QStringLiteral("Missing built helper: ") + helperPath());
-    process.setProgram(helperPath());
-    process.setProcessChannelMode(QProcess::SeparateChannels);
-    process.start();
-    if (!process.waitForStarted(10000))
-      return fail(process.errorString());
+    if (vte_typst_abi_version() != 1 || vte_typst_session_create_v1(&session) != VTE_TYPST_OK)
+      return fail(QStringLiteral("Could not create native Typst session"));
     if (!request({{QStringLiteral("op"), QStringLiteral("initialize")},
                   {QStringLiteral("config"), config}}))
       return false;
     return reply.header.value(QStringLiteral("op")) == QStringLiteral("ready") ||
            fail(QString::fromUtf8(QJsonDocument(reply.header).toJson()));
+  }
+
+  bool close() {
+    auto *retired = session;
+    session = nullptr;
+    return !retired || vte_typst_session_destroy_v1(retired) == VTE_TYPST_OK;
   }
 
   bool compile(const QString &p_source, const QJsonArray &p_retained = {},
@@ -145,48 +131,19 @@ public:
     error.clear();
     parsed = {};
     reply = {};
+    terminalReplies = 0;
     p_header.insert(QStringLiteral("v"), 1);
     p_header.insert(QStringLiteral("epoch"), epoch);
     p_header.insert(QStringLiteral("generation"), generation);
     p_header.insert(QStringLiteral("request"), ++requestId);
+    requestHeader = p_header;
     const auto bytes = QJsonDocument(p_header).toJson(QJsonDocument::Compact);
-    char prefix[8];
-    qToBigEndian<quint32>(quint32(bytes.size()), reinterpret_cast<uchar *>(prefix));
-    qToBigEndian<quint32>(0, reinterpret_cast<uchar *>(prefix + 4));
-    QElapsedTimer timer;
-    timer.start();
-    if (process.write(prefix, 8) != 8 || process.write(bytes) != bytes.size()) {
-      return fail(QStringLiteral("Could not queue helper request"));
-    }
-    while (process.bytesToWrite()) {
-      drainStderr();
-      if (timer.elapsed() >= operationTimeout ||
-          !process.waitForBytesWritten(qMax(1, operationTimeout - int(timer.elapsed())))) {
-        return fail(QStringLiteral("Timed out writing helper request"));
-      }
-    }
-    bool sawParsed = false;
-    for (;;) {
-      if (!readFrame(reply, timer))
-        return false;
-      for (const auto *key : {"v", "epoch", "generation", "request"}) {
-        if (reply.header.value(QLatin1String(key)) != p_header.value(QLatin1String(key))) {
-          return fail(QStringLiteral("Helper reply identity mismatch: ") + QLatin1String(key));
-        }
-      }
-      const auto op = reply.header.value(QStringLiteral("op")).toString();
-      if (op != QStringLiteral("parsed")) {
-        if (p_header.value(QStringLiteral("op")) == QStringLiteral("compile") && !sawParsed) {
-          return fail(QStringLiteral("Compile terminated without its parsed frame"));
-        }
-        return true;
-      }
-      if (sawParsed || p_header.value(QStringLiteral("op")) != QStringLiteral("compile") ||
-          !reply.payload.isEmpty())
-        return fail(QStringLiteral("Unexpected parsed frame"));
-      sawParsed = true;
-      parsed = reply.header;
-    }
+    const auto status =
+        vte_typst_session_execute_v1(session, reinterpret_cast<const uint8_t *>(bytes.constData()),
+                                     size_t(bytes.size()), receive, this);
+    if (status != VTE_TYPST_OK)
+      return fail(error + QStringLiteral(" Native ABI status: %1").arg(status));
+    return terminalReplies == 1 || fail(QStringLiteral("Missing terminal native reply"));
   }
 
   bool pdf(const QJsonValue &p_snapshot) {
@@ -195,72 +152,143 @@ public:
   }
 
   QString details() const {
-    return error + QLatin1Char('\n') + QString::fromUtf8(QJsonDocument(reply.header).toJson()) +
-           QLatin1Char('\n') + QString::fromUtf8(stderrBytes.right(4096));
+    return error + QLatin1Char('\n') + QString::fromUtf8(QJsonDocument(reply.header).toJson());
   }
 
   QJsonObject config;
   Reply reply;
   QJsonObject parsed;
+  std::function<void(const QJsonObject &)> onReply;
 
 private:
+  static int32_t receive(void *p_context, VteTypstReply *p_reply) noexcept {
+    try {
+      const std::shared_ptr<VteTypstReply> owned(
+          p_reply, [](VteTypstReply *p_value) { vte_typst_reply_release(p_value); });
+      auto &self = *static_cast<NativeSession *>(p_context);
+      size_t headerSize = 0, payloadSize = 0;
+      const auto *header = vte_typst_reply_header(owned.get(), &headerSize);
+      const auto *payload = vte_typst_reply_payload(owned.get(), &payloadSize);
+      if (!header || !headerSize || headerSize > 16 * 1024 * 1024 ||
+          payloadSize > 128 * 1024 * 1024 || (!payload && payloadSize)) {
+        self.fail(QStringLiteral("Invalid native reply spans"));
+        return 1;
+      }
+      QJsonParseError parseError;
+      const auto json = QJsonDocument::fromJson(
+          QByteArray::fromRawData(reinterpret_cast<const char *>(header), qsizetype(headerSize)),
+          &parseError);
+      if (parseError.error != QJsonParseError::NoError || !json.isObject()) {
+        self.fail(QStringLiteral("Invalid native reply metadata"));
+        return 1;
+      }
+      const auto object = json.object();
+      for (const auto *key : {"v", "epoch", "generation", "request"}) {
+        if (object.value(QLatin1String(key)) != self.requestHeader.value(QLatin1String(key))) {
+          self.fail(QStringLiteral("Native reply identity mismatch: ") + QLatin1String(key));
+          return 1;
+        }
+      }
+      const bool compile =
+          self.requestHeader.value(QStringLiteral("op")) == QStringLiteral("compile");
+      if (object.value(QStringLiteral("op")) == QStringLiteral("parsed")) {
+        if (!compile || !self.parsed.isEmpty() || self.terminalReplies || payloadSize) {
+          self.fail(QStringLiteral("Unexpected parsed event"));
+          return 1;
+        }
+        self.parsed = object;
+        if (self.onReply)
+          self.onReply(object);
+      } else {
+        if (++self.terminalReplies != 1 || (compile && self.parsed.isEmpty())) {
+          self.fail(QStringLiteral("Invalid native event order"));
+          return 1;
+        }
+        self.reply = {owned, object,
+                      QByteArray::fromRawData(reinterpret_cast<const char *>(payload),
+                                              qsizetype(payloadSize))};
+      }
+      return 0;
+    } catch (...) {
+      // shared_ptr construction also invokes its deleter if allocation fails.
+      return 1;
+    }
+  }
   bool fail(const QString &p_error) {
     error = p_error;
-    drainStderr();
     return false;
   }
-  void drainStderr() { stderrBytes = (stderrBytes + process.readAllStandardError()).right(16384); }
-  bool readBytes(QByteArray &p_bytes, int p_size, QElapsedTimer &p_timer) {
-    p_bytes.clear();
-    p_bytes.reserve(p_size);
-    while (p_bytes.size() < p_size) {
-      drainStderr();
-      const auto chunk = process.read(p_size - p_bytes.size());
-      p_bytes.append(chunk);
-      if (p_bytes.size() == p_size)
-        return true;
-      if (p_timer.elapsed() >= operationTimeout)
-        return fail(QStringLiteral("Timed out reading helper frame"));
-      if (process.state() == QProcess::NotRunning)
-        return fail(QStringLiteral("Helper exited during a frame"));
-      process.waitForReadyRead(qMax(1, qMin(100, operationTimeout - int(p_timer.elapsed()))));
-    }
-    return true;
-  }
-  bool readFrame(Reply &p_reply, QElapsedTimer &p_timer) {
-    QByteArray prefix;
-    if (!readBytes(prefix, 8, p_timer))
-      return false;
-    const auto headerSize =
-        qFromBigEndian<quint32>(reinterpret_cast<const uchar *>(prefix.constData()));
-    const auto payloadSize =
-        qFromBigEndian<quint32>(reinterpret_cast<const uchar *>(prefix.constData() + 4));
-    if (!headerSize || headerSize > 16 * 1024 * 1024 || payloadSize > 128 * 1024 * 1024) {
-      return fail(QStringLiteral("Helper returned oversized frame lengths"));
-    }
-    QByteArray header;
-    if (!readBytes(header, int(headerSize), p_timer) ||
-        !readBytes(p_reply.payload, int(payloadSize), p_timer))
-      return false;
-    QJsonParseError parseError;
-    const auto json = QJsonDocument::fromJson(header, &parseError);
-    if (parseError.error != QJsonParseError::NoError || !json.isObject())
-      return fail(QStringLiteral("Invalid JSON helper frame"));
-    p_reply.header = json.object();
-    return true;
-  }
-  QProcess process;
+  VteTypstSession *session = nullptr;
   QString error;
-  QByteArray stderrBytes;
-  // Deliberately exercise exact wire IDs beyond a 32-bit integer.
+  QJsonObject requestHeader;
+  int terminalReplies = 0;
+  // Deliberately exercise exact request identities beyond a 32-bit integer.
   const double epoch = 4294967301.0;
   double generation = 1;
   double requestId = 4294967311.0;
 };
 
+// Hold actual runtime workers at a queue boundary without replacing native work.
+// Shared state survives early test returns until each queued lambda has retired.
+class RuntimeLaneGate {
+public:
+  explicit RuntimeLaneGate(TypstRuntime &p_runtime, bool p_scanner = false)
+      : state(std::make_shared<State>()), expected(p_scanner ? 1 : 2) {
+    const QStringList names = p_scanner ? QStringList{QStringLiteral("typst-scanner")}
+                                        : QStringList{QStringLiteral("typst-compile-0"),
+                                                      QStringLiteral("typst-compile-1")};
+    for (const auto &name : names) {
+      auto *thread = p_runtime.findChild<QThread *>(name);
+      auto *worker = thread ? thread->property("worker").value<QObject *>() : nullptr;
+      if (worker && QMetaObject::invokeMethod(
+                        worker,
+                        [held = state] {
+                          held->entered.release();
+                          held->resume.acquire();
+                        },
+                        Qt::QueuedConnection))
+        ++scheduled;
+    }
+  }
+  ~RuntimeLaneGate() { release(); }
+  bool entered() { return scheduled == expected && state->entered.tryAcquire(expected, 10000); }
+  void release() {
+    if (scheduled) {
+      state->resume.release(scheduled);
+      scheduled = 0;
+    }
+  }
+
+private:
+  struct State {
+    QSemaphore entered;
+    QSemaphore resume;
+  };
+  const std::shared_ptr<State> state;
+  const int expected;
+  int scheduled = 0;
+};
+
+class NativeDeliveryObserver : public QObject {
+public:
+  std::function<void()> beforeDelivery;
+  std::function<bool()> shouldIntercept;
+
+protected:
+  bool eventFilter(QObject *, QEvent *p_event) Q_DECL_OVERRIDE {
+    if (p_event->type() == QEvent::MetaCall && beforeDelivery &&
+        (!shouldIntercept || shouldIntercept())) {
+      const auto callback = std::move(beforeDelivery);
+      callback();
+    }
+    return false;
+  }
+};
+
 class Pdf {
 public:
-  explicit Pdf(const QByteArray &p_bytes) : bytes(p_bytes), buffer(&bytes), document(nullptr) {}
+  explicit Pdf(const QByteArray &p_bytes)
+      : bytes(p_bytes.constData(), p_bytes.size()), buffer(&bytes), document(nullptr) {}
   bool load() {
     if (!buffer.open(QIODevice::ReadOnly))
       return false;
@@ -279,9 +307,9 @@ QString shortSource(const QString &p_text) {
   return QStringLiteral("#set page(width: 240pt, height: 160pt, margin: 16pt)\n") + p_text;
 }
 
-QSharedPointer<TypstEditorConfig> editorConfig(const QString &p_root) {
+QSharedPointer<TypstEditorConfig> editorConfig(const QString &p_root, TypstRuntime *p_runtime) {
   auto config = QSharedPointer<TypstEditorConfig>::create();
-  config->m_helperExecutable = helperPath();
+  config->m_runtime = p_runtime;
   config->m_projectRoot = p_root;
   config->m_debounceMs = 10;
   config->m_compileTimeoutMs = operationTimeout;
@@ -293,11 +321,11 @@ QSharedPointer<TypstEditorConfig> editorConfig(const QString &p_root) {
 
 class EditorFixture {
 public:
-  explicit EditorFixture(const QString &p_root, const QString &p_source,
+  explicit EditorFixture(TypstRuntime &p_runtime, const QString &p_root, const QString &p_source,
                          VTypstEditor::Mode p_mode = VTypstEditor::Mode::Read,
                          QSharedPointer<TypstEditorConfig> p_config = {}, bool p_inplace = true,
                          bool p_live = false)
-      : editor(p_config ? p_config : editorConfig(p_root),
+      : editor(p_config ? p_config : editorConfig(p_root, &p_runtime),
                QSharedPointer<TextEditorParameters>::create()) {
     editor.getTextEditor()->setSpellCheckEnabled(false);
     editor.setInplacePreviewEnabled(p_inplace);
@@ -340,6 +368,14 @@ QString sharpPdfSource() {
                         "#pagebreak()\n"
                         "Offscreen neighbor: prefetch must not soften the visible page.\n"
                         "$ integral_0^1 x^2 dif x = 1/3 $");
+}
+
+QObject *compilerBridge(QObject *p_editor) {
+  for (auto *child : p_editor->findChildren<QObject *>()) {
+    if (child->metaObject()->indexOfSignal("generationChanged(quint64,quint64)") >= 0)
+      return child;
+  }
+  return nullptr;
 }
 
 std::unique_ptr<QSignalSpy> observePdfExports(QObject *p_editor) {
@@ -726,14 +762,454 @@ QString splitSource() {
 }
 } // namespace
 
+void TestTypstEditor::nativeReplySurvivesSessionRetirement() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  Reply retained;
+  {
+    NativeSession native(root.path());
+    QVERIFY2(native.start(), qPrintable(native.details()));
+    QVERIFY2(native.compile(shortSource(QStringLiteral("Retained native bytes."))),
+             qPrintable(native.details()));
+    const auto snapshot = native.reply.header.value(QStringLiteral("snapshot"));
+    QVERIFY2(native.pdf(snapshot), qPrintable(native.details()));
+    QCOMPARE(native.reply.header.value(QStringLiteral("op")).toString(), QStringLiteral("pdf"));
+    retained = native.reply;
+    QVERIFY(native.close());
+  }
+  QVERIFY(retained.owner);
+  QVERIFY(retained.payload.startsWith("%PDF-"));
+  Pdf pdf(retained.payload);
+  QVERIFY(pdf.load());
+  QCOMPARE(pdf.text(), QStringLiteral("Retained native bytes."));
+  // The ABI span aliases Rust-owned Bytes. Release on another thread after the
+  // session is gone; the consumer PDF has already taken its independent copy.
+  auto owner = std::move(retained.owner);
+  retained = {};
+  std::thread release([owned = std::move(owner)]() mutable { owned.reset(); });
+  release.join();
+  QCOMPARE(pdf.text(), QStringLiteral("Retained native bytes."));
+}
+
+void TestTypstEditor::nativeCallbackFailureRetiresRequest() {
+  VteTypstSession *session = nullptr;
+  QCOMPARE(vte_typst_session_create_v1(&session), VTE_TYPST_OK);
+  const auto destroy = qScopeGuard([&] { vte_typst_session_destroy_v1(session); });
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  QJsonObject request{{QStringLiteral("v"), 1},
+                      {QStringLiteral("epoch"), 1},
+                      {QStringLiteral("generation"), 1},
+                      {QStringLiteral("request"), 1},
+                      {QStringLiteral("op"), QStringLiteral("initialize")},
+                      {QStringLiteral("config"), wireConfig(root.path())}};
+  auto bytes = QJsonDocument(request).toJson(QJsonDocument::Compact);
+  int callbacks = 0;
+  const auto reject = [](void *p_context, VteTypstReply *p_reply) noexcept -> int32_t {
+    ++*static_cast<int *>(p_context);
+    vte_typst_reply_release(p_reply);
+    return 1;
+  };
+  QCOMPARE(vte_typst_session_execute_v1(session,
+                                        reinterpret_cast<const uint8_t *>(bytes.constData()),
+                                        size_t(bytes.size()), reject, &callbacks),
+           VTE_TYPST_CALLBACK_FAILED);
+  QCOMPARE(callbacks, 1);
+  request[QStringLiteral("request")] = 2;
+  request[QStringLiteral("op")] = QStringLiteral("compile");
+  request[QStringLiteral("activeFile")] = QStringLiteral("main.typ");
+  request[QStringLiteral("overlays")] = QJsonArray{
+      QJsonObject{{QStringLiteral("file"), QStringLiteral("main.typ")},
+                  {QStringLiteral("text"), shortSource(QStringLiteral("Not delivered"))}}};
+  bytes = QJsonDocument(request).toJson(QJsonDocument::Compact);
+  callbacks = 0;
+  QCOMPARE(vte_typst_session_execute_v1(session,
+                                        reinterpret_cast<const uint8_t *>(bytes.constData()),
+                                        size_t(bytes.size()), reject, &callbacks),
+           VTE_TYPST_CALLBACK_FAILED);
+  QCOMPARE(callbacks, 1); // Rejecting parsed must stop further delivery.
+  NativeSession recovered(root.path());
+  QVERIFY2(recovered.start(), qPrintable(recovered.details()));
+  QVERIFY2(recovered.compile(shortSource(QStringLiteral("Fresh session"))),
+           qPrintable(recovered.details()));
+  QVERIFY(recovered.reply.header.contains(QStringLiteral("snapshot")));
+}
+
+void TestTypstEditor::unavailableRuntimePreservesSource_data() {
+  QTest::addColumn<bool>("stopped");
+  QTest::newRow("missing-runtime") << false;
+  QTest::newRow("stopped-runtime") << true;
+}
+
+void TestTypstEditor::unavailableRuntimePreservesSource() {
+  QFETCH(bool, stopped);
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  TypstRuntime runtime;
+  QVERIFY(runtime.isAvailable());
+  if (stopped) {
+    runtime.shutdown();
+    runtime.shutdown(); // Drain is idempotent; it never restarts the runtime.
+    QVERIFY(!runtime.isAvailable());
+  }
+  auto config = editorConfig(root.path(), stopped ? &runtime : nullptr);
+  const auto source = shortSource(QStringLiteral("Source survives without compilation."));
+  EditorFixture fixture(runtime, root.path(), source, VTypstEditor::Mode::Edit, config);
+  QVERIFY(waitUntil(
+      [&] { return fixture.editor.compileStatus() == VTypstEditor::CompileStatus::Unavailable; }));
+  QCOMPARE(fixture.editor.document()->toPlainText(), source);
+  QVERIFY(!fixture.edit()->isReadOnly());
+  QTextCursor cursor(fixture.editor.document());
+  cursor.movePosition(QTextCursor::End);
+  cursor.insertText(QStringLiteral("\nStill editable."));
+  QVERIFY(fixture.editor.document()->isUndoAvailable());
+  fixture.editor.document()->undo();
+  QCOMPARE(fixture.editor.document()->toPlainText(), source);
+  fixture.editor.retryCompilation();
+  QCOMPARE(fixture.editor.pdfPageCount(), 0);
+  TypstCompiler compiler(*config);
+  QSignalSpy completed(&compiler, &TypstCompiler::finished);
+  QVERIFY(compiler.compileToSvg(source));
+  QCOMPARE(completed.count(), 0);
+  QVERIFY(waitUntil([&] { return completed.count() == 1; }));
+  const auto failure = qvariant_cast<TypstCompiler::Result>(completed.first().first());
+  QVERIFY(!failure.isSuccess());
+  QVERIFY(!failure.m_error.isEmpty());
+  QVERIFY(failure.m_svgPages.isEmpty());
+  QVERIFY(!compiler.isCompiling());
+}
+
+void TestTypstEditor::runtimeSessionsRemainIndependent() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto source = shortSource(QStringLiteral("#include \"shared.typ\""));
+  EditorFixture first(m_runtime, root.path(), source);
+  EditorFixture second(m_runtime, root.path(), source);
+  first.editor.setFileOverlay(QStringLiteral("shared.typ"), QStringLiteral("= First session"));
+  second.editor.setFileOverlay(QStringLiteral("shared.typ"), QStringLiteral("= Second session"));
+  QVERIFY2(first.ready(), qPrintable(first.editor.compileMessage()));
+  QVERIFY2(second.ready(), qPrintable(second.editor.compileMessage()));
+  QVERIFY(waitUntil([&] { return first.editor.pdfPageCount() && second.editor.pdfPageCount(); }));
+  QCOMPARE(first.selectPage().trimmed(), QStringLiteral("First session"));
+  QCOMPARE(second.selectPage().trimmed(), QStringLiteral("Second session"));
+  first.editor.setFileOverlay(QStringLiteral("shared.typ"), QStringLiteral("#let broken = ("));
+  QVERIFY(waitUntil(
+      [&] { return first.editor.compileStatus() == VTypstEditor::CompileStatus::Error; }));
+  QVERIFY(!first.editor.diagnostics().isEmpty());
+  QCOMPARE(second.editor.compileStatus(), VTypstEditor::CompileStatus::Ready);
+  QCOMPARE(second.selectPage().trimmed(), QStringLiteral("Second session"));
+  QVERIFY(second.editor.diagnostics().isEmpty());
+  auto restricted = QSharedPointer<TypstEditorConfig>::create(first.editor.getConfig());
+  restricted->m_maxPdfBytes = 64;
+  first.editor.setConfig(restricted);
+  first.editor.setFileOverlay(QStringLiteral("shared.typ"),
+                              QStringLiteral("= First export failure"));
+  QVERIFY(waitUntil(
+      [&] { return first.editor.compileStatus() == VTypstEditor::CompileStatus::Error; }));
+  QVERIFY(!first.editor.compileMessage().isEmpty());
+  second.editor.setFileOverlay(QStringLiteral("shared.typ"),
+                               QStringLiteral("= Second replacement"));
+  QVERIFY(waitUntil([&] { return second.editor.hasPendingPdfUpdate(); }));
+  QCOMPARE(second.selected().trimmed(), QStringLiteral("Second session"));
+  QCOMPARE(first.selectPage().trimmed(), QStringLiteral("First session"));
+  second.clearSelection();
+  QVERIFY(waitUntil([&] { return !second.editor.hasPendingPdfUpdate(); }));
+  QCOMPARE(second.selectPage().trimmed(), QStringLiteral("Second replacement"));
+  QSignalSpy firstRecovered(first.pane(), SIGNAL(snapshotPublished(quint64)));
+  first.editor.setConfig(editorConfig(root.path(), &m_runtime));
+  first.editor.setFileOverlay(QStringLiteral("shared.typ"), QStringLiteral("= First recovered"));
+  first.clearSelection();
+  QVERIFY2(first.ready(), qPrintable(first.editor.compileMessage()));
+  QVERIFY(waitUntil([&] { return firstRecovered.count() == 1; }));
+  QCOMPARE(first.selectPage().trimmed(), QStringLiteral("First recovered"));
+  QCOMPARE(second.selectPage().trimmed(), QStringLiteral("Second replacement"));
+}
+
+void TestTypstEditor::scannerFailsClosedWithoutEvaluation() {
+  QString error;
+  QVERIFY(TypstCompiler::collectImageReferences({QString()}, nullptr, &error).isEmpty());
+  QVERIFY(!error.isEmpty());
+  TypstRuntime runtime;
+  QVERIFY(runtime.isAvailable());
+  for (const auto &sources :
+       {QStringList(), QStringList{QString(), QString(), QString(), QString()}}) {
+    error.clear();
+    QVERIFY(TypstCompiler::collectImageReferences(sources, &runtime, &error).isEmpty());
+    QVERIFY(!error.isEmpty());
+  }
+  const auto scans = TypstCompiler::collectImageReferences(
+      {QStringLiteral("#let unresolved = unknown_function()\n#image(\"kept.png\")"),
+       QStringLiteral("#let load = image\n#load(\"uncertain.png\")"),
+       QStringLiteral("#image(\"unterminated")},
+      &runtime, &error);
+  QVERIFY2(error.isEmpty(), qPrintable(error));
+  QCOMPARE(scans.size(), 3);
+  QVERIFY(scans[0].m_complete);
+  QCOMPARE(scans[0].m_images, QStringList{QStringLiteral("kept.png")});
+  QVERIFY(!scans[1].m_complete);
+  QVERIFY(!scans[2].m_complete);
+  runtime.shutdown();
+  error.clear();
+  QVERIFY(TypstCompiler::collectImageReferences({QString()}, &runtime, &error).isEmpty());
+  QVERIFY(!error.isEmpty());
+}
+
+void TestTypstEditor::scannerDeadlineAndBusyFailClosed() {
+  TypstRuntime runtime;
+  RuntimeLaneGate gate(runtime, true);
+  QVERIFY(gate.entered());
+  bool guiEventDelivered = false;
+  QObject receiver;
+  QTimer::singleShot(0, &receiver, [&] { guiEventDelivered = true; });
+  QString error;
+  QElapsedTimer elapsed;
+  elapsed.start();
+  const auto abandoned = TypstCompiler::collectImageReferences(
+      {QStringLiteral("#image(\"abandoned.png\")")}, &runtime, &error);
+  QVERIFY(abandoned.isEmpty());
+  QVERIFY(!error.isEmpty());
+  QVERIFY(elapsed.elapsed() >= 9000);
+  QVERIFY(elapsed.elapsed() < 15000);
+  QVERIFY(!guiEventDelivered); // Accepted-close scanning must not pump nested GUI events.
+  elapsed.restart();
+  QVERIFY(TypstCompiler::collectImageReferences({QString()}, &runtime, &error).isEmpty());
+  QVERIFY(!error.isEmpty());
+  QVERIFY(elapsed.elapsed() < 1000); // Do not queue behind an abandoned scan.
+  gate.release();
+  QVector<TypstCompiler::ImageReferences> recovered;
+  QVERIFY(waitUntil([&] {
+    recovered = TypstCompiler::collectImageReferences({QStringLiteral("#image(\"current.png\")")},
+                                                      &runtime, &error);
+    return !recovered.isEmpty();
+  }));
+  QVERIFY2(error.isEmpty(), qPrintable(error));
+  QCOMPARE(recovered.size(), 1);
+  QVERIFY(recovered.first().m_complete);
+  QCOMPARE(recovered.first().m_images, QStringList{QStringLiteral("current.png")});
+}
+
+void TestTypstEditor::runtimeDrainsRunningNativeCall() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  TypstRuntime runtime;
+  auto *thread = runtime.findChild<QThread *>(QStringLiteral("typst-compile-0"));
+  QVERIFY(thread);
+  auto *worker = thread->property("worker").value<QObject *>();
+  QVERIFY(worker);
+  struct Invocation {
+    QSemaphore parsed;
+    QSemaphore resume;
+    QSemaphore returned;
+    bool success = false;
+    QString error;
+  };
+  const auto invocation = std::make_shared<Invocation>();
+  const auto releaseOnFailure = qScopeGuard([&] { invocation->resume.release(); });
+  QVERIFY(QMetaObject::invokeMethod(
+      worker,
+      [invocation, project = root.path()] {
+        NativeSession native(project);
+        if (native.start()) {
+          native.onReply = [invocation](const QJsonObject &) {
+            invocation->parsed.release();
+            invocation->resume.acquire();
+          };
+          invocation->success = native.compile(shortSource(QStringLiteral("Finite native drain")));
+        }
+        invocation->error = native.details();
+        native.close(); // Session destruction is on the same lane as execution.
+        invocation->returned.release();
+      },
+      Qt::QueuedConnection));
+  QVERIFY2(invocation->parsed.tryAcquire(1, operationTimeout), "Native compile did not parse");
+  QVERIFY(!invocation->returned.tryAcquire());
+
+  // A real call is held inside its parsed C callback, not a mock operation or
+  // unbounded Typst loop. The separate scanner and the GUI must remain usable.
+  QString error;
+  const auto scans = TypstCompiler::collectImageReferences(
+      {QStringLiteral("#image(\"independent.png\")")}, &runtime, &error);
+  QVERIFY2(error.isEmpty(), qPrintable(error));
+  QCOMPARE(scans.size(), 1);
+  bool responsive = false;
+  QTimer::singleShot(0, &runtime, [&] { responsive = true; });
+  QVERIFY(waitUntil([&] { return responsive; }));
+
+  // isAvailable() reads the runtime's atomic admission flag. Release only after
+  // shutdown has stopped admission: draining cannot depend on GUI acknowledgements.
+  bool observedShutdown = false;
+  std::thread release([&] {
+    QElapsedTimer timeout;
+    timeout.start();
+    while (runtime.isAvailable() && timeout.elapsed() < 10000)
+      std::this_thread::yield();
+    observedShutdown = !runtime.isAvailable();
+    invocation->resume.release();
+  });
+  runtime.shutdown();
+  release.join();
+  QVERIFY(observedShutdown);
+  QVERIFY(invocation->returned.tryAcquire());
+  QVERIFY2(invocation->success, qPrintable(invocation->error));
+  QVERIFY(!runtime.isAvailable());
+  for (auto *lane : runtime.findChildren<QThread *>())
+    QVERIFY(!lane->isRunning());
+  runtime.shutdown();
+}
+
+void TestTypstEditor::runtimeDropsRepliesForDeletedReceiver() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  auto fixture = std::make_unique<EditorFixture>(m_runtime, root.path(),
+                                                 shortSource(QStringLiteral("Receiver baseline")));
+  QVERIFY2(fixture->ready(), qPrintable(fixture->editor.compileMessage()));
+  QPointer<VTypstEditor> receiver(&fixture->editor);
+  auto *delivery = m_runtime.findChild<QObject *>(QStringLiteral("typst-delivery"));
+  QVERIFY(delivery);
+  NativeDeliveryObserver observer;
+  delivery->installEventFilter(&observer);
+  bool retired = false;
+  observer.beforeDelivery = [&] {
+    fixture.reset();
+    retired = true;
+  };
+  fixture->editor.setFileOverlay(QStringLiteral("main.typ"),
+                                 shortSource(QStringLiteral("Reply has no receiver")));
+  QVERIFY(waitUntil([&] { return retired; }));
+  QVERIFY(receiver.isNull());
+  delivery->removeEventFilter(&observer);
+  EditorFixture recovered(m_runtime, root.path(),
+                          shortSource(QStringLiteral("Receiver recovered")));
+  QVERIFY2(recovered.ready(), qPrintable(recovered.editor.compileMessage()));
+  QVERIFY(waitUntil([&] { return recovered.editor.pdfPageCount() == 1; }));
+  QCOMPARE(recovered.selectPage().trimmed(), QStringLiteral("Receiver recovered"));
+}
+
+void TestTypstEditor::compilerCompletionCanDestroyReceiver() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  auto compiler = std::make_unique<TypstCompiler>(*editorConfig(root.path(), &m_runtime));
+  QPointer<TypstCompiler> receiver(compiler.get());
+  int completions = 0;
+  TypstCompiler::Result result;
+  connect(compiler.get(), &TypstCompiler::finished, this,
+          [&](const TypstCompiler::Result &p_result) {
+            result = p_result;
+            ++completions;
+            compiler.reset();
+          });
+  QVERIFY(compiler->compileToSvg(shortSource(QStringLiteral("Delete on result"))));
+  QVERIFY(waitUntil([&] { return receiver.isNull(); }));
+  QCOMPARE(completions, 1);
+  QVERIFY2(result.isSuccess(), qPrintable(result.m_error));
+  QCOMPARE(result.m_svgPages.size(), 1);
+  QSvgRenderer renderer(result.m_svgPages.first());
+  QVERIFY(renderer.isValid());
+}
+
+void TestTypstEditor::runtimeShutdownCompletesAdmittedExport() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  TypstRuntime runtime;
+  TypstCompiler compiler(*editorConfig(root.path(), &runtime));
+  QSignalSpy completed(&compiler, &TypstCompiler::finished);
+  RuntimeLaneGate gate(runtime);
+  QVERIFY(gate.entered());
+  const auto source = shortSource(QStringLiteral("Cancelled queued export"));
+  QVERIFY(compiler.compileToSvg(source));
+  QCoreApplication::processEvents(); // Dispatch initialization behind the held lane.
+  QCOMPARE(completed.count(), 0);
+  QVERIFY(compiler.isCompiling());
+  std::thread release([&] {
+    QElapsedTimer timeout;
+    timeout.start();
+    while (runtime.isAvailable() && timeout.elapsed() < 10000)
+      std::this_thread::yield();
+    gate.release();
+  });
+  runtime.shutdown();
+  release.join();
+  QVERIFY(!runtime.isAvailable());
+  QVERIFY(waitUntil([&] { return completed.count() == 1; }));
+  auto result = qvariant_cast<TypstCompiler::Result>(completed.first().first());
+  QVERIFY(!result.isSuccess());
+  QVERIFY(!result.m_error.isEmpty());
+  QVERIFY(result.m_svgPages.isEmpty());
+  QVERIFY(!compiler.isCompiling());
+  QVERIFY(compiler.compileToBitmap(source));
+  QVERIFY(waitUntil([&] { return completed.count() == 2; }));
+  result = qvariant_cast<TypstCompiler::Result>(completed.last().first());
+  QVERIFY(!result.isSuccess());
+  QVERIFY(!result.m_error.isEmpty());
+  QVERIFY(result.m_bitmapPages.isEmpty());
+  runtime.shutdown();
+  QCoreApplication::sendPostedEvents();
+  QCOMPARE(completed.count(), 2);
+}
+
+void TestTypstEditor::deadlineRetryKeepsDispatchIdentityUntilCompletion() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  TypstRuntime runtime;
+  EditorFixture fixture(runtime, root.path(), shortSource(QStringLiteral("Deadline baseline")),
+                        VTypstEditor::Mode::Read, {}, false, false);
+  QSignalSpy published(fixture.pane(), SIGNAL(snapshotPublished(quint64)));
+  QVERIFY2(waitUntil([&] { return published.count() == 1; }),
+           qPrintable(fixture.editor.compileMessage()));
+  auto *bridge = compilerBridge(&fixture.editor);
+  QVERIFY(bridge);
+  auto *deadline = bridge->findChild<QTimer *>(QStringLiteral("typst-deadline"));
+  QVERIFY(deadline);
+  auto *delivery = runtime.findChild<QObject *>(QStringLiteral("typst-delivery"));
+  QVERIFY(delivery);
+  QSignalSpy generations(bridge, SIGNAL(generationChanged(quint64, quint64)));
+  QVERIFY(generations.isValid());
+  bool deadlineDelivered = false;
+  bool errorObserved = false;
+  bool epochRetained = false;
+  bool intercepted = false;
+  NativeDeliveryObserver observer;
+  observer.shouldIntercept = [&] {
+    return deadline->isActive() && !generations.isEmpty() &&
+           fixture.editor.compileStatus() == VTypstEditor::CompileStatus::Compiling;
+  };
+  observer.beforeDelivery = [&] {
+    intercepted = true;
+    const auto epoch = generations.last()[0].toULongLong();
+    const int previous = generations.count();
+    // Exercise the real deadline handler immediately before a queued native
+    // reply is delivered. The ABI may have returned already, but lane completion
+    // has not been acknowledged: retry must preserve that dispatch identity.
+    deadline->stop();
+    deadlineDelivered = QMetaObject::invokeMethod(deadline, "timeout", Qt::DirectConnection);
+    errorObserved = fixture.editor.compileStatus() == VTypstEditor::CompileStatus::Error;
+    fixture.editor.retryCompilation();
+    fixture.editor.retryCompilation();
+    fixture.editor.setFileOverlay(QStringLiteral("main.typ"),
+                                  shortSource(QStringLiteral("Latest source after retry")));
+    epochRetained = published.count() == 1;
+    for (int index = previous; index < generations.count(); ++index)
+      epochRetained = epochRetained && generations[index][0].toULongLong() == epoch;
+  };
+  delivery->installEventFilter(&observer);
+  fixture.editor.setFileOverlay(QStringLiteral("main.typ"),
+                                shortSource(QStringLiteral("Timed out source must not publish")));
+  QVERIFY(waitUntil([&] { return intercepted; }));
+  QVERIFY(deadlineDelivered);
+  QVERIFY(errorObserved);
+  QVERIFY(epochRetained);
+  QVERIFY2(waitUntil([&] { return published.count() == 2; }),
+           qPrintable(fixture.editor.compileMessage()));
+  QCOMPARE(fixture.selectPage().trimmed(), QStringLiteral("Latest source after retry"));
+  QVERIFY(fixture.editor.diagnostics().isEmpty());
+  delivery->removeEventFilter(&observer);
+}
+
 void TestTypstEditor::compilerGeometryAndScale() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  auto config = *editorConfig(root.path());
+  auto config = *editorConfig(root.path(), &m_runtime);
   TypstCompiler compiler(config);
-  // Construction takes a copy: later caller changes must not change this compiler.
-  config.m_helperExecutable = root.filePath(QStringLiteral("missing-helper"));
-  config.m_maxRasterPixels = 1;
   QSignalSpy completed(&compiler, &TypstCompiler::finished);
   QVERIFY(completed.isValid());
   const auto source = QStringLiteral(
@@ -791,6 +1267,35 @@ void TestTypstEditor::compilerGeometryAndScale() {
   }
 }
 
+void TestTypstEditor::compilerBitmapOutlivesRuntime() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  QImage retained;
+  {
+    TypstRuntime runtime;
+    {
+      auto config = *editorConfig(root.path(), &runtime);
+      TypstCompiler compiler(config);
+      QSignalSpy completed(&compiler, &TypstCompiler::finished);
+      QVERIFY(compiler.compileToBitmap(
+          QStringLiteral("#set page(width: 80pt, height: 60pt, margin: 0pt)\n"
+                         "#rect(width: 40pt, height: 30pt, fill: rgb(0, 255, 0), stroke: none)")));
+      QVERIFY(waitUntil([&] { return completed.count() == 1; }));
+      const auto result = qvariant_cast<TypstCompiler::Result>(completed.first().first());
+      QVERIFY2(result.isSuccess(), qPrintable(result.m_error));
+      QCOMPARE(result.m_bitmapPages.size(), 1);
+      retained = result.m_bitmapPages.first();
+    }
+    runtime.shutdown();
+  }
+  QCOMPARE(retained.size(), QSize(80, 60));
+  QCOMPARE(retained.pixelColor(10, 10), QColor(Qt::green));
+  auto changed = retained;
+  changed.setPixelColor(10, 10, QColor(Qt::red));
+  QCOMPARE(changed.pixelColor(10, 10), QColor(Qt::red));
+  QCOMPARE(retained.pixelColor(10, 10), QColor(Qt::green));
+}
+
 void TestTypstEditor::previewThemeDefaultsRespectAuthoredStyles() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
@@ -798,45 +1303,45 @@ void TestTypstEditor::previewThemeDefaultsRespectAuthoredStyles() {
   authoredImage.fill(Qt::white);
   authoredImage.setPixelColor(5, 5, Qt::black);
   QVERIFY(authoredImage.save(root.filePath(QStringLiteral("authored.png"))));
-  Helper helper(root.path());
+  NativeSession native(root.path());
   const QColor dark(30, 32, 38), light(224, 226, 230), red(239, 51, 68);
-  helper.config.insert(QStringLiteral("previewBackground"), QJsonArray{30, 32, 38, 255});
-  helper.config.insert(QStringLiteral("previewForeground"), QJsonArray{224, 226, 230, 255});
-  QVERIFY2(helper.start(), qPrintable(helper.details()));
+  native.config.insert(QStringLiteral("previewBackground"), QJsonArray{30, 32, 38, 255});
+  native.config.insert(QStringLiteral("previewForeground"), QJsonArray{224, 226, 230, 255});
+  QVERIFY2(native.start(), qPrintable(native.details()));
   const auto source =
       QStringLiteral("#set page(width: 240pt, height: 160pt, margin: 10pt)\n"
                      "#set text(size: 20pt)\nDefault text\n\n"
                      "#text(fill: rgb(\"#ef3344\"))[Local override]\n"
                      "#place(bottom + right)[#image(\"authored.png\", width: 20pt, height: 10pt)]");
   const auto raster = [&](const QString &p_source) {
-    if (!helper.compile(p_source))
+    if (!native.compile(p_source))
       return QImage();
-    const auto snapshot = helper.reply.header.value(QStringLiteral("snapshot"));
-    if (!helper.request({{QStringLiteral("op"), QStringLiteral("raster")},
+    const auto snapshot = native.reply.header.value(QStringLiteral("snapshot"));
+    if (!native.request({{QStringLiteral("op"), QStringLiteral("raster")},
                          {QStringLiteral("snapshot"), snapshot},
                          {QStringLiteral("page"), 0},
                          {QStringLiteral("scale"), 1}}))
       return QImage();
-    const auto &header = helper.reply.header;
+    const auto &header = native.reply.header;
     if (header.value(QStringLiteral("op")) != QStringLiteral("raster"))
       return QImage();
-    return QImage(reinterpret_cast<const uchar *>(helper.reply.payload.constData()),
+    return QImage(reinterpret_cast<const uchar *>(native.reply.payload.constData()),
                   header.value(QStringLiteral("width")).toInt(),
                   header.value(QStringLiteral("height")).toInt(),
                   QImage::Format_RGBA8888_Premultiplied)
         .copy();
   };
   auto image = raster(source);
-  QVERIFY2(!image.isNull(), qPrintable(helper.details()));
+  QVERIFY2(!image.isNull(), qPrintable(native.details()));
   QCOMPARE(image.pixelColor(0, 0), dark);
   QVERIFY(pixelsWithColor(image, light) > 30);
   QVERIFY(pixelsWithColor(image, red) > 30);
   QCOMPARE(image.pixelColor(211, 141), QColor(Qt::white));
   QCOMPARE(image.pixelColor(215, 145), QColor(Qt::black));
 
-  // Same process and source: new library defaults must invalidate memoized layout.
-  helper.config[QStringLiteral("previewBackground")] = QJsonArray{246, 244, 238, 255};
-  helper.config[QStringLiteral("previewForeground")] = QJsonArray{42, 48, 52, 255};
+  // Same session and source: new library defaults must invalidate memoized layout.
+  native.config[QStringLiteral("previewBackground")] = QJsonArray{246, 244, 238, 255};
+  native.config[QStringLiteral("previewForeground")] = QJsonArray{42, 48, 52, 255};
   image = raster(source);
   QCOMPARE(image.pixelColor(0, 0), QColor(246, 244, 238));
   QVERIFY(pixelsWithColor(image, QColor(42, 48, 52)) > 30);
@@ -857,13 +1362,14 @@ void TestTypstEditor::previewThemeDefaultsRespectAuthoredStyles() {
 void TestTypstEditor::previewThemeSwitchAndOptOutPreserveSource() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  auto config = editorConfig(root.path());
+  auto config = editorConfig(root.path(), &m_runtime);
   config->m_pdfBackground = QColor(30, 32, 38);
   config->m_previewForeground = QColor(224, 226, 230);
   const auto source = QStringLiteral("#set page(width: 320pt, height: 300pt, margin: 20pt)\n"
                                      "#set text(size: 24pt)\nTheme text\n\n$ x^2 + y^2 $\n\n"
                                      "#text(fill: rgb(\"#ef3344\"))[Explicit red]");
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, config, true, true);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, config, true,
+                        true);
   auto *pane = fixture.pane();
   QSignalSpy published(pane, SIGNAL(snapshotPublished(quint64)));
   QVERIFY(waitUntil([&]() { return published.count() == 1; }));
@@ -916,12 +1422,12 @@ void TestTypstEditor::previewThemeSwitchAndOptOutPreserveSource() {
 void TestTypstEditor::exportsIgnorePreviewTheme() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  auto config = editorConfig(root.path());
+  auto config = editorConfig(root.path(), &m_runtime);
   config->m_pdfBackground = QColor(30, 32, 38);
   config->m_previewForeground = QColor(224, 226, 230);
   config->m_enableThemeStyleInPreview = true;
   TypstCompiler compiler(*config);
-  TypstCompiler unthemed(*editorConfig(root.path()));
+  TypstCompiler unthemed(*editorConfig(root.path(), &m_runtime));
   QSignalSpy finished(&compiler, &TypstCompiler::finished);
   QSignalSpy unthemedFinished(&unthemed, &TypstCompiler::finished);
   const auto source = QStringLiteral("#set page(width: 240pt, height: 120pt, margin: 10pt)\n"
@@ -985,7 +1491,7 @@ void TestTypstEditor::compilerUnicodeImportsAndNormalization() {
   QVERIFY(mixedNewlines.contains(QStringLiteral("\r\n")));
   QVERIFY(mixedNewlines.contains(QStringLiteral("formula\r#assert")));
 
-  TypstCompiler compiler(*editorConfig(root.path()));
+  TypstCompiler compiler(*editorConfig(root.path(), &m_runtime));
   QSignalSpy completed(&compiler, &TypstCompiler::finished);
   QVERIFY(compiler.compileToSvg(mixedNewlines));
   QVERIFY(waitUntil([&]() { return completed.count() == 1; }));
@@ -1033,7 +1539,7 @@ void TestTypstEditor::compilerUnicodeImportsAndNormalization() {
 void TestTypstEditor::compilerAsyncFailureAndRecovery() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  TypstCompiler compiler(*editorConfig(root.path()));
+  TypstCompiler compiler(*editorConfig(root.path(), &m_runtime));
   QSignalSpy completed(&compiler, &TypstCompiler::finished);
   bool returnedFromSubmit = false;
   bool asynchronous = true;
@@ -1091,7 +1597,7 @@ void TestTypstEditor::compilerRejectsInvalidScaleAndPixelLimit() {
   QFETCH(int, pixelLimit);
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  auto config = *editorConfig(root.path());
+  auto config = *editorConfig(root.path(), &m_runtime);
   config.m_maxRasterPixels = pixelLimit;
   TypstCompiler compiler(config);
   QSignalSpy completed(&compiler, &TypstCompiler::finished);
@@ -1140,7 +1646,7 @@ void TestTypstEditor::compilerResultBudgetClearsPartialPages() {
   const auto submit = [bitmap](TypstCompiler &p_compiler, const QString &p_source) {
     return bitmap ? p_compiler.compileToBitmap(p_source) : p_compiler.compileToSvg(p_source);
   };
-  TypstCompiler baseline(*editorConfig(root.path()));
+  TypstCompiler baseline(*editorConfig(root.path(), &m_runtime));
   QSignalSpy baselineFinished(&baseline, &TypstCompiler::finished);
   QVERIFY(submit(baseline, twoPages));
   QVERIFY(waitUntil([&]() { return baselineFinished.count() == 1; }));
@@ -1155,7 +1661,7 @@ void TestTypstEditor::compilerResultBudgetClearsPartialPages() {
     totalBytes += bytes;
     largestPage = qMax(largestPage, bytes);
   }
-  auto config = *editorConfig(root.path());
+  auto config = *editorConfig(root.path(), &m_runtime);
   config.m_maxCacheBytes = largestPage + (totalBytes - largestPage) / 2;
   QVERIFY(config.m_maxCacheBytes > largestPage);
   QVERIFY(config.m_maxCacheBytes < totalBytes);
@@ -1192,69 +1698,69 @@ void TestTypstEditor::overlaysDiagnosticsAndSnapshotRetention() {
   const QByteArray diskImport("#let phrase = [Disk import must not win.]");
   QVERIFY(writeFixture(mainPath, diskMain));
   QVERIFY(writeFixture(importPath, diskImport));
-  Helper helper(root.path());
-  QVERIFY2(helper.start(), qPrintable(helper.details()));
+  NativeSession native(root.path());
+  QVERIFY2(native.start(), qPrintable(native.details()));
 
-  QVERIFY2(helper.compile(QStringLiteral("#let broken = (")), qPrintable(helper.details()));
-  QCOMPARE(helper.reply.header.value(QStringLiteral("op")).toString(), QStringLiteral("compiled"));
-  QVERIFY(!helper.reply.header.contains(QStringLiteral("snapshot")));
-  QVERIFY(!helper.reply.header.contains(QStringLiteral("pages")));
-  const auto diagnostics = helper.reply.header.value(QStringLiteral("diagnostics")).toArray();
+  QVERIFY2(native.compile(QStringLiteral("#let broken = (")), qPrintable(native.details()));
+  QCOMPARE(native.reply.header.value(QStringLiteral("op")).toString(), QStringLiteral("compiled"));
+  QVERIFY(!native.reply.header.contains(QStringLiteral("snapshot")));
+  QVERIFY(!native.reply.header.contains(QStringLiteral("pages")));
+  const auto diagnostics = native.reply.header.value(QStringLiteral("diagnostics")).toArray();
   QVERIFY(!diagnostics.isEmpty());
   QCOMPARE(diagnostics.first().toObject().value(QStringLiteral("file")).toString(),
            QStringLiteral("main.typ"));
   QCOMPARE(diagnostics.first().toObject().value(QStringLiteral("severity")).toString(),
            QStringLiteral("error"));
-  QVERIFY2(helper.pdf(1), qPrintable(helper.details()));
-  QCOMPARE(helper.reply.header.value(QStringLiteral("op")).toString(), QStringLiteral("error"));
-  QVERIFY(helper.reply.payload.isEmpty());
+  QVERIFY2(native.pdf(1), qPrintable(native.details()));
+  QCOMPARE(native.reply.header.value(QStringLiteral("op")).toString(), QStringLiteral("error"));
+  QVERIFY(native.reply.payload.isEmpty());
 
   const auto source =
       shortSource(QStringLiteral("#import \"chapter.typ\": phrase\nOverlay main: #phrase"));
-  QVERIFY2(helper.compile(source, {}, importOverlay(QStringLiteral("First import."))),
-           qPrintable(helper.details()));
-  const auto first = helper.reply.header.value(QStringLiteral("snapshot"));
-  QVERIFY2(first.toDouble() > 0, qPrintable(helper.details()));
-  QVERIFY2(helper.pdf(first), qPrintable(helper.details()));
-  Pdf firstPdf(helper.reply.payload);
+  QVERIFY2(native.compile(source, {}, importOverlay(QStringLiteral("First import."))),
+           qPrintable(native.details()));
+  const auto first = native.reply.header.value(QStringLiteral("snapshot"));
+  QVERIFY2(first.toDouble() > 0, qPrintable(native.details()));
+  QVERIFY2(native.pdf(first), qPrintable(native.details()));
+  Pdf firstPdf(native.reply.payload);
   QVERIFY(firstPdf.load());
   QCOMPARE(firstPdf.text(), QStringLiteral("Overlay main: First import."));
 
   QVERIFY2(
-      helper.compile(source, {first}, importOverlay(QStringLiteral("Changed unsaved import."))),
-      qPrintable(helper.details()));
-  const auto second = helper.reply.header.value(QStringLiteral("snapshot"));
+      native.compile(source, {first}, importOverlay(QStringLiteral("Changed unsaved import."))),
+      qPrintable(native.details()));
+  const auto second = native.reply.header.value(QStringLiteral("snapshot"));
   QVERIFY(second.toDouble() > first.toDouble());
-  QVERIFY2(helper.pdf(second), qPrintable(helper.details()));
-  Pdf secondPdf(helper.reply.payload);
+  QVERIFY2(native.pdf(second), qPrintable(native.details()));
+  Pdf secondPdf(native.reply.payload);
   QVERIFY(secondPdf.load());
   QCOMPARE(secondPdf.text(), QStringLiteral("Overlay main: Changed unsaved import."));
 
-  QVERIFY2(helper.compile(QStringLiteral("#let broken = ("), {second}),
-           qPrintable(helper.details()));
-  QVERIFY(!helper.reply.header.contains(QStringLiteral("snapshot")));
-  QVERIFY(!helper.reply.header.value(QStringLiteral("diagnostics")).toArray().isEmpty());
-  QVERIFY2(helper.pdf(second), qPrintable(helper.details()));
-  Pdf retained(helper.reply.payload);
+  QVERIFY2(native.compile(QStringLiteral("#let broken = ("), {second}),
+           qPrintable(native.details()));
+  QVERIFY(!native.reply.header.contains(QStringLiteral("snapshot")));
+  QVERIFY(!native.reply.header.value(QStringLiteral("diagnostics")).toArray().isEmpty());
+  QVERIFY2(native.pdf(second), qPrintable(native.details()));
+  Pdf retained(native.reply.payload);
   QVERIFY(retained.load());
   QCOMPARE(retained.text(), secondPdf.text());
-  QVERIFY2(helper.pdf(first), qPrintable(helper.details()));
-  QCOMPARE(helper.reply.header.value(QStringLiteral("op")).toString(), QStringLiteral("error"));
+  QVERIFY2(native.pdf(first), qPrintable(native.details()));
+  QCOMPARE(native.reply.header.value(QStringLiteral("op")).toString(), QStringLiteral("error"));
 
-  QVERIFY2(helper.compile(shortSource(QStringLiteral("Recovered source.")), {second}),
-           qPrintable(helper.details()));
-  const auto recovered = helper.reply.header.value(QStringLiteral("snapshot"));
+  QVERIFY2(native.compile(shortSource(QStringLiteral("Recovered source.")), {second}),
+           qPrintable(native.details()));
+  const auto recovered = native.reply.header.value(QStringLiteral("snapshot"));
   QVERIFY(recovered.toDouble() > second.toDouble());
-  QVERIFY(helper.reply.header.value(QStringLiteral("diagnostics")).toArray().isEmpty());
-  QVERIFY2(helper.pdf(recovered), qPrintable(helper.details()));
-  Pdf recoveredPdf(helper.reply.payload);
+  QVERIFY(native.reply.header.value(QStringLiteral("diagnostics")).toArray().isEmpty());
+  QVERIFY2(native.pdf(recovered), qPrintable(native.details()));
+  Pdf recoveredPdf(native.reply.payload);
   QVERIFY(recoveredPdf.load());
   QCOMPARE(recoveredPdf.text(), QStringLiteral("Recovered source."));
-  QVERIFY2(helper.request({{QStringLiteral("op"), QStringLiteral("retain")},
+  QVERIFY2(native.request({{QStringLiteral("op"), QStringLiteral("retain")},
                            {QStringLiteral("snapshots"), QJsonArray{recovered}}}),
-           qPrintable(helper.details()));
-  QVERIFY2(helper.pdf(second), qPrintable(helper.details()));
-  QCOMPARE(helper.reply.header.value(QStringLiteral("op")).toString(), QStringLiteral("error"));
+           qPrintable(native.details()));
+  QVERIFY2(native.pdf(second), qPrintable(native.details()));
+  QCOMPARE(native.reply.header.value(QStringLiteral("op")).toString(), QStringLiteral("error"));
   QFile mainFile(mainPath), importedFile(importPath);
   QVERIFY(mainFile.open(QIODevice::ReadOnly));
   QVERIFY(importedFile.open(QIODevice::ReadOnly));
@@ -1265,17 +1771,17 @@ void TestTypstEditor::overlaysDiagnosticsAndSnapshotRetention() {
 void TestTypstEditor::unicodeNavigationPdfPointsAndRasterLimits() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  Helper helper(root.path());
-  QVERIFY2(helper.start(), qPrintable(helper.details()));
+  NativeSession native(root.path());
+  QVERIFY2(native.start(), qPrintable(native.details()));
   const auto source = shortSource(QString::fromUtf8(
       "// non-BMP: \xf0\x9f\x98\x80\nFirst page.\n#pagebreak()\nNavigationTarget"));
-  QVERIFY2(helper.compile(source), qPrintable(helper.details()));
-  const auto snapshot = helper.reply.header.value(QStringLiteral("snapshot"));
-  QVERIFY2(snapshot.toDouble() > 0, qPrintable(helper.details()));
-  const auto pages = helper.reply.header.value(QStringLiteral("pages")).toArray();
+  QVERIFY2(native.compile(source), qPrintable(native.details()));
+  const auto snapshot = native.reply.header.value(QStringLiteral("snapshot"));
+  QVERIFY2(snapshot.toDouble() > 0, qPrintable(native.details()));
+  const auto pages = native.reply.header.value(QStringLiteral("pages")).toArray();
   QCOMPARE(pages.size(), 2);
-  QVERIFY2(helper.pdf(snapshot), qPrintable(helper.details()));
-  Pdf pdf(helper.reply.payload);
+  QVERIFY2(native.pdf(snapshot), qPrintable(native.details()));
+  Pdf pdf(native.reply.payload);
   QVERIFY(pdf.load());
   QCOMPARE(pdf.document.pageCount(), 2);
   QCOMPARE(pdf.text(0), QStringLiteral("First page."));
@@ -1289,12 +1795,12 @@ void TestTypstEditor::unicodeNavigationPdfPointsAndRasterLimits() {
   }
 
   const int start = source.indexOf(QStringLiteral("NavigationTarget"));
-  QVERIFY2(helper.request({{QStringLiteral("op"), QStringLiteral("sourceToOutput")},
+  QVERIFY2(native.request({{QStringLiteral("op"), QStringLiteral("sourceToOutput")},
                            {QStringLiteral("snapshot"), snapshot},
                            {QStringLiteral("file"), QStringLiteral("main.typ")},
                            {QStringLiteral("offset"), start + 4}}),
-           qPrintable(helper.details()));
-  const auto locations = helper.reply.header.value(QStringLiteral("locations")).toArray();
+           qPrintable(native.details()));
+  const auto locations = native.reply.header.value(QStringLiteral("locations")).toArray();
   QVERIFY(!locations.isEmpty());
   const auto location = locations.first().toObject();
   QCOMPARE(location.value(QStringLiteral("page")).toInt(), 1);
@@ -1305,13 +1811,13 @@ void TestTypstEditor::unicodeNavigationPdfPointsAndRasterLimits() {
     textBounds = textBounds.united(polygon.boundingRect());
   QVERIFY2(textBounds.adjusted(-4, -4, 4, 4).contains(point),
            "Source navigation must use the exported PDF's page points");
-  QVERIFY2(helper.request({{QStringLiteral("op"), QStringLiteral("outputToSource")},
+  QVERIFY2(native.request({{QStringLiteral("op"), QStringLiteral("outputToSource")},
                            {QStringLiteral("snapshot"), snapshot},
                            {QStringLiteral("page"), 1},
                            {QStringLiteral("x"), textBounds.center().x()},
                            {QStringLiteral("y"), textBounds.center().y()}}),
-           qPrintable(helper.details()));
-  const auto mapped = helper.reply.header.value(QStringLiteral("location")).toObject();
+           qPrintable(native.details()));
+  const auto mapped = native.reply.header.value(QStringLiteral("location")).toObject();
   QCOMPARE(mapped.value(QStringLiteral("file")).toString(), QStringLiteral("main.typ"));
   QVERIFY(mapped.value(QStringLiteral("start")).toInt(-1) >= start);
   QVERIFY(mapped.value(QStringLiteral("end")).toInt(-1) >=
@@ -1321,34 +1827,34 @@ void TestTypstEditor::unicodeNavigationPdfPointsAndRasterLimits() {
 
   const int emoji = source.indexOf(QChar(0xd83d));
   QVERIFY(emoji >= 0);
-  QVERIFY2(helper.request({{QStringLiteral("op"), QStringLiteral("sourceToOutput")},
+  QVERIFY2(native.request({{QStringLiteral("op"), QStringLiteral("sourceToOutput")},
                            {QStringLiteral("snapshot"), snapshot},
                            {QStringLiteral("file"), QStringLiteral("main.typ")},
                            {QStringLiteral("offset"), emoji + 1}}),
-           qPrintable(helper.details()));
-  QCOMPARE(helper.reply.header.value(QStringLiteral("op")).toString(), QStringLiteral("error"));
+           qPrintable(native.details()));
+  QCOMPARE(native.reply.header.value(QStringLiteral("op")).toString(), QStringLiteral("error"));
   QElapsedTimer rejectionTime;
   rejectionTime.start();
-  QVERIFY2(helper.request({{QStringLiteral("op"), QStringLiteral("raster")},
+  QVERIFY2(native.request({{QStringLiteral("op"), QStringLiteral("raster")},
                            {QStringLiteral("snapshot"), snapshot},
                            {QStringLiteral("page"), 1},
                            {QStringLiteral("scale"), 1000000}}),
-           qPrintable(helper.details()));
-  QCOMPARE(helper.reply.header.value(QStringLiteral("op")).toString(), QStringLiteral("error"));
-  QVERIFY(helper.reply.payload.isEmpty());
+           qPrintable(native.details()));
+  QCOMPARE(native.reply.header.value(QStringLiteral("op")).toString(), QStringLiteral("error"));
+  QVERIFY(native.reply.payload.isEmpty());
   QVERIFY2(rejectionTime.elapsed() < 5000,
            "Invalid raster dimensions must be rejected before rendering/allocation");
-  QVERIFY2(helper.request({{QStringLiteral("op"), QStringLiteral("raster")},
+  QVERIFY2(native.request({{QStringLiteral("op"), QStringLiteral("raster")},
                            {QStringLiteral("snapshot"), snapshot},
                            {QStringLiteral("page"), 1},
                            {QStringLiteral("scale"), 2}}),
-           qPrintable(helper.details()));
-  QCOMPARE(helper.reply.header.value(QStringLiteral("op")).toString(), QStringLiteral("raster"));
-  QCOMPARE(helper.reply.header.value(QStringLiteral("width")).toInt(), 480);
-  QCOMPARE(helper.reply.header.value(QStringLiteral("height")).toInt(), 320);
-  QCOMPARE(helper.reply.header.value(QStringLiteral("stride")).toInt(), 1920);
-  QCOMPARE(helper.reply.payload.size(), 480 * 320 * 4);
-  const QImage image(reinterpret_cast<const uchar *>(helper.reply.payload.constData()), 480, 320,
+           qPrintable(native.details()));
+  QCOMPARE(native.reply.header.value(QStringLiteral("op")).toString(), QStringLiteral("raster"));
+  QCOMPARE(native.reply.header.value(QStringLiteral("width")).toInt(), 480);
+  QCOMPARE(native.reply.header.value(QStringLiteral("height")).toInt(), 320);
+  QCOMPARE(native.reply.header.value(QStringLiteral("stride")).toInt(), 1920);
+  QCOMPARE(native.reply.payload.size(), 480 * 320 * 4);
+  const QImage image(reinterpret_cast<const uchar *>(native.reply.payload.constData()), 480, 320,
                      1920, QImage::Format_RGBA8888_Premultiplied);
   const QRect textPixels = QRectF(textBounds.topLeft() * 2, textBounds.size() * 2).toAlignedRect();
   QVERIFY2(inkPixels(image, textPixels.adjusted(-2, -2, 2, 2)) > 50,
@@ -1358,16 +1864,16 @@ void TestTypstEditor::unicodeNavigationPdfPointsAndRasterLimits() {
   const auto bleedSource =
       QStringLiteral("#set page(width:200pt,height:100pt,margin:10pt,bleed:12pt)\n"
                      "= Target <target>\n#link(<target>)[Go]");
-  QVERIFY2(helper.compile(bleedSource), qPrintable(helper.details()));
-  const auto bleedSnapshot = helper.reply.header.value(QStringLiteral("snapshot"));
-  QVERIFY2(bleedSnapshot.toDouble() > 0, qPrintable(helper.details()));
-  const auto trimPages = helper.reply.header.value(QStringLiteral("pages")).toArray();
+  QVERIFY2(native.compile(bleedSource), qPrintable(native.details()));
+  const auto bleedSnapshot = native.reply.header.value(QStringLiteral("snapshot"));
+  QVERIFY2(bleedSnapshot.toDouble() > 0, qPrintable(native.details()));
+  const auto trimPages = native.reply.header.value(QStringLiteral("pages")).toArray();
   QCOMPARE(trimPages.size(), 1);
   QCOMPARE(trimPages.first().toArray(), QJsonArray({200, 100}));
-  const auto links = helper.reply.header.value(QStringLiteral("links")).toArray();
+  const auto links = native.reply.header.value(QStringLiteral("links")).toArray();
   QVERIFY(!links.isEmpty());
-  QVERIFY2(helper.pdf(bleedSnapshot), qPrintable(helper.details()));
-  Pdf trimPdf(helper.reply.payload);
+  QVERIFY2(native.pdf(bleedSnapshot), qPrintable(native.details()));
+  Pdf trimPdf(native.reply.payload);
   QVERIFY(trimPdf.load());
   QCOMPARE(trimPdf.document.pageCount(), 1);
   QCOMPARE(trimPdf.size(0), QSizeF(200, 100));
@@ -1397,7 +1903,8 @@ void TestTypstEditor::unicodeNavigationPdfPointsAndRasterLimits() {
   QVERIFY2(linkAgreesWithPdf,
            "Bleed must not shift PDF glyphs away from the trim-space link sidecar");
 
-  EditorFixture navigation(root.path(), source, VTypstEditor::Mode::Edit, {}, true, false);
+  EditorFixture navigation(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, true,
+                           false);
   QVERIFY2(navigation.ready(), qPrintable(navigation.editor.compileMessage()));
   QTextCursor cursor(navigation.editor.document());
   cursor.setPosition(start + 4);
@@ -1432,7 +1939,7 @@ void TestTypstEditor::previewClickNavigatesSource() {
                       QString::fromUtf8("// non-BMP: \xf0\x9f\x98\x80\n") +
                       QStringLiteral("// source padding\n").repeated(80) +
                       QStringLiteral("First page.\n#pagebreak()\n") + target;
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
   auto *pane = fixture.pane();
   auto exports = observePdfExports(&fixture.editor);
   QVERIFY(exports);
@@ -1539,7 +2046,7 @@ void TestTypstEditor::previewClickPreservesSelectionLinksAndStaleOutput() {
   const auto target = QStringLiteral("Selection target.");
   const auto source =
       shortSource(target + QStringLiteral("\n\n#link(\"https://example.org/\")[Visit link]"));
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
   auto *pane = fixture.pane();
   auto *viewport = pane->viewport();
   auto exports = observePdfExports(&fixture.editor);
@@ -1616,12 +2123,12 @@ void TestTypstEditor::previewClickPreservesSelectionLinksAndStaleOutput() {
 void TestTypstEditor::repeatedAndSplitOutputRecords() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  Helper helper(root.path());
-  QVERIFY2(helper.start(), qPrintable(helper.details()));
+  NativeSession native(root.path());
+  QVERIFY2(native.start(), qPrintable(native.details()));
   const auto source = QStringLiteral("#set page(width: 100mm, height: 80mm, margin: 8mm)\n"
                                      "#for n in (2, 7, 11) { [Before $ E = #n c^2 $ after.] }");
-  QVERIFY2(helper.compile(source), qPrintable(helper.details()));
-  const auto records = helper.reply.header.value(QStringLiteral("previews")).toArray();
+  QVERIFY2(native.compile(source), qPrintable(native.details()));
+  const auto records = native.reply.header.value(QStringLiteral("previews")).toArray();
   QCOMPARE(records.size(), 3);
   const auto first = records.first().toObject();
   const int start = first.value(QStringLiteral("start")).toInt();
@@ -1646,16 +2153,16 @@ void TestTypstEditor::repeatedAndSplitOutputRecords() {
   QCOMPARE(ids.size(), 3);
   QVERIFY(regions.at(0) != regions.at(1));
   QVERIFY(regions.at(1) != regions.at(2));
-  const auto repeatedSnapshot = helper.reply.header.value(QStringLiteral("snapshot"));
-  QVERIFY2(helper.pdf(repeatedSnapshot), qPrintable(helper.details()));
-  Pdf repeated(helper.reply.payload);
+  const auto repeatedSnapshot = native.reply.header.value(QStringLiteral("snapshot"));
+  QVERIFY2(native.pdf(repeatedSnapshot), qPrintable(native.details()));
+  Pdf repeated(native.reply.payload);
   QVERIFY(repeated.load());
   QCOMPARE(repeated.text().count(QStringLiteral("Before")), 3);
   QVERIFY(repeated.text().contains(QStringLiteral("11")));
   QVERIFY(repeated.text().contains(QLatin1Char('7')));
 
-  QVERIFY2(helper.compile(splitSource()), qPrintable(helper.details()));
-  const auto split = helper.reply.header.value(QStringLiteral("previews")).toArray();
+  QVERIFY2(native.compile(splitSource()), qPrintable(native.details()));
+  const auto split = native.reply.header.value(QStringLiteral("previews")).toArray();
   QCOMPARE(split.size(), 1);
   const auto occurrence = split.first().toObject();
   QCOMPARE(occurrence.value(QStringLiteral("status")).toString(), QStringLiteral("ready"));
@@ -1670,9 +2177,9 @@ void TestTypstEditor::repeatedAndSplitOutputRecords() {
     pages.insert(page);
   }
   QVERIFY(pages.size() >= 2);
-  const auto splitSnapshot = helper.reply.header.value(QStringLiteral("snapshot"));
-  QVERIFY2(helper.pdf(splitSnapshot), qPrintable(helper.details()));
-  Pdf splitPdf(helper.reply.payload);
+  const auto splitSnapshot = native.reply.header.value(QStringLiteral("snapshot"));
+  QVERIFY2(native.pdf(splitSnapshot), qPrintable(native.details()));
+  Pdf splitPdf(native.reply.payload);
   QVERIFY(splitPdf.load());
   QVERIFY(splitPdf.document.pageCount() >= pages.size());
   for (const int page : pages)
@@ -1700,7 +2207,7 @@ void TestTypstEditor::outlineIncludesEvaluatedHeadingsAndUnicodeRanges() {
   const auto chapter = QStringLiteral("// %1 before the imported range\n"
                                       "#let chapter = [\n  == _Imported_ %1\n]\n")
                            .arg(unicode);
-  EditorFixture fixture(root.path(), main);
+  EditorFixture fixture(m_runtime, root.path(), main);
   fixture.editor.setFileOverlay(QStringLiteral("chapter.typ"), chapter);
   QSignalSpy updates(&fixture.editor, &VTypstEditor::headingsUpdated);
   QVERIFY(updates.isValid());
@@ -1747,7 +2254,7 @@ void TestTypstEditor::outlineIncludesEvaluatedHeadingsAndUnicodeRanges() {
 void TestTypstEditor::outlineInvalidationFailureAndRecovery() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  EditorFixture fixture(root.path(), shortSource(QStringLiteral("= Before")),
+  EditorFixture fixture(m_runtime, root.path(), shortSource(QStringLiteral("= Before")),
                         VTypstEditor::Mode::Edit, {}, false, true);
   QSignalSpy updates(&fixture.editor, &VTypstEditor::headingsUpdated);
   QSignalSpy published(fixture.pane(), SIGNAL(snapshotPublished(quint64)));
@@ -1825,7 +2332,7 @@ void TestTypstEditor::outlineScopeAndModesPreserveSource() {
   QVERIFY(root.isValid());
   const auto main = QStringLiteral("= Main\n#include \"chapter.typ\"\n= End\n");
   const auto chapter = QStringLiteral("== Imported\n");
-  EditorFixture fixture(root.path(), main, VTypstEditor::Mode::Edit, {}, false, true);
+  EditorFixture fixture(m_runtime, root.path(), main, VTypstEditor::Mode::Edit, {}, false, true);
   fixture.editor.setFileOverlay(QStringLiteral("chapter.typ"), chapter);
   auto *document = fixture.editor.document();
   QTextCursor cursor(document);
@@ -1930,7 +2437,7 @@ void TestTypstEditor::outlineScopeAndModesPreserveSource() {
 void TestTypstEditor::supersededCompileCannotPublishOutline() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  EditorFixture fixture(root.path(), shortSource(QStringLiteral("= Baseline")));
+  EditorFixture fixture(m_runtime, root.path(), shortSource(QStringLiteral("= Baseline")));
   QSignalSpy updates(&fixture.editor, &VTypstEditor::headingsUpdated);
   QVERIFY2(waitUntil([&]() { return fixture.editor.getHeadings().size() == 1; }),
            qPrintable(fixture.editor.compileMessage()));
@@ -2034,7 +2541,8 @@ void TestTypstEditor::independentEditPreviews() {
   QVERIFY(root.isValid());
   const auto source = shortSource(
       QStringLiteral("#set text(fill: rgb(\"#ff0000\"), size: 24pt)\n= Preview\n$ x^2 $\nAfter"));
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, {}, inplace, live);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, inplace,
+                        live);
   QSignalSpy published(fixture.pane(), SIGNAL(snapshotPublished(quint64)));
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
   QVERIFY(fixture.edit()->isVisible());
@@ -2105,7 +2613,7 @@ void TestTypstEditor::combinedPreviewsAdvanceWhilePdfSelectionIsDeferred() {
   QVERIFY(root.isValid());
   const auto source = shortSource(
       QStringLiteral("#set text(fill: rgb(\"#ff0000\"), size: 24pt)\n= Before\n$ x^2 $\nAfter"));
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, {}, true, true);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, true, true);
   QSignalSpy published(fixture.pane(), SIGNAL(snapshotPublished(quint64)));
   auto exports = observePdfExports(&fixture.editor);
   QVERIFY(exports);
@@ -2180,7 +2688,7 @@ void TestTypstEditor::pdfZoomModeNotifications() {
   using ZoomMode = VTypstEditor::PdfZoomMode;
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  auto config = editorConfig(root.path());
+  auto config = editorConfig(root.path(), &m_runtime);
   config->m_initialZoom = 1.25;
   VTypstEditor editor(config, QSharedPointer<TextEditorParameters>::create());
   auto *pane = editor.findChild<QAbstractScrollArea *>(QStringLiteral("typstPdf"));
@@ -2257,7 +2765,7 @@ void TestTypstEditor::pdfFitBeforePublication() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
   const auto source = shortSource(QStringLiteral("Restored preview camera."));
-  EditorFixture fixture(root.path(), source);
+  EditorFixture fixture(m_runtime, root.path(), source);
   auto *pane = fixture.pane();
   QVERIFY(pane);
   const auto *meta = pane->metaObject();
@@ -2336,7 +2844,7 @@ void TestTypstEditor::pdfZoomPublicationIsReentrant() {
   const auto source = QStringLiteral("#import \"size.typ\": width, height\n"
                                      "#set page(width: width, height: height, margin: 16pt)\n"
                                      "Camera publication remains reentrant.");
-  EditorFixture fixture(root.path(), source);
+  EditorFixture fixture(m_runtime, root.path(), source);
   fixture.editor.setFileOverlay(QStringLiteral("size.typ"),
                                 QStringLiteral("#let width = 240pt\n#let height = 160pt"));
   auto *pane = fixture.pane();
@@ -2396,7 +2904,7 @@ void TestTypstEditor::pdfZoomWheelAndContextMenu() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
   const auto source = shortSource(QStringLiteral("Native camera gestures."));
-  EditorFixture fixture(root.path(), source);
+  EditorFixture fixture(m_runtime, root.path(), source);
   auto *pane = fixture.pane();
   QVERIFY(pane);
   QVERIFY2(waitUntil([&]() { return fixture.editor.pdfPageCount() == 1; }),
@@ -2484,7 +2992,8 @@ void TestTypstEditor::modesPreserveSourceUndoAndSelection() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
   const auto original = shortSource(QStringLiteral("Same source document."));
-  EditorFixture fixture(root.path(), original, VTypstEditor::Mode::Edit, {}, true, false);
+  EditorFixture fixture(m_runtime, root.path(), original, VTypstEditor::Mode::Edit, {}, true,
+                        false);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
   auto *document = fixture.editor.document();
   document->setModified(false);
@@ -2542,8 +3051,9 @@ void TestTypstEditor::modesPreserveSourceUndoAndSelection() {
 void TestTypstEditor::hiddenSourceAndImportChangesReachPdf() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  EditorFixture fixture(root.path(), shortSource(QStringLiteral(
-                                         "#import \"chapter.typ\": phrase\nInitial: #phrase")));
+  EditorFixture fixture(
+      m_runtime, root.path(),
+      shortSource(QStringLiteral("#import \"chapter.typ\": phrase\nInitial: #phrase")));
   fixture.editor.setFileOverlay(QStringLiteral("chapter.typ"),
                                 QStringLiteral("#let phrase = [unsaved import]"));
   QVERIFY(fixture.pane());
@@ -2570,10 +3080,46 @@ void TestTypstEditor::hiddenSourceAndImportChangesReachPdf() {
   QVERIFY(!QFileInfo::exists(root.filePath(QStringLiteral("chapter.typ"))));
 }
 
+void TestTypstEditor::diskDependenciesRecoverAfterReplacementAndRecreation() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto chapter = root.filePath(QStringLiteral("chapter.typ"));
+  QVERIFY(writeFixture(chapter, QByteArrayLiteral("#let phrase = [Original disk import]")));
+  EditorFixture fixture(m_runtime, root.path(),
+                        shortSource(QStringLiteral("#import \"chapter.typ\": phrase\n#phrase")));
+  QSignalSpy published(fixture.pane(), SIGNAL(snapshotPublished(quint64)));
+  QVERIFY(published.isValid());
+  QVERIFY2(waitUntil([&] { return published.count() == 1; }),
+           qPrintable(fixture.editor.compileMessage()));
+  QCOMPARE(fixture.selectPage().trimmed(), QStringLiteral("Original disk import"));
+  fixture.clearSelection();
+
+  const auto replacement = root.filePath(QStringLiteral("replacement.typ"));
+  QVERIFY(writeFixture(replacement, QByteArrayLiteral("#let phrase = [Replaced disk import]")));
+  QVERIFY(QFile::remove(chapter));
+  QVERIFY(QFile::rename(replacement, chapter));
+  QVERIFY2(waitUntil([&] { return published.count() == 2; }),
+           qPrintable(fixture.editor.compileMessage()));
+  QCOMPARE(fixture.selectPage().trimmed(), QStringLiteral("Replaced disk import"));
+  fixture.clearSelection();
+
+  QVERIFY(QFile::remove(chapter));
+  QVERIFY(waitUntil(
+      [&] { return fixture.editor.compileStatus() == VTypstEditor::CompileStatus::Error; }));
+  QCOMPARE(published.count(), 2);
+  QCOMPARE(fixture.selectPage().trimmed(), QStringLiteral("Replaced disk import"));
+  fixture.clearSelection();
+  QVERIFY(writeFixture(chapter, QByteArrayLiteral("#let phrase = [Recreated disk import]")));
+  QVERIFY2(waitUntil([&] { return published.count() == 3; }),
+           qPrintable(fixture.editor.compileMessage()));
+  QCOMPARE(fixture.selectPage().trimmed(), QStringLiteral("Recreated disk import"));
+  QVERIFY(fixture.editor.diagnostics().isEmpty());
+}
+
 void TestTypstEditor::diagnosticsPreserveLastGoodOutput() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  EditorFixture fixture(root.path(), QStringLiteral("#let broken = ("));
+  EditorFixture fixture(m_runtime, root.path(), QStringLiteral("#let broken = ("));
   QSignalSpy published(fixture.pane(), SIGNAL(snapshotPublished(quint64)));
   QVERIFY2(waitUntil([&]() {
              return fixture.editor.compileStatus() == VTypstEditor::CompileStatus::Error;
@@ -2610,12 +3156,13 @@ void TestTypstEditor::diagnosticsPreserveLastGoodOutput() {
 void TestTypstEditor::selectionDefersPublicationAcrossScrollAndModes() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  auto config = editorConfig(root.path());
+  auto config = editorConfig(root.path(), &m_runtime);
   config->m_maxCacheBytes = 8 * 1024 * 1024;
   const auto pages =
       QStringLiteral("#set page(width: 320pt, height: 400pt, margin: 20pt)\n"
                      "Before update.\n#pagebreak()\nMiddle page.\n#pagebreak()\nLast page.");
-  EditorFixture fixture(root.path(), pages, VTypstEditor::Mode::Edit, config, false, true);
+  EditorFixture fixture(m_runtime, root.path(), pages, VTypstEditor::Mode::Edit, config, false,
+                        true);
   QSignalSpy published(fixture.pane(), SIGNAL(snapshotPublished(quint64)));
   QVERIFY2(waitUntil([&]() { return published.count() == 1; }),
            qPrintable(fixture.editor.compileMessage()));
@@ -2685,7 +3232,8 @@ void TestTypstEditor::openingPreservesSourcePosition() {
   for (int index = 0; index < 120; ++index) {
     source += QStringLiteral("Line %1: remembered source position. $x^2$\n\n").arg(index);
   }
-  EditorFixture fixture(root.path(), reset ? shortSource(QStringLiteral("Outgoing")) : source,
+  EditorFixture fixture(m_runtime, root.path(),
+                        reset ? shortSource(QStringLiteral("Outgoing")) : source,
                         VTypstEditor::Mode::Edit, {}, true, true);
   if (reset) {
     QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
@@ -2729,7 +3277,7 @@ void TestTypstEditor::sideBySideScrollSync() {
   for (int line = 0; line < 120; ++line) {
     source += QStringLiteral("Line %1: scrolling keeps both views together.\n\n").arg(line);
   }
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
   auto *pane = fixture.pane();
   auto *edit = fixture.edit();
   auto *sourceBar = edit->verticalScrollBar();
@@ -2863,7 +3411,7 @@ void TestTypstEditor::scrollSyncWithNonScrollableSource() {
   QVERIFY(root.isValid());
   const auto source = QStringLiteral("#set page(width: 320pt, height: 440pt)\n"
                                      "First\n#pagebreak()\nSecond\n#pagebreak()\nThird");
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
   QSignalSpy published(fixture.pane(), SIGNAL(snapshotPublished(quint64)));
   QVERIFY2(waitUntil([&]() { return published.count() == 1; }),
            qPrintable(fixture.editor.compileMessage()));
@@ -2884,23 +3432,23 @@ void TestTypstEditor::cursorLocationFlashesThreeTimes() {
   QVERIFY(root.isValid());
   const auto source = shortSource(QString::fromUtf8("// \xf0\x9f\x98\x80\nMapped cursor target."));
   const int offset = source.indexOf(QStringLiteral("cursor")) + 2;
-  Helper helper(root.path());
-  QVERIFY2(helper.start(), qPrintable(helper.details()));
-  QVERIFY2(helper.compile(source), qPrintable(helper.details()));
-  const auto snapshot = helper.reply.header.value(QStringLiteral("snapshot"));
-  QVERIFY2(helper.request({{QStringLiteral("op"), QStringLiteral("sourceToOutput")},
+  NativeSession native(root.path());
+  QVERIFY2(native.start(), qPrintable(native.details()));
+  QVERIFY2(native.compile(source), qPrintable(native.details()));
+  const auto snapshot = native.reply.header.value(QStringLiteral("snapshot"));
+  QVERIFY2(native.request({{QStringLiteral("op"), QStringLiteral("sourceToOutput")},
                            {QStringLiteral("snapshot"), snapshot},
                            {QStringLiteral("file"), QStringLiteral("main.typ")},
                            {QStringLiteral("offset"), offset}}),
-           qPrintable(helper.details()));
-  const auto locations = helper.reply.header.value(QStringLiteral("locations")).toArray();
+           qPrintable(native.details()));
+  const auto locations = native.reply.header.value(QStringLiteral("locations")).toArray();
   QVERIFY(!locations.isEmpty());
   const auto location = locations.first().toObject();
   QCOMPARE(location.value(QStringLiteral("page")).toInt(), 0);
   const QPointF point(location.value(QStringLiteral("x")).toDouble(),
                       location.value(QStringLiteral("y")).toDouble());
 
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
   auto *pane = fixture.pane();
   QSignalSpy published(pane, SIGNAL(snapshotPublished(quint64)));
   QVERIFY2(waitUntil([&]() { return published.count() == 1; }),
@@ -2957,7 +3505,7 @@ void TestTypstEditor::cursorHighlightFollowsLatestPublication() {
       QStringLiteral("#set page(width: 240pt, height: 700pt, margin: (x: 24pt, y: 100pt))\n") +
       QStringLiteral("// source padding\n").repeated(100) +
       QStringLiteral("First target.\n#pagebreak()\nLast target.");
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
   auto *pane = fixture.pane();
   QSignalSpy published(pane, SIGNAL(snapshotPublished(quint64)));
   QVERIFY2(waitUntil([&]() { return published.count() == 1; }),
@@ -3033,7 +3581,7 @@ void TestTypstEditor::headingCursorTargetsTitleInsteadOfOutline() {
   const auto source =
       QStringLiteral("#set page(width: 320pt, height: 700pt, margin: 30pt)\n"
                      "#outline()\n#pagebreak()\n= Actual title\nBody below the title.");
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
   auto *pane = fixture.pane();
   QSignalSpy published(pane, SIGNAL(snapshotPublished(quint64)));
   QVERIFY2(waitUntil([&]() { return published.count() == 1; }),
@@ -3078,7 +3626,7 @@ void TestTypstEditor::inPlaceReservationsDoNotEditSource() {
   QVERIFY(root.isValid());
   const auto source =
       QStringLiteral("#set text(fill: red, size: 24pt)\nBefore\n$ x^2 + y^2 = z^2 $\nAfter");
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
   fixture.edit()->setLineWrapMode(QTextEdit::NoWrap);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
   auto *document = fixture.editor.document();
@@ -3137,11 +3685,12 @@ void TestTypstEditor::inPlaceReservationsDoNotEditSource() {
 void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  auto config = editorConfig(root.path());
+  auto config = editorConfig(root.path(), &m_runtime);
   config->m_previewMaxHeight = 160;
   const auto source = QStringLiteral("#set text(size: 24pt)\n#for color in (rgb(\"#ff0000\"), "
                                      "rgb(\"#0000ff\")) { text(fill: color)[$x$] } $y$\nAfter");
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, config, true, false);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, config, true,
+                        false);
   const auto repeated = [&]() -> QWidget * {
     for (auto *entry : fixture.editor.findChildren<QWidget *>(QStringLiteral("typstPreviewCard"))) {
       if (coloredPixels(widgetImage(entry), true) > 10)
@@ -3398,7 +3947,7 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
 void TestTypstEditor::supersededCompileCannotPublish() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  EditorFixture fixture(root.path(), shortSource(QStringLiteral("Baseline.")));
+  EditorFixture fixture(m_runtime, root.path(), shortSource(QStringLiteral("Baseline.")));
   QSignalSpy published(fixture.pane(), SIGNAL(snapshotPublished(quint64)));
   QVERIFY2(waitUntil([&]() { return published.count() == 1; }),
            qPrintable(fixture.editor.compileMessage()));
@@ -3460,14 +4009,15 @@ void TestTypstEditor::syntaxHighlightsSurviveRehighlightAndThemeChanges() {
   QVERIFY(root.isValid());
   const auto lightPath = root.filePath(QStringLiteral("light.theme"));
   QVERIFY(writeTypstTheme(lightPath, QStringLiteral("#aa2233")));
-  auto config = editorConfig(root.path());
+  auto config = editorConfig(root.path(), &m_runtime);
   config->m_textEditorConfig->m_theme = Theme::createThemeFromFile(lightPath);
   QVERIFY(config->m_textEditorConfig->m_theme);
   config->m_textEditorConfig->m_syntaxTheme = QStringLiteral("Breeze Dark");
   const auto source = QStringLiteral("// comment\n= Heading\n#let value = 42\n"
                                      "#let label = \"string\"\n#text(\"call\")\n"
                                      "*strong* _emph_ `raw`\n$ x^2 $\nplain\n");
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, config, false, true);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, config, false,
+                        true);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
   auto *document = fixture.editor.document();
   const int stringPosition = source.indexOf(QStringLiteral("string"));
@@ -3528,7 +4078,7 @@ void TestTypstEditor::syntaxHighlightsSurviveRehighlightAndThemeChanges() {
 
   const auto darkPath = root.filePath(QStringLiteral("dark.theme"));
   QVERIFY(writeTypstTheme(darkPath, QStringLiteral("#ff8899"), false));
-  auto darkConfig = editorConfig(root.path());
+  auto darkConfig = editorConfig(root.path(), &m_runtime);
   darkConfig->m_textEditorConfig->m_theme = Theme::createThemeFromFile(darkPath);
   QVERIFY(darkConfig->m_textEditorConfig->m_theme);
   fixture.editor.setConfig(darkConfig);
@@ -3561,7 +4111,7 @@ void TestTypstEditor::syntaxHighlightsSurviveRehighlightAndThemeChanges() {
     QVERIFY(!syntaxFormatAt(document, commentPosition).hasProperty(QTextFormat::FontPointSize));
   }
   // Dropping the section removes formatting; restoring it needs no source mutation.
-  auto unstyled = editorConfig(root.path());
+  auto unstyled = editorConfig(root.path(), &m_runtime);
   unstyled->m_textEditorConfig->m_theme = Theme::createThemeFromContent(QStringLiteral(
       R"({"metadata": {"type": "vtextedit"}, "editor-styles": {"Text": {"font-size": 11}}})"));
   fixture.editor.setConfig(unstyled);
@@ -3624,7 +4174,7 @@ void TestTypstEditor::rawCodeHighlightsUseSyntaxTheme() {
                                QStringLiteral("#aa2233"), false));
   QVERIFY(writeCodeSyntaxTheme(syntaxBPath, QStringLiteral("#7766bb"), QStringLiteral("#0055cc"),
                                QStringLiteral("#cc5500"), true));
-  auto configA = editorConfig(root.path());
+  auto configA = editorConfig(root.path(), &m_runtime);
   configA->m_textEditorConfig->m_theme = themeFromJson(editorTheme);
   configA->m_textEditorConfig->m_syntaxTheme = syntaxAPath;
   QVERIFY(configA->m_textEditorConfig->m_theme);
@@ -3708,7 +4258,8 @@ void TestTypstEditor::rawCodeHighlightsUseSyntaxTheme() {
     QVERIFY2(QString::fromUtf8(probe.context).contains(QString::fromUtf8(probe.token)),
              probe.token);
   }
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, configA, false, false);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, configA, false,
+                        false);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
   auto *document = fixture.editor.document();
   auto *highlighter = document->findChild<QSyntaxHighlighter *>();
@@ -4009,7 +4560,7 @@ void TestTypstEditor::rawCodeHighlightsFollowEditsAndErrors() {
   const auto syntaxPath = root.filePath(QStringLiteral("RawEditCode.theme"));
   QVERIFY(writeCodeSyntaxTheme(syntaxPath, QStringLiteral("#0033aa"), QStringLiteral("#a00060"),
                                QStringLiteral("#aa2233"), false));
-  auto config = editorConfig(root.path());
+  auto config = editorConfig(root.path(), &m_runtime);
   config->m_textEditorConfig->m_syntaxTheme = syntaxPath;
   config->m_textEditorConfig->m_theme = Theme::createThemeFromFile(path);
   QVERIFY(config->m_textEditorConfig->m_theme);
@@ -4017,7 +4568,8 @@ void TestTypstEditor::rawCodeHighlightsFollowEditsAndErrors() {
       QStringLiteral("```rust\nfn main() {\n  /* first\n  let n = 42;\n  second */\n"
                      "  let message = \"\u00e9\U0001f600\";\n  /// documentation\n"
                      "  if true { let value = 42; let base = 0xff; let f = 1.5; }\n}\n```\n");
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, config, false, false);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, config, false,
+                        false);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
   auto *document = fixture.editor.document();
   const auto color = [&](const QString &p_token) {
@@ -4191,10 +4743,11 @@ void TestTypstEditor::lazyHighlightsFollowPendingEdits() {
   QVERIFY(root.isValid());
   const auto themePath = root.filePath(QStringLiteral("syntax.theme"));
   QVERIFY(writeTypstTheme(themePath, QStringLiteral("#aa2233")));
-  auto config = editorConfig(root.path());
+  auto config = editorConfig(root.path(), &m_runtime);
   config->m_textEditorConfig->m_theme = Theme::createThemeFromFile(themePath);
   const auto source = QStringLiteral("/* first\nsecond */\n#let label = \"string\"\nplain\n");
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, config, true, false);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, config, true,
+                        false);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
   config->m_debounceMs = 60000;
   fixture.editor.setConfig(config);
@@ -4271,10 +4824,11 @@ void TestTypstEditor::lazyHighlightsFollowPendingEdits() {
 void TestTypstEditor::lazyPreviewsFollowPendingEdits() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  auto config = editorConfig(root.path());
+  auto config = editorConfig(root.path(), &m_runtime);
   const auto source = QStringLiteral("#set text(fill: red, size: 24pt)\nBefore\n"
                                      "$x^2$\nBetween\n$ y^2 $\nAfter");
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, config, true, false);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, config, true,
+                        false);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
   const auto cards = [&]() {
     auto result = fixture.editor.findChildren<QWidget *>(QStringLiteral("typstPreviewCard"));
@@ -4362,7 +4916,7 @@ void TestTypstEditor::rasterHandoffRetainsLastGoodWhileTyping() {
   QVERIFY(root.isValid());
   auto source = splitSource();
   source.replace(QStringLiteral("fill: red"), QStringLiteral("fill: red, size: 14pt"));
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, {}, true, false);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, true, false);
   fixture.edit()->setLineWrapMode(QTextEdit::NoWrap);
   TypstRasterObserver observer;
   QVERIFY(observeRasters(&fixture.editor, &observer));
@@ -4470,7 +5024,7 @@ void TestTypstEditor::rasterHandoffTransitions() {
   const auto source = shortSource(QStringLiteral("#set text(fill: red, size: 24pt)\n$ x $\nAfter"));
   const auto replacement = shortSource(QStringLiteral(
       "#set text(fill: rgb(\"#0000ff\"), size: 24pt)\n$ Omega^3 + Omega^2 + Omega $\nAfter"));
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, {}, true, false);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, true, false);
   TypstRasterObserver observer;
   QVERIFY(observeRasters(&fixture.editor, &observer));
   quint64 baselineEpoch = 0;
@@ -4568,7 +5122,7 @@ void TestTypstEditor::rasterHandoffTransitions() {
     if (transition == 1)
       QCOMPARE(fixture.editor.activeFile(), QStringLiteral("other.typ"));
     if (transition == 3) {
-      QVERIFY2(reusedId, "Retry must exercise a new helper epoch reusing its first snapshot ID");
+      QVERIFY2(reusedId, "Retry must exercise a new session epoch reusing its first snapshot ID");
       QVERIFY(retained);
     }
   }
@@ -4591,8 +5145,8 @@ void TestTypstEditor::lazyStateClearsOnReplacement() {
   QFETCH(int, replacement);
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  auto config = editorConfig(root.path());
-  EditorFixture fixture(root.path(), QStringLiteral("// comment\n$ x^2 $\n"),
+  auto config = editorConfig(root.path(), &m_runtime);
+  EditorFixture fixture(m_runtime, root.path(), QStringLiteral("// comment\n$ x^2 $\n"),
                         VTypstEditor::Mode::Edit, config, true, false);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
   QVERIFY(waitUntil(
@@ -4631,13 +5185,14 @@ void TestTypstEditor::syntaxHighlightsFollowEditsAndErrors() {
   QVERIFY(root.isValid());
   const auto themePath = root.filePath(QStringLiteral("syntax.theme"));
   QVERIFY(writeTypstTheme(themePath, QStringLiteral("#aa2233")));
-  auto config = editorConfig(root.path());
+  auto config = editorConfig(root.path(), &m_runtime);
   config->m_textEditorConfig->m_theme = Theme::createThemeFromFile(themePath);
   QVERIFY(config->m_textEditorConfig->m_theme);
   const auto suffix = QStringLiteral("\U0001F680") + QStringLiteral(" #text(\"before\")\nplain\n");
   const auto source = QStringLiteral("/* first\nsecond */\n") + suffix;
   const auto uncommented = QStringLiteral(" first\nsecond \n") + suffix;
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, config, false, true);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, config, false,
+                        true);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
   auto *document = fixture.editor.document();
   const int firstPosition = source.indexOf(QStringLiteral("first"));
@@ -4729,7 +5284,7 @@ void TestTypstEditor::pdfVisiblePagesStaySharpAndRecover() {
   QVERIFY(root.isValid());
   const auto mode = sideBySide ? VTypstEditor::Mode::Edit : VTypstEditor::Mode::Read;
   const auto source = sharpPdfSource();
-  auto config = editorConfig(root.path());
+  auto config = editorConfig(root.path(), &m_runtime);
   config->m_maxCacheBytes = 512 * 1024 * 1024;
   config->m_maxRasterPixels = 16 * 1024 * 1024;
   QSize viewportSize;
@@ -4740,7 +5295,7 @@ void TestTypstEditor::pdfVisiblePagesStaySharpAndRecover() {
   {
     // Measure a real, laid-out PDF before selecting the budget. Recreate the editor
     // afterward so an unrestricted cached image cannot satisfy the sharpness test.
-    EditorFixture layout(root.path(), source, mode, config, false, sideBySide);
+    EditorFixture layout(m_runtime, root.path(), source, mode, config, false, sideBySide);
     auto exports = observePdfExports(&layout.editor);
     QVERIFY(exports && exports->isValid());
     const auto *meta = layout.pane()->metaObject();
@@ -4775,7 +5330,7 @@ void TestTypstEditor::pdfVisiblePagesStaySharpAndRecover() {
   const int pixelBudget = int(pagePixels * 3 / 2);
   config->m_maxRasterPixels = pixelBudget;
   QVERIFY(qint64(config->m_maxCacheBytes) > qint64(pixelBudget) * 4 + 32 * 1024 * 1024);
-  EditorFixture fixture(root.path(), source, mode, config, false, sideBySide);
+  EditorFixture fixture(m_runtime, root.path(), source, mode, config, false, sideBySide);
   auto *pane = fixture.pane();
   QVERIFY(pane);
   auto exports = observePdfExports(&fixture.editor);
@@ -4903,7 +5458,7 @@ void TestTypstEditor::pdfVisiblePagesStaySharpAndRecover() {
 void TestTypstEditor::pdfBudgetFailurePreservesOutputAndRecovers() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  EditorFixture fixture(root.path(),
+  EditorFixture fixture(m_runtime, root.path(),
                         shortSource(QStringLiteral("Preserved across export failure.")));
   QSignalSpy published(fixture.pane(), SIGNAL(snapshotPublished(quint64)));
   QVERIFY2(waitUntil([&]() { return published.count() == 1; }),
@@ -4946,7 +5501,7 @@ void TestTypstEditor::resourceRequestsAcrossDocumentReset() {
   QVERIFY(writeResourceImage(path, Qt::red, &red));
   const auto source =
       shortSource(QStringLiteral("Held selection\n\n#image(\"picture.png\", width: 60pt)"));
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Read, {}, false, false);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Read, {}, false, false);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
   QRect bounds;
   QVERIFY(waitUntil(
@@ -4954,19 +5509,16 @@ void TestTypstEditor::resourceRequestsAcrossDocumentReset() {
   const auto context = resourceMenuAt(fixture.editor, fixture.pane()->viewport(), bounds.center());
   QVERIFY(context.m_imageId);
   QVERIFY(!fixture.selectPage().isEmpty());
-  auto *process = fixture.editor.findChild<QProcess *>();
-  QVERIFY(process);
-  const auto pid = process->processId();
   QSignalSpy data(&fixture.editor, &VTypstEditor::imageDataReady);
   fixture.editor.requestImageData(context, 1);
   QVERIFY(waitUntil([&] { return data.count() == 1; }));
   QCOMPARE(data.first()[1].toByteArray(), red);
 
-  // Delay delivery of an actual image reply, leaving its serial request in flight.
-  auto blockedReply = std::make_unique<QSignalBlocker>(process);
+  // Delivery is queued: retire/reset before returning to the GUI event loop.
+  // The first request is admitted, while the second is still bridge-queued.
   fixture.editor.requestImageData(context, 2);
-  QVERIFY(process->bytesAvailable() > 0 || process->waitForReadyRead(3000));
   fixture.editor.requestImageData(context, 3);
+  QCOMPARE(data.count(), 1);
   if (reset) {
     fixture.editor.resetForNewDocument();
     QVERIFY(!fixture.editor.isResourceContextValid(context));
@@ -4981,8 +5533,6 @@ void TestTypstEditor::resourceRequestsAcrossDocumentReset() {
                                   source + QStringLiteral("\nNew source"));
     QVERIFY(fixture.editor.isResourceContextValid(context));
   }
-  blockedReply.reset();
-  QVERIFY(QMetaObject::invokeMethod(process, "readyReadStandardOutput", Qt::DirectConnection));
   QVERIFY(waitUntil([&] { return data.count() == 3; }));
   for (const auto &reply : data) {
     const auto id = reply[0].toULongLong();
@@ -4996,8 +5546,8 @@ void TestTypstEditor::resourceRequestsAcrossDocumentReset() {
       QVERIFY(!reply[3].toString().isEmpty());
     }
   }
-  QCOMPARE(process->processId(), pid);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  QCOMPARE(data.count(), 3);
   if (reset) {
     QVERIFY(waitUntil([&] {
       return coloredPixels(widgetImage(fixture.pane()->viewport()), false, &bounds) > 20;
@@ -5017,8 +5567,8 @@ void TestTypstEditor::resourceRequestsAcrossDocumentReset() {
 void TestTypstEditor::documentResetInvalidationCanDestroyEditor() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  auto fixture =
-      std::make_unique<EditorFixture>(root.path(), shortSource(QStringLiteral("Old document")));
+  auto fixture = std::make_unique<EditorFixture>(m_runtime, root.path(),
+                                                 shortSource(QStringLiteral("Old document")));
   QVERIFY(fixture->ready());
   QPointer<VTypstEditor> editor(&fixture->editor);
   bool invalidated = false;
@@ -5040,12 +5590,13 @@ void TestTypstEditor::documentResetClearsPublishedState() {
   QVERIFY(dependency.open(QIODevice::WriteOnly));
   QVERIFY(dependency.write("Dependency A.") > 0);
   dependency.close();
-  auto config = editorConfig(root.path());
+  auto config = editorConfig(root.path(), &m_runtime);
   const auto pageSetup = QStringLiteral("#set page(width: 240pt, height: 700pt, margin: 16pt)\n");
   const auto source =
       pageSetup +
       QStringLiteral("= Heading A\n#include \"dependency.typ\"\n$ x^2 $\n#pagebreak()\nSearch A.");
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, config, true, true);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, config, true,
+                        true);
   QSignalSpy published(fixture.pane(), SIGNAL(snapshotPublished(quint64)));
   QVERIFY2(waitUntil([&]() {
              return published.count() == 1 && !previewImages(fixture.editor).isEmpty();
@@ -5054,17 +5605,12 @@ void TestTypstEditor::documentResetClearsPublishedState() {
   auto *sourceEditor = fixture.editor.getTextEditor();
   auto *document = fixture.editor.document();
   auto *pane = fixture.pane();
-  auto *process = fixture.editor.findChild<QProcess *>();
   auto *splitter = fixture.editor.findChild<QSplitter *>();
-  QVERIFY(process);
   QVERIFY(splitter);
-  const auto pid = process->processId();
-  QVERIFY(pid > 0);
-  const auto *bridge = process->parent();
+  const auto *bridge = compilerBridge(&fixture.editor);
+  QVERIFY(bridge);
   QSignalSpy generations(bridge, SIGNAL(generationChanged(quint64, quint64)));
   QVERIFY(generations.isValid());
-  QSignalSpy starts(process, &QProcess::started);
-  QSignalSpy exits(process, &QProcess::finished);
   fixture.editor.setPdfZoom(1.4);
   splitter->setSizes({600, 400});
   const auto sizes = splitter->sizes();
@@ -5149,11 +5695,8 @@ void TestTypstEditor::documentResetClearsPublishedState() {
   QCOMPARE(fixture.editor.getTextEditor(), sourceEditor);
   QCOMPARE(fixture.editor.document(), document);
   QCOMPARE(fixture.pane(), pane);
-  QCOMPARE(fixture.editor.findChild<QProcess *>(), process);
-  QCOMPARE(process->parent(), bridge);
-  QCOMPARE(process->processId(), pid);
-  QCOMPARE(starts.count(), 0);
-  QCOMPARE(exits.count(), 0);
+  QCOMPARE(compilerBridge(&fixture.editor), bridge);
+  QCOMPARE(fixture.editor.getConfig().m_runtime, &m_runtime);
   QCOMPARE(fixture.editor.pdfZoom(), zoom);
   QCOMPARE(fixture.editor.pdfZoomMode(), zoomMode);
   QCOMPARE(splitter->sizes(), sizes);
@@ -5162,15 +5705,12 @@ void TestTypstEditor::documentResetClearsPublishedState() {
 void TestTypstEditor::documentResetRetiresPendingPdf() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  EditorFixture fixture(root.path(), shortSource(QStringLiteral("Published A.")));
+  EditorFixture fixture(m_runtime, root.path(), shortSource(QStringLiteral("Published A.")));
   QSignalSpy published(fixture.pane(), SIGNAL(snapshotPublished(quint64)));
   QVERIFY2(waitUntil([&]() { return published.count() == 1; }),
            qPrintable(fixture.editor.compileMessage()));
   auto *pane = fixture.pane();
   auto *source = fixture.editor.getTextEditor();
-  auto *process = fixture.editor.findChild<QProcess *>();
-  QVERIFY(process);
-  const auto pid = process->processId();
   fixture.editor.fitPdfWidth();
   fixture.editor.setInplacePreviewEnabled(false);
   fixture.editor.setLivePreviewEnabled(true);
@@ -5208,8 +5748,7 @@ void TestTypstEditor::documentResetRetiresPendingPdf() {
     QCOMPARE(fixture.selectPage().trimmed(), QStringLiteral("Published B %1.").arg(round));
     QCOMPARE(fixture.pane(), pane);
     QCOMPARE(fixture.editor.getTextEditor(), source);
-    QCOMPARE(fixture.editor.findChild<QProcess *>(), process);
-    QCOMPARE(process->processId(), pid);
+    QCOMPARE(fixture.editor.getConfig().m_runtime, &m_runtime);
     QCOMPARE(fixture.editor.currentPdfPage(), 0);
     QCOMPARE(fixture.editor.pdfZoomMode(), VTypstEditor::PdfZoomMode::Width);
   }
@@ -5222,63 +5761,53 @@ void TestTypstEditor::documentResetDrainsTimedOutRequest() {
   QVERIFY(diskSource.open(QIODevice::WriteOnly));
   QVERIFY(diskSource.write("Saved A dependency.") > 0);
   diskSource.close();
-  auto config = editorConfig(root.path());
-  EditorFixture fixture(root.path(), shortSource(QStringLiteral("Unsaved A overlay.")),
+  auto config = editorConfig(root.path(), &m_runtime);
+  EditorFixture fixture(m_runtime, root.path(), shortSource(QStringLiteral("Unsaved A overlay.")),
                         VTypstEditor::Mode::Read, config);
   QSignalSpy published(fixture.pane(), SIGNAL(snapshotPublished(quint64)));
-  QVERIFY2(waitUntil([&]() { return published.count() == 1; }),
+  QVERIFY2(waitUntil([&] { return published.count() == 1; }),
            qPrintable(fixture.editor.compileMessage()));
-  auto *process = fixture.editor.findChild<QProcess *>();
-  QVERIFY(process);
-  const auto pid = process->processId();
   auto *source = fixture.editor.getTextEditor();
   auto *pane = fixture.pane();
-  QSignalSpy starts(process, &QProcess::started);
-  QSignalSpy exits(process, &QProcess::finished);
-  std::unique_ptr<QSignalBlocker> blockedReply;
-  int compiling = 0;
+  RuntimeLaneGate gate(m_runtime);
+  QVERIFY(gate.entered());
+  auto *delivery = m_runtime.findChild<QObject *>(QStringLiteral("typst-delivery"));
+  QVERIFY(delivery);
+  QCoreApplication::sendPostedEvents(delivery, QEvent::MetaCall);
   int ready = 0;
-  bool resetInFlight = false;
   const auto connection =
       connect(&fixture.editor, &VTypstEditor::compileStatusChanged, &fixture.editor,
               [&](VTypstEditor::CompileStatus p_status, const QString &) {
                 if (p_status == VTypstEditor::CompileStatus::Ready)
                   ++ready;
-                // Invalidation is first; the second event follows the real compile write.
-                if (!resetInFlight && p_status == VTypstEditor::CompileStatus::Compiling &&
-                    ++compiling == 2) {
-                  resetInFlight = true;
-                  // Delay delivery, not execution, of the real helper's response. This makes
-                  // the old request's actual timer expire deterministically after the reset.
-                  blockedReply = std::make_unique<QSignalBlocker>(process);
-                  source->setText(shortSource(QStringLiteral("Queued A must never compile.")));
-                  fixture.editor.resetForNewDocument();
-                  config->m_compileTimeoutMs = operationTimeout;
-                  fixture.editor.setConfig(config);
-                  fixture.editor.setProject(root.path(), QStringLiteral("B.typ"));
-                  fixture.editor.setActiveFile(QStringLiteral("B.typ"));
-                  source->setText(shortSource(QStringLiteral("#include \"main.typ\"\n\nOnly B.")));
-                  fixture.editor.finishDocumentReset();
-                }
               });
+  // Hold both lanes before dispatch. A real soft deadline retires the admitted
+  // old request; reset and Retry must not admit its superseded A source later.
   config->m_compileTimeoutMs = 50;
   fixture.editor.setConfig(config);
-  QVERIFY2(waitUntil([&]() {
-             return resetInFlight &&
-                    fixture.editor.compileStatus() == VTypstEditor::CompileStatus::Error;
+  QVERIFY2(waitUntil([&] {
+             return fixture.editor.compileStatus() == VTypstEditor::CompileStatus::Error;
            }),
            qPrintable(fixture.editor.compileMessage()));
+  source->setText(shortSource(QStringLiteral("Queued A must never compile.")));
+  fixture.editor.resetForNewDocument();
+  config->m_compileTimeoutMs = operationTimeout;
+  fixture.editor.setConfig(config);
+  fixture.editor.setProject(root.path(), QStringLiteral("B.typ"));
+  fixture.editor.setActiveFile(QStringLiteral("B.typ"));
+  source->setText(shortSource(QStringLiteral("#include \"main.typ\"\n\nOnly B.")));
+  fixture.editor.finishDocumentReset();
   QCOMPARE(fixture.editor.pdfPageCount(), 0);
   QCOMPARE(ready, 0);
   QCOMPARE(published.count(), 1);
-  QCOMPARE(process->state(), QProcess::Running);
-  QCOMPARE(process->processId(), pid);
-  QCOMPARE(starts.count(), 0);
-  QCOMPARE(exits.count(), 0);
-  // Blocked Qt signals are not replayed; explicitly deliver the accumulated real bytes.
-  blockedReply.reset();
-  QVERIFY(QMetaObject::invokeMethod(process, "readyReadStandardOutput", Qt::DirectConnection));
-  QVERIFY2(waitUntil([&]() { return published.count() == 2; }),
+  bool guiResponsive = false;
+  QTimer::singleShot(0, &fixture.editor, [&] { guiResponsive = true; });
+  QVERIFY(waitUntil([&] { return guiResponsive; }));
+  fixture.editor.retryCompilation();
+  fixture.editor.retryCompilation();
+  QCOMPARE(published.count(), 1);
+  gate.release();
+  QVERIFY2(waitUntil([&] { return published.count() == 2; }),
            qPrintable(fixture.editor.compileMessage()));
   disconnect(connection);
   QCOMPARE(ready, 1);
@@ -5286,12 +5815,10 @@ void TestTypstEditor::documentResetDrainsTimedOutRequest() {
   QVERIFY(text.contains(QStringLiteral("Saved A dependency")));
   QVERIFY(text.contains(QStringLiteral("Only B")));
   QVERIFY(!text.contains(QStringLiteral("Unsaved A overlay")));
+  QVERIFY(!text.contains(QStringLiteral("Queued A")));
   QCOMPARE(fixture.editor.getTextEditor(), source);
   QCOMPARE(fixture.pane(), pane);
-  QCOMPARE(fixture.editor.findChild<QProcess *>(), process);
-  QCOMPARE(process->processId(), pid);
-  QCOMPARE(starts.count(), 0);
-  QCOMPARE(exits.count(), 0);
+  QCOMPARE(fixture.editor.getConfig().m_runtime, &m_runtime);
   QVERIFY(fixture.editor.diagnostics().isEmpty());
 }
 
@@ -5300,7 +5827,7 @@ void TestTypstEditor::repeatedCloseDuringPendingOutput() {
   QVERIFY(root.isValid());
   for (int round = 0; round < 3; ++round) {
     auto fixture = std::unique_ptr<EditorFixture>(
-        new EditorFixture(root.path(), shortSource(QStringLiteral("Close baseline."))));
+        new EditorFixture(m_runtime, root.path(), shortSource(QStringLiteral("Close baseline."))));
     QPointer<VTypstEditor> guarded(&fixture->editor);
     QSignalSpy published(fixture->pane(), SIGNAL(snapshotPublished(quint64)));
     QVERIFY2(waitUntil([&]() { return published.count() == 1; }),
@@ -5320,7 +5847,7 @@ void TestTypstEditor::repeatedCloseDuringPendingOutput() {
     QVERIFY(guarded.isNull());
     QCoreApplication::processEvents();
   }
-  EditorFixture finalFixture(root.path(),
+  EditorFixture finalFixture(m_runtime, root.path(),
                              shortSource(QStringLiteral("Alive after repeated close.")));
   QSignalSpy published(finalFixture.pane(), SIGNAL(snapshotPublished(quint64)));
   QVERIFY2(waitUntil([&]() { return published.count() == 1; }),
@@ -5339,7 +5866,7 @@ void TestTypstEditor::resourceContextMetadataAndGestures() {
                      "#figure(rotate(8deg, image(\"red.png\", width: 72pt)), caption: [Nested])\n"
                      "#link(destination)[#image(\"blue.png\", width: 72pt)]\n"
                      "// #image(\"red.png\")\n`#image(\"red.png\")`\nUnrelated text\n");
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
   QVERIFY(waitUntil([&]() { return fixture.editor.pdfPageCount() == 1; }));
   auto *document = fixture.editor.document();
@@ -5434,7 +5961,7 @@ void TestTypstEditor::resourceImageDataRetentionAndCancellation() {
   QVERIFY(writeResourceImage(path, Qt::red, &original));
   const auto source =
       shortSource(QStringLiteral("Retained label\n\n#image(\"picture.png\", width: 60pt)"));
-  EditorFixture fixture(root.path(), source);
+  EditorFixture fixture(m_runtime, root.path(), source);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
   QRect bounds;
   QVERIFY(waitUntil([&]() {
@@ -5503,7 +6030,7 @@ void TestTypstEditor::resourceResizePreservesSourceUndo() {
   QVERIFY(writeResourceImage(root.filePath(QStringLiteral("picture.png")), Qt::red));
   const auto source = shortSource(QStringLiteral("// 😀 é\n#image(\"picture.png\", alt: \"😀\", "
                                                  "width: /*keep*/ 1in, height: auto, /*tail*/)\n"));
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
   auto *document = fixture.editor.document();
   const auto original =
@@ -5576,7 +6103,7 @@ void TestTypstEditor::resourceResizeRejectsUnsafeContexts() {
   QVERIFY(writeResourceImage(root.filePath(QStringLiteral("picture.png")), Qt::red));
   QVERIFY(writeFixture(root.filePath(QStringLiteral("import.typ")),
                        QByteArray("#image(\"picture.png\", width: 60pt)")));
-  EditorFixture fixture(root.path(), shortSource(QStringLiteral("Baseline")),
+  EditorFixture fixture(m_runtime, root.path(), shortSource(QStringLiteral("Baseline")),
                         VTypstEditor::Mode::Edit, {}, false, true);
   QSignalSpy published(fixture.pane(), SIGNAL(snapshotPublished(quint64)));
   for (const auto &body :
@@ -5631,7 +6158,7 @@ void TestTypstEditor::resourceMenusFollowTheirSurface() {
   QVERIFY(writeResourceImage(root.filePath(QStringLiteral("picture.png")), Qt::red, &original));
   const auto source =
       shortSource(QStringLiteral("Held selection\n\n#image(\"picture.png\", width: 60pt)"));
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
   QRect bounds;
   QVERIFY(waitUntil([&]() {
@@ -5707,9 +6234,9 @@ void TestTypstEditor::resourceMenusSurviveDeletion() {
   QVERIFY(root.isValid());
   QVERIFY(writeResourceImage(root.filePath(QStringLiteral("picture.png")), Qt::red));
   const auto source = shortSource(QStringLiteral("#image(\"picture.png\", width: 60pt)"));
-  auto fixture = std::make_unique<EditorFixture>(root.path(), source, VTypstEditor::Mode::Edit,
-                                                 QSharedPointer<TypstEditorConfig>(), surface == 1,
-                                                 surface == 2);
+  auto fixture = std::make_unique<EditorFixture>(
+      m_runtime, root.path(), source, VTypstEditor::Mode::Edit, QSharedPointer<TypstEditorConfig>(),
+      surface == 1, surface == 2);
   QVERIFY2(fixture->ready(), qPrintable(fixture->editor.compileMessage()));
   QWidget *target = fixture->edit()->viewport();
   QPoint point;
@@ -5756,7 +6283,7 @@ void TestTypstEditor::resourceIndependentSnapshotRetention() {
     return shortSource(
         QStringLiteral("Retained selection\n\n#image(\"%1\", width: %2pt)").arg(name).arg(width));
   };
-  EditorFixture fixture(root.path(), source(QStringLiteral("red.png"), 60),
+  EditorFixture fixture(m_runtime, root.path(), source(QStringLiteral("red.png"), 60),
                         VTypstEditor::Mode::Edit, {}, true, true);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
   QRect bounds;
@@ -5847,7 +6374,7 @@ void TestTypstEditor::resourceInternalLinkNavigation() {
   QVERIFY(root.isValid());
   const auto source = shortSource(
       QStringLiteral("#link(<target>)[Internal destination]\n#pagebreak()\n= Target <target>"));
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, {}, false, false);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, false, false);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
   const auto context =
       sourceResourceAt(fixture, source.indexOf(QStringLiteral("Internal destination")) + 2);
@@ -5877,7 +6404,7 @@ void TestTypstEditor::resourceImageDataBoundsAndGeneratedPixels() {
       shortSource(QStringLiteral("#image(\"wide.svg\", width: 60pt, height: 20pt)\n"
                                  "#image(bytes((255, 0, 0, 0, 0, 255)), format: (encoding: "
                                  "\"rgb8\", width: 2, height: 1), width: 60pt)"));
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
   const auto oversized = sourceResourceAt(fixture, source.indexOf(QStringLiteral("wide.svg")) + 2);
   QVERIFY(oversized.m_imageId);
@@ -5905,7 +6432,7 @@ void TestTypstEditor::resourceImageDataBoundsAndGeneratedPixels() {
 
 void TestTypstEditor::resourceImageCompletionSurvivesDeletion_data() {
   QTest::addColumn<bool>("valid");
-  QTest::newRow("helper-success") << true;
+  QTest::newRow("native-success") << true;
   QTest::newRow("invalid-context") << false;
 }
 
@@ -5916,8 +6443,9 @@ void TestTypstEditor::resourceImageCompletionSurvivesDeletion() {
   QByteArray original;
   QVERIFY(writeResourceImage(root.filePath(QStringLiteral("picture.png")), Qt::red, &original));
   const auto source = shortSource(QStringLiteral("#image(\"picture.png\", width: 60pt)"));
-  auto fixture = std::make_unique<EditorFixture>(root.path(), source, VTypstEditor::Mode::Edit,
-                                                 QSharedPointer<TypstEditorConfig>(), false, false);
+  auto fixture =
+      std::make_unique<EditorFixture>(m_runtime, root.path(), source, VTypstEditor::Mode::Edit,
+                                      QSharedPointer<TypstEditorConfig>(), false, false);
   QVERIFY2(fixture->ready(), qPrintable(fixture->editor.compileMessage()));
   auto context = sourceResourceAt(*fixture, source.indexOf(QStringLiteral("picture.png")) + 2);
   QVERIFY(context.m_imageId);
@@ -5949,10 +6477,11 @@ void TestTypstEditor::resourceStaleInternalLinkEligibility() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
   QVERIFY(writeResourceImage(root.filePath(QStringLiteral("picture.png")), Qt::red));
-  auto config = editorConfig(root.path());
+  auto config = editorConfig(root.path(), &m_runtime);
   const auto source = shortSource(
       QStringLiteral("= Target <target>\n#link(<target>)[#image(\"picture.png\", width: 60pt)]"));
-  EditorFixture fixture(root.path(), source, VTypstEditor::Mode::Edit, config, true, true);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, config, true,
+                        true);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
   QRect bounds;
   QVERIFY(waitUntil([&]() {

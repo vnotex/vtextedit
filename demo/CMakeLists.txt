@@ -34,18 +34,37 @@ if(WIN32)
                 "$<TARGET_FILE:VTextEdit>"
                 "$<TARGET_FILE_DIR:${DEMO_TARGET}>"
         )
+        if(VTEXTEDIT_ENABLE_TYPST)
+            list(APPEND DEMO_RUNTIME_COMMANDS
+                COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                    "$<TARGET_FILE:VTextEditTypst>" "$<TARGET_FILE_DIR:${DEMO_TARGET}>"
+            )
+        endif()
     endforeach()
     add_custom_target(VTextEditDemoRuntime
         ${DEMO_RUNTIME_COMMANDS}
         DEPENDS VTextEdit
         VERBATIM
     )
+    if(VTEXTEDIT_ENABLE_TYPST)
+        add_dependencies(VTextEditDemoRuntime VTextEditTypst)
+    endif()
 endif()
 
+file(RELATIVE_PATH DEMO_INSTALL_LIBDIR "${CMAKE_INSTALL_FULL_BINDIR}" "${CMAKE_INSTALL_FULL_LIBDIR}")
+file(RELATIVE_PATH DEMO_BUNDLE_LIBDIR "${CMAKE_INSTALL_PREFIX}" "${CMAKE_INSTALL_FULL_LIBDIR}")
 set(SRC_FOLDER "../src")
 foreach(DEMO_TARGET IN LISTS DEMO_TARGETS)
     if(WIN32)
         add_dependencies(${DEMO_TARGET} VTextEditDemoRuntime)
+    endif()
+    if(APPLE)
+        set_property(TARGET ${DEMO_TARGET} APPEND PROPERTY INSTALL_RPATH
+            "@executable_path/../../../${DEMO_BUNDLE_LIBDIR}")
+    elseif(UNIX)
+        set_property(TARGET ${DEMO_TARGET} APPEND PROPERTY INSTALL_RPATH
+            "$ORIGIN/${DEMO_INSTALL_LIBDIR}")
+        set_property(TARGET ${DEMO_TARGET} PROPERTY BUILD_RPATH_USE_ORIGIN TRUE)
     endif()
     target_include_directories(${DEMO_TARGET} PRIVATE
         ${SRC_FOLDER}/include

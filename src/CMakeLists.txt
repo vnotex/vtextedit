@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.21)
 # — not the root CMakeLists.txt — is what the SOVERSION at the bottom of this file
 # actually reads. The two declarations MUST be bumped together; bumping only the
 # root leaves the installed library carrying the previous soname.
-project(VTextEdit VERSION 9.0.0 LANGUAGES C CXX)
+project(VTextEdit VERSION 10.0.0 LANGUAGES C CXX)
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
@@ -165,8 +165,10 @@ if(VTEXTEDIT_ENABLE_TYPST)
     target_sources(VTextEdit PRIVATE
         include/vtextedit/typstcompiler.h
         include/vtextedit/typsteditorconfig.h
+        include/vtextedit/typstruntime.h
         include/vtextedit/vtypsteditor.h
         typsteditor/typstcompiledsnapshot.h
+        typsteditor/typstruntime.cpp typsteditor/typstruntime_p.h
         typsteditor/typstcompiler.cpp
         typsteditor/typstcompilerbridge.cpp typsteditor/typstcompilerbridge.h
         typsteditor/typsthighlighter.cpp typsteditor/typsthighlighter.h
@@ -176,9 +178,25 @@ if(VTEXTEDIT_ENABLE_TYPST)
         typsteditor/vtypsteditor.cpp
     )
     target_compile_definitions(VTextEdit PUBLIC VTEXTEDIT_ENABLE_TYPST)
-    target_link_libraries(VTextEdit PRIVATE Qt6::Pdf)
+    target_link_libraries(VTextEdit PRIVATE Qt6::Pdf VTextEditTypst)
     target_include_directories(VTextEdit PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    add_dependencies(VTextEdit vtextedit-typst)
+    if(WIN32)
+        # Also serves consumers whose test PATH points at the editor DLL directory.
+        add_custom_target(VTextEditTypstRuntime
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:VTextEdit>"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:VTextEditTypst>" "$<TARGET_FILE_DIR:VTextEdit>"
+            DEPENDS VTextEditTypst
+            VERBATIM
+        )
+        add_dependencies(VTextEdit VTextEditTypstRuntime)
+    elseif(APPLE)
+        set_property(TARGET VTextEdit APPEND PROPERTY BUILD_RPATH "@loader_path")
+        set_property(TARGET VTextEdit APPEND PROPERTY INSTALL_RPATH "@loader_path")
+    elseif(UNIX)
+        set_property(TARGET VTextEdit APPEND PROPERTY INSTALL_RPATH "$ORIGIN")
+        set_property(TARGET VTextEdit PROPERTY BUILD_RPATH_USE_ORIGIN TRUE)
+    endif()
     # Typst's public headers include the existing editor API. Install that closure too.
     install(DIRECTORY include/vtextedit
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
@@ -255,6 +273,10 @@ target_link_libraries(VTextEdit PUBLIC Qt6::Core5Compat)
 #
 # 9.0: the KF6 syntax engine replaces the old exported fork. TextBlockData exposes
 # its State type; consumers must rebuild rather than load an ABI-mixed dependency.
+#
+# 10.0: TypstEditorConfig replaces its executable QString with a non-owning
+# TypstRuntime pointer, changing its exported layout; collectImageReferences()
+# also takes that runtime instead of an executable path. Rebuild every consumer.
 set_target_properties(VTextEdit PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION ${PROJECT_VERSION_MAJOR}

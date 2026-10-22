@@ -213,106 +213,238 @@
     </message>
 </context>
 <context>
+    <name>vte::TypstCompiler</name>
+    <message>
+        <location filename="../../typsteditor/typstcompiler.cpp" line="70" />
+        <source>Could not render Typst SVG page.</source>
+        <translation>Typst の SVG ページを描画できませんでした。</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompiler.cpp" line="84" />
+        <source>Could not render Typst bitmap page.</source>
+        <translation>Typst のビットマップページを描画できませんでした。</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompiler.cpp" line="94" />
+        <source>Typst bitmap rendering was cancelled.</source>
+        <translation>Typst のビットマップ描画がキャンセルされました。</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompiler.cpp" line="111" />
+        <source>Typst bitmap scale must be finite and positive.</source>
+        <translation>Typst のビットマップ倍率は有限の正数である必要があります。</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompiler.cpp" line="128" />
+        <source>Typst output exceeds the configured total page size limit.</source>
+        <translation>Typst の出力が設定されたページ合計サイズの上限を超えています。</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompiler.cpp" line="215" />
+        <source>Image reference scan requires 1–3 sources and an available Typst runtime.</source>
+        <translation>画像参照の走査には 1～3 件のソースと利用可能な Typst ランタイムが必要です。</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompiler.cpp" line="227" />
+        <source>Image reference source contains a NUL</source>
+        <translation>画像参照のソースに NUL 文字が含まれています</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompiler.cpp" line="233" />
+        <source>Image reference source contains invalid Unicode</source>
+        <translation>画像参照のソースに無効な Unicode が含まれています</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompiler.cpp" line="241" />
+        <location filename="../../typsteditor/typstcompiler.cpp" line="251" />
+        <source>Image reference request exceeds 16 MiB</source>
+        <translation>画像参照のリクエストが 16 MiB を超えています</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompiler.cpp" line="261" />
+        <source>Invalid image reference response lengths</source>
+        <translation>画像参照の応答の長さが無効です</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompiler.cpp" line="272" />
+        <source>Invalid image reference response</source>
+        <translation>画像参照の応答が無効です</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompiler.cpp" line="296" />
+        <source>Invalid image reference result fields</source>
+        <translation>画像参照の結果フィールドが無効です</translation>
+    </message>
+</context>
+<context>
     <name>vte::TypstCompilerBridge</name>
     <message>
-        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="+177"/>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="319" />
         <source>Typst operation timed out. Edit the source or retry.</source>
         <translation>Typst の処理がタイムアウトしました。ソースを編集するか、再試行してください。</translation>
     </message>
     <message>
-        <location line="+17"/>
-        <source>Typst helper failed: %1</source>
-        <translation>Typst ヘルパーでエラーが発生しました: %1</translation>
-    </message>
-    <message>
-        <location line="+7"/>
-        <source>Typst helper exited. Edit the source or retry.</source>
-        <translation>Typst ヘルパーが終了しました。ソースを編集するか、再試行してください。</translation>
-    </message>
-    <message>
-        <location line="+80"/>
-        <source>Typst helper was not found. Install vtextedit-typst or configure its path.</source>
-        <translation>Typst ヘルパーが見つかりません。vtextedit-typst をインストールするか、そのパスを設定してください。</translation>
-    </message>
-    <message>
-        <location line="+3"/>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="524" />
         <source>Starting Typst compiler…</source>
         <translation>Typst コンパイラーを起動中…</translation>
     </message>
     <message>
-        <location line="+53"/>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="592" />
         <source>Compiling Typst…</source>
         <translation>Typst をコンパイル中…</translation>
     </message>
     <message>
-        <location line="+19"/>
-        <source>Typst project overlays exceed the protocol size limit.</source>
-        <translation>Typst プロジェクトのメモリ上のファイル差し替えデータがプロトコルのサイズ上限を超えています。</translation>
-    </message>
-    <message>
-        <location line="+8"/>
-        <source>Could not write to the Typst helper.</source>
-        <translation>Typst ヘルパーにデータを書き込めませんでした。</translation>
-    </message>
-    <message>
-        <location line="+30"/>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="661" />
         <source>Typst request queue is full.</source>
         <translation>Typst のリクエストキューがいっぱいです。</translation>
     </message>
     <message>
-        <location line="+71"/>
-        <source>Typst helper returned an oversized frame.</source>
-        <translation>Typst ヘルパーがサイズ上限を超えるデータフレームを返しました。</translation>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="316" />
+        <source>Waiting for the previous Typst operation to finish.</source>
+        <translation>前の Typst 処理が完了するのを待っています。</translation>
     </message>
     <message>
-        <location line="+31"/>
-        <source>Typst helper returned an invalid protocol header.</source>
-        <translation>Typst ヘルパーが無効なプロトコルヘッダーを返しました。</translation>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="505" />
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="510" />
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="518" />
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="622" />
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="806" />
+        <source>Typst runtime is unavailable.</source>
+        <translation>Typst ランタイムを利用できません。</translation>
     </message>
     <message>
-        <location line="+24"/>
-        <source>Typst helper response does not match its request.</source>
-        <translation>Typst ヘルパーの応答がリクエストと一致しません。</translation>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="618" />
+        <source>Typst project overlays exceed the native request size limit.</source>
+        <translation>Typst プロジェクトのメモリ上のファイル差し替えデータがネイティブリクエストのサイズ上限を超えています。</translation>
     </message>
     <message>
-        <location line="+34"/>
-        <source>Typst helper is incompatible: missing %1.</source>
-        <translation>Typst ヘルパーに互換性がありません: %1 がありません。</translation>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="693" />
+        <source>The Typst image snapshot is no longer retained.</source>
+        <translation>Typst の画像スナップショットは保持されていません。</translation>
     </message>
     <message>
-        <location line="+21"/>
-        <source>Typst helper returned invalid compiled geometry.</source>
-        <translation>Typst ヘルパーがコンパイル結果の無効なジオメトリデータを返しました。</translation>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="777" />
+        <source>Typst backend returned an oversized reply.</source>
+        <translation>Typst バックエンドがサイズ上限を超える応答を返しました。</translation>
     </message>
     <message>
-        <location line="+3"/>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="784" />
+        <source>Typst backend returned invalid reply metadata.</source>
+        <translation>Typst バックエンドが無効な応答メタデータを返しました。</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="793" />
+        <source>Typst backend returned more than one final reply.</source>
+        <translation>Typst バックエンドが複数の最終応答を返しました。</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="827" />
+        <source>Typst native operation failed (status %1). Edit the source or retry.</source>
+        <translation>Typst のネイティブ処理に失敗しました（状態 %1）。ソースを編集するか、再試行してください。</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="842" />
+        <source>Typst backend completed without a final reply.</source>
+        <translation>Typst バックエンドが最終応答を返さずに完了しました。</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="868" />
+        <source>Typst backend response does not match its request.</source>
+        <translation>Typst バックエンドの応答がリクエストと一致しません。</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="913" />
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="1174" />
+        <source>Typst image request failed.</source>
+        <translation>Typst の画像リクエストに失敗しました。</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="958" />
+        <source>Typst backend is incompatible: missing %1.</source>
+        <translation>Typst バックエンドに互換性がありません: %1 がありません。</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="974" />
+        <source>Typst dependencies changed during compilation.</source>
+        <translation>コンパイル中に Typst の依存ファイルが変更されました。</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="1003" />
+        <source>Typst backend returned invalid compiled geometry.</source>
+        <translation>Typst バックエンドがコンパイル結果の無効なジオメトリデータを返しました。</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="1007" />
         <source>Typst preview is up to date.</source>
         <translation>Typst プレビューは最新です。</translation>
     </message>
     <message>
-        <location line="+3"/>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="1015" />
         <source>Typst compilation failed.</source>
         <translation>Typst のコンパイルに失敗しました。</translation>
     </message>
     <message>
-        <location line="+8"/>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="1023" />
         <source>Typst PDF exceeds the configured size limit.</source>
         <translation>Typst PDF が設定されたサイズ上限を超えています。</translation>
     </message>
     <message>
-        <location line="+18"/>
-        <source>Typst helper returned invalid raster dimensions.</source>
-        <translation>Typst ヘルパーが無効なラスター画像サイズを返しました。</translation>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="1042" />
+        <source>Typst backend returned invalid image data.</source>
+        <translation>Typst バックエンドが無効な画像データを返しました。</translation>
     </message>
     <message>
-        <location line="+38"/>
-        <source>Typst helper returned an unexpected operation.</source>
-        <translation>Typst ヘルパーが予期しない操作を返しました。</translation>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="1057" />
+        <source>Typst backend returned an invalid SVG page.</source>
+        <translation>Typst バックエンドが無効な SVG ページを返しました。</translation>
     </message>
     <message>
-        <location line="+60"/>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="1081" />
+        <source>Typst backend returned invalid raster dimensions.</source>
+        <translation>Typst バックエンドが無効なラスター寸法を返しました。</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="1139" />
+        <source>Typst backend returned an unexpected operation.</source>
+        <translation>Typst バックエンドが予期しない処理を返しました。</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="1173" />
+        <source>Typst image request cancelled.</source>
+        <translation>Typst の画像リクエストがキャンセルされました。</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="1242" />
         <source>Could not watch Typst dependencies: %1</source>
         <translation>Typst の依存ファイルを監視できませんでした: %1</translation>
+    </message>
+</context>
+<context>
+    <name>vte::TypstRuntime</name>
+    <message>
+        <location filename="../../typsteditor/typstruntime.cpp" line="292" />
+        <source>Typst runtime is unavailable.</source>
+        <translation>Typst ランタイムを利用できません。</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstruntime.cpp" line="295" />
+        <source>The previous image reference scan is still running.</source>
+        <translation>前の画像参照の走査がまだ実行中です。</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstruntime.cpp" line="323" />
+        <source>Unable to queue image reference scan.</source>
+        <translation>画像参照の走査をキューに追加できません。</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstruntime.cpp" line="329" />
+        <source>Image reference scan timed out.</source>
+        <translation>画像参照の走査がタイムアウトしました。</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstruntime.cpp" line="332" />
+        <source>Image reference scan failed (native status %1).</source>
+        <translation>画像参照の走査に失敗しました（ネイティブ状態 %1）。</translation>
     </message>
 </context>
 <context>

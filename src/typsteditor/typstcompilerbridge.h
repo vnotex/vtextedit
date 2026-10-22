@@ -2,6 +2,7 @@
 #define VTE_TYPSTCOMPILERBRIDGE_H
 
 #include "typstcompiledsnapshot.h"
+#include "typstruntime_p.h"
 #include <vtextedit/typsteditorconfig.h>
 
 #include <QFileSystemWatcher>
@@ -10,13 +11,12 @@
 #include <QJsonObject>
 #include <QMap>
 #include <QObject>
-#include <QProcess>
 #include <QTimer>
 #include <QVector>
 
 namespace vte {
 
-// One serialized helper operation, one coalesced newest compile, no GUI-thread compiler work.
+// One serialized native operation, one coalesced newest compile, no GUI-thread compiler work.
 class TypstCompilerBridge : public QObject {
   Q_OBJECT
 public:
@@ -75,10 +75,13 @@ private:
   void pump();
   void send(QJsonObject p_header);
   void enqueue(QJsonObject p_header);
-  void readOutput();
-  void handleReply(const QJsonObject &p_header, QByteArray p_payload);
+  void receiveReply(const TypstRuntimeReply &p_reply);
+  void nativeFinished(int p_status);
+  void retireRequest(bool p_failure, bool p_stopTimeout = true);
+  void resetSession();
+  void handleReply(const QJsonObject &p_header, const TypstRuntimeReply &p_reply);
   void fail(const QString &p_message, bool p_unavailable = false);
-  void finishRequest();
+  void finishRequest(quint64 p_request = 0);
   void completeRaster(const QJsonObject &p_request, bool p_cancelled);
   void completeImage(const QJsonObject &p_request, const QByteArray &p_data, const QString &p_mime,
                      const QString &p_error);
@@ -91,7 +94,9 @@ private:
   TypstEditorConfig m_config;
   QString m_activeFile;
   QMap<QString, QString> m_overlays;
-  QProcess m_process;
+  TypstRuntimeSession *m_session = nullptr;
+  TypstRuntimeReply m_terminalReply;
+  QJsonObject m_terminalHeader;
   QFileSystemWatcher m_watcher;
   QTimer m_debounce;
   QTimer m_timeout;
@@ -111,12 +116,10 @@ private:
   bool m_compileDue = false;
   bool m_stopping = false;
   bool m_documentReset = false;
-  char m_prefix[8] = {};
-  qint64 m_prefixRead = 0;
-  QByteArray m_header;
-  QByteArray m_payload;
-  qint64 m_headerRead = 0;
-  qint64 m_payloadRead = 0;
+  bool m_nativeInFlight = false;
+  bool m_restartPending = false;
+  bool m_requestRetired = false;
+  bool m_requestCompleted = false;
 };
 
 } // namespace vte

@@ -1,5 +1,5 @@
 cmake_minimum_required (VERSION 3.21)
-project(VTextEdit VERSION 9.0.0 LANGUAGES C CXX)
+project(VTextEdit VERSION 10.0.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -14,7 +14,7 @@ if(NOT QT_DEFAULT_MAJOR_VERSION STREQUAL "6")
     message(FATAL_ERROR "VTextEdit requires Qt 6.9 or newer. Qt 5 is not supported; set QT_DEFAULT_MAJOR_VERSION=6.")
 endif()
 find_package(Qt6 6.9 REQUIRED COMPONENTS Core)
-option(VTEXTEDIT_ENABLE_TYPST "Build the native Typst editor and compiler helper" OFF)
+option(VTEXTEDIT_ENABLE_TYPST "Build the native Typst editor and compiler library" OFF)
 option(VTEXTEDIT_BUILD_DEMOS "Build editor demo applications" ON)
 
 if(VTEXTEDIT_ENABLE_TYPST)
@@ -27,8 +27,6 @@ add_subdirectory(src)
 if(VTEXTEDIT_BUILD_DEMOS)
     add_subdirectory(demo)
     if(VTEXTEDIT_ENABLE_TYPST)
-        add_dependencies(VTextEditDemo vtextedit-typst)
-        add_dependencies(VTypstEditorDemo vtextedit-typst)
         install(TARGETS VTextEditDemo VTypstEditorDemo
             RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
             BUNDLE DESTINATION .

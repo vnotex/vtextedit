@@ -171,11 +171,18 @@ jobs:
         shell: pwsh
         run: |
           $bin = "$env:RUNNER_WORKSPACE\install-typst\bin"
-          foreach ($required in @('VTextEditDemo.exe', 'VTextEdit.dll', 'vtextedit-typst.exe', 'Qt${{ matrix.qt-major }}Pdf.dll', 'platforms\qwindows.dll')) {
+          foreach ($required in @('VTextEditDemo.exe', 'VTextEdit.dll', 'vtextedit_typst.dll', 'Qt${{ matrix.qt-major }}Pdf.dll', 'platforms\qwindows.dll')) {
             if (-not (Test-Path "$bin\$required")) { throw "Missing installed runtime: $required" }
           }
           $dumpbin = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
           if (-not $dumpbin) { throw 'Could not locate MSVC dumpbin' }
+          if (Get-ChildItem $bin -Recurse -File -Filter 'vtextedit-typst.exe') {
+            throw 'Obsolete Typst executable was installed'
+          }
+          $editorImports = & $dumpbin /DEPENDENTS "$bin\VTextEdit.dll"
+          if ($LASTEXITCODE -ne 0 -or ($editorImports -join "`n") -notmatch '(?i)vtextedit_typst\.dll') {
+            throw 'Installed VTextEdit does not import the native Typst DLL'
+          }
           $forbidden = '(?i)Qt[56]\S*(WebEngine|Quick|Qml|PdfWidgets)\S*\.dll|QtWebEngineProcess'
           # Inspect deployed files and PE imports, never the SDK archive's contents.
           foreach ($file in Get-ChildItem $bin -Recurse -File | Where-Object { $_.Extension -in '.dll', '.exe' }) {

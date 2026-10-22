@@ -1,6 +1,5 @@
 #include "typstcompilerbridge.h"
 
-#include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -8,8 +7,6 @@
 #include <QJsonParseError>
 #include <QPointer>
 #include <QSet>
-#include <QStandardPaths>
-#include <QtEndian>
 
 #include <cmath>
 #include <limits>
@@ -301,9 +298,10 @@ TypstSnapshot snapshotFromJson(const QJsonObject &p_header, bool p_resourcesRequ
 
 TypstCompilerBridge::TypstCompilerBridge(QObject *p_parent, Mode p_mode)
     : QObject(p_parent), m_mode(p_mode) {
-  m_process.setParent(this);
   m_debounce.setSingleShot(true);
   m_timeout.setSingleShot(true);
+  m_timeout.setParent(this);
+  m_timeout.setObjectName(QStringLiteral("typst-deadline"));
   connect(&m_debounce, &QTimer::timeout, this, [this]() {
     m_compileDue = true;
     pump();
@@ -312,57 +310,36 @@ TypstCompilerBridge::TypstCompilerBridge(QObject *p_parent, Mode p_mode)
     if (!m_request.isEmpty() &&
         m_request.value(QStringLiteral("op")) != QStringLiteral("initialize") &&
         !isCurrent(m_request)) {
-      // Keep the protocol frame/request owned until its reply arrives. Sending B now
-      // would overlap the still-running A operation; killing it would defeat reuse.
-      emit stateChanged(State::Error, tr("Waiting for the previous Typst operation to finish."));
+      const QPointer<TypstCompilerBridge> alive(this);
+      retireRequest(false);
+      if (alive)
+        emit stateChanged(State::Error, tr("Waiting for the previous Typst operation to finish."));
       return;
     }
     fail(tr("Typst operation timed out. Edit the source or retry."));
   });
-  connect(&m_process, &QProcess::started, this, [this]() {
-    QJsonObject request{{QStringLiteral("op"), QStringLiteral("initialize")},
-                        {QStringLiteral("config"), configuration()}};
-    send(request);
-  });
-  connect(&m_process, &QProcess::readyReadStandardOutput, this, &TypstCompilerBridge::readOutput);
-  connect(&m_process, &QProcess::readyReadStandardError, this, [this]() {
-    // Drain diagnostics without retaining an unbounded compiler log.
-    m_process.setReadChannel(QProcess::StandardError);
-    char bytes[4096];
-    while (m_process.read(bytes, sizeof(bytes)) > 0) {
-    }
-    m_process.setReadChannel(QProcess::StandardOutput);
-  });
-  connect(&m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError p_error) {
-    if (!m_stopping && !m_failed) {
-      fail(tr("Typst helper failed: %1").arg(m_process.errorString()),
-           p_error == QProcess::FailedToStart);
-    }
-  });
-  connect(&m_process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
-          [this](int, QProcess::ExitStatus) {
-            if (!m_stopping && !m_failed) {
-              fail(tr("Typst helper exited. Edit the source or retry."));
-            }
-          });
   const auto changed = [this](const QString &) { invalidate(); };
   connect(&m_watcher, &QFileSystemWatcher::fileChanged, this, changed);
   connect(&m_watcher, &QFileSystemWatcher::directoryChanged, this, changed);
 }
 
-TypstCompilerBridge::~TypstCompilerBridge() { stop(); }
+TypstCompilerBridge::~TypstCompilerBridge() {
+  // The runtime retains active native state; editor destruction never waits.
+  delete m_session;
+}
 
 void TypstCompilerBridge::updateProject(const TypstEditorConfig &p_config,
                                         const QString &p_activeFile,
                                         const QMap<QString, QString> &p_overlays) {
-  const bool executableChanged = m_config.m_helperExecutable != p_config.m_helperExecutable;
+  const bool runtimeChanged = m_config.m_runtime != p_config.m_runtime;
   m_config = p_config;
   m_activeFile = p_activeFile;
   m_overlays = p_overlays;
-  if (executableChanged && m_process.state() != QProcess::NotRunning) {
+  const QPointer<TypstCompilerBridge> alive(this);
+  if (runtimeChanged && m_session)
     stop();
-  }
-  invalidate();
+  if (alive)
+    invalidate();
 }
 
 void TypstCompilerBridge::resetForNewDocument() {
@@ -380,8 +357,12 @@ void TypstCompilerBridge::resetForNewDocument() {
   auto queue = std::move(m_queue);
   m_queue.clear();
   updateDependencies({});
-  // m_request, its timeout, epoch and partially received frame remain intact.
+  // Keep the original dispatch identity and session epoch until native return.
   const QPointer<TypstCompilerBridge> alive(this);
+  if (m_request.value(QStringLiteral("op")) != QStringLiteral("initialize"))
+    retireRequest(false, false);
+  if (!alive)
+    return;
   emit generationChanged(m_epoch, m_generation);
   if (!alive)
     return;
@@ -418,6 +399,11 @@ void TypstCompilerBridge::invalidate() {
   m_compilePending = true;
   m_compileDue = false;
   m_debounce.start(m_mode == Mode::Export ? 0 : qMax(0, m_config.m_debounceMs));
+  if (m_session && m_request.value(QStringLiteral("op")) == QStringLiteral("compile") &&
+      m_session->cancelQueued()) {
+    m_requestRetired = true;
+    m_session->suppressReplies();
+  }
   const QPointer<TypstCompilerBridge> alive(this);
   emit generationChanged(m_epoch, m_generation);
   if (!alive)
@@ -445,65 +431,97 @@ void TypstCompilerBridge::retry() {
   pump();
 }
 
-void TypstCompilerBridge::stop(bool p_failure) {
-  if (m_stopping) {
-    return;
+void TypstCompilerBridge::retireRequest(bool p_failure, bool p_stopTimeout) {
+  if (p_stopTimeout)
+    m_timeout.stop();
+  m_terminalReply = {};
+  m_terminalHeader = {};
+  m_requestRetired = true;
+  if (m_session) {
+    m_session->suppressReplies();
+    m_session->cancelQueued();
   }
-  m_stopping = true;
-  m_timeout.stop();
-  m_debounce.stop();
-  const auto epoch = m_epoch;
-  const auto generation = m_generation;
-  const auto snapshot = m_latest ? m_latest->m_id : 0;
-  // Detach before emitting completions: their slots may enqueue or stop the bridge again.
-  auto request = std::move(m_request);
+  if (m_requestCompleted || m_request.isEmpty())
+    return;
+  m_requestCompleted = true;
+  const bool current = isCurrent(m_request) && m_latest &&
+                       identifier(m_request.value(QStringLiteral("snapshot"))) == m_latest->m_id;
+  completeRaster(m_request, !p_failure || !current);
+}
+
+void TypstCompilerBridge::resetSession() {
+  Q_ASSERT(!m_nativeInFlight);
+  delete m_session;
+  m_session = nullptr;
   m_request = {};
-  auto queue = std::move(m_queue);
-  m_queue.clear();
+  m_terminalReply = {};
+  m_terminalHeader = {};
+  m_requestRetired = false;
+  m_requestCompleted = false;
+  m_restartPending = false;
   ++m_epoch;
   m_ready = false;
   m_displayed = 0;
   m_inplace = 0;
   m_latest.clear();
-  if (m_process.state() != QProcess::NotRunning) {
-    m_process.kill();
-    m_process.waitForFinished(1000);
-  }
-  m_prefixRead = m_headerRead = m_payloadRead = 0;
-  m_header.clear();
-  m_payload.clear();
-  const auto complete = [this, p_failure, epoch, generation,
-                         snapshot](const QJsonObject &p_request) {
-    const bool current = identifier(p_request.value(QStringLiteral("epoch"))) == epoch &&
-                         identifier(p_request.value(QStringLiteral("generation"))) == generation &&
+}
+
+void TypstCompilerBridge::stop(bool p_failure) {
+  if (m_stopping)
+    return;
+  m_stopping = true;
+  m_debounce.stop();
+  m_restartPending = true;
+  const auto epoch = m_epoch;
+  const auto generation = m_generation;
+  const auto snapshot = m_latest ? m_latest->m_id : 0;
+  auto queue = std::move(m_queue);
+  m_queue.clear();
+  const QPointer<TypstCompilerBridge> alive(this);
+  retireRequest(p_failure);
+  if (!alive)
+    return;
+  m_ready = false;
+  m_displayed = 0;
+  m_inplace = 0;
+  m_latest.clear();
+  // Timeout/retry may retire delivery, never a still-executing session.
+  if (!m_nativeInFlight)
+    resetSession();
+  for (const auto &request : queue) {
+    const bool current = identifier(request.value(QStringLiteral("epoch"))) == epoch &&
+                         identifier(request.value(QStringLiteral("generation"))) == generation &&
                          snapshot &&
-                         identifier(p_request.value(QStringLiteral("snapshot"))) == snapshot;
-    completeRaster(p_request, !p_failure || !current);
-  };
-  complete(request);
-  for (const auto &queued : queue) {
-    complete(queued);
+                         identifier(request.value(QStringLiteral("snapshot"))) == snapshot;
+    completeRaster(request, !p_failure || !current);
+    if (!alive)
+      return;
   }
   m_stopping = false;
 }
 
 void TypstCompilerBridge::start() {
-  QString executable = m_config.m_helperExecutable;
-  if (executable.isEmpty()) {
-    QString name = QStringLiteral("vtextedit-typst");
-#ifdef Q_OS_WIN
-    name += QStringLiteral(".exe");
-#endif
-    const auto beside = QDir(QCoreApplication::applicationDirPath()).filePath(name);
-    executable = QFileInfo::exists(beside) ? beside : QStandardPaths::findExecutable(name);
-  }
-  if (executable.isEmpty()) {
-    fail(tr("Typst helper was not found. Install vtextedit-typst or configure its path."), true);
+  if (!m_config.m_runtime || !m_config.m_runtime->isAvailable()) {
+    fail(tr("Typst runtime is unavailable."), true);
     return;
   }
-  emit stateChanged(State::Starting, tr("Starting Typst compiler…"));
-  m_timeout.start(qMax(1, m_config.m_compileTimeoutMs));
-  m_process.start(executable, QStringList());
+  m_session = TypstRuntimePrivate::get(m_config.m_runtime)->createSession(this);
+  if (!m_session) {
+    fail(tr("Typst runtime is unavailable."), true);
+    return;
+  }
+  connect(m_session, &TypstRuntimeSession::replyReady, this, &TypstCompilerBridge::receiveReply);
+  connect(m_session, &TypstRuntimeSession::finished, this, &TypstCompilerBridge::nativeFinished);
+  connect(m_session, &TypstRuntimeSession::stopped, this, [this]() {
+    // Runtime shutdown has joined every lane, including an active invocation.
+    m_nativeInFlight = false;
+    fail(tr("Typst runtime is unavailable."), true);
+  });
+  const QPointer<TypstCompilerBridge> alive(this);
+  send({{QStringLiteral("op"), QStringLiteral("initialize")},
+        {QStringLiteral("config"), configuration()}});
+  if (alive && m_nativeInFlight)
+    emit stateChanged(State::Starting, tr("Starting Typst compiler…"));
 }
 
 QJsonObject TypstCompilerBridge::configuration() const {
@@ -543,10 +561,10 @@ QJsonArray TypstCompilerBridge::retained(bool p_forCompile) const {
 }
 
 void TypstCompilerBridge::pump() {
-  if (m_documentReset || m_failed || !m_request.isEmpty() || m_stopping) {
+  if (m_documentReset || m_failed || m_nativeInFlight || !m_request.isEmpty() || m_stopping) {
     return;
   }
-  if (m_process.state() == QProcess::NotRunning) {
+  if (!m_session) {
     if (m_compilePending && m_compileDue) {
       start();
     }
@@ -563,13 +581,15 @@ void TypstCompilerBridge::pump() {
     }
     m_compilePending = false;
     m_compileDue = false;
+    const QPointer<TypstCompilerBridge> alive(this);
     send({{QStringLiteral("op"), QStringLiteral("compile")},
           {QStringLiteral("config"), configuration()},
           {QStringLiteral("activeFile"), m_activeFile},
           {QStringLiteral("overlays"), overlays},
           {QStringLiteral("previewMetadata"), m_mode == Mode::Preview},
           {QStringLiteral("snapshots"), retained(true)}});
-    emit stateChanged(State::Compiling, tr("Compiling Typst…"));
+    if (alive && m_nativeInFlight)
+      emit stateChanged(State::Compiling, tr("Compiling Typst…"));
     return;
   }
   if (!m_queue.isEmpty()) {
@@ -590,19 +610,19 @@ void TypstCompilerBridge::send(QJsonObject p_header) {
     p_header.insert(QStringLiteral("generation"), static_cast<double>(m_generation));
   }
   p_header.insert(QStringLiteral("request"), static_cast<double>(m_nextRequest++));
-  const auto bytes = QJsonDocument(p_header).toJson(QJsonDocument::Compact);
+  auto bytes = QJsonDocument(p_header).toJson(QJsonDocument::Compact);
   m_request = std::move(p_header);
+  m_requestRetired = false;
+  m_requestCompleted = false;
   if (bytes.size() > static_cast<int>(c_maxHeader)) {
-    fail(tr("Typst project overlays exceed the protocol size limit."));
+    fail(tr("Typst project overlays exceed the native request size limit."));
     return;
   }
-  char prefix[8];
-  qToBigEndian<quint32>(static_cast<quint32>(bytes.size()), reinterpret_cast<uchar *>(prefix));
-  qToBigEndian<quint32>(0, reinterpret_cast<uchar *>(prefix + 4));
-  if (m_process.write(prefix, 8) != 8 || m_process.write(bytes) != bytes.size()) {
-    fail(tr("Could not write to the Typst helper."));
+  if (!m_session || !m_session->execute(std::move(bytes))) {
+    fail(tr("Typst runtime is unavailable."), true);
     return;
   }
+  m_nativeInFlight = true;
   m_timeout.start(qMax(1, m_config.m_compileTimeoutMs));
 }
 
@@ -634,9 +654,11 @@ void TypstCompilerBridge::enqueue(QJsonObject p_header) {
     }
   }
   if (m_queue.size() >= 64) {
+    const QPointer<TypstCompilerBridge> alive(this);
     completeRaster(p_header, false);
-    emit operationFailed(p_header.value(QStringLiteral("op")).toString(),
-                         tr("Typst request queue is full."));
+    if (alive)
+      emit operationFailed(p_header.value(QStringLiteral("op")).toString(),
+                           tr("Typst request queue is full."));
     return;
   }
   m_queue.append(std::move(p_header));
@@ -741,66 +763,88 @@ void TypstCompilerBridge::outputToSource(quint64 p_snapshot, int p_page, const Q
   }
 }
 
-void TypstCompilerBridge::readOutput() {
-  if (m_stopping) {
+void TypstCompilerBridge::receiveReply(const TypstRuntimeReply &p_reply) {
+  if (!m_nativeInFlight || m_requestRetired)
+    return;
+  size_t headerSize = 0;
+  size_t payloadSize = 0;
+  const auto *bytes = p_reply.header(&headerSize);
+  p_reply.payload(&payloadSize);
+  if (!bytes || headerSize == 0 || headerSize > c_maxHeader || payloadSize > c_maxPayload ||
+      (m_request.value(QStringLiteral("op")) == QStringLiteral("imageData") &&
+       payloadSize > 32U * 1024 * 1024) ||
+      static_cast<qint64>(payloadSize) > m_config.m_maxCacheBytes) {
+    fail(tr("Typst backend returned an oversized reply."));
     return;
   }
-  while (!m_failed && m_process.bytesAvailable() > 0) {
-    if (m_prefixRead < 8) {
-      const auto read = m_process.read(m_prefix + m_prefixRead, 8 - m_prefixRead);
-      if (read <= 0) {
-        return;
-      }
-      m_prefixRead += read;
-      if (m_prefixRead < 8) {
-        continue;
-      }
-      const auto headerSize = qFromBigEndian<quint32>(reinterpret_cast<uchar *>(m_prefix));
-      const auto payloadSize = qFromBigEndian<quint32>(reinterpret_cast<uchar *>(m_prefix + 4));
-      if (!headerSize || headerSize > c_maxHeader || payloadSize > c_maxPayload ||
-          (m_request.value(QStringLiteral("op")) == QStringLiteral("imageData") &&
-           payloadSize > 32U * 1024 * 1024) ||
-          static_cast<qint64>(payloadSize) > m_config.m_maxCacheBytes) {
-        fail(tr("Typst helper returned an oversized frame."));
-        return;
-      }
-      m_header.resize(static_cast<int>(headerSize));
-      m_payload.resize(static_cast<int>(payloadSize));
-    }
-    if (m_headerRead < m_header.size()) {
-      const auto read =
-          m_process.read(m_header.data() + m_headerRead, m_header.size() - m_headerRead);
-      if (read <= 0) {
-        return;
-      }
-      m_headerRead += read;
-      if (m_headerRead < m_header.size()) {
-        continue;
-      }
-    }
-    if (m_payloadRead < m_payload.size()) {
-      const auto read =
-          m_process.read(m_payload.data() + m_payloadRead, m_payload.size() - m_payloadRead);
-      if (read <= 0) {
-        return;
-      }
-      m_payloadRead += read;
-      if (m_payloadRead < m_payload.size()) {
-        continue;
-      }
-    }
-    QJsonParseError error;
-    const auto json = QJsonDocument::fromJson(m_header, &error);
-    if (error.error != QJsonParseError::NoError || !json.isObject()) {
-      fail(tr("Typst helper returned an invalid protocol header."));
-      return;
-    }
-    auto payload = std::move(m_payload);
-    m_header.clear();
-    m_payload.clear();
-    m_prefixRead = m_headerRead = m_payloadRead = 0;
-    handleReply(json.object(), std::move(payload));
+  QJsonParseError error;
+  const auto json = QJsonDocument::fromJson(
+      QByteArray::fromRawData(reinterpret_cast<const char *>(bytes), qsizetype(headerSize)),
+      &error);
+  if (error.error != QJsonParseError::NoError || !json.isObject()) {
+    fail(tr("Typst backend returned invalid reply metadata."));
+    return;
   }
+  const auto header = json.object();
+  if (header.value(QStringLiteral("op")) == QStringLiteral("parsed")) {
+    handleReply(header, {});
+    return;
+  }
+  if (m_terminalReply) {
+    fail(tr("Typst backend returned more than one final reply."));
+    return;
+  }
+  // A final event is not completion: the ABI may still fail after emitting it.
+  m_terminalReply = p_reply;
+  m_terminalHeader = header;
+}
+
+void TypstCompilerBridge::nativeFinished(int p_status) {
+  m_nativeInFlight = false;
+  m_timeout.stop();
+  const QPointer<TypstCompilerBridge> alive(this);
+  if (!m_session || !m_session->isAvailable()) {
+    fail(tr("Typst runtime is unavailable."), true);
+    return;
+  }
+  if (m_restartPending) {
+    resetSession();
+    emit generationChanged(m_epoch, m_generation);
+    if (alive)
+      pump();
+    return;
+  }
+  if (p_status != VTE_TYPST_OK && p_status != TypstRuntimePrivate::Cancelled) {
+    if (m_requestRetired || (!isCurrent(m_request) && m_request.value(QStringLiteral("op")) !=
+                                                          QStringLiteral("initialize"))) {
+      stop();
+      if (!alive)
+        return;
+      m_compileDue = m_compilePending;
+      emit generationChanged(m_epoch, m_generation);
+      if (alive)
+        pump();
+    } else {
+      fail(
+          tr("Typst native operation failed (status %1). Edit the source or retry.").arg(p_status));
+    }
+    return;
+  }
+  if (m_requestRetired || p_status == TypstRuntimePrivate::Cancelled) {
+    retireRequest(false);
+    if (alive)
+      finishRequest();
+    return;
+  }
+  auto reply = std::move(m_terminalReply);
+  auto header = std::move(m_terminalHeader);
+  m_terminalReply = {};
+  m_terminalHeader = {};
+  if (!reply) {
+    fail(tr("Typst backend completed without a final reply."));
+    return;
+  }
+  handleReply(header, reply);
 }
 
 bool TypstCompilerBridge::isCurrent(const QJsonObject &p_header) const {
@@ -808,7 +852,14 @@ bool TypstCompilerBridge::isCurrent(const QJsonObject &p_header) const {
          identifier(p_header.value(QStringLiteral("generation"))) == m_generation;
 }
 
-void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_payload) {
+void TypstCompilerBridge::handleReply(const QJsonObject &p_header,
+                                      const TypstRuntimeReply &p_reply) {
+  const QPointer<TypstCompilerBridge> alive(this);
+  const auto requestId = identifier(p_header.value(QStringLiteral("request")));
+  const auto pending = [this, requestId]() {
+    return m_session && m_session->isAvailable() &&
+           identifier(m_request.value(QStringLiteral("request"))) == requestId;
+  };
   if (p_header.value(QStringLiteral("v")).toInt() != 1 || m_request.isEmpty() ||
       identifier(p_header.value(QStringLiteral("request"))) !=
           identifier(m_request.value(QStringLiteral("request"))) ||
@@ -816,7 +867,7 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
           identifier(m_request.value(QStringLiteral("epoch"))) ||
       identifier(p_header.value(QStringLiteral("generation"))) !=
           identifier(m_request.value(QStringLiteral("generation")))) {
-    fail(tr("Typst helper response does not match its request."));
+    fail(tr("Typst backend response does not match its request."));
     return;
   }
   const auto operation = p_header.value(QStringLiteral("op")).toString();
@@ -846,7 +897,8 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
     m_request = {};
     m_timeout.stop();
     completeRaster(request, true);
-    pump();
+    if (alive)
+      pump();
     return;
   }
   if (operation == QStringLiteral("error")) {
@@ -865,16 +917,33 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
       return;
     }
     completeRaster(request, !current);
-    if (current) {
+    if (!alive)
+      return;
+    if (current && isCurrent(p_header)) {
       updateDependencies(p_header.value(QStringLiteral("dependencies")).toArray());
+      if (!alive)
+        return;
       emit diagnosticsReady(diagnostics(p_header.value(QStringLiteral("diagnostics")).toArray()));
+      if (!alive || !isCurrent(p_header))
+        return;
       const auto message = p_header.value(QStringLiteral("message")).toString();
       emit operationFailed(requested, message);
-      emit stateChanged(State::Error, message);
+      if (!alive)
+        return;
+      if (isCurrent(p_header))
+        emit stateChanged(State::Error, message);
     }
-    pump();
+    if (alive)
+      pump();
     return;
   }
+  // Native Bytes cross the boundary without a frame copy. Only a live Qt
+  // consumer gets an independent owning payload; obsolete replies need no copy.
+  size_t payloadSize = 0;
+  const auto *payloadBytes = p_reply ? p_reply.payload(&payloadSize) : nullptr;
+  QByteArray p_payload;
+  if (payloadSize && operation != QStringLiteral("raster"))
+    p_payload = QByteArray(reinterpret_cast<const char *>(payloadBytes), qsizetype(payloadSize));
   if (operation == QStringLiteral("ready") && requested == QStringLiteral("initialize")) {
     const auto capabilities = p_header.value(QStringLiteral("capabilities")).toArray();
     const auto requiredCapabilities =
@@ -886,7 +955,7 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
                           QStringLiteral("resources")};
     for (const auto &required : requiredCapabilities) {
       if (!capabilities.contains(required)) {
-        fail(tr("Typst helper is incompatible: missing %1.").arg(required));
+        fail(tr("Typst backend is incompatible: missing %1.").arg(required));
         return;
       }
     }
@@ -894,35 +963,50 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
   } else if (operation == QStringLiteral("compiled") && requested == QStringLiteral("compile")) {
     if (current) {
       updateDependencies(p_header.value(QStringLiteral("dependencies")).toArray());
+      if (!alive || !pending())
+        return;
       if (p_header.value(QStringLiteral("invalidated")).toBool()) {
         if (m_mode == Mode::Export) {
           emit diagnosticsReady(
               diagnostics(p_header.value(QStringLiteral("diagnostics")).toArray()));
+          if (!alive || !pending())
+            return;
           emit stateChanged(State::Error, tr("Typst dependencies changed during compilation."));
         } else {
           invalidate();
         }
-        finishRequest();
+        if (alive)
+          finishRequest(requestId);
         return;
       }
       const auto messages = diagnostics(p_header.value(QStringLiteral("diagnostics")).toArray());
       emit diagnosticsReady(messages);
+      if (!alive || !pending())
+        return;
+      if (!isCurrent(p_header)) {
+        finishRequest(requestId);
+        return;
+      }
       emit highlightsReady(m_generation,
                            highlights(p_header.value(QStringLiteral("highlights")).toArray()),
                            m_activeFile);
+      if (!alive || !pending())
+        return;
       // Diagnostics/highlight consumers may edit the source synchronously.
       if (!isCurrent(p_header)) {
-        finishRequest();
+        finishRequest(requestId);
         return;
       }
       if (p_header.contains(QStringLiteral("snapshot"))) {
         m_latest = snapshotFromJson(p_header, m_mode == Mode::Preview);
         if (!m_latest) {
-          fail(tr("Typst helper returned invalid compiled geometry."));
+          fail(tr("Typst backend returned invalid compiled geometry."));
           return;
         }
         const auto snapshot = m_latest;
         emit stateChanged(State::Ready, tr("Typst preview is up to date."));
+        if (!alive || !pending())
+          return;
         // Ready consumers can also invalidate this result before publication.
         if (isCurrent(p_header) && m_latest == snapshot) {
           emit snapshotReady(snapshot);
@@ -938,7 +1022,8 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
       if (p_payload.isEmpty() || p_payload.size() > m_config.m_maxPdfBytes) {
         emit operationFailed(operation, tr("Typst PDF exceeds the configured size limit."));
       } else {
-        emit pdfReady(m_latest, p_payload);
+        const auto snapshot = m_latest;
+        emit pdfReady(snapshot, p_payload);
       }
     }
   } else if (operation == QStringLiteral("imageData") && requested == operation) {
@@ -954,7 +1039,7 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
         p_payload.size() > 32 * 1024 * 1024 ||
         (mime != QLatin1String("image/png") && mime != QLatin1String("image/jpeg") &&
          mime != QLatin1String("image/gif") && mime != QLatin1String("image/webp"))) {
-      fail(tr("Typst helper returned invalid image data."));
+      fail(tr("Typst backend returned invalid image data."));
       return;
     }
     auto request = std::move(m_request);
@@ -969,7 +1054,7 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
     const int page = integer(p_header.value(QStringLiteral("page")));
     if (id != identifier(m_request.value(QStringLiteral("snapshot"))) ||
         page != integer(m_request.value(QStringLiteral("page"))) || p_payload.isEmpty()) {
-      fail(tr("Typst helper returned an invalid SVG page."));
+      fail(tr("Typst backend returned an invalid SVG page."));
       return;
     }
     auto request = std::move(m_request);
@@ -977,7 +1062,8 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
     m_timeout.stop();
     emit pageSvgReady(identifier(request.value(QStringLiteral("epoch"))), id, page,
                       current && m_latest && m_latest->m_id == id ? p_payload : QByteArray());
-    pump();
+    if (alive)
+      pump();
     return;
   } else if (operation == QStringLiteral("raster") && requested == operation) {
     const auto id = identifier(p_header.value(QStringLiteral("snapshot")));
@@ -990,20 +1076,21 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
         page != integer(m_request.value(QStringLiteral("page"))) ||
         !qFuzzyCompare(scale, m_request.value(QStringLiteral("scale")).toDouble()) || width <= 0 ||
         height <= 0 || width > std::numeric_limits<int>::max() / 4 || stride != width * 4 ||
-        static_cast<qint64>(width) * height > m_config.m_maxRasterPixels ||
-        static_cast<qint64>(stride) * height != p_payload.size()) {
-      fail(tr("Typst helper returned invalid raster dimensions."));
+        static_cast<qint64>(width) * height > m_config.m_maxRasterPixels || !payloadBytes ||
+        static_cast<quint64>(stride) * height != payloadSize) {
+      fail(tr("Typst backend returned invalid raster dimensions."));
       return;
     }
     auto request = std::move(m_request);
     m_request = {};
     m_timeout.stop();
     if (current && m_latest && m_latest->m_id == id) {
-      auto *storage = new QByteArray(std::move(p_payload));
+      auto *storage = new TypstRuntimeReply(p_reply);
+      // Const storage makes writes detach rather than mutate Typst's shared cache.
       QImage image(
-          reinterpret_cast<uchar *>(storage->data()), width, height, stride,
+          reinterpret_cast<const uchar *>(payloadBytes), width, height, stride,
           QImage::Format_RGBA8888_Premultiplied,
-          [](void *p_storage) { delete static_cast<QByteArray *>(p_storage); }, storage);
+          [](void *p_storage) { delete static_cast<TypstRuntimeReply *>(p_storage); }, storage);
       emit pageImageReady(identifier(request.value(QStringLiteral("epoch"))),
                           identifier(request.value(QStringLiteral("snapshot"))),
                           integer(request.value(QStringLiteral("page"))),
@@ -1011,7 +1098,8 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
     } else {
       completeRaster(request, true);
     }
-    pump();
+    if (alive)
+      pump();
     return;
   } else if (operation == QStringLiteral("sourceToOutput") && requested == operation) {
     if (current && m_latest) {
@@ -1027,7 +1115,7 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
           page = -1;
         }
       }
-      // The helper echoes protocol identity, not this caller-local metadata.
+      // The backend echoes request identity, not this caller-local metadata.
       const auto cursorRequest = identifier(m_request.value(QStringLiteral("cursorRequest")));
       if (cursorRequest) {
         emit cursorLocationReady(cursorRequest, m_latest->m_id, page, point);
@@ -1040,6 +1128,8 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
       const auto range = sourceRange(p_header.value(QStringLiteral("location")).toObject());
       if (range.isValid()) {
         emit sourceLocationReady(range.m_file, range.m_start, range.m_end);
+        if (!alive || !pending())
+          return;
       }
       const QUrl url(p_header.value(QStringLiteral("url")).toString());
       if (!url.isEmpty() && url.isValid()) {
@@ -1047,15 +1137,21 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header, QByteArray p_
       }
     }
   } else if (!(operation == QStringLiteral("retained") && requested == QStringLiteral("retain"))) {
-    fail(tr("Typst helper returned an unexpected operation."));
+    fail(tr("Typst backend returned an unexpected operation."));
     return;
   }
-  finishRequest();
+  if (alive)
+    finishRequest(requestId);
 }
 
-void TypstCompilerBridge::finishRequest() {
+void TypstCompilerBridge::finishRequest(quint64 p_request) {
+  if (p_request && identifier(m_request.value(QStringLiteral("request"))) != p_request)
+    return;
+  Q_ASSERT(!m_nativeInFlight);
   m_timeout.stop();
   m_request = {};
+  m_requestRetired = false;
+  m_requestCompleted = false;
   pump();
 }
 
@@ -1097,12 +1193,17 @@ void TypstCompilerBridge::completeRaster(const QJsonObject &p_request, bool p_ca
 }
 
 void TypstCompilerBridge::fail(const QString &p_message, bool p_unavailable) {
-  stop(true);
   m_failed = true;
   m_compilePending = false;
   m_compileDue = false;
+  const auto generation = m_generation;
+  const QPointer<TypstCompilerBridge> alive(this);
+  stop(true);
+  if (!alive)
+    return;
   emit generationChanged(m_epoch, m_generation);
-  emit stateChanged(p_unavailable ? State::Unavailable : State::Error, p_message);
+  if (alive && m_failed && generation == m_generation)
+    emit stateChanged(p_unavailable ? State::Unavailable : State::Error, p_message);
 }
 
 void TypstCompilerBridge::updateDependencies(const QJsonArray &p_dependencies) {
@@ -1126,7 +1227,11 @@ void TypstCompilerBridge::updateDependencies(const QJsonArray &p_dependencies) {
     QFileInfo file(path);
     if (file.exists()) {
       paths.insert(file.absoluteFilePath());
+      continue;
     }
+    // Existing dependencies notify their own changes/removal. Watching their
+    // parents too would revoke resources for unrelated notebook bookkeeping.
+    // Missing dependencies need an ancestor watch so creation can recover them.
     auto directory = file.absoluteDir();
     while (!directory.exists() && directory.cdUp()) {
     }

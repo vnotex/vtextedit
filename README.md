@@ -195,19 +195,22 @@ for publication, rather than assuming `compileStatusChanged(Ready)` runs afterwa
 Mode changes alone preserve the outline, and a PDF selection delaying preview publication
 does not delay the current outline. Retrieval never edits source or undo history.
 
-Deploy the updated compiler helper with the library: it must advertise the `headings`
-capability; an older helper is rejected explicitly.
+Deploy the matching native Typst shared library with VTextEdit; its ABI and required
+capabilities are checked before using compiled output.
 
 ### Compile text to SVG or bitmap
 
 With Typst enabled, `<vtextedit/typstcompiler.h>` exposes `vte::TypstCompiler`, an
 asynchronous compiler independent of `VTypstEditor`. A `QGuiApplication` and a running
 Qt event loop suffice; no editor widget is constructed. Create and use the compiler on
-the same thread, and keep it alive until `finished` is emitted.
+the same thread, and keep it alive until `finished` is emitted. The application owns
+`TypstRuntime` and must keep it alive until every editor/compiler has been destroyed.
 
 ```cpp
+vte::TypstRuntime runtime; // Include <vtextedit/typstruntime.h>; after QGuiApplication.
 vte::TypstEditorConfig config;
-// Optional: config.m_projectRoot, m_mainFile, m_helperExecutable, m_fontPaths, ...
+config.m_runtime = &runtime;
+// Optional: config.m_projectRoot, m_mainFile, m_fontPaths, ...
 vte::TypstCompiler compiler(config);
 QObject::connect(&compiler, &vte::TypstCompiler::finished,
                  [](const vte::TypstCompiler::Result &result) {
@@ -237,7 +240,8 @@ compiler.compileToBitmap(QStringLiteral(
 * Each accepted call returns `true` and emits `finished(Result)` asynchronously once.
   A busy instance returns `false` without queuing another job or emitting an extra
   completion. `isCompiling()` is false in `finished`; a slot can submit the next job
-  immediately. Destruction cancels pending work without a completion.
+  immediately. Destruction retires pending work without a completion; the runtime
+  retains any active native invocation until it returns.
 * Results own their data and can outlive the compiler or later jobs. An empty `m_error`
   means success; `m_diagnostics` contains compilation warnings/errors with available
   source file and LF/UTF-16 offsets. Any failure clears both page vectors, including
@@ -245,25 +249,36 @@ compiler.compileToBitmap(QStringLiteral(
 * Constructor settings are copied. Text overlays `m_mainFile` in memory, with CR/CRLF
   normalized to LF; disk source is never overwritten. An empty project root resolves
   to the current directory at construction. Imports/assets, font/package paths,
-  download opt-in and helper discovery follow `TypstEditorConfig`. No editor overlays
+  download opt-in and the application-owned runtime follow `TypstEditorConfig`. No editor overlays
   are implicitly shared. File changes never trigger unsolicited export jobs; a
   dependency change during compilation fails the job instead of retrying it.
-* `m_compileTimeoutMs` bounds each helper operation; `m_maxRasterPixels` bounds each
-  bitmap page. `m_maxCacheBytes` also bounds the sum of returned page bytes, and each
-  wire payload is at most 128 MiB. Helper cache limits apply separately, not as a
-  process-wide memory ceiling. Native SVG generation builds its string before checking
-  its size; oversized output is not copied, cached or transmitted. `m_maxPdfBytes`,
-  debounce and editor presentation settings do not control these exports.
+* `m_compileTimeoutMs` is a soft deadline for each operation, including queueing.
+  Expiry discards output but cannot interrupt arbitrary native code; Retry waits for
+  the active call to return. `m_maxRasterPixels` bounds each bitmap page.
+  `m_maxCacheBytes` also bounds the sum of returned page bytes, and each binary payload
+  is at most 128 MiB. Session budgets are not a process-wide memory ceiling. Native SVG
+  generation builds its string before checking its size; oversized output is not copied
+  or cached. `m_maxPdfBytes`, debounce and presentation settings do not control exports.
 
-Deploy the matching `vtextedit-typst` helper with `svg` and `raster` capabilities.
 Export compilation skips highlighting, outlines and editor-only preview metadata.
+The runtime uses two serial compile/render lanes and a separate parse-only scanner
+lane; sessions stay on their assigned lane. Destroy editors/compilers first, then
+drain the runtime before destroying the Qt application. Shutdown does not pump GUI
+events and can wait indefinitely for a stuck native call. Catchable Rust panics become
+errors and poison that session, but native faults, aborts and allocation failures
+can terminate the host. A missing shared library can prevent application startup.
+
+`TypstCompiler::collectImageReferences(sources, &runtime, &error)` parses one to three
+sources without evaluation or filesystem access. Its synchronous caller waits at most
+ten seconds without pumping events. A busy, stopped or timed-out scanner fails
+conservatively; only complete scans may prove absence for image deletion.
 
 ### Building and running
 
-`VTEXTEDIT_ENABLE_TYPST` defaults to **OFF**. Disabled builds do not build the helper or
+`VTEXTEDIT_ENABLE_TYPST` defaults to **OFF**. Disabled builds do not build the Rust library or
 `VTypstEditorDemo`, install the Typst headers, or require Rust/Qt Pdf. All editors require
 Qt 6.9 or newer and the build dependencies listed above. Enabled builds additionally require
-Cargo with pinned **Rust 1.99.0**, the locked helper dependencies (official Typst crates
+Cargo with pinned **Rust 1.99.0**, the locked backend dependencies (official Typst crates
 pinned to **0.15.1**), and **Qt 6 Pdf**. On Windows use an MSVC Qt kit for Qt Pdf, not MinGW.
 
 The preview is QWidget-only: it uses public Qt Pdf APIs, not PdfWidgets, Qt Quick/QML,
@@ -300,14 +315,15 @@ All example data is embedded; no package downloads are needed. In **In-place pre
 try **Repeated occurrences** (red and blue formulas shown together) and **Sequential page
 fragments** (scroll the editor through one multi-page equation to its final row).
 
-CMake builds the helper with `cargo build --release --locked`, places it in the build's
-`bin`, and installs it in `CMAKE_INSTALL_BINDIR`. For cross compilation also set
-`VTEXTEDIT_TYPST_RUST_TARGET` to the matching Rust target triple. At runtime,
-`TypstEditorConfig::m_helperExecutable` overrides lookup; otherwise the editor searches
-beside the application, then `PATH`. The demos accept `VTEXTEDIT_TYPST_HELPER` as that
-configuration override (useful for configuration subdirectories or bundles). Deploy the
-helper with your application or set an explicit path; do not rely on a developer Cargo
-cache. Installing the targets does not by itself bundle all Qt/native dependencies.
+CMake builds the `cdylib` with locked Cargo dependencies and links it through
+`VTextEditTypst`. Windows deploys `vtextedit_typst.dll` beside consumers; Linux installs
+`libvtextedit_typst.so.1` in `CMAKE_INSTALL_LIBDIR`; macOS uses
+`libvtextedit_typst.1.dylib` with an `@rpath` install ID. VNote stages the macOS library
+in `Contents/Frameworks`. For cross compilation set `VTEXTEDIT_TYPST_RUST_TARGET`
+to the matching Rust target triple; Apple universal builds combine both slices.
+There is no helper executable, configurable backend path or executable fallback.
+Hosts must supply `TypstEditorConfig::m_runtime` explicitly; demos own it before
+their windows. Installing targets does not itself bundle all Qt/native dependencies.
 
 ### Typst source highlighting themes
 

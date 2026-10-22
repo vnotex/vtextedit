@@ -10,6 +10,8 @@
 
 namespace vte {
 
+class TypstRuntime;
+
 class VTEXTEDIT_EXPORT TypstEditorConfig {
 public:
   explicit TypstEditorConfig(
@@ -17,8 +19,9 @@ public:
       : m_textEditorConfig(p_config ? p_config : QSharedPointer<TextEditorConfig>::create()) {}
 
   QSharedPointer<TextEditorConfig> m_textEditorConfig;
-  // Empty uses the helper installed beside the application, then PATH.
-  QString m_helperExecutable;
+  // Application-owned; must outlive every editor/compiler using this configuration.
+  // A missing or stopped runtime leaves source editing available without compilation.
+  TypstRuntime *m_runtime = nullptr;
   QString m_projectRoot;
   QString m_mainFile = QStringLiteral("main.typ");
   QStringList m_fontPaths;

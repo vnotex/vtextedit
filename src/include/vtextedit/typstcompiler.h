@@ -14,8 +14,8 @@
 
 namespace vte {
 
-// Asynchronous, widget-independent compilation using the optional Typst helper.
-// Use on its owning thread with a running Qt event loop; destruction cancels pending work.
+// Asynchronous, widget-independent compilation using the application-owned Typst runtime.
+// Use on its owning thread with a running Qt event loop; destruction retires pending work.
 class VTEXTEDIT_EXPORT TypstCompiler : public QObject {
   Q_OBJECT
 public:
@@ -37,16 +37,17 @@ public:
     bool m_complete = false;
   };
 
-  // Parse 1–3 sources without evaluation, project access or the preview process.
+  // Parse 1–3 sources without evaluation, fonts, downloads or project access.
   // Only complete scans can prove absence; incomplete scans still report known literals.
-  // Requires an existing absolute helper path. Blocks without pumping GUI events,
-  // with a single 10-second process deadline and 16 MiB request/response limits.
-  // Failure returns an empty vector; p_error is cleared on entry.
+  // The explicit runtime must remain alive throughout the call. Blocks without pumping
+  // GUI events for at most 10 seconds, including queueing, with 16 MiB byte limits.
+  // A busy abandoned scanner fails immediately. Failure returns an empty vector;
+  // p_error is cleared on entry, and underlying native work is not forcibly interrupted.
   static QVector<ImageReferences> collectImageReferences(const QStringList &p_sources,
-                                                         const QString &p_helperExecutable,
+                                                         TypstRuntime *p_runtime,
                                                          QString *p_error = nullptr);
 
-  // Copies project, helper, font/package, timeout and resource settings.
+  // Copies project, runtime pointer, font/package, timeout and resource settings.
   // Editor presentation settings and debounce are unused. Empty root uses the current directory.
   explicit TypstCompiler(const TypstEditorConfig &p_config = TypstEditorConfig(),
                          QObject *p_parent = nullptr);

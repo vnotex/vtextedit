@@ -402,6 +402,33 @@ Once written back as HTML a table **stays** HTML, even after every merge is spli
 is no in-editor route back to pipe syntax.
 
 
+## Typst Native Runtime
+
+`TypstRuntime` is application-owned and explicitly injected through
+`TypstEditorConfig::m_runtime`; construct it after the Qt application and before consumers.
+The Rust cdylib is directly linked through C ABI 1, with opaque lane-confined sessions
+and independently owned replies released by Rust. Raster QImages retain immutable Rust
+reply storage without a pixel copy and detach on writes; bitmap results may outlive their
+compiler and runtime (`compilerBitmapOutlivesRuntime`). There is no helper executable or PATH
+lookup. Two serial compile/render lanes and one scanner lane bound native concurrency.
+
+A soft timeout retires delivery, not a running native call. Keep its session epoch/handle
+until actual return; Retry records intent and never overlaps or replaces active work.
+Rebinding advances GUI generation while retaining the in-flight identity. Editor/compiler
+destruction is nonblocking; runtime shutdown cancels queued work, drains active calls,
+and joins workers without GUI acknowledgement. A stuck call may delay shutdown indefinitely.
+Do not unload the library while workers/reply owners remain. Catch unwinding panics at
+every C boundary and poison affected sessions; native aborts/faults remain process-wide.
+
+The parse-only scanner owns its inputs and uses a separate bounded wait with no event
+pumping. Timeout or an occupied abandoned scan fails closed without another worker.
+Only complete scans can authorize obsolete-image deletion. Keep Rust allocation ownership
+inside the library, noexcept C++ callbacks, and context-bound queued GUI delivery.
+Watch existing dependencies directly, not their parents: unrelated notebook directory
+notifications must not revoke current resources. Missing paths use the nearest existing
+ancestor watch; `diskDependenciesRecoverAfterReplacementAndRecreation` covers file
+replacement, deletion, retained last-good output and creation recovery.
+
 ## Typst Raw Code Highlighting
 
 `tools/typst-backend/src/highlight.rs` extracts embedded tokens from literal Raw CST nodes,
@@ -447,7 +474,7 @@ state or undo history. Coverage: inline Rust extractor tests,
 and in-place previews. Invalid colors retain native Typst defaults. The canvas always
 uses `m_pdfBackground`, independently of the flag.
 
-Only the Preview bridge sends these colors. The helper installs them in `Library.styles`,
+Only the Preview bridge sends these colors. The backend installs them in `Library.styles`,
 below authored set/show/constructor styles, without rewriting source or recoloring images.
 Explicit black, white, and transparent page fills retain their meaning. Theme changes and
 opt-out rebuild the library only when defaults change; retained snapshots keep their old
@@ -465,14 +492,14 @@ outline, in-place cards and displayed/pending PDF selection/navigation. Project/
 source notifications, watchers and Retry cannot reopen admission during this interval. A failed
 incoming source load can leave it closed; ordinary same-document edits keep last-good output.
 
-The native/source widgets, compiler process and user preview/zoom preferences survive. In-flight
-protocol requests retain their IDs/framing until the matching obsolete reply is drained; no new
-request overlaps them. An obsolete timeout reports unavailable compilation without killing the
-process or forgetting that reply. Current-generation failure and explicit Retry retain existing
-recovery behavior. Retired render slots own outstanding renderer callbacks until completion but
+The native/source widgets, compiler session and user preview/zoom preferences survive. In-flight
+native requests retain their IDs and session epoch until actual return; no new request overlaps
+them. An obsolete timeout retires delivery without force-stopping native work. Current-generation
+failure and explicit Retry also wait for return before recreating the session. Retired render
+slots own outstanding renderer callbacks until completion but
 can never publish or paint the outgoing PDF. Bind completion clears load-time formatting history.
 Reset also revokes both displayed resource IDs before notifying consumers. Queued image requests
-complete as cancelled; in-flight image replies drain their original protocol frame and are rejected
+complete as cancelled; in-flight image replies retain native ownership until return and are rejected
 once their snapshot is no longer retained. Ordinary source edits still allow in-flight reads of a
 retained displayed image. Resource invalidation may synchronously destroy the editor, so reset must
 not retain rollback guards referring to its members across that notification.

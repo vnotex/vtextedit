@@ -40,13 +40,13 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn frame_limit(&self) -> usize {
+    pub fn request_limit(&self) -> usize {
         self.world.as_ref().map_or(MAX_HEADER, |w| w.config.max_cache_bytes.min(MAX_HEADER))
     }
 
     pub fn dependencies(&self) -> Value { self.world.as_ref().map_or(json!([]), ProjectWorld::dependencies) }
 
-    pub fn handle(&mut self, request: &Value, send: &mut SendReply<'_>) -> Result<bool, String> {
+    pub fn handle(&mut self, request: &Value, send: &mut SendReply<'_>) -> Result<(), String> {
         let op = text(request, "op")?;
         let epoch = id(request, "epoch")?;
         if op == "initialize" {
@@ -57,11 +57,13 @@ impl Session {
             self.world = Some(world);
             send(json!({"op":"ready", "version":1,
                 "capabilities":["pdf","raster","svg","navigation","previews","highlights","headings","resources"]}), Bytes::new([]))?;
-            return Ok(false);
+            return Ok(());
         }
         if self.epoch != Some(epoch) { return Err("session is not initialized for this epoch".into()); }
         // Advance memoization even after a failed operation or a cached raster
         // request, so historical edits/scales do not accumulate indefinitely.
+        // comemo synchronizes its shared caches; other sessions can evict entries
+        // too. This is aging, not a process-wide hard memory budget.
         struct MemoizationEpoch;
         impl Drop for MemoizationEpoch { fn drop(&mut self) { typst::comemo::evict(10); } }
         let _memoization_epoch = MemoizationEpoch;
@@ -77,10 +79,9 @@ impl Session {
             "imageData" => self.image_data(request, send)?,
             "sourceToOutput" => self.source_to_output(request, send)?,
             "outputToSource" => self.output_to_source(request, send)?,
-            "shutdown" => return Ok(true),
             _ => return Err(format!("unknown operation: {op}")),
         }
-        Ok(false)
+        Ok(())
     }
 
     fn retain(&mut self, request: &Value) -> Result<(), String> {

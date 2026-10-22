@@ -138,7 +138,7 @@ jobs:
         if: matrix.typst == 'ON'
         run: cmake --install "${{runner.workspace}}/build"
 
-      # This checks the installed project/helper layout with the installed Qt
+      # This checks the installed project/library layout with the installed Qt
       # runtime package, not a self-contained Linux bundle. Only Qt's SDK runtime
       # paths are allowed; no project build or Cargo paths are supplied.
       - name: Smoke installed layout with Qt SDK runtime (not a bundle)
@@ -149,7 +149,10 @@ jobs:
         run: |
           prefix="${{runner.workspace}}/install-typst"
           export LD_LIBRARY_PATH="$prefix/lib:$QT_ROOT_DIR/lib"
-          for binary in "$prefix/bin/VTextEditDemo" "$prefix/bin/vtextedit-typst" "$prefix/lib/libVTextEdit.so"; do
+          test ! -e "$prefix/bin/vtextedit-typst"
+          readelf -d "$prefix/lib/libvtextedit_typst.so.1" | grep -F 'Library soname: [libvtextedit_typst.so.1]'
+          readelf -d "$prefix/lib/libVTextEdit.so" | grep -F 'Shared library: [libvtextedit_typst.so.1]'
+          for binary in "$prefix/bin/VTextEditDemo" "$prefix/lib/libvtextedit_typst.so.1" "$prefix/lib/libVTextEdit.so"; do
             dependencies="$(ldd "$binary")"
             printf '%s\n%s\n' "$binary" "$dependencies"
             if [[ "$dependencies" == *"not found"* || "$dependencies" == *"${{runner.workspace}}/build/"* || "$dependencies" == *"$GITHUB_WORKSPACE/"* ]]; then

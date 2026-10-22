@@ -223,106 +223,238 @@
     </message>
 </context>
 <context>
+    <name>vte::TypstCompiler</name>
+    <message>
+        <location filename="../../typsteditor/typstcompiler.cpp" line="70" />
+        <source>Could not render Typst SVG page.</source>
+        <translation>Typst SVG 페이지를 렌더링할 수 없습니다.</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompiler.cpp" line="84" />
+        <source>Could not render Typst bitmap page.</source>
+        <translation>Typst 비트맵 페이지를 렌더링할 수 없습니다.</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompiler.cpp" line="94" />
+        <source>Typst bitmap rendering was cancelled.</source>
+        <translation>Typst 비트맵 렌더링이 취소되었습니다.</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompiler.cpp" line="111" />
+        <source>Typst bitmap scale must be finite and positive.</source>
+        <translation>Typst 비트맵 배율은 유한한 양수여야 합니다.</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompiler.cpp" line="128" />
+        <source>Typst output exceeds the configured total page size limit.</source>
+        <translation>Typst 출력이 설정된 전체 페이지 크기 제한을 초과합니다.</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompiler.cpp" line="215" />
+        <source>Image reference scan requires 1–3 sources and an available Typst runtime.</source>
+        <translation>이미지 참조 검사에는 소스 1~3개와 사용 가능한 Typst 런타임이 필요합니다.</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompiler.cpp" line="227" />
+        <source>Image reference source contains a NUL</source>
+        <translation>이미지 참조 소스에 NUL 문자가 포함되어 있습니다</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompiler.cpp" line="233" />
+        <source>Image reference source contains invalid Unicode</source>
+        <translation>이미지 참조 소스에 잘못된 유니코드가 포함되어 있습니다</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompiler.cpp" line="241" />
+        <location filename="../../typsteditor/typstcompiler.cpp" line="251" />
+        <source>Image reference request exceeds 16 MiB</source>
+        <translation>이미지 참조 요청이 16 MiB를 초과합니다</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompiler.cpp" line="261" />
+        <source>Invalid image reference response lengths</source>
+        <translation>이미지 참조 응답 길이가 잘못되었습니다</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompiler.cpp" line="272" />
+        <source>Invalid image reference response</source>
+        <translation>이미지 참조 응답이 잘못되었습니다</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompiler.cpp" line="296" />
+        <source>Invalid image reference result fields</source>
+        <translation>이미지 참조 결과 필드가 잘못되었습니다</translation>
+    </message>
+</context>
+<context>
     <name>vte::TypstCompilerBridge</name>
     <message>
-        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="+177"/>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="319" />
         <source>Typst operation timed out. Edit the source or retry.</source>
         <translation>Typst 작업 시간이 초과되었습니다. 소스를 편집하거나 다시 시도하세요.</translation>
     </message>
     <message>
-        <location line="+17"/>
-        <source>Typst helper failed: %1</source>
-        <translation>Typst 도우미 오류: %1</translation>
-    </message>
-    <message>
-        <location line="+7"/>
-        <source>Typst helper exited. Edit the source or retry.</source>
-        <translation>Typst 도우미가 종료되었습니다. 소스를 편집하거나 다시 시도하세요.</translation>
-    </message>
-    <message>
-        <location line="+80"/>
-        <source>Typst helper was not found. Install vtextedit-typst or configure its path.</source>
-        <translation>Typst 도우미를 찾을 수 없습니다. vtextedit-typst를 설치하거나 경로를 설정하세요.</translation>
-    </message>
-    <message>
-        <location line="+3"/>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="524" />
         <source>Starting Typst compiler…</source>
         <translation>Typst 컴파일러 시작 중…</translation>
     </message>
     <message>
-        <location line="+53"/>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="592" />
         <source>Compiling Typst…</source>
         <translation>Typst 컴파일 중…</translation>
     </message>
     <message>
-        <location line="+19"/>
-        <source>Typst project overlays exceed the protocol size limit.</source>
-        <translation>Typst 프로젝트의 메모리 내 파일 대체 데이터가 프로토콜 크기 제한을 초과합니다.</translation>
-    </message>
-    <message>
-        <location line="+8"/>
-        <source>Could not write to the Typst helper.</source>
-        <translation>Typst 도우미에 데이터를 쓸 수 없습니다.</translation>
-    </message>
-    <message>
-        <location line="+30"/>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="661" />
         <source>Typst request queue is full.</source>
         <translation>Typst 요청 대기열이 가득 찼습니다.</translation>
     </message>
     <message>
-        <location line="+71"/>
-        <source>Typst helper returned an oversized frame.</source>
-        <translation>Typst 도우미가 크기 제한을 초과하는 데이터 프레임을 반환했습니다.</translation>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="316" />
+        <source>Waiting for the previous Typst operation to finish.</source>
+        <translation>이전 Typst 작업이 완료되기를 기다리고 있습니다.</translation>
     </message>
     <message>
-        <location line="+31"/>
-        <source>Typst helper returned an invalid protocol header.</source>
-        <translation>Typst 도우미가 잘못된 프로토콜 헤더를 반환했습니다.</translation>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="505" />
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="510" />
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="518" />
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="622" />
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="806" />
+        <source>Typst runtime is unavailable.</source>
+        <translation>Typst 런타임을 사용할 수 없습니다.</translation>
     </message>
     <message>
-        <location line="+24"/>
-        <source>Typst helper response does not match its request.</source>
-        <translation>Typst 도우미의 응답이 요청과 일치하지 않습니다.</translation>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="618" />
+        <source>Typst project overlays exceed the native request size limit.</source>
+        <translation>Typst 프로젝트의 메모리 내 파일 대체 데이터가 네이티브 요청 크기 제한을 초과합니다.</translation>
     </message>
     <message>
-        <location line="+34"/>
-        <source>Typst helper is incompatible: missing %1.</source>
-        <translation>Typst 도우미가 호환되지 않습니다. %1 기능이 없습니다.</translation>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="693" />
+        <source>The Typst image snapshot is no longer retained.</source>
+        <translation>Typst 이미지 스냅샷이 더 이상 유지되지 않습니다.</translation>
     </message>
     <message>
-        <location line="+21"/>
-        <source>Typst helper returned invalid compiled geometry.</source>
-        <translation>Typst 도우미가 잘못된 컴파일 결과 기하 데이터를 반환했습니다.</translation>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="777" />
+        <source>Typst backend returned an oversized reply.</source>
+        <translation>Typst 백엔드가 크기 제한을 초과하는 응답을 반환했습니다.</translation>
     </message>
     <message>
-        <location line="+3"/>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="784" />
+        <source>Typst backend returned invalid reply metadata.</source>
+        <translation>Typst 백엔드가 잘못된 응답 메타데이터를 반환했습니다.</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="793" />
+        <source>Typst backend returned more than one final reply.</source>
+        <translation>Typst 백엔드가 최종 응답을 두 번 이상 반환했습니다.</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="827" />
+        <source>Typst native operation failed (status %1). Edit the source or retry.</source>
+        <translation>Typst 네이티브 작업에 실패했습니다(상태 %1). 소스를 편집하거나 다시 시도하세요.</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="842" />
+        <source>Typst backend completed without a final reply.</source>
+        <translation>Typst 백엔드가 최종 응답 없이 완료되었습니다.</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="868" />
+        <source>Typst backend response does not match its request.</source>
+        <translation>Typst 백엔드의 응답이 요청과 일치하지 않습니다.</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="913" />
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="1174" />
+        <source>Typst image request failed.</source>
+        <translation>Typst 이미지 요청에 실패했습니다.</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="958" />
+        <source>Typst backend is incompatible: missing %1.</source>
+        <translation>Typst 백엔드가 호환되지 않습니다. %1 기능이 없습니다.</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="974" />
+        <source>Typst dependencies changed during compilation.</source>
+        <translation>컴파일 중 Typst 의존 파일이 변경되었습니다.</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="1003" />
+        <source>Typst backend returned invalid compiled geometry.</source>
+        <translation>Typst 백엔드가 잘못된 컴파일 결과 기하 데이터를 반환했습니다.</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="1007" />
         <source>Typst preview is up to date.</source>
         <translation>Typst 미리보기가 최신 상태입니다.</translation>
     </message>
     <message>
-        <location line="+3"/>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="1015" />
         <source>Typst compilation failed.</source>
         <translation>Typst 컴파일에 실패했습니다.</translation>
     </message>
     <message>
-        <location line="+8"/>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="1023" />
         <source>Typst PDF exceeds the configured size limit.</source>
         <translation>Typst PDF가 설정된 크기 제한을 초과합니다.</translation>
     </message>
     <message>
-        <location line="+18"/>
-        <source>Typst helper returned invalid raster dimensions.</source>
-        <translation>Typst 도우미가 잘못된 래스터 이미지 크기를 반환했습니다.</translation>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="1042" />
+        <source>Typst backend returned invalid image data.</source>
+        <translation>Typst 백엔드가 잘못된 이미지 데이터를 반환했습니다.</translation>
     </message>
     <message>
-        <location line="+38"/>
-        <source>Typst helper returned an unexpected operation.</source>
-        <translation>Typst 도우미가 예상치 못한 작업을 반환했습니다.</translation>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="1057" />
+        <source>Typst backend returned an invalid SVG page.</source>
+        <translation>Typst 백엔드가 잘못된 SVG 페이지를 반환했습니다.</translation>
     </message>
     <message>
-        <location line="+60"/>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="1081" />
+        <source>Typst backend returned invalid raster dimensions.</source>
+        <translation>Typst 백엔드가 잘못된 래스터 크기를 반환했습니다.</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="1139" />
+        <source>Typst backend returned an unexpected operation.</source>
+        <translation>Typst 백엔드가 예상치 못한 작업을 반환했습니다.</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="1173" />
+        <source>Typst image request cancelled.</source>
+        <translation>Typst 이미지 요청이 취소되었습니다.</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstcompilerbridge.cpp" line="1242" />
         <source>Could not watch Typst dependencies: %1</source>
         <translation>Typst 종속 파일을 감시할 수 없습니다: %1</translation>
+    </message>
+</context>
+<context>
+    <name>vte::TypstRuntime</name>
+    <message>
+        <location filename="../../typsteditor/typstruntime.cpp" line="292" />
+        <source>Typst runtime is unavailable.</source>
+        <translation>Typst 런타임을 사용할 수 없습니다.</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstruntime.cpp" line="295" />
+        <source>The previous image reference scan is still running.</source>
+        <translation>이전 이미지 참조 검사가 아직 실행 중입니다.</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstruntime.cpp" line="323" />
+        <source>Unable to queue image reference scan.</source>
+        <translation>이미지 참조 검사를 대기열에 추가할 수 없습니다.</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstruntime.cpp" line="329" />
+        <source>Image reference scan timed out.</source>
+        <translation>이미지 참조 검사 시간이 초과되었습니다.</translation>
+    </message>
+    <message>
+        <location filename="../../typsteditor/typstruntime.cpp" line="332" />
+        <source>Image reference scan failed (native status %1).</source>
+        <translation>이미지 참조 검사에 실패했습니다(네이티브 상태 %1).</translation>
     </message>
 </context>
 <context>

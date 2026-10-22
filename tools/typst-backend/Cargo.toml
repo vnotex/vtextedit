@@ -5,6 +5,11 @@ edition = "2024"
 rust-version = "1.99"
 license = "LGPL-3.0-only"
 publish = false
+autobins = false
+
+[lib]
+name = "vtextedit_typst"
+crate-type = ["cdylib"]
 
 [dependencies]
 blake3 = "1"
@@ -24,6 +29,8 @@ usvg = "=0.47.0"
 
 [profile.dev]
 debug = 0
+panic = "unwind"
 
 [profile.release]
 strip = true
+panic = "unwind"

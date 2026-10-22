@@ -1,17 +1,13 @@
 #include <vtextedit/typstcompiler.h>
 
 #include "typstcompilerbridge.h"
+#include "typstruntime_p.h"
 
 #include <QDir>
-#include <QElapsedTimer>
-#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QProcess>
-#include <QScopeGuard>
 #include <QTimer>
-#include <QtEndian>
 
 #include <cmath>
 #include <utility>
@@ -151,7 +147,7 @@ public:
       return;
     }
     if (!p_error.isEmpty()) {
-      // A transport failure may first complete a page with empty data, then
+      // A native failure may first complete a page with empty data, then
       // supply its more specific error. Keep that error but publish only once.
       m_result.m_error = p_error;
       m_result.m_svgPages.clear();
@@ -203,8 +199,8 @@ bool TypstCompiler::compileToBitmap(const QString &p_text, qreal p_pixelsPerPoin
 bool TypstCompiler::isCompiling() const { return d->m_busy; }
 
 QVector<TypstCompiler::ImageReferences>
-TypstCompiler::collectImageReferences(const QStringList &p_sources,
-                                      const QString &p_helperExecutable, QString *p_error) {
+TypstCompiler::collectImageReferences(const QStringList &p_sources, TypstRuntime *p_runtime,
+                                      QString *p_error) {
   if (p_error) {
     p_error->clear();
   }
@@ -215,11 +211,8 @@ TypstCompiler::collectImageReferences(const QStringList &p_sources,
     return QVector<ImageReferences>();
   };
   constexpr qsizetype c_headerLimit = 16 * 1024 * 1024;
-  constexpr qint64 c_chunkSize = 64 * 1024;
-  const QFileInfo executable(p_helperExecutable);
-  if (p_helperExecutable.contains(QChar::Null) || !executable.isAbsolute() ||
-      !executable.isFile() || p_sources.isEmpty() || p_sources.size() > 3) {
-    return fail(tr("Image reference scan requires 1–3 sources and an explicit helper file"));
+  if (!p_runtime || !p_runtime->isAvailable() || p_sources.isEmpty() || p_sources.size() > 3) {
+    return fail(tr("Image reference scan requires 1–3 sources and an available Typst runtime."));
   }
 
   // Bound the encoded JSON before QJsonDocument allocates its serialized header.
@@ -257,85 +250,19 @@ TypstCompiler::collectImageReferences(const QStringList &p_sources,
   if (header.size() > c_headerLimit) {
     return fail(tr("Image reference request exceeds 16 MiB"));
   }
-  char lengths[8] = {};
-  qToBigEndian<quint32>(quint32(header.size()), lengths);
-  QElapsedTimer deadline;
-  deadline.start();
-  const auto remaining = [&] { return int(qMax(qint64(0), 10000 - deadline.elapsed())); };
-  QProcess scanner;
-  // Scanner errors are reported as failures, never parsed as protocol bytes. Avoid an
-  // unbounded stderr buffer even if an explicit but broken executable is supplied.
-  scanner.setStandardErrorFile(QProcess::nullDevice());
-  const auto reap = qScopeGuard([&] {
-    if (scanner.state() != QProcess::NotRunning) {
-      scanner.kill();
-      scanner.waitForFinished(1000);
-    }
-  });
-  scanner.start(p_helperExecutable, {QStringLiteral("--scan-image-references")});
-  if (!scanner.waitForStarted(remaining())) {
-    return fail(tr("Unable to start image reference scanner: %1").arg(scanner.errorString()));
-  }
-  const auto send = [&](const char *p_data, qint64 p_size) {
-    while (p_size > 0) {
-      if (remaining() == 0) {
-        return false;
-      }
-      const auto chunk = qMin(p_size, c_chunkSize);
-      if (scanner.write(p_data, chunk) != chunk) {
-        return false;
-      }
-      while (scanner.bytesToWrite() > 0) {
-        if (remaining() == 0 || !scanner.waitForBytesWritten(remaining())) {
-          return false;
-        }
-      }
-      p_data += chunk;
-      p_size -= chunk;
-    }
-    return true;
-  };
-  if (!send(lengths, sizeof(lengths)) || !send(header.constData(), header.size())) {
-    return fail(tr("Unable to write image reference request within its deadline"));
-  }
-  scanner.closeWriteChannel();
-  QByteArray response;
-  qsizetype expected = 8;
-  bool haveLengths = false;
-  while (scanner.state() != QProcess::NotRunning || scanner.bytesAvailable() > 0) {
-    if (remaining() == 0) {
-      return fail(tr("Image reference scan timed out"));
-    }
-    if (scanner.bytesAvailable() == 0) {
-      scanner.waitForReadyRead(remaining());
-      continue;
-    }
-    if (response.size() == expected) {
-      return fail(tr("Image reference scanner returned trailing data"));
-    }
-    const auto chunk = scanner.read(qMin(c_chunkSize, qint64(expected - response.size())));
-    if (chunk.isEmpty()) {
-      return fail(tr("Unable to read image reference response"));
-    }
-    response.append(chunk);
-    if (!haveLengths && response.size() == 8) {
-      const auto jsonSize = qFromBigEndian<quint32>(response.constData());
-      const auto binarySize = qFromBigEndian<quint32>(response.constData() + 4);
-      if (jsonSize == 0 || jsonSize > c_headerLimit || binarySize != 0) {
-        return fail(tr("Invalid image reference response lengths"));
-      }
-      expected += jsonSize;
-      response.reserve(expected);
-      haveLengths = true;
-    }
-  }
-  if (remaining() == 0 || scanner.exitStatus() != QProcess::NormalExit || scanner.exitCode() != 0 ||
-      !haveLengths || response.size() != expected) {
-    return fail(tr("Image reference scanner failed or returned an incomplete response"));
-  }
+  const auto reply = TypstRuntimePrivate::get(p_runtime)->scan(header, p_error);
+  if (!reply)
+    return {};
+  size_t headerSize = 0;
+  size_t payloadSize = 0;
+  const auto *bytes = reply.header(&headerSize);
+  reply.payload(&payloadSize);
+  if (!bytes || headerSize == 0 || headerSize > size_t(c_headerLimit) || payloadSize != 0)
+    return fail(tr("Invalid image reference response lengths"));
   QJsonParseError parseError;
   const auto document = QJsonDocument::fromJson(
-      QByteArray::fromRawData(response.constData() + 8, response.size() - 8), &parseError);
+      QByteArray::fromRawData(reinterpret_cast<const char *>(bytes), qsizetype(headerSize)),
+      &parseError);
   const auto object = document.object();
   const auto sources = object.value(QStringLiteral("sources"));
   if (parseError.error != QJsonParseError::NoError || !document.isObject() ||

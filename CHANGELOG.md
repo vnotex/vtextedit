@@ -1,5 +1,24 @@
 # Changelog
 
+## 10.0.0 (unreleased)
+
+### Breaking changes
+
+- Replace the Typst helper executable with a directly linked Rust shared library and C ABI 1.
+  Hosts own `TypstRuntime`, set `TypstEditorConfig::m_runtime`, and keep it alive through
+  editor/compiler destruction. Remove helper-path configuration and executable fallback.
+- `TypstCompiler::collectImageReferences()` takes the runtime rather than an executable path.
+  Rebuild consumers against the changed config layout and scanner API; VTextEdit SOVERSION is 10.
+- Native calls run on two serialized compilation lanes and a separate scanner lane. Deadlines
+  retire results rather than terminating calls; retries wait for active calls to return.
+  Editor destruction is nonblocking, but runtime shutdown drains and can wait indefinitely.
+  Native faults are no longer process-isolated, and a missing library can prevent startup.
+
+### Preserved behavior
+
+- Keep Typst 0.15.1, snapshots, diagnostics, navigation, previews and SVG/bitmap/PDF output.
+  Parse-only image cleanup keeps its bounded wait and skips deletion on uncertainty.
+
 ## 9.0.0 (unreleased)
 
 ### Breaking changes
