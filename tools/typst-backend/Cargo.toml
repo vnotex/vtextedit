@@ -24,7 +24,7 @@ typst-ide = "=0.15.1"
 typst-pdf = "=0.15.1"
 typst-render = "=0.15.1"
 typst-svg = "=0.15.1"
-typst-kit = { version = "=0.15.1", features = ["embedded-fonts", "system-packages", "system-downloader", "datetime"] }
+typst-kit = { version = "=0.15.1", features = ["embedded-fonts", "scan-fonts", "system-packages", "system-downloader", "datetime"] }
 usvg = "=0.47.0"
 
 [profile.dev]

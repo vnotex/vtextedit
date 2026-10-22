@@ -18,6 +18,7 @@ use typst::visualize::{Color, Paint};
 use typst::{Library, LibraryExt, World};
 use typst_kit::datetime::Time;
 use typst_kit::downloader::{Downloader, SystemDownloader};
+use typst_kit::fonts::FontStore;
 use typst_kit::packages::SystemPackages;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -122,18 +123,33 @@ fn is_lf_source(source: &Source) -> bool {
     !source.text().contains('\r')
 }
 
-struct Fonts { book: LazyHash<FontBook>, fonts: Vec<Font> }
+struct Fonts {
+    book: LazyHash<FontBook>,
+    fonts: Vec<Font>,
+    fallback: Arc<FontStore>,
+}
 impl Fonts {
-    fn bundled() -> Arc<Self> {
-        // Immutable embedded fonts are shared across sessions. OnceLock retries
-        // initialization after an unwind; it does not poison later sessions.
-        static BUNDLED: OnceLock<Arc<Fonts>> = OnceLock::new();
-        BUNDLED.get_or_init(|| {
-            let mut book = FontBook::new();
-            let mut fonts = Vec::new();
-            for (font, info) in typst_kit::fonts::embedded() { book.push(info); fonts.push(font); }
-            Arc::new(Self { book: LazyHash::new(book), fonts })
+    fn defaults() -> Arc<Self> {
+        // Discover once across sessions; system font data is loaded on demand.
+        // Bundled faces keep priority on equal matches. New installations need a restart.
+        static DEFAULTS: OnceLock<Arc<Fonts>> = OnceLock::new();
+        DEFAULTS.get_or_init(|| {
+            let mut fallback = FontStore::new();
+            fallback.extend(typst_kit::fonts::embedded());
+            fallback.extend(typst_kit::fonts::system());
+            Arc::new(Self {
+                book: fallback.book().clone(), fonts: Vec::new(),
+                fallback: Arc::new(fallback),
+            })
         }).clone()
+    }
+
+    fn font(&self, index: usize) -> Option<Font> {
+        if index < self.fonts.len() {
+            Some(self.fonts[index].clone())
+        } else {
+            self.fallback.font(index - self.fonts.len())
+        }
     }
 }
 
@@ -174,7 +190,7 @@ impl ProjectWorld {
         let library = config.library();
         let mut world = Self {
             config, library,
-            fonts: Fonts::bundled(), font_dependencies: BTreeMap::new(), main,
+            fonts: Fonts::defaults(), font_dependencies: BTreeMap::new(), main,
             overlays: HashMap::new(), reads: Mutex::default(), packages, package_roots,
             time: Arc::new(Time::system()),
         };
@@ -235,7 +251,7 @@ impl ProjectWorld {
         paths.sort();
         paths.dedup();
         if paths.is_empty() {
-            self.fonts = Fonts::bundled();
+            self.fonts = Fonts::defaults();
         } else {
             let mut book = FontBook::new();
             let mut fonts = Vec::new();
@@ -251,9 +267,14 @@ impl ProjectWorld {
                     book.push(font.info().clone()); fonts.push(font);
                 }
             }
-            // Explicit fonts win; bundled fallback order never depends on the OS.
-            for font in &Fonts::bundled().fonts { book.push(font.info().clone()); fonts.push(font.clone()); }
-            self.fonts = Arc::new(Fonts { book: LazyHash::new(book), fonts });
+            // Explicit faces precede shared defaults; preserve their book/slot order.
+            let defaults = Fonts::defaults();
+            for info in (0..).map_while(|index| defaults.book.info(index)) {
+                book.push(info.clone());
+            }
+            self.fonts = Arc::new(Fonts {
+                book: LazyHash::new(book), fonts, fallback: defaults.fallback.clone(),
+            });
         }
         self.font_dependencies = dependencies;
         self.reads.get_mut().unwrap().dependencies.extend(self.font_dependencies.clone());
@@ -421,7 +442,7 @@ impl World for ProjectWorld {
         reads.slots.entry(id).or_default().bytes = Some(bytes.clone());
         bytes
     }
-    fn font(&self, index: usize) -> Option<Font> { self.fonts.fonts.get(index).cloned() }
+    fn font(&self, index: usize) -> Option<Font> { self.fonts.font(index) }
     fn today(&self, offset: Option<Duration>) -> Option<Datetime> { self.time.today(offset) }
 }
 
@@ -446,7 +467,7 @@ impl World for FrozenWorld {
     fn file(&self, id: FileId) -> FileResult<Bytes> {
         self.files.get(&id).cloned().unwrap_or(Err(FileError::AccessDenied))
     }
-    fn font(&self, index: usize) -> Option<Font> { self.fonts.fonts.get(index).cloned() }
+    fn font(&self, index: usize) -> Option<Font> { self.fonts.font(index) }
     fn today(&self, offset: Option<Duration>) -> Option<Datetime> { self.time.today(offset) }
 }
 impl typst_ide::IdeWorld for FrozenWorld { fn upcast(&self) -> &dyn World { self } }
@@ -604,6 +625,70 @@ fn is_font(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_fonts_shape_chinese_when_available() {
+        use typst::layout::{Frame, FrameItem};
+        const TEXT: &str = "中文汉字漢字";
+        // No named platform font dependency: fontless CI still runs the other tests.
+        let Some((_, info)) = typst_kit::fonts::system().find(|(_, info)| {
+            TEXT.chars().all(|c| info.coverage.contains(c as u32))
+        }) else {
+            eprintln!("CJK shaping requires an installed Chinese font; skipped");
+            return;
+        };
+        fn text_without_tofu(frame: &Frame) -> String {
+            let mut text = String::new();
+            for (_, item) in frame.items() {
+                match item {
+                    FrameItem::Text(run) => {
+                        assert!(run.glyphs.iter().all(|glyph| glyph.id != 0), "missing glyph in {}", run.text);
+                        text.push_str(&run.text);
+                    }
+                    FrameItem::Group(group) => text.push_str(&text_without_tofu(&group.frame)),
+                    _ => {}
+                }
+            }
+            text
+        }
+        let mut world = ProjectWorld::new(Config { project_root: std::env::temp_dir(), ..Config::default() }).unwrap();
+        // Cover default fallback and an authored installed family without fontPaths.
+        for source in [TEXT.to_owned(), format!("#set text(font: {})\n{TEXT}", serde_json::to_string(&info.family).unwrap())] {
+            world.update(world.config.clone(), vec![Overlay { file: "main.typ".into(), text: source }]).unwrap();
+            let result = typst::compile::<typst_layout::PagedDocument>(&world);
+            assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+            let document = result.output.unwrap();
+            let text: String = document.pages().iter().map(|page| text_without_tofu(&page.frame)).collect();
+            assert_eq!(text, TEXT);
+        }
+    }
+
+    #[test]
+    fn explicit_font_precedence_and_frozen_fallback_survive_reset() {
+        let root = std::env::temp_dir().join(format!("vtextedit-fonts-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let (font, info) = typst_kit::fonts::embedded().find(|(_, info)| info.family == "DejaVu Sans Mono").unwrap();
+        let path = root.join("explicit.ttf");
+        fs::write(&path, font.data().as_slice()).unwrap();
+        let config = Config { project_root: root.clone(), font_paths: vec![path.clone()], ..Config::default() };
+        let mut world = ProjectWorld::new(config).unwrap();
+        let selected = world.book().select(&info.family.to_lowercase(), info.variant).unwrap();
+        assert_eq!(selected, 0, "explicit face must win an equal match");
+        assert_eq!(world.font(selected).unwrap().data(), font.data());
+        let fallback = world.book().select("libertinus serif", Default::default()).unwrap();
+        let fallback_font = world.font(fallback).unwrap();
+        assert_eq!(fallback_font.info().family, "Libertinus Serif");
+        let frozen = world.freeze();
+        world.update(Config { project_root: root.clone(), ..Config::default() }, vec![]).unwrap();
+        fs::remove_file(path).unwrap();
+        assert_eq!(frozen.font(selected).unwrap().data(), font.data());
+        assert_eq!(frozen.font(fallback).unwrap().data(), fallback_font.data());
+        assert!(frozen.font(usize::MAX).is_none());
+        let selected = world.book().select(&info.family.to_lowercase(), info.variant).unwrap();
+        assert_eq!(world.font(selected).unwrap().data(), font.data());
+        assert!(world.font(usize::MAX).is_none());
+        fs::remove_dir(root).unwrap();
+    }
 
     #[test]
     fn utf16_mapping_rejects_split_surrogates_and_preserves_import_identity() {

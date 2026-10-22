@@ -429,6 +429,16 @@ notifications must not revoke current resources. Missing paths use the nearest e
 ancestor watch; `diskDependenciesRecoverAfterReplacementAndRecreation` covers file
 replacement, deletion, retained last-good output and creation recovery.
 
+Typst font lookup includes configured `fontPaths`, bundled fonts, then installed system
+fonts (earlier entries win equal matches). This applies to preview and export without
+rewriting authored text styles. The process shares one system catalog and lazily loads
+font data; installing or replacing system fonts requires restarting the host. Loaded faces
+remain owned by retained snapshots. Configured font paths retain their bounded reads and
+dependency watches; system fonts are shared process assets, not watched project inputs.
+CJK output requires an installed font covering the characters. Coverage: the conditional
+`system_fonts_shape_chinese_when_available` glyph test and the deterministic
+`explicit_font_precedence_and_frozen_fallback_survive_reset` regression.
+
 ## Typst Raw Code Highlighting
 
 `tools/typst-backend/src/highlight.rs` extracts embedded tokens from literal Raw CST nodes,
