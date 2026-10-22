@@ -19,6 +19,11 @@
 - Keep Typst 0.15.1, snapshots, diagnostics, navigation, previews and SVG/bitmap/PDF output.
   Parse-only image cleanup keeps its bounded wait and skips deletion on uncertainty.
 
+### CI fixes
+
+- Make the Typst preview shrink test independent of word-boundary wrapping and wait for
+  queued card replacement before testing stale-link menus and double-clicks.
+
 ## 9.0.0 (unreleased)
 
 ### Breaking changes

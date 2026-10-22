@@ -3751,6 +3751,9 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
   const int spanWidth = sourceRect(equationStart + 3).left() - sourceRect(equationStart).left();
   const int chromeWidth = fixture.editor.width() - fixture.edit()->viewport()->width();
   const int remaining = (spanWidth + fullRowWidth) / 2;
+  // Keep the equation on this visual line while testing its remaining-width fit.
+  const auto wrapMode = fixture.edit()->wordWrapMode();
+  fixture.edit()->setWordWrapMode(QTextOption::WrapAnywhere);
   fixture.editor.resize(chromeWidth + sourceRect(equationStart).left() + remaining +
                             qRound(fixture.editor.document()->documentMargin()) + 4,
                         650);
@@ -3763,6 +3766,7 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
   QVERIFY(repeated()->geometry().right() < fixture.edit()->viewport()->width());
 
   // The claimed source is mid-line on a soft-wrapped continuation, not at its origin.
+  fixture.edit()->setWordWrapMode(wrapMode);
   fixture.editor.resize(450, 650);
   QVERIFY(waitUntil([&]() {
     const auto block = fixture.editor.document()->findBlock(equationStart);
@@ -6507,18 +6511,19 @@ void TestTypstEditor::resourceStaleInternalLinkEligibility() {
     return current.m_snapshot && current.m_snapshot != pdfA.m_snapshot;
   }));
   QVERIFY(current.m_linkNavigable);
+  QPointer<QWidget> card = resourceCard(fixture.editor, true, &point);
+  QVERIFY(card);
   config->m_debounceMs = 60000;
   fixture.editor.setConfig(config);
-  QWidget *card = nullptr;
-  TypstResourceContext stale;
+  // Drain the queued replacement before a menu can enter its nested event loop.
+  QVERIFY(waitUntil([&]() { return card.isNull(); }));
   QVERIFY(waitUntil([&]() {
-    // Applying config relayouts and replaces cards; capture the displayed replacement.
     card = resourceCard(fixture.editor, true, &point);
-    if (!card)
-      return false;
-    stale = resourceMenuAt(fixture.editor, card, point);
-    return stale.m_imageId != 0;
+    return !card.isNull();
   }));
+  auto stale = resourceMenuAt(fixture.editor, card, point);
+  QVERIFY(card);
+  QVERIFY(stale.m_imageId != 0);
   QVERIFY(stale.m_linkIndex >= 0);
   QVERIFY(!stale.m_linkNavigable);
   QVERIFY(fixture.editor.isResourceContextValid(stale));
