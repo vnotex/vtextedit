@@ -18,6 +18,7 @@ public:
       const QSharedPointer<TextEditorConfig> &p_config = QSharedPointer<TextEditorConfig>())
       : m_textEditorConfig(p_config ? p_config : QSharedPointer<TextEditorConfig>::create()) {}
 
+  // The theme's typst-editor-styles.Text fonts default both source and compiled output.
   QSharedPointer<TextEditorConfig> m_textEditorConfig;
   // Application-owned; must outlive every editor/compiler using this configuration.
   // A missing or stopped runtime leaves source editing available without compilation.
@@ -39,7 +40,7 @@ public:
   // Canvas color; also the default page fill when theme styling is enabled.
   // Invalid leaves native Typst defaults and uses QPalette::Dark for the canvas.
   QColor m_pdfBackground;
-  // Preview-only defaults. Authored styles win; TypstCompiler exports ignore these.
+  // Preview-only color defaults. Authored styles win; TypstCompiler exports ignore these.
   bool m_enableThemeStyleInPreview = true;
   QColor m_previewForeground;
 };

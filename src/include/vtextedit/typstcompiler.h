@@ -48,7 +48,8 @@ public:
                                                          QString *p_error = nullptr);
 
   // Copies project, runtime pointer, font/package, timeout and resource settings.
-  // Editor presentation settings and debounce are unused. Empty root uses the current directory.
+  // Explicit typst-editor-styles.Text font defaults apply; authored styles take precedence.
+  // Source zoom, preview colors and debounce are unused. Empty root uses the current directory.
   explicit TypstCompiler(const TypstEditorConfig &p_config = TypstEditorConfig(),
                          QObject *p_parent = nullptr);
   ~TypstCompiler() Q_DECL_OVERRIDE;

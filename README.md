@@ -325,6 +325,35 @@ There is no helper executable, configurable backend path or executable fallback.
 Hosts must supply `TypstEditorConfig::m_runtime` explicitly; demos own it before
 their windows. Installing targets does not itself bundle all Qt/native dependencies.
 
+### Typst editor and document fonts
+
+Add `typst-editor-styles.Text` to your `text-editor.theme` to set the source editor's
+base style and default document fonts:
+
+```json
+{
+  "typst-editor-styles": {
+    "Text": {
+      "font-family": "Consolas, DejaVu Sans Mono",
+      "font-size": 14
+    }
+  }
+}
+```
+
+Merge this section into the existing theme. `font-family` is an ordered, comma-separated
+list; blank entries are ignored. `font-size` is a positive integer in points. The source
+editor inherits omitted properties from `editor-styles.Text`; other editors are unaffected.
+Only font properties explicitly set in `typst-editor-styles.Text` become document defaults
+for PDF and in-place previews and `TypstCompiler` SVG/bitmap exports. Omitted font properties
+retain native Typst defaults in compiled output, so existing themes keep their behavior.
+
+Authored Typst `set`, `show`, and `text(...)` styles take precedence. Source zoom and
+`m_enableThemeStyleInPreview` do not change these document font defaults. Source colors and
+decorations in this section are editor-only; the existing preview-color defaults remain
+preview-only. Exported typography therefore depends on the supplied theme unless the
+Typst document explicitly specifies its fonts.
+
 ### Typst source highlighting themes
 
 Typst elements use `TypstEditorConfig::m_textEditorConfig->m_theme`, the same vtextedit
@@ -362,8 +391,9 @@ References use the exact, case-sensitive `@markdown-syntax-styles:NAME` spelling
 resolve when the theme is loaded. The target must be a known Markdown style with a
 format object in the same file. References cannot chain or add property overrides;
 use a literal object instead. Missing entries, invalid values, and unresolved references
-add no syntax formatting. An empty object explicitly uses the base `editor-styles.Text`
-format. Custom themes without the section therefore leave Typst syntax unstyled; the
+add no syntax formatting. An empty object uses the base `editor-styles.Text` format with
+any `typst-editor-styles.Text` overrides. Custom themes without the syntax section leave
+Typst syntax unstyled; the
 bundled default theme supplies mappings and Typst-specific colors.
 
 Formats support the existing foreground/background colors, font family, point size,
@@ -374,7 +404,8 @@ Load the theme with `Theme::createThemeFromFile()`, assign it to `m_textEditorCo
 and apply it through `VTypstEditor::setConfig()`.
 
 `m_syntaxTheme` remains the KSyntaxHighlighting theme for code highlighting elsewhere;
-it no longer controls Typst elements. Source themes do not change the compiled PDF.
+it no longer controls Typst elements. Syntax-specific formats do not change compiled output;
+only the document font defaults in `typst-editor-styles.Text` do.
 
 ### Host API and project identity
 

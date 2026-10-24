@@ -163,6 +163,9 @@ public:
 
   const QSharedPointer<QVector<Format>> &markdownSyntaxStyles() const;
 
+  // Sparse Text override; omitted properties inherit the source editor style.
+  const Format &typstTextStyle() const;
+
   // Lowercase Typst parser kinds, with Markdown references resolved at load time.
   const QMap<QString, Format> &typstSyntaxStyles() const;
 
@@ -180,6 +183,8 @@ private:
   void loadMarkdownEditorStyles(const QJsonObject &p_obj);
 
   void loadMarkdownSyntaxStyles(const QJsonObject &p_obj);
+
+  void loadTypstEditorStyles(const QJsonObject &p_obj);
 
   void loadTypstSyntaxStyles(const QJsonObject &p_obj);
 
@@ -199,6 +204,8 @@ private:
   QMap<EditorStyle, Format> m_markdownEditorStyles;
 
   QSharedPointer<QVector<Format>> m_markdownSyntaxStyles;
+
+  Format m_typstTextStyle;
 
   QMap<QString, Format> m_typstSyntaxStyles;
 };

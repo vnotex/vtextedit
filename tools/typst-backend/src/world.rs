@@ -10,9 +10,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use typst::diag::{FileError, FileResult};
 use typst::foundations::{Bytes, Datetime, Duration, Smart};
-use typst::layout::PageElem;
+use typst::layout::{Abs, PageElem};
 use typst::syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot};
-use typst::text::{Font, FontBook, TextElem};
+use typst::text::{Font, FontBook, FontFamily, FontList, TextElem, TextSize};
 use typst::utils::LazyHash;
 use typst::visualize::{Color, Paint};
 use typst::{Library, LibraryExt, World};
@@ -35,6 +35,8 @@ pub struct Config {
     pub max_cache_bytes: usize,
     pub preview_background: Option<[u8; 4]>,
     pub preview_foreground: Option<[u8; 4]>,
+    pub text_font_families: Vec<String>,
+    pub text_font_size: Option<u32>,
 }
 
 impl Default for Config {
@@ -45,6 +47,7 @@ impl Default for Config {
             max_pdf_bytes: 64 * 1024 * 1024, max_raster_pixels: 16 * 1024 * 1024,
             max_cache_bytes: 256 * 1024 * 1024,
             preview_background: None, preview_foreground: None,
+            text_font_families: vec![], text_font_size: None,
         }
     }
 }
@@ -53,6 +56,13 @@ impl Config {
     fn library(&self) -> Arc<LazyHash<Library>> {
         let mut library = Library::default();
         // Library defaults sit below authored set/show rules without changing source spans.
+        if !self.text_font_families.is_empty() {
+            library.styles.set(TextElem::font,
+                FontList(self.text_font_families.iter().map(|family| FontFamily::new(family)).collect()));
+        }
+        if let Some(size) = self.text_font_size {
+            library.styles.set(TextElem::size, TextSize(Abs::pt(f64::from(size)).into()));
+        }
         if let Some([r, g, b, a]) = self.preview_background {
             library.styles.set(PageElem::fill,
                 Smart::Custom(Some(Paint::Solid(Color::from_u8(r, g, b, a)))));
@@ -69,6 +79,9 @@ impl Config {
             .map_err(|e| format!("cannot resolve projectRoot: {e}"))?;
         if !self.project_root.is_dir() { return Err("projectRoot must be a directory".into()); }
         project_id(&self.main_file)?;
+        if self.text_font_size.is_some_and(|size| size == 0 || size > i32::MAX as u32) {
+            return Err("textFontSize must be positive and fit a signed 32-bit integer".into());
+        }
         for path in self.font_paths.iter().chain(&self.package_paths) {
             if !path.is_absolute() { return Err("fontPaths and packagePaths must be absolute".into()); }
         }
@@ -220,6 +233,8 @@ impl ProjectWorld {
         self.main = project_id(&config.main_file)?;
         if self.config.preview_background != config.preview_background
             || self.config.preview_foreground != config.preview_foreground
+            || self.config.text_font_families != config.text_font_families
+            || self.config.text_font_size != config.text_font_size
         {
             self.library = config.library();
         }
@@ -625,6 +640,188 @@ fn is_font(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn text_font_world(mut config: Config) -> ProjectWorld {
+        config.project_root = std::env::temp_dir();
+        let mut world = ProjectWorld::new(config).unwrap();
+        // Only bundled faces participate in these regressions, even on font-rich hosts.
+        let mut fallback = FontStore::new();
+        fallback.extend(typst_kit::fonts::embedded());
+        world.fonts = Arc::new(Fonts {
+            book: fallback.book().clone(), fonts: Vec::new(), fallback: Arc::new(fallback),
+        });
+        world
+    }
+
+    fn assert_text_font(world: &dyn World, source: &str, family: &str, size: f64) -> typst_layout::PagedDocument {
+        use typst::layout::{Frame, FrameItem};
+        fn inspect(frame: &Frame, family: &str, size: f64, text: &mut String) {
+            for (_, item) in frame.items() {
+                match item {
+                    FrameItem::Text(run) => {
+                        assert_eq!(run.font.info().family, family);
+                        assert_eq!(run.size, Abs::pt(size));
+                        assert!(run.glyphs.iter().all(|glyph| glyph.id != 0), "missing glyph in {}", run.text);
+                        text.push_str(&run.text);
+                    }
+                    FrameItem::Group(group) => inspect(&group.frame, family, size, text),
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(world.source(world.main()).unwrap().text(), source);
+        let result = typst::compile::<typst_layout::PagedDocument>(world);
+        assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+        let document = result.output.unwrap();
+        let mut text = String::new();
+        for page in document.pages() { inspect(&page.frame, family, size, &mut text); }
+        assert_eq!(text, "Fontprobe");
+        assert_eq!(world.source(world.main()).unwrap().text(), source);
+        document
+    }
+
+    #[test]
+    fn text_font_config_defaults_and_point_size_validation() {
+        let omitted: Config = serde_json::from_value(json!({})).unwrap();
+        assert!(omitted.text_font_families.is_empty());
+        assert_eq!(omitted.text_font_size, None);
+        let empty: Config = serde_json::from_value(json!({"textFontFamilies":[], "textFontSize":null})).unwrap();
+        assert!(empty.text_font_families.is_empty());
+        assert_eq!(empty.text_font_size, None);
+        let configured: Config = serde_json::from_value(json!({
+            "textFontFamilies":["Missing Font", "DejaVu Sans Mono", "Libertinus Serif"],
+            "textFontSize":19
+        })).unwrap();
+        assert_eq!(configured.text_font_families, ["Missing Font", "DejaVu Sans Mono", "Libertinus Serif"]);
+        assert_eq!(configured.text_font_size, Some(19));
+        for size in [None, Some(1), Some(i32::MAX as u32)] {
+            assert!(Config { project_root: std::env::temp_dir(), text_font_size: size, ..Config::default() }.validate().is_ok());
+        }
+        for size in [0, i32::MAX as u32 + 1, u32::MAX] {
+            let error = Config { project_root: std::env::temp_dir(), text_font_size: Some(size), ..Config::default() }.validate().unwrap_err();
+            assert!(error.contains("textFontSize"), "{error}");
+        }
+        for size in [json!(-1), json!(1.5), json!(u32::MAX as u64 + 1), json!("19")] {
+            assert!(serde_json::from_value::<Config>(json!({"textFontSize":size})).is_err());
+        }
+    }
+
+    #[test]
+    fn text_font_defaults_shape_ordered_bundled_families() {
+        let mut world = text_font_world(Config { text_font_size: Some(19), ..Config::default() });
+        for (families, expected_family) in [
+            (["Missing Font", "DejaVu Sans Mono", "Libertinus Serif"], "DejaVu Sans Mono"),
+            (["Missing Font", "Libertinus Serif", "DejaVu Sans Mono"], "Libertinus Serif"),
+            (["Missing Font", "Another Missing Font", "DejaVu Sans Mono"], "DejaVu Sans Mono"),
+        ] {
+            let config = Config {
+                text_font_families: families.iter().map(|family| (*family).into()).collect(),
+                ..world.config.clone()
+            };
+            world.update(config, vec![Overlay { file: "main.typ".into(), text: "Fontprobe".into() }]).unwrap();
+            assert_text_font(&world, "Fontprobe", expected_family, 19.0);
+        }
+    }
+
+    #[test]
+    fn text_font_defaults_preserve_omitted_properties_and_ignore_preview_colors() {
+        let mut world = text_font_world(Config::default());
+        for (families, size, expected_family, expected_size) in [
+            (vec![], None, "Libertinus Serif", 11.0),
+            (vec!["DejaVu Sans Mono".into()], None, "DejaVu Sans Mono", 11.0),
+            (vec![], Some(19), "Libertinus Serif", 19.0),
+            (vec!["DejaVu Sans Mono".into()], Some(19), "DejaVu Sans Mono", 19.0),
+        ] {
+            for preview_colors in [false, true] {
+                let config = Config {
+                    text_font_families: families.clone(), text_font_size: size,
+                    preview_foreground: preview_colors.then_some([32, 64, 96, 255]),
+                    preview_background: preview_colors.then_some([240, 230, 220, 255]),
+                    ..world.config.clone()
+                };
+                world.update(config, vec![Overlay { file: "main.typ".into(), text: "Fontprobe".into() }]).unwrap();
+                assert_text_font(&world, "Fontprobe", expected_family, expected_size);
+            }
+        }
+    }
+
+    #[test]
+    fn authored_text_styles_override_font_defaults_independently() {
+        let mut world = text_font_world(Config {
+            text_font_families: vec!["DejaVu Sans Mono".into()], text_font_size: Some(19),
+            ..Config::default()
+        });
+        for (source, family, size) in [
+            ("#set text(font: \"Libertinus Serif\")\nFontprobe", "Libertinus Serif", 19.0),
+            ("#set text(size: 13pt)\nFontprobe", "DejaVu Sans Mono", 13.0),
+            ("#set text(font: \"Libertinus Serif\", size: 13pt)\nFontprobe", "Libertinus Serif", 13.0),
+            ("#show text: set text(font: \"Libertinus Serif\")\nFontprobe", "Libertinus Serif", 19.0),
+            ("#show text: set text(size: 13pt)\nFontprobe", "DejaVu Sans Mono", 13.0),
+            ("#show text: set text(font: \"Libertinus Serif\", size: 13pt)\nFontprobe", "Libertinus Serif", 13.0),
+            ("#text(font: \"Libertinus Serif\")[Fontprobe]", "Libertinus Serif", 19.0),
+            ("#text(size: 13pt)[Fontprobe]", "DejaVu Sans Mono", 13.0),
+            ("#text(font: \"Libertinus Serif\", size: 13pt)[Fontprobe]", "Libertinus Serif", 13.0),
+        ] {
+            world.update(world.config.clone(), vec![Overlay { file: "main.typ".into(), text: source.into() }]).unwrap();
+            assert_text_font(&world, source, family, size);
+        }
+    }
+
+    #[test]
+    fn text_font_default_updates_preserve_frozen_world_and_font_store() {
+        let mut world = text_font_world(Config {
+            text_font_families: vec!["DejaVu Sans Mono".into()], text_font_size: Some(19),
+            ..Config::default()
+        });
+        world.update(world.config.clone(), vec![Overlay { file: "main.typ".into(), text: "Fontprobe".into() }]).unwrap();
+        assert_text_font(&world, "Fontprobe", "DejaVu Sans Mono", 19.0);
+        let frozen = world.freeze();
+        let fonts = world.fonts.clone();
+        for (families, size, expected_family, expected_size) in [
+            (vec!["Libertinus Serif".into()], Some(19), "Libertinus Serif", 19.0),
+            (vec!["DejaVu Sans Mono".into()], Some(19), "DejaVu Sans Mono", 19.0),
+            (vec!["DejaVu Sans Mono".into()], Some(23), "DejaVu Sans Mono", 23.0),
+            (vec![], Some(23), "Libertinus Serif", 23.0),
+            (vec!["DejaVu Sans Mono".into()], Some(23), "DejaVu Sans Mono", 23.0),
+            (vec!["DejaVu Sans Mono".into()], None, "DejaVu Sans Mono", 11.0),
+            (vec![], None, "Libertinus Serif", 11.0),
+        ] {
+            let previous = world.library.clone();
+            let config = Config { text_font_families: families, text_font_size: size, ..world.config.clone() };
+            world.update(config, vec![Overlay { file: "main.typ".into(), text: "Fontprobe".into() }]).unwrap();
+            assert!(!Arc::ptr_eq(&previous, &world.library), "font defaults must invalidate the library");
+            assert!(Arc::ptr_eq(&fonts, &world.fonts), "font defaults must not reload the font store");
+            assert_text_font(&world, "Fontprobe", expected_family, expected_size);
+            assert_text_font(&frozen, "Fontprobe", "DejaVu Sans Mono", 19.0);
+        }
+        let previous = world.library.clone();
+        world.update(world.config.clone(), vec![Overlay { file: "main.typ".into(), text: "Fontprobe".into() }]).unwrap();
+        assert!(Arc::ptr_eq(&previous, &world.library), "unchanged defaults must retain the library");
+    }
+
+    #[test]
+    fn text_font_defaults_match_authored_svg_and_raster_exports() {
+        let mut world = text_font_world(Config {
+            text_font_families: vec!["DejaVu Sans Mono".into()], text_font_size: Some(19),
+            ..Config::default()
+        });
+        let source = "#set page(width: 160pt, height: 70pt, margin: 8pt)\nFontprobe";
+        world.update(world.config.clone(), vec![Overlay { file: "main.typ".into(), text: source.into() }]).unwrap();
+        let themed = assert_text_font(&world, source, "DejaVu Sans Mono", 19.0);
+        let authored_source = format!("#set text(font: \"DejaVu Sans Mono\", size: 19pt)\n{source}");
+        let config = Config { text_font_families: vec![], text_font_size: None, ..world.config.clone() };
+        world.update(config, vec![Overlay { file: "main.typ".into(), text: authored_source.clone() }]).unwrap();
+        let authored = assert_text_font(&world, &authored_source, "DejaVu Sans Mono", 19.0);
+        assert_eq!(themed.pages().len(), 1);
+        assert_eq!(authored.pages().len(), 1);
+        let svg_options = typst_svg::SvgOptions { render_bleed: false, pretty: false };
+        assert_eq!(typst_svg::svg(&themed.pages()[0], &svg_options), typst_svg::svg(&authored.pages()[0], &svg_options));
+        let render_options = typst_render::RenderOptions { pixel_per_pt: typst::utils::Scalar::new(1.0), render_bleed: false };
+        let themed_pixels = typst_render::render(&themed.pages()[0], &render_options);
+        let authored_pixels = typst_render::render(&authored.pages()[0], &render_options);
+        assert_eq!((themed_pixels.width(), themed_pixels.height()), (authored_pixels.width(), authored_pixels.height()));
+        assert_eq!(themed_pixels.take(), authored_pixels.take());
+    }
 
     #[test]
     fn system_fonts_shape_chinese_when_available() {

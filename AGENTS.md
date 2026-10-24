@@ -477,6 +477,25 @@ state or undo history. Coverage: inline Rust extractor tests,
 `raw_highlights_survive_evaluation_errors`, `rawCodeHighlightsUseSyntaxTheme` and
 `rawCodeHighlightsFollowEditsAndErrors`.
 
+## Typst Text Theme Defaults
+
+`Theme::typstTextStyle()` exposes the sparse `typst-editor-styles.Text` format.
+`TypstSourceEditor` merges it property-wise over `editor-styles.Text` in a private config/theme
+copy; never mutate the canonical shared/default theme. Reconfiguration restores inherited
+widget styling when an override is removed and preserves source zoom, content and history.
+Syntax formats inherit the specialized Text style; Markdown and ordinary editors do not.
+
+The bridge sends only explicitly configured `font-family` and positive integer `font-size`
+as `textFontFamilies` and `textFontSize` in both Preview and Export modes. Font families are
+trimmed once when parsing the theme; keep the full ordered list, not Qt's selected family.
+Missing font properties retain native Typst defaults in compiled output, not the generic
+source-editor font. Source zoom and the preview-color toggle never change document fonts.
+The Rust library defaults sit below authored set/show/constructor styles. Changes/removal
+invalidate the library without reloading the font store; retained snapshots keep old defaults.
+`TypstCompiler` exports use the supplied theme's document fonts. Coverage: `textStyleOverridesMergeWithoutSharedMutation`,
+`textFontDefaultsMatchAuthoredStyles`, `textFontThemeSwitchAndZoomPreserveSource`, and the
+bundled-font frame/export regressions in `world.rs`.
+
 ## Typst Preview Theme Defaults
 
 `TypstEditorConfig::m_enableThemeStyleInPreview` defaults to true. When enabled, valid
@@ -488,8 +507,8 @@ Only the Preview bridge sends these colors. The backend installs them in `Librar
 below authored set/show/constructor styles, without rewriting source or recoloring images.
 Explicit black, white, and transparent page fills retain their meaning. Theme changes and
 opt-out rebuild the library only when defaults change; retained snapshots keep their old
-library. `TypstCompiler` uses Export mode and never sends preview defaults, even when given
-the editor's themed config. Font and layout defaults are unchanged. Regression coverage:
+library. `TypstCompiler` uses Export mode and never sends preview colors, even when given
+the editor's themed config; the Text font defaults above still apply. Regression coverage:
 `previewThemeDefaultsRespectAuthoredStyles`, `previewThemeSwitchAndOptOutPreserveSource`,
 and `exportsIgnorePreviewTheme` in `tests/test_typsteditor/`.
 

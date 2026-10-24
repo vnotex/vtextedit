@@ -11,6 +11,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QFontDatabase>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -654,6 +655,25 @@ QJsonArray importOverlay(const QString &p_value) {
 bool writeFixture(const QString &p_path, const QByteArray &p_content) {
   QFile file(p_path);
   return file.open(QIODevice::WriteOnly) && file.write(p_content) == p_content.size();
+}
+
+QSharedPointer<Theme> textTheme(const QJsonObject &p_base, const QJsonObject &p_override) {
+  const QJsonObject theme{
+      {QStringLiteral("metadata"), QJsonObject{{QStringLiteral("type"), "vtextedit"}}},
+      {QStringLiteral("editor-styles"), QJsonObject{{QStringLiteral("Text"), p_base}}},
+      {QStringLiteral("typst-editor-styles"), QJsonObject{{QStringLiteral("Text"), p_override}}},
+      {QStringLiteral("typst-syntax-styles"),
+       QJsonObject{{QStringLiteral("string"), QJsonObject()}}}};
+  return Theme::createThemeFromContent(QString::fromUtf8(QJsonDocument(theme).toJson()));
+}
+
+QImage exportedPdfImage(const QSignalSpy &p_exports) {
+  if (p_exports.isEmpty())
+    return {};
+  Pdf pdf(p_exports.last().at(1).toByteArray());
+  if (!pdf.load() || pdf.document.pageCount() != 1)
+    return {};
+  return pdf.document.render(0, QSize(480, 320));
 }
 
 QTextCharFormat syntaxFormatAt(QTextDocument *p_document, int p_position) {
@@ -1466,6 +1486,294 @@ void TestTypstEditor::exportsIgnorePreviewTheme() {
     QCOMPARE(image,
              bitmap ? original.m_bitmapPages.first() : renderedSvg(original.m_svgPages.first()));
   }
+}
+
+void TestTypstEditor::textStyleOverridesMergeWithoutSharedMutation() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto baseFamily = QFontDatabase::systemFont(QFontDatabase::GeneralFont).family();
+  const auto otherFamily = QFontDatabase::systemFont(QFontDatabase::FixedFont).family();
+  const QJsonObject base{{QStringLiteral("font-family"), baseFamily},
+                         {QStringLiteral("font-size"), 11},
+                         {QStringLiteral("text-color"), "#223344"},
+                         {QStringLiteral("background-color"), "#f0eee8"},
+                         {QStringLiteral("selected-text-color"), "#fefefe"},
+                         {QStringLiteral("selected-background-color"), "#445566"},
+                         {QStringLiteral("bold"), true},
+                         {QStringLiteral("italic"), true},
+                         {QStringLiteral("underline"), true},
+                         {QStringLiteral("strike-through"), true}};
+  const QList<QJsonObject> overrides{
+      {{QStringLiteral("font-size"), 19}},
+      {{QStringLiteral("font-family"), otherFamily}},
+      {{QStringLiteral("text-color"), "#993322"},
+       {QStringLiteral("selected-background-color"), "#887766"},
+       {QStringLiteral("bold"), false},
+       {QStringLiteral("underline"), false}},
+      {{QStringLiteral("background-color"), "#ddeeff"},
+       {QStringLiteral("selected-text-color"), "#112233"},
+       {QStringLiteral("italic"), false},
+       {QStringLiteral("strike-through"), false}},
+      {{QStringLiteral("font-family"), " ,  , "}, {QStringLiteral("font-size"), 0}},
+      {}};
+  const auto source = shortSource(QStringLiteral("#let label = \"Inherited style\"\n#label"));
+  for (const auto &override : overrides) {
+    auto config = editorConfig(root.path(), &m_runtime);
+    config->m_textEditorConfig->m_theme = textTheme(base, override);
+    EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, config, false,
+                          true);
+    QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+    auto *document = fixture.editor.document();
+    const int position = source.indexOf(QStringLiteral("Inherited"));
+    const auto verifySource = [&]() {
+      QCOMPARE(fixture.edit()->font().family(),
+               override.value(QStringLiteral("font-family")).toString() == otherFamily
+                   ? otherFamily
+                   : baseFamily);
+      QCOMPARE(fixture.edit()->font().pointSize(),
+               override.value(QStringLiteral("font-size")).toInt() > 0 ? 19 : 11);
+      for (const auto &entry :
+           {qMakePair(QPalette::Text, QStringLiteral("text-color")),
+            qMakePair(QPalette::HighlightedText, QStringLiteral("selected-text-color")),
+            qMakePair(QPalette::Highlight, QStringLiteral("selected-background-color"))}) {
+        QCOMPARE(
+            fixture.edit()->palette().color(entry.first),
+            QColor(override.value(entry.second).toString(base.value(entry.second).toString())));
+      }
+      const auto format = syntaxFormatAt(document, position);
+      QCOMPARE(format.fontFamily(), fixture.edit()->font().family());
+      QCOMPARE(format.foreground().color(), fixture.edit()->palette().color(QPalette::Text));
+      const QColor background(
+          override.value(QStringLiteral("background-color"))
+              .toString(base.value(QStringLiteral("background-color")).toString()));
+      QCOMPARE(format.background().color(), background);
+      const auto painted = widgetImage(fixture.edit()->viewport());
+      QCOMPARE(painted.pixelColor(painted.width() / 2, painted.height() - 8), background);
+      QCOMPARE(
+          format.fontWeight(),
+          int(override.value(QStringLiteral("bold")).toBool(true) ? QFont::Bold : QFont::Normal));
+      QCOMPARE(format.fontItalic(), override.value(QStringLiteral("italic")).toBool(true));
+      QCOMPARE(format.fontUnderline(), override.value(QStringLiteral("underline")).toBool(true));
+      QCOMPARE(format.fontStrikeOut(),
+               override.value(QStringLiteral("strike-through")).toBool(true));
+    };
+    verifySource();
+    fixture.editor.setConfig(config);
+    QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+    verifySource();
+
+    // A later ordinary editor consumes the same input. Observe its live font and
+    // palette, not the config pointer: the Typst specialization must stay private.
+    VTextEditor ordinary(config->m_textEditorConfig,
+                         QSharedPointer<TextEditorParameters>::create());
+    ordinary.resize(600, 300);
+    ordinary.show();
+    QCOMPARE(ordinary.getTextEdit()->font().family(), baseFamily);
+    QCOMPARE(ordinary.getTextEdit()->font().pointSize(), 11);
+    QCOMPARE(ordinary.getTextEdit()->palette().color(QPalette::Text), QColor("#223344"));
+    const auto painted = widgetImage(ordinary.getTextEdit()->viewport());
+    QCOMPARE(painted.pixelColor(painted.width() / 2, painted.height() - 8), QColor("#f0eee8"));
+    QCOMPARE(ordinary.getTextEdit()->palette().color(QPalette::HighlightedText), QColor("#fefefe"));
+    QCOMPARE(ordinary.getTextEdit()->palette().color(QPalette::Highlight), QColor("#445566"));
+  }
+
+  // Omitting generic family/colors must restore Qt's inherited defaults too,
+  // not the old override left on the widget by its generated stylesheet.
+  auto config = editorConfig(root.path(), &m_runtime);
+  const QJsonObject sparse{{QStringLiteral("font-size"), 11}};
+  config->m_textEditorConfig->m_theme =
+      textTheme(sparse, {{QStringLiteral("font-family"), otherFamily},
+                         {QStringLiteral("text-color"), "#993322"},
+                         {QStringLiteral("background-color"), "#ddeeff"},
+                         {QStringLiteral("selected-text-color"), "#112233"},
+                         {QStringLiteral("selected-background-color"), "#887766"}});
+  EditorFixture changed(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, config, false,
+                        true);
+  QVERIFY2(changed.ready(), qPrintable(changed.editor.compileMessage()));
+  config->m_textEditorConfig->m_theme = textTheme(sparse, {});
+  changed.editor.setConfig(config);
+  EditorFixture fresh(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, config, false,
+                      true);
+  QVERIFY2(changed.ready(), qPrintable(changed.editor.compileMessage()));
+  QVERIFY2(fresh.ready(), qPrintable(fresh.editor.compileMessage()));
+  QCOMPARE(changed.edit()->font(), fresh.edit()->font());
+  for (const auto role :
+       {QPalette::Text, QPalette::Base, QPalette::HighlightedText, QPalette::Highlight})
+    QCOMPARE(changed.edit()->palette().color(role), fresh.edit()->palette().color(role));
+  QCOMPARE(syntaxFormatAt(changed.editor.document(), source.indexOf(QStringLiteral("Inherited"))),
+           syntaxFormatAt(fresh.editor.document(), source.indexOf(QStringLiteral("Inherited"))));
+}
+
+void TestTypstEditor::textFontDefaultsMatchAuthoredStyles_data() {
+  QTest::addColumn<QJsonObject>("override");
+  QTest::addColumn<QString>("authoredDefaults");
+  QTest::addColumn<QString>("body");
+  const QString words = QStringLiteral("Font defaults Wiim 0123");
+  const QString font = QStringLiteral("#set text(font: \"DejaVu Sans Mono\")\n");
+  const QString size = QStringLiteral("#set text(size: 19pt)\n");
+  const QJsonObject both{{QStringLiteral("font-family"), "DejaVu Sans Mono"},
+                         {QStringLiteral("font-size"), 19}};
+  QTest::newRow("ordered-fallback")
+      << QJsonObject{{QStringLiteral("font-family"),
+                      " VTextEdit Missing Family , , DejaVu Sans Mono , "},
+                     {QStringLiteral("font-size"), 19}}
+      << QStringLiteral(
+             "#set text(font: (\"VTextEdit Missing Family\", \"DejaVu Sans Mono\"), size: 19pt)\n")
+      << words;
+  QTest::newRow("family-only") << QJsonObject{{QStringLiteral("font-family"), "DejaVu Sans Mono"}}
+                               << font << words;
+  QTest::newRow("size-only") << QJsonObject{{QStringLiteral("font-size"), 19}} << size << words;
+  QTest::newRow("omitted") << QJsonObject() << QString() << words;
+  QTest::newRow("empty") << QJsonObject{{QStringLiteral("font-family"), " ,  "},
+                                        {QStringLiteral("font-size"), 0}}
+                         << QString() << words;
+  QTest::newRow("authored-family")
+      << both << size << QStringLiteral("#set text(font: \"Libertinus Serif\")\n") + words;
+  QTest::newRow("authored-size") << both << font
+                                 << QStringLiteral("#set text(size: 13pt)\n") + words;
+  QTest::newRow("authored-set") << both << QString()
+                                << QStringLiteral(
+                                       "#set text(font: \"Libertinus Serif\", size: 13pt)\n") +
+                                       words;
+  QTest::newRow("authored-show")
+      << both << QString()
+      << QStringLiteral("#show text: set text(font: \"Libertinus Serif\", size: 13pt)\n") + words;
+  QTest::newRow("authored-constructor")
+      << both << QString()
+      << QStringLiteral("#text(font: \"Libertinus Serif\", size: 13pt)[") + words +
+             QLatin1Char(']');
+}
+
+void TestTypstEditor::textFontDefaultsMatchAuthoredStyles() {
+  QFETCH(QJsonObject, override);
+  QFETCH(QString, authoredDefaults);
+  QFETCH(QString, body);
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  auto config = editorConfig(root.path(), &m_runtime);
+  // Generic source fonts deliberately disagree with native Typst defaults.
+  config->m_textEditorConfig->m_theme = textTheme(
+      {{QStringLiteral("font-family"), "Arial"}, {QStringLiteral("font-size"), 43}}, override);
+  config->m_pdfBackground = QColor("#202020");
+  config->m_previewForeground = QColor("#eeeeee");
+  const auto source = shortSource(body);
+  const auto authored = authoredDefaults + source;
+  TypstCompiler compiler(*config);
+  TypstCompiler reference(*editorConfig(root.path(), &m_runtime));
+  QSignalSpy finished(&compiler, &TypstCompiler::finished);
+  QSignalSpy referenceFinished(&reference, &TypstCompiler::finished);
+  const auto image = [](const TypstCompiler::Result &p_result, bool p_bitmap) {
+    if (p_bitmap)
+      return p_result.m_bitmapPages.size() == 1 ? p_result.m_bitmapPages.first() : QImage();
+    if (p_result.m_svgPages.size() != 1)
+      return QImage();
+    QSvgRenderer renderer(p_result.m_svgPages.first());
+    if (!renderer.isValid())
+      return QImage();
+    QImage rendered(QSize(480, 320), QImage::Format_ARGB32_Premultiplied);
+    rendered.fill(Qt::transparent);
+    QPainter painter(&rendered);
+    renderer.render(&painter);
+    return rendered;
+  };
+  for (bool bitmap : {true, false}) {
+    finished.clear();
+    referenceFinished.clear();
+    QVERIFY(bitmap ? compiler.compileToBitmap(source) : compiler.compileToSvg(source));
+    QVERIFY(bitmap ? reference.compileToBitmap(authored) : reference.compileToSvg(authored));
+    QVERIFY(waitUntil([&]() { return finished.count() == 1 && referenceFinished.count() == 1; }));
+    const auto actual = qvariant_cast<TypstCompiler::Result>(finished.first().first());
+    const auto expected = qvariant_cast<TypstCompiler::Result>(referenceFinished.first().first());
+    QVERIFY2(actual.isSuccess(), qPrintable(actual.m_error));
+    QVERIFY2(expected.isSuccess(), qPrintable(expected.m_error));
+    const auto rendered = image(actual, bitmap);
+    QVERIFY(!rendered.isNull());
+    QCOMPARE(rendered, image(expected, bitmap));
+  }
+
+  // Real preview PDF publication goes through a different bridge mode. The
+  // color opt-out must not opt out of font defaults.
+  config->m_enableThemeStyleInPreview = false;
+  EditorFixture preview(m_runtime, root.path(), source, VTypstEditor::Mode::Read, config);
+  EditorFixture oracle(m_runtime, root.path(), authored);
+  const auto previewExports = observePdfExports(&preview.editor);
+  const auto oracleExports = observePdfExports(&oracle.editor);
+  QVERIFY(previewExports && oracleExports);
+  QVERIFY(waitUntil([&]() { return !previewExports->isEmpty() && !oracleExports->isEmpty(); }));
+  const auto rendered = exportedPdfImage(*previewExports);
+  QVERIFY(!rendered.isNull());
+  QCOMPARE(rendered, exportedPdfImage(*oracleExports));
+}
+
+void TestTypstEditor::textFontThemeSwitchAndZoomPreserveSource() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto baseFamily = QFontDatabase::systemFont(QFontDatabase::GeneralFont).family();
+  const QJsonObject base{{QStringLiteral("font-family"), baseFamily},
+                         {QStringLiteral("font-size"), 11}};
+  const QList<QJsonObject> overrides{
+      {{QStringLiteral("font-family"), "DejaVu Sans Mono"}, {QStringLiteral("font-size"), 19}},
+      {{QStringLiteral("font-size"), 23}},
+      {},
+      {}};
+  const QStringList defaults{QStringLiteral("#set text(font: \"DejaVu Sans Mono\", size: 19pt)\n"),
+                             QStringLiteral("#set text(size: 23pt)\n"), QString(), QString()};
+  auto config = editorConfig(root.path(), &m_runtime);
+  config->m_textEditorConfig->m_theme = textTheme(base, overrides.first());
+  const auto original = shortSource(QStringLiteral("Font switch Wiim 0123"));
+  EditorFixture fixture(m_runtime, root.path(), original, VTypstEditor::Mode::Edit, config, false,
+                        true);
+  const auto exports = observePdfExports(&fixture.editor);
+  QVERIFY(exports);
+  QVERIFY(waitUntil([&]() { return !exports->isEmpty(); }));
+  auto *document = fixture.editor.document();
+  document->setModified(false);
+  QTextCursor cursor(document);
+  cursor.movePosition(QTextCursor::End);
+  cursor.insertText(QStringLiteral(" Edited."));
+  const auto edited = document->toPlainText();
+  cursor.setPosition(edited.size() - 1, QTextCursor::KeepAnchor);
+  fixture.edit()->setTextCursor(cursor);
+  const int undoSteps = document->availableUndoSteps();
+  QVERIFY(undoSteps > 0);
+  QVERIFY(document->isModified());
+  QSignalSpy changes(document, &QTextDocument::contentsChange);
+  QImage previous;
+  for (int step = 0; step < overrides.size(); ++step) {
+    config->m_textEditorConfig->m_theme = textTheme(base, overrides.at(step));
+    config->m_enableThemeStyleInPreview = step % 2 == 0;
+    fixture.editor.getTextEditor()->zoom(3);
+    const int count = exports->count();
+    fixture.editor.setConfig(config);
+    QVERIFY(waitUntil([&]() { return exports->count() > count; }));
+    QCOMPARE(fixture.edit()->font().pointSize(), step == 0 ? 22 : step == 1 ? 26 : 14);
+    if (step > 0)
+      QCOMPARE(fixture.edit()->font().family(), baseFamily);
+    EditorFixture oracle(m_runtime, root.path(), defaults.at(step) + edited);
+    const auto oracleExports = observePdfExports(&oracle.editor);
+    QVERIFY(oracleExports);
+    QVERIFY(waitUntil([&]() { return !oracleExports->isEmpty(); }));
+    const auto rendered = exportedPdfImage(*exports);
+    QVERIFY(!rendered.isNull());
+    QCOMPARE(rendered, exportedPdfImage(*oracleExports));
+    if (step == 1 || step == 2)
+      QVERIFY(rendered != previous);
+    if (step == 3)
+      QCOMPARE(rendered, previous); // Toggling preview colors does not alter document fonts.
+    previous = rendered;
+    QCOMPARE(document->toPlainText(), edited);
+    QCOMPARE(document->availableUndoSteps(), undoSteps);
+    QCOMPARE(fixture.edit()->textCursor().anchor(), cursor.anchor());
+    QCOMPARE(fixture.edit()->textCursor().position(), cursor.position());
+    QVERIFY(document->isModified());
+  }
+  QCOMPARE(textChangeCount(changes), 0);
+  fixture.editor.getTextEditor()->zoom(0);
+  QCOMPARE(fixture.edit()->font().pointSize(), 11);
+  fixture.edit()->undo();
+  QCOMPARE(document->toPlainText(), original);
+  fixture.edit()->redo();
+  QCOMPARE(document->toPlainText(), edited);
 }
 
 void TestTypstEditor::compilerUnicodeImportsAndNormalization() {

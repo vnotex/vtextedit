@@ -109,6 +109,8 @@ void Theme::load(const QJsonObject &p_obj) {
 
   loadMarkdownSyntaxStyles(p_obj);
 
+  loadTypstEditorStyles(p_obj);
+
   loadTypstSyntaxStyles(p_obj);
 }
 
@@ -253,6 +255,27 @@ void Theme::loadMarkdownSyntaxStyles(const QJsonObject &p_obj) {
   }
 }
 
+void Theme::loadTypstEditorStyles(const QJsonObject &p_obj) {
+  auto text = p_obj.value(QStringLiteral("typst-editor-styles"))
+                  .toObject()
+                  .value(QStringLiteral("Text"))
+                  .toObject();
+  // Blank family entries are omissions, not an override of the source default.
+  const auto families =
+      text.value(QStringLiteral("font-family")).toString().split(QLatin1Char(','));
+  QStringList trimmed;
+  for (const auto &family : families) {
+    const auto name = family.trimmed();
+    if (!name.isEmpty())
+      trimmed.append(name);
+  }
+  if (trimmed.isEmpty())
+    text.remove(QStringLiteral("font-family"));
+  else
+    text.insert(QStringLiteral("font-family"), trimmed.join(QLatin1Char(',')));
+  m_typstTextStyle = loadStyleFormat(text);
+}
+
 void Theme::loadTypstSyntaxStyles(const QJsonObject &p_obj) {
   const auto obj = p_obj.value(QStringLiteral("typst-syntax-styles")).toObject();
   const auto markdown = p_obj.value(QStringLiteral("markdown-syntax-styles")).toObject();
@@ -297,5 +320,7 @@ const QMap<Theme::EditorStyle, Format> &Theme::markdownEditorStyles() const {
 const QSharedPointer<QVector<Format>> &Theme::markdownSyntaxStyles() const {
   return m_markdownSyntaxStyles;
 }
+
+const Format &Theme::typstTextStyle() const { return m_typstTextStyle; }
 
 const QMap<QString, Format> &Theme::typstSyntaxStyles() const { return m_typstSyntaxStyles; }

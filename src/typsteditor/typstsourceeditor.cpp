@@ -12,10 +12,60 @@
 
 using namespace vte;
 
+namespace {
+QSharedPointer<TextEditorConfig> sourceConfig(const QSharedPointer<TextEditorConfig> &p_config) {
+  const auto config = p_config ? p_config : QSharedPointer<TextEditorConfig>::create();
+  const auto theme = config->m_theme ? config->m_theme : TextEditorConfig::defaultTheme();
+  const auto &override = theme->typstTextStyle();
+  if (override.m_fontFamily.isEmpty() && override.m_fontPointSize <= 0 && !override.m_textColor &&
+      !override.m_backgroundColor && !override.m_selectedTextColor &&
+      !override.m_selectedBackgroundColor && !override.m_hasBold && !override.m_hasItalic &&
+      !override.m_hasUnderline && !override.m_hasStrikeThrough)
+    return config;
+
+  // VTypstEditor keeps the canonical config. Specialize only this source editor,
+  // so refreshes and removing the override never inherit an earlier merge.
+  auto specialized = QSharedPointer<TextEditorConfig>::create(*config);
+  specialized->m_theme = QSharedPointer<Theme>::create(*theme);
+  auto &text = specialized->m_theme->editorStyle(Theme::Text);
+  if (!override.m_fontFamily.isEmpty()) {
+    text.m_fontFamilies = override.m_fontFamilies;
+    text.m_fontFamily = override.m_fontFamily;
+  }
+  if (override.m_fontPointSize > 0)
+    text.m_fontPointSize = override.m_fontPointSize;
+  if (override.m_textColor)
+    text.m_textColor = override.m_textColor;
+  if (override.m_backgroundColor)
+    text.m_backgroundColor = override.m_backgroundColor;
+  if (override.m_selectedTextColor)
+    text.m_selectedTextColor = override.m_selectedTextColor;
+  if (override.m_selectedBackgroundColor)
+    text.m_selectedBackgroundColor = override.m_selectedBackgroundColor;
+  if (override.m_hasBold) {
+    text.m_bold = override.m_bold;
+    text.m_hasBold = true;
+  }
+  if (override.m_hasItalic) {
+    text.m_italic = override.m_italic;
+    text.m_hasItalic = true;
+  }
+  if (override.m_hasUnderline) {
+    text.m_underline = override.m_underline;
+    text.m_hasUnderline = true;
+  }
+  if (override.m_hasStrikeThrough) {
+    text.m_strikeThrough = override.m_strikeThrough;
+    text.m_hasStrikeThrough = true;
+  }
+  return specialized;
+}
+} // namespace
+
 TypstSourceEditor::TypstSourceEditor(const QSharedPointer<TextEditorConfig> &p_config,
                                      const QSharedPointer<TextEditorParameters> &p_parameters,
                                      QWidget *p_parent)
-    : VTextEditor(p_config, p_parameters, p_parent) {
+    : VTextEditor(sourceConfig(p_config), p_parameters, p_parent) {
   // The document owns the layout and can outlive this subclass's members. Tie
   // the empty resource manager to layout destruction, not editor destruction.
   const auto resources = QSharedPointer<DocumentResourceMgr>::create();
@@ -62,7 +112,19 @@ TypstHighlighter *TypstSourceEditor::typstHighlighter() const {
 }
 
 void TypstSourceEditor::applyConfig(const QSharedPointer<TextEditorConfig> &p_config) {
-  VTextEditor::setConfig(p_config ? p_config : QSharedPointer<TextEditorConfig>::create());
+  const int delta = zoomDelta();
+  VTextEditor::zoom(0);
+  const auto &previous = getConfig().m_theme->typstTextStyle();
+  if (!previous.m_fontFamily.isEmpty() || previous.m_textColor || previous.m_backgroundColor ||
+      previous.m_selectedTextColor || previous.m_selectedBackgroundColor) {
+    // The base editor reads unspecified font/palette properties from the widget.
+    // Remove our old stylesheet first so omitted generic properties inherit the
+    // unstyled widget, rather than retaining the previous Typst override.
+    setStyleSheet(QString());
+    m_textEdit->viewport()->setStyleSheet(QString());
+  }
+  VTextEditor::setConfig(sourceConfig(p_config));
+  VTextEditor::zoom(delta);
   typstHighlighter()->refreshTheme(getConfig(), editorFontPointSize() - baseEditorFontPointSize());
   refreshGeometry();
 }

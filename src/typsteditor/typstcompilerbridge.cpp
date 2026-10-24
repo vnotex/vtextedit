@@ -534,6 +534,15 @@ QJsonObject TypstCompilerBridge::configuration() const {
       {QStringLiteral("maxPdfBytes"), static_cast<double>(m_config.m_maxPdfBytes)},
       {QStringLiteral("maxRasterPixels"), m_config.m_maxRasterPixels},
       {QStringLiteral("maxCacheBytes"), static_cast<double>(m_config.m_maxCacheBytes)}};
+  const auto theme = m_config.m_textEditorConfig && m_config.m_textEditorConfig->m_theme
+                         ? m_config.m_textEditorConfig->m_theme
+                         : TextEditorConfig::defaultTheme();
+  const auto &text = theme->typstTextStyle();
+  if (!text.m_fontFamilies.isEmpty())
+    config.insert(QStringLiteral("textFontFamilies"),
+                  QJsonArray::fromStringList(text.m_fontFamilies));
+  if (text.m_fontPointSize > 0)
+    config.insert(QStringLiteral("textFontSize"), text.m_fontPointSize);
   if (m_mode == Mode::Preview && m_config.m_enableThemeStyleInPreview) {
     const auto addColor = [&config](const QString &p_key, const QColor &p_color) {
       if (p_color.isValid()) {

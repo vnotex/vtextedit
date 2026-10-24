@@ -63,6 +63,10 @@ private slots:
   void previewThemeDefaultsRespectAuthoredStyles();
   void previewThemeSwitchAndOptOutPreserveSource();
   void exportsIgnorePreviewTheme();
+  void textStyleOverridesMergeWithoutSharedMutation();
+  void textFontDefaultsMatchAuthoredStyles_data();
+  void textFontDefaultsMatchAuthoredStyles();
+  void textFontThemeSwitchAndZoomPreserveSource();
   void compilerUnicodeImportsAndNormalization();
   void compilerAsyncFailureAndRecovery();
   void compilerRejectsInvalidScaleAndPixelLimit_data();
