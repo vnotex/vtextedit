@@ -644,6 +644,9 @@ Native editor fixtures must establish Qt's active top-level window after showing
 `activateWindow()` alone depends on a window manager that bare Xvfb does not provide.
 Compare configured and rendered font families through `QFontInfo`, not raw generic-family
 labels: Qt's stylesheet font can capitalize an equivalent alias differently from the database.
+After replacing source, raster fixtures must place the text cursor at the observed source before
+aligning horizontal scroll; deferred Qt caret visibility can otherwise rewind the viewport to
+its old cursor and clip an already-rendered preview.
 
 ## Architecture
 

@@ -4028,6 +4028,9 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
     return fixture.edit()->cursorRect(cursor);
   };
   const auto scrollToSource = [&](int p_position) {
+    QTextCursor cursor(fixture.editor.document());
+    cursor.setPosition(p_position);
+    fixture.edit()->setTextCursor(cursor);
     auto *bar = fixture.edit()->horizontalScrollBar();
     bar->setValue(bar->value() + sourceRect(p_position).left() -
                   qRound(fixture.editor.document()->documentMargin()));
@@ -4115,24 +4118,8 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
            block.layout()->lineAt(0).naturalTextWidth() + 2 * doc->documentMargin();
   }));
   scrollToSource(wideStart);
-  const bool wideVisible =
-      waitUntil([&]() { return repeated() && coloredPixels(widgetImage(repeated()), false) > 10; });
-  if (!wideVisible) {
-    auto *horizontal = fixture.edit()->horizontalScrollBar();
-    auto *vertical = fixture.edit()->verticalScrollBar();
-    qWarning() << "Wide preview font/DPI:" << fixture.edit()->font()
-               << fixture.edit()->logicalDpiX() << "viewport:" << fixture.edit()->viewport()->rect()
-               << "source:" << sourceRect(wideStart)
-               << "horizontal value/range:" << horizontal->value() << horizontal->minimum()
-               << horizontal->maximum() << "vertical value/range:" << vertical->value()
-               << vertical->minimum() << vertical->maximum();
-    for (auto *card : fixture.editor.findChildren<QWidget *>(QStringLiteral("typstPreviewCard"))) {
-      const auto image = widgetImage(card);
-      qWarning() << "Wide preview card:" << card->geometry() << "visible:" << card->isVisible()
-                 << "red/blue pixels:" << coloredPixels(image, true) << coloredPixels(image, false);
-    }
-  }
-  QVERIFY2(wideVisible, "Wide repeated preview did not publish both colored occurrences");
+  QVERIFY(waitUntil(
+      [&]() { return repeated() && coloredPixels(widgetImage(repeated()), false) > 10; }));
   const auto wideSize = repeated()->size();
   const qreal wideDocumentWidth =
       fixture.editor.document()->documentLayout()->documentSize().width();
