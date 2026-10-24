@@ -12,6 +12,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFontDatabase>
+#include <QFontInfo>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -335,6 +336,8 @@ public:
     editor.setMode(p_mode);
     editor.resize(1000, 650);
     editor.show();
+    editor.activateWindow();
+    QApplication::setActiveWindow(&editor);
   }
   QAbstractScrollArea *pane() const {
     return editor.findChild<QAbstractScrollArea *>(QStringLiteral("typstPdf"));
@@ -1526,10 +1529,11 @@ void TestTypstEditor::textStyleOverridesMergeWithoutSharedMutation() {
     auto *document = fixture.editor.document();
     const int position = source.indexOf(QStringLiteral("Inherited"));
     const auto verifySource = [&]() {
-      QCOMPARE(fixture.edit()->font().family(),
-               override.value(QStringLiteral("font-family")).toString() == otherFamily
-                   ? otherFamily
-                   : baseFamily);
+      const auto requestedFamily =
+          override.value(QStringLiteral("font-family")).toString() == otherFamily ? otherFamily
+                                                                                  : baseFamily;
+      QCOMPARE(QFontInfo(fixture.edit()->font()).family(),
+               QFontInfo(QFont(requestedFamily)).family());
       QCOMPARE(fixture.edit()->font().pointSize(),
                override.value(QStringLiteral("font-size")).toInt() > 0 ? 19 : 11);
       for (const auto &entry :
@@ -1541,7 +1545,7 @@ void TestTypstEditor::textStyleOverridesMergeWithoutSharedMutation() {
             QColor(override.value(entry.second).toString(base.value(entry.second).toString())));
       }
       const auto format = syntaxFormatAt(document, position);
-      QCOMPARE(format.fontFamily(), fixture.edit()->font().family());
+      QCOMPARE(QFontInfo(format.font()).family(), QFontInfo(fixture.edit()->font()).family());
       QCOMPARE(format.foreground().color(), fixture.edit()->palette().color(QPalette::Text));
       const QColor background(
           override.value(QStringLiteral("background-color"))
@@ -1568,7 +1572,8 @@ void TestTypstEditor::textStyleOverridesMergeWithoutSharedMutation() {
                          QSharedPointer<TextEditorParameters>::create());
     ordinary.resize(600, 300);
     ordinary.show();
-    QCOMPARE(ordinary.getTextEdit()->font().family(), baseFamily);
+    QCOMPARE(QFontInfo(ordinary.getTextEdit()->font()).family(),
+             QFontInfo(QFont(baseFamily)).family());
     QCOMPARE(ordinary.getTextEdit()->font().pointSize(), 11);
     QCOMPARE(ordinary.getTextEdit()->palette().color(QPalette::Text), QColor("#223344"));
     const auto painted = widgetImage(ordinary.getTextEdit()->viewport());
@@ -4110,8 +4115,24 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
            block.layout()->lineAt(0).naturalTextWidth() + 2 * doc->documentMargin();
   }));
   scrollToSource(wideStart);
-  QVERIFY(waitUntil(
-      [&]() { return repeated() && coloredPixels(widgetImage(repeated()), false) > 10; }));
+  const bool wideVisible =
+      waitUntil([&]() { return repeated() && coloredPixels(widgetImage(repeated()), false) > 10; });
+  if (!wideVisible) {
+    auto *horizontal = fixture.edit()->horizontalScrollBar();
+    auto *vertical = fixture.edit()->verticalScrollBar();
+    qWarning() << "Wide preview font/DPI:" << fixture.edit()->font()
+               << fixture.edit()->logicalDpiX() << "viewport:" << fixture.edit()->viewport()->rect()
+               << "source:" << sourceRect(wideStart)
+               << "horizontal value/range:" << horizontal->value() << horizontal->minimum()
+               << horizontal->maximum() << "vertical value/range:" << vertical->value()
+               << vertical->minimum() << vertical->maximum();
+    for (auto *card : fixture.editor.findChildren<QWidget *>(QStringLiteral("typstPreviewCard"))) {
+      const auto image = widgetImage(card);
+      qWarning() << "Wide preview card:" << card->geometry() << "visible:" << card->isVisible()
+                 << "red/blue pixels:" << coloredPixels(image, true) << coloredPixels(image, false);
+    }
+  }
+  QVERIFY2(wideVisible, "Wide repeated preview did not publish both colored occurrences");
   const auto wideSize = repeated()->size();
   const qreal wideDocumentWidth =
       fixture.editor.document()->documentLayout()->documentSize().width();

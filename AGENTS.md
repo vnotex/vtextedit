@@ -640,6 +640,11 @@ the `vtextedit` translator with its chosen `QLocale` before constructing editors
 * Each test compiles needed source files directly (no library dependency) with `VTEXTEDIT_STATIC_DEFINE`
 * Shared test utilities in `tests/utils/`
 
+Native editor fixtures must establish Qt's active top-level window after showing it;
+`activateWindow()` alone depends on a window manager that bare Xvfb does not provide.
+Compare configured and rendered font families through `QFontInfo`, not raw generic-family
+labels: Qt's stylesheet font can capitalize an equivalent alias differently from the database.
+
 ## Architecture
 
 ### Overview
