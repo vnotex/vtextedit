@@ -649,6 +649,11 @@ aligning horizontal scroll; deferred Qt caret visibility can otherwise rewind th
 its old cursor and clip an already-rendered preview. When replacing with overwide source,
 wait for the horizontal scrollbar's nonzero range before alignment: document layout width
 alone does not establish that the scrollbar can accept the requested offset.
+Raster-request observers and their callbacks must be installed before admitting the source
+whose first request they assert: native show/activation can pump events inside fixture
+construction. A current preview does not prove a late subscriber saw its startup request.
+Keep epoch/snapshot and actual card geometry/color counts in timeout diagnostics; do not
+replace raster assertions with the compiler's up-to-date message.
 
 ## Architecture
 

@@ -4075,10 +4075,23 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
   fixture.editor.resize(chromeWidth + sourceRect(equationStart).left() + remaining +
                             qRound(fixture.editor.document()->documentMargin()) + 4,
                         650);
-  QVERIFY(waitUntil([&]() {
+  const bool fitted = waitUntil([&]() {
     return repeated() && repeated()->width() < fullRowWidth &&
            coloredPixels(widgetImage(repeated()), false) > 10;
-  }));
+  });
+  QString fitState;
+  if (!fitted) {
+    QDebug state(&fitState);
+    state << "editor/viewport/full/span:" << fixture.editor.width()
+          << fixture.edit()->viewport()->width() << fullRowWidth << spanWidth
+          << "source:" << sourceRect(equationStart);
+    for (auto *card : fixture.editor.findChildren<QWidget *>(QStringLiteral("typstPreviewCard"))) {
+      const auto image = widgetImage(card);
+      state << "card/visible/red/blue:" << card->geometry() << card->isVisible()
+            << coloredPixels(image, true) << coloredPixels(image, false);
+    }
+  }
+  QVERIFY2(fitted, qPrintable(fitState));
   QVERIFY(std::abs(repeated()->geometry().left() - sourceRect(equationStart).left()) <= 1);
   QVERIFY(repeated()->width() > spanWidth);
   QVERIFY(repeated()->geometry().right() < fixture.edit()->viewport()->width());
@@ -5372,19 +5385,31 @@ void TestTypstEditor::rasterHandoffTransitions() {
   const auto source = shortSource(QStringLiteral("#set text(fill: red, size: 24pt)\n$ x $\nAfter"));
   const auto replacement = shortSource(QStringLiteral(
       "#set text(fill: rgb(\"#0000ff\"), size: 24pt)\n$ Omega^3 + Omega^2 + Omega $\nAfter"));
-  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, true, false);
+  EditorFixture fixture(m_runtime, root.path(), QString(), VTypstEditor::Mode::Edit, {}, true,
+                        false);
   TypstRasterObserver observer;
-  QVERIFY(observeRasters(&fixture.editor, &observer));
   quint64 baselineEpoch = 0;
   quint64 baselineSnapshot = 0;
   observer.requested = [&](quint64 p_epoch, quint64 p_snapshot, int, qreal) {
     baselineEpoch = p_epoch;
     baselineSnapshot = p_snapshot;
   };
-  QVERIFY2(waitUntil([&]() {
-             return baselineSnapshot && previewHasOnlyColor(previewImages(fixture.editor), true);
-           }),
-           qPrintable(fixture.editor.compileMessage()));
+  // Native show/activation can pump events: subscribe before admitting the source.
+  QVERIFY(observeRasters(&fixture.editor, &observer));
+  fixture.editor.setFileOverlay(QStringLiteral("main.typ"), source);
+  const bool baselineReady = waitUntil([&]() {
+    return baselineSnapshot && previewHasOnlyColor(previewImages(fixture.editor), true);
+  });
+  QString baselineState;
+  if (!baselineReady) {
+    QDebug state(&baselineState);
+    state << fixture.editor.compileMessage() << "epoch/snapshot:" << baselineEpoch
+          << baselineSnapshot;
+    for (const auto &image : previewImages(fixture.editor))
+      state << "card/red/blue:" << image.size() << coloredPixels(image, true)
+            << coloredPixels(image, false);
+  }
+  QVERIFY2(baselineReady, qPrintable(baselineState));
   const auto lastGood = previewImages(fixture.editor);
   auto *document = fixture.editor.document();
   const auto *paneMeta = fixture.pane()->metaObject();
