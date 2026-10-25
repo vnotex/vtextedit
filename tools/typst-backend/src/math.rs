@@ -50,10 +50,13 @@ fn check_frame(frame: &Frame) -> Result<(), String> {
 }
 
 pub fn render(request: &Value) -> Result<(Value, typst::foundations::Bytes), String> {
-    let fields = ["v", "op", "epoch", "generation", "request", "source", "display", "foreground"];
+    let fields = ["v", "op", "epoch", "generation", "request", "source", "display", "foreground", "sensitive"];
     let object = request.as_object().ok_or("math request must be an object")?;
     if object.keys().any(|key| !fields.contains(&key.as_str())) {
         return Err("unknown math request field".into());
+    }
+    if object.get("sensitive").is_some_and(|value| !value.is_boolean()) {
+        return Err("sensitive must be boolean".into());
     }
     let source = crate::text(request, "source")?;
     if source.trim().is_empty() || source.contains('\0') || source.len() > MAX_SOURCE {
@@ -141,6 +144,85 @@ mod tests {
     }
 
     #[test]
+    fn sensitivity_is_optional_and_strictly_boolean() {
+        let mut session = crate::compile::Session::default();
+        let mut expected_geometry = None;
+        for sensitive in [None, Some(false), Some(true)] {
+            let mut input = request("frac(a^2 + b^2, sqrt(c))", false);
+            if let Some(sensitive) = sensitive { input["sensitive"] = json!(sensitive); }
+            let mut replies = 0;
+            session.handle(&input, &mut |header, svg| {
+                replies += 1;
+                assert_eq!(header["op"], "mathSvg");
+                let geometry = (header["widthPt"].clone(), header["heightPt"].clone(),
+                    header["baselinePt"].clone());
+                if let Some(expected) = &expected_geometry {
+                    assert_eq!(&geometry, expected);
+                } else {
+                    expected_geometry = Some(geometry);
+                }
+                let svg = std::str::from_utf8(&svg).unwrap();
+                assert!(svg.contains("<path"));
+                assert!(svg.contains("#1f539d"));
+                Ok(())
+            }).unwrap();
+            assert_eq!(replies, 1);
+            assert_eq!(session.dependencies(), json!([]));
+        }
+        for value in [Value::Null, json!(0), json!(1), json!(-1), json!(0.5),
+            json!(""), json!("false"), json!("true"), json!([]), json!({})] {
+            let mut invalid = request("sqrt(x)", false);
+            invalid["sensitive"] = value;
+            assert_eq!(render(&invalid).unwrap_err(), "sensitive must be boolean");
+            let error = session.handle(&invalid, &mut |_, _| {
+                panic!("invalid sensitivity must not publish SVG");
+            }).unwrap_err();
+            assert_eq!(error, "sensitive must be boolean");
+        }
+    }
+
+    #[test]
+    fn math_completion_covers_delivery_failure_and_unwind() {
+        for sensitive in [false, true] {
+            let mut session = crate::compile::Session::default();
+            let mut input = request("frac(a^2 + b^2, sqrt(c))", false);
+            input["sensitive"] = json!(sensitive);
+            let error = session.handle(&input, &mut |_, svg| {
+                assert!(std::str::from_utf8(&svg).unwrap().contains("<path"));
+                Err("reply delivery failed".into())
+            }).unwrap_err();
+            assert_eq!(error, "reply delivery failed");
+
+            // Unwind after real evaluation to exercise the dispatch guard without
+            // injecting a compiler/cache substitute or changing FFI panic handling.
+            let mut delivered = false;
+            let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                session.handle(&input, &mut |_, svg| {
+                    assert!(std::str::from_utf8(&svg).unwrap().contains("<path"));
+                    delivered = true;
+                    panic!("math reply delivery unwind");
+                })
+            }));
+            assert!(delivered);
+            assert!(unwound.is_err());
+
+            input["source"] = json!("frac(");
+            assert!(session.handle(&input, &mut |_, _| {
+                panic!("invalid math must not publish SVG");
+            }).is_err());
+            input["source"] = json!("sqrt(x)");
+            let mut replies = 0;
+            session.handle(&input, &mut |header, svg| {
+                replies += 1;
+                assert_eq!(header["op"], "mathSvg");
+                assert!(std::str::from_utf8(&svg).unwrap().contains("<path"));
+                Ok(())
+            }).unwrap();
+            assert_eq!(replies, 1);
+        }
+    }
+
+    #[test]
     fn fragments_have_intrinsic_geometry_and_display_limits() {
         let (text, svg) = render(&request("sum_(i=1)^n i", false)).unwrap();
         let (display, _) = render(&request("sum_(i=1)^n i", true)).unwrap();
@@ -167,7 +249,14 @@ mod tests {
             "#import \"@preview/mitex:0.2.4\": *",
             "#link(\"https://example.com\")[$x$]",
             "#context counter(page).display()"] {
-            assert!(render(&request(source, false)).is_err(), "accepted {source:?}");
+            for sensitive in [false, true] {
+                let mut input = request(source, false);
+                input["sensitive"] = json!(sensitive);
+                let mut session = crate::compile::Session::default();
+                assert!(session.handle(&input, &mut |_, _| {
+                    panic!("invalid math must not publish SVG");
+                }).is_err(), "accepted {source:?} (sensitive={sensitive})");
+            }
         }
         let mut invalid = request("x", false);
         invalid["root"] = json!(".");

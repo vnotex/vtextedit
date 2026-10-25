@@ -58,9 +58,13 @@ private slots:
   void deadlineRetryKeepsDispatchIdentityUntilCompletion();
   void runtimeDropsRepliesForDeletedReceiver();
   void compilerCompletionCanDestroyReceiver();
+  void mathFragmentsRenderWithBaseline_data();
   void mathFragmentsRenderWithBaseline();
+  void mathFragmentsFailClosed_data();
   void mathFragmentsFailClosed();
+  void mathCancellationAndDeadlineRecover_data();
   void mathCancellationAndDeadlineRecover();
+  void mathRendererLifetime_data();
   void mathRendererLifetime();
   void compilerGeometryAndScale();
   void compilerBitmapOutlivesRuntime();

@@ -94,7 +94,8 @@ public:
     delete m_session;
   }
 
-  bool start(const QString &p_source, bool p_display, const QColor &p_foreground) {
+  bool start(const QString &p_source, bool p_display, const QColor &p_foreground,
+             bool p_sensitive) {
     if (m_busy) {
       return false;
     }
@@ -117,6 +118,7 @@ public:
     m_pendingRequest = {
         {QStringLiteral("source"), source},
         {QStringLiteral("display"), p_display},
+        {QStringLiteral("sensitive"), p_sensitive},
         {QStringLiteral("foreground"), QJsonArray{p_foreground.red(), p_foreground.green(),
                                                   p_foreground.blue(), p_foreground.alpha()}}};
     pump();
@@ -158,6 +160,8 @@ public:
     // Each stateless fragment is its own generation; no project is initialized.
     m_pendingRequest.insert(QStringLiteral("generation"), static_cast<double>(m_requestId));
     m_pendingRequest.insert(QStringLiteral("request"), static_cast<double>(m_requestId));
+    // Sensitivity is captured with the logical request, not mutable session state.
+    // execute() owns these bytes until actual native return, even after cancellation.
     auto request = QJsonDocument(m_pendingRequest).toJson(QJsonDocument::Compact);
     m_pendingRequest = {};
     m_replySeen = false;
@@ -347,8 +351,8 @@ TypstMathRenderer::TypstMathRenderer(TypstRuntime *p_runtime, QObject *p_parent)
 TypstMathRenderer::~TypstMathRenderer() = default;
 
 bool TypstMathRenderer::renderToSvg(const QString &p_source, bool p_display,
-                                    const QColor &p_foreground) {
-  return d->start(p_source, p_display, p_foreground);
+                                    const QColor &p_foreground, bool p_sensitive) {
+  return d->start(p_source, p_display, p_foreground, p_sensitive);
 }
 
 bool TypstMathRenderer::isRendering() const { return d->m_busy; }

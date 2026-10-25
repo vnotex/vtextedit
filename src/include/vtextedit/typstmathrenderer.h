@@ -42,7 +42,11 @@ public:
   // must be valid. Display changes math style, not Markdown block placement.
   // False means busy: no work queued and no finished signal for the rejected call.
   // Each accepted call has a 30-second deadline, including time queued for a lane.
-  bool renderToSvg(const QString &p_source, bool p_display, const QColor &p_foreground);
+  // Sensitive calls clear currently stored global comemo results when native work
+  // returns, including failure/unwind. Cancellation does not interrupt execution;
+  // concurrent calls may retain/reinsert results. This does not erase heap memory.
+  bool renderToSvg(const QString &p_source, bool p_display, const QColor &p_foreground,
+                   bool p_sensitive = false);
   bool isRendering() const;
   // Completes accepted work with a cancellation error; idle cancellation is a no-op.
   // Native work already executing is suppressed, never forcibly interrupted.

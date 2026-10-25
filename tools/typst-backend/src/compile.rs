@@ -49,9 +49,17 @@ impl Session {
     pub fn handle(&mut self, request: &Value, send: &mut SendReply<'_>) -> Result<(), String> {
         let op = text(request, "op")?;
         if op == "mathSvg" {
-            let result = crate::math::render(request).and_then(|(header, svg)| send(header, svg));
-            typst::comemo::evict(10);
-            return result;
+            // This guard outlives evaluation and reply delivery, including errors
+            // and panic unwind. Suppressed/cancelled calls still finish here.
+            // evict(0) clears currently stored global results, not allocator memory
+            // or values held/reinserted by concurrent native calls.
+            struct MathMemoizationEpoch(usize);
+            impl Drop for MathMemoizationEpoch {
+                fn drop(&mut self) { typst::comemo::evict(self.0); }
+            }
+            let sensitive = matches!(request.get("sensitive"), Some(Value::Bool(true)));
+            let _memoization_epoch = MathMemoizationEpoch(if sensitive { 0 } else { 10 });
+            return crate::math::render(request).and_then(|(header, svg)| send(header, svg));
         }
         let epoch = id(request, "epoch")?;
         if op == "initialize" {

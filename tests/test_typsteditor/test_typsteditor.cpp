@@ -1141,7 +1141,14 @@ void TestTypstEditor::compilerCompletionCanDestroyReceiver() {
   QVERIFY(renderer.isValid());
 }
 
+void TestTypstEditor::mathFragmentsRenderWithBaseline_data() {
+  QTest::addColumn<bool>("sensitive");
+  QTest::newRow("ordinary") << false;
+  QTest::newRow("sensitive") << true;
+}
+
 void TestTypstEditor::mathFragmentsRenderWithBaseline() {
+  QFETCH(bool, sensitive);
   TypstMathRenderer renderer(&m_runtime);
   QSignalSpy completed(&renderer, &TypstMathRenderer::finished);
   QVERIFY(completed.isValid());
@@ -1155,7 +1162,7 @@ void TestTypstEditor::mathFragmentsRenderWithBaseline() {
     QVector<QImage> images;
     for (const bool display : {false, true}) {
       const int previous = completed.count();
-      QVERIFY(renderer.renderToSvg(source, display, foreground));
+      QVERIFY(renderer.renderToSvg(source, display, foreground, sensitive));
       QVERIFY(renderer.isRendering());
       QCOMPARE(completed.count(), previous);
       QVERIFY(waitUntil([&] { return completed.count() == previous + 1; }));
@@ -1220,7 +1227,7 @@ void TestTypstEditor::mathFragmentsRenderWithBaseline() {
   for (const auto &source :
        {QStringLiteral("frac(\na^2,\nb\n)"), QStringLiteral("frac(\r\na^2,\rb\r\n)")}) {
     const int previous = completed.count();
-    QVERIFY(renderer.renderToSvg(source, false, foreground));
+    QVERIFY(renderer.renderToSvg(source, false, foreground, sensitive));
     QVERIFY(waitUntil([&] { return completed.count() == previous + 1; }));
     const auto result = qvariant_cast<TypstMathRenderer::Result>(completed.last().first());
     QVERIFY2(result.isSuccess(), qPrintable(result.m_error));
@@ -1233,7 +1240,14 @@ void TestTypstEditor::mathFragmentsRenderWithBaseline() {
   QCOMPARE(completed.count(), sources.size() * 2 + 2);
 }
 
+void TestTypstEditor::mathFragmentsFailClosed_data() {
+  QTest::addColumn<bool>("sensitive");
+  QTest::newRow("ordinary") << false;
+  QTest::newRow("sensitive") << true;
+}
+
 void TestTypstEditor::mathFragmentsFailClosed() {
+  QFETCH(bool, sensitive);
   QTemporaryDir root;
   QVERIFY(root.isValid());
   const auto textPath = root.filePath(QStringLiteral("private.txt"));
@@ -1263,10 +1277,10 @@ void TestTypstEditor::mathFragmentsFailClosed() {
     // The last case exercises invalid QColor without changing source validity.
     const auto source = index < invalid.size() ? invalid.at(index) : QStringLiteral("sqrt(x)");
     const auto color = index < invalid.size() ? foreground : QColor();
-    QVERIFY(renderer.renderToSvg(source, false, color));
+    QVERIFY(renderer.renderToSvg(source, false, color, sensitive));
     QVERIFY(renderer.isRendering());
     QCOMPARE(completed.count(), previous);
-    QVERIFY(!renderer.renderToSvg(QStringLiteral("sqrt(y)"), false, foreground));
+    QVERIFY(!renderer.renderToSvg(QStringLiteral("sqrt(y)"), false, foreground, !sensitive));
     QVERIFY(waitUntil([&] { return completed.count() == previous + 1; }));
     const auto failed = qvariant_cast<TypstMathRenderer::Result>(completed.last().first());
     QVERIFY2(!failed.isSuccess(),
@@ -1277,7 +1291,7 @@ void TestTypstEditor::mathFragmentsFailClosed() {
     QCOMPARE(failed.m_baselinePt, qreal(0));
     QVERIFY(!renderer.isRendering());
 
-    QVERIFY(renderer.renderToSvg(QStringLiteral("sqrt(x)"), false, foreground));
+    QVERIFY(renderer.renderToSvg(QStringLiteral("sqrt(x)"), false, foreground, !sensitive));
     QCOMPARE(completed.count(), previous + 1);
     QVERIFY(waitUntil([&] { return completed.count() == previous + 2; }));
     const auto recovered = qvariant_cast<TypstMathRenderer::Result>(completed.last().first());
@@ -1287,7 +1301,7 @@ void TestTypstEditor::mathFragmentsFailClosed() {
   const auto boundary = QStringLiteral("sqrt(x)") + QString(64 * 1024 - 7, QLatin1Char(' '));
   QCOMPARE(boundary.toUtf8().size(), 64 * 1024);
   const int previous = completed.count();
-  QVERIFY(renderer.renderToSvg(boundary, false, foreground));
+  QVERIFY(renderer.renderToSvg(boundary, false, foreground, sensitive));
   QVERIFY(waitUntil([&] { return completed.count() == previous + 1; }));
   const auto result = qvariant_cast<TypstMathRenderer::Result>(completed.last().first());
   QVERIFY2(result.isSuccess(), qPrintable(result.m_error));
@@ -1296,7 +1310,14 @@ void TestTypstEditor::mathFragmentsFailClosed() {
   QCOMPARE(completed.count(), previous + 1);
 }
 
+void TestTypstEditor::mathCancellationAndDeadlineRecover_data() {
+  QTest::addColumn<bool>("sensitive");
+  QTest::newRow("ordinary-to-sensitive") << false;
+  QTest::newRow("sensitive-to-ordinary") << true;
+}
+
 void TestTypstEditor::mathCancellationAndDeadlineRecover() {
+  QFETCH(bool, sensitive);
   TypstRuntime runtime;
   QVERIFY(runtime.isAvailable());
   TypstMathRenderer renderer(&runtime);
@@ -1316,8 +1337,8 @@ void TestTypstEditor::mathCancellationAndDeadlineRecover() {
   {
     RuntimeLaneGate gate(runtime); // Both native compile lanes are occupied.
     QVERIFY(gate.entered());
-    QVERIFY(renderer.renderToSvg(QStringLiteral("sum_(i=1)^n i"), true, foreground));
-    QVERIFY(!renderer.renderToSvg(replacement, false, foreground));
+    QVERIFY(renderer.renderToSvg(QStringLiteral("sum_(i=1)^n i"), true, foreground, sensitive));
+    QVERIFY(!renderer.renderToSvg(replacement, false, foreground, !sensitive));
     QCoreApplication::processEvents();
     QCOMPARE(completed.count(), 0);
     QVERIFY(renderer.isRendering());
@@ -1335,7 +1356,7 @@ void TestTypstEditor::mathCancellationAndDeadlineRecover() {
 
     // A replacement has its own queue-inclusive deadline while both lanes are
     // still held. No slow formula, native mock, or wall-clock race is needed.
-    QVERIFY(renderer.renderToSvg(replacement, false, foreground));
+    QVERIFY(renderer.renderToSvg(replacement, false, foreground, !sensitive));
     QCoreApplication::processEvents();
     QCOMPARE(completed.count(), 1);
     QVERIFY(deadline->isActive());
@@ -1350,9 +1371,9 @@ void TestTypstEditor::mathCancellationAndDeadlineRecover() {
     QCOMPARE(timedOut.m_baselinePt, qreal(0));
     QVERIFY(!renderer.isRendering());
 
-    QVERIFY(renderer.renderToSvg(replacement, false, foreground));
+    QVERIFY(renderer.renderToSvg(replacement, false, foreground, sensitive));
     QCOMPARE(deadline->interval(), 30000);
-    QVERIFY(!renderer.renderToSvg(QStringLiteral("sqrt(y)"), true, foreground));
+    QVERIFY(!renderer.renderToSvg(QStringLiteral("sqrt(y)"), true, foreground, !sensitive));
     gate.release();
     QVERIFY(waitUntil([&] { return completed.count() == 3; }));
     const auto recovered = qvariant_cast<TypstMathRenderer::Result>(completed.last().first());
@@ -1384,8 +1405,12 @@ void TestTypstEditor::mathCancellationAndDeadlineRecover() {
                   return;
                 replaceOnCancellation = false;
                 idleBeforeSignal = !renderer.isRendering() && !p_result.isSuccess();
-                replacementAccepted = renderer.renderToSvg(replacement, false, foreground);
-                busyAccepted = renderer.renderToSvg(QStringLiteral("sqrt(y)"), false, foreground);
+                // Capture a different policy while the retired native call still
+                // owns its request; a rejected busy call must change neither one.
+                replacementAccepted =
+                    renderer.renderToSvg(replacement, false, foreground, !sensitive);
+                busyAccepted =
+                    renderer.renderToSvg(QStringLiteral("sqrt(y)"), false, foreground, sensitive);
               });
   observer.beforeDelivery = [&] {
     intercepted = true;
@@ -1398,7 +1423,8 @@ void TestTypstEditor::mathCancellationAndDeadlineRecover() {
     replacementBeforeNativeDelivery = completed.count() == 1 && replacementAccepted;
   };
   delivery->installEventFilter(&observer);
-  QVERIFY(renderer.renderToSvg(QStringLiteral("frac(a^2 + b^2, sqrt(c))"), true, foreground));
+  QVERIFY(renderer.renderToSvg(QStringLiteral("frac(a^2 + b^2, sqrt(c))"), true, foreground,
+                               sensitive));
   QVERIFY(waitUntil([&] { return completed.count() == 2; }));
   QVERIFY(intercepted);
   QVERIFY(cancelWasAsynchronous);
@@ -1423,15 +1449,22 @@ void TestTypstEditor::mathCancellationAndDeadlineRecover() {
   QCOMPARE(completed.count(), 2);
 }
 
+void TestTypstEditor::mathRendererLifetime_data() {
+  QTest::addColumn<bool>("sensitive");
+  QTest::newRow("ordinary") << false;
+  QTest::newRow("sensitive") << true;
+}
+
 void TestTypstEditor::mathRendererLifetime() {
+  QFETCH(bool, sensitive);
   const QColor foreground(31, 83, 157, 255);
   const auto source = QStringLiteral("frac(a^2 + b^2, sqrt(c))");
   {
     TypstMathRenderer missing(nullptr);
     QSignalSpy completed(&missing, &TypstMathRenderer::finished);
-    QVERIFY(missing.renderToSvg(source, false, foreground));
+    QVERIFY(missing.renderToSvg(source, false, foreground, sensitive));
     QCOMPARE(completed.count(), 0);
-    QVERIFY(!missing.renderToSvg(source, false, foreground));
+    QVERIFY(!missing.renderToSvg(source, false, foreground, !sensitive));
     QVERIFY(waitUntil([&] { return completed.count() == 1; }));
     const auto result = qvariant_cast<TypstMathRenderer::Result>(completed.first().first());
     QVERIFY(!result.isSuccess());
@@ -1459,7 +1492,7 @@ void TestTypstEditor::mathRendererLifetime() {
               idleBeforeSignal = !renderer->isRendering();
               renderer.reset();
             });
-    QVERIFY(renderer->renderToSvg(source, false, foreground));
+    QVERIFY(renderer->renderToSvg(source, false, foreground, sensitive));
     QVERIFY(waitUntil([&] { return receiver.isNull(); }));
     QCOMPARE(completions, 1);
     QVERIFY(idleBeforeSignal);
@@ -1472,7 +1505,7 @@ void TestTypstEditor::mathRendererLifetime() {
     auto renderer = std::make_unique<TypstMathRenderer>(nullptr);
     connect(renderer.get(), &TypstMathRenderer::finished, this,
             [&](const TypstMathRenderer::Result &) { ++completions; });
-    QVERIFY(renderer->renderToSvg(QString(), false, foreground));
+    QVERIFY(renderer->renderToSvg(QString(), false, foreground, sensitive));
     renderer.reset(); // Even an already queued validation failure is suppressed.
     QCoreApplication::sendPostedEvents();
     QCOMPARE(completions, 0);
@@ -1491,7 +1524,7 @@ void TestTypstEditor::mathRendererLifetime() {
               idleBeforeSignal = !renderer->isRendering();
               renderer.reset();
             });
-    QVERIFY(renderer->renderToSvg(source, false, foreground));
+    QVERIFY(renderer->renderToSvg(source, false, foreground, sensitive));
     QCOMPARE(completions, 0);
     QVERIFY(waitUntil([&] { return receiver.isNull(); }));
     QVERIFY(idleBeforeSignal);
@@ -1515,13 +1548,13 @@ void TestTypstEditor::mathRendererLifetime() {
     NativeDeliveryObserver observer;
     observer.beforeDelivery = [&] { renderer.reset(); };
     delivery->installEventFilter(&observer);
-    QVERIFY(renderer->renderToSvg(source, false, foreground));
+    QVERIFY(renderer->renderToSvg(source, false, foreground, sensitive));
     QVERIFY(waitUntil([&] { return receiver.isNull(); }));
     QCOMPARE(completions, 0);
     delivery->removeEventFilter(&observer);
     TypstMathRenderer recovered(&runtime);
     QSignalSpy completed(&recovered, &TypstMathRenderer::finished);
-    QVERIFY(recovered.renderToSvg(QStringLiteral("sqrt(x)"), false, foreground));
+    QVERIFY(recovered.renderToSvg(QStringLiteral("sqrt(x)"), false, foreground, !sensitive));
     QVERIFY(waitUntil([&] { return completed.count() == 1; }));
     const auto result = qvariant_cast<TypstMathRenderer::Result>(completed.first().first());
     QVERIFY2(result.isSuccess(), qPrintable(result.m_error));
@@ -1536,13 +1569,13 @@ void TestTypstEditor::mathRendererLifetime() {
             [&](const TypstMathRenderer::Result &) { ++completions; });
     RuntimeLaneGate gate(runtime);
     QVERIFY(gate.entered());
-    QVERIFY(renderer->renderToSvg(source, false, foreground));
+    QVERIFY(renderer->renderToSvg(source, false, foreground, sensitive));
     QCoreApplication::processEvents();
     renderer.reset(); // Destruction must not wait for either held compile lane.
     QCOMPARE(completions, 0);
     TypstMathRenderer recovered(&runtime);
     QSignalSpy completed(&recovered, &TypstMathRenderer::finished);
-    QVERIFY(recovered.renderToSvg(QStringLiteral("sqrt(x)"), false, foreground));
+    QVERIFY(recovered.renderToSvg(QStringLiteral("sqrt(x)"), false, foreground, !sensitive));
     gate.release();
     QVERIFY(waitUntil([&] { return completed.count() == 1; }));
     const auto result = qvariant_cast<TypstMathRenderer::Result>(completed.first().first());
@@ -1557,7 +1590,7 @@ void TestTypstEditor::mathRendererLifetime() {
     QSignalSpy completed(&renderer, &TypstMathRenderer::finished);
     RuntimeLaneGate gate(runtime);
     QVERIFY(gate.entered());
-    QVERIFY(renderer.renderToSvg(source, false, foreground));
+    QVERIFY(renderer.renderToSvg(source, false, foreground, sensitive));
     QCoreApplication::processEvents();
     QCOMPARE(completed.count(), 0);
     bool observedShutdown = false;
@@ -1583,14 +1616,14 @@ void TestTypstEditor::mathRendererLifetime() {
       QCOMPARE(result.m_baselinePt, qreal(0));
       QVERIFY(!renderer.isRendering());
       if (request == 0) {
-        QVERIFY(renderer.renderToSvg(source, false, foreground));
+        QVERIFY(renderer.renderToSvg(source, false, foreground, sensitive));
         QCOMPARE(completed.count(), 1);
         QVERIFY(waitUntil([&] { return completed.count() == 2; }));
       }
     }
     TypstMathRenderer stopped(&runtime);
     QSignalSpy stoppedCompleted(&stopped, &TypstMathRenderer::finished);
-    QVERIFY(stopped.renderToSvg(source, false, foreground));
+    QVERIFY(stopped.renderToSvg(source, false, foreground, sensitive));
     QCOMPARE(stoppedCompleted.count(), 0);
     QVERIFY(waitUntil([&] { return stoppedCompleted.count() == 1; }));
     const auto stoppedResult =

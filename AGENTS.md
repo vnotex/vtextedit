@@ -459,6 +459,14 @@ Baseline is finite but may be outside the viewport. Native status is authoritati
 provisional replies. Coverage: the four `mathFragments*`/`mathCancellation*`/`mathRendererLifetime`
 tests in `test_typsteditor`, plus native `math::tests`.
 
+The host may mark `renderToSvg` sensitive. Its `mathSvg` request carries a strictly boolean
+`sensitive` field (omitted means false). An unwind-safe native completion guard clears currently
+stored global comemo results with `evict(0)` for sensitive calls, including failures and the
+eventual return of cancelled calls; ordinary requests keep `evict(10)` aging. This can make other
+Typst work recompute, but does not change project snapshots or output caches. Concurrent calls
+may retain/reinsert results, fonts remain shared runtime assets, and allocator/interner memory
+is not guaranteed erased. Never claim immediate wiping or force-stop a running native call.
+
 ## Typst Raw Code Highlighting
 
 `tools/typst-backend/src/highlight.rs` extracts embedded tokens from literal Raw CST nodes,
