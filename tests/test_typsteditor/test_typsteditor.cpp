@@ -49,7 +49,7 @@
 
 #include <vtextedit/typstcompiler.h>
 #include <vtextedit/typsteditorconfig.h>
-#include <vtextedit/typstmathrenderer.h>
+#include <vtextedit/typstfragmentrenderer.h>
 #include <vtextedit/typstruntime.h>
 #include <vtextedit/vtextedit.h>
 #include <vtextedit/vtexteditor.h>
@@ -502,7 +502,7 @@ int pixelsWithColor(const QImage &p_image, const QColor &p_color) {
   return count;
 }
 
-QImage mathFragmentImage(const TypstMathRenderer::Result &p_result) {
+QImage mathFragmentImage(const TypstFragmentRenderer::Result &p_result) {
   QSvgRenderer svg(p_result.m_svg);
   if (!svg.isValid() || p_result.m_sizePt.isEmpty())
     return {};
@@ -1149,8 +1149,8 @@ void TestTypstEditor::mathFragmentsRenderWithBaseline_data() {
 
 void TestTypstEditor::mathFragmentsRenderWithBaseline() {
   QFETCH(bool, sensitive);
-  TypstMathRenderer renderer(&m_runtime);
-  QSignalSpy completed(&renderer, &TypstMathRenderer::finished);
+  TypstFragmentRenderer renderer(&m_runtime);
+  QSignalSpy completed(&renderer, &TypstFragmentRenderer::finished);
   QVERIFY(completed.isValid());
   // QtSvg does not support Typst's CSS Color 4 eight-digit hex alpha paints.
   // Alpha-channel rendering is exercised by the Markdown WebEngine tests.
@@ -1162,13 +1162,14 @@ void TestTypstEditor::mathFragmentsRenderWithBaseline() {
     QVector<QImage> images;
     for (const bool display : {false, true}) {
       const int previous = completed.count();
-      QVERIFY(renderer.renderToSvg(source, display, foreground, sensitive));
+      QVERIFY(renderer.renderMathToSvg(source, display, foreground, sensitive));
       QVERIFY(renderer.isRendering());
       QCOMPARE(completed.count(), previous);
       QVERIFY(waitUntil([&] { return completed.count() == previous + 1; }));
       QVERIFY(!renderer.isRendering());
-      const auto result = qvariant_cast<TypstMathRenderer::Result>(completed.last().first());
+      const auto result = qvariant_cast<TypstFragmentRenderer::Result>(completed.last().first());
       QVERIFY2(result.isSuccess(), qPrintable(result.m_error));
+      QCOMPARE(result.m_pageCount, 1);
       QVERIFY(!result.m_svg.isEmpty());
       QVERIFY(result.m_svg.size() <= 8 * 1024 * 1024);
       QVERIFY(std::isfinite(result.m_sizePt.width()));
@@ -1223,13 +1224,13 @@ void TestTypstEditor::mathFragmentsRenderWithBaseline() {
   }
 
   // The facade normalizes both newline forms without changing math geometry.
-  QVector<TypstMathRenderer::Result> normalized;
+  QVector<TypstFragmentRenderer::Result> normalized;
   for (const auto &source :
        {QStringLiteral("frac(\na^2,\nb\n)"), QStringLiteral("frac(\r\na^2,\rb\r\n)")}) {
     const int previous = completed.count();
-    QVERIFY(renderer.renderToSvg(source, false, foreground, sensitive));
+    QVERIFY(renderer.renderMathToSvg(source, false, foreground, sensitive));
     QVERIFY(waitUntil([&] { return completed.count() == previous + 1; }));
-    const auto result = qvariant_cast<TypstMathRenderer::Result>(completed.last().first());
+    const auto result = qvariant_cast<TypstFragmentRenderer::Result>(completed.last().first());
     QVERIFY2(result.isSuccess(), qPrintable(result.m_error));
     normalized.append(result);
   }
@@ -1254,8 +1255,8 @@ void TestTypstEditor::mathFragmentsFailClosed() {
   const auto importPath = root.filePath(QStringLiteral("private.typ"));
   QVERIFY(writeFixture(textPath, QByteArrayLiteral("This file must not be readable")));
   QVERIFY(writeFixture(importPath, QByteArrayLiteral("#let value = $sqrt(x)$\n")));
-  TypstMathRenderer renderer(&m_runtime);
-  QSignalSpy completed(&renderer, &TypstMathRenderer::finished);
+  TypstFragmentRenderer renderer(&m_runtime);
+  QSignalSpy completed(&renderer, &TypstFragmentRenderer::finished);
   const QColor foreground(31, 83, 157, 255);
   const QStringList invalid = {
       QString(),
@@ -1277,33 +1278,34 @@ void TestTypstEditor::mathFragmentsFailClosed() {
     // The last case exercises invalid QColor without changing source validity.
     const auto source = index < invalid.size() ? invalid.at(index) : QStringLiteral("sqrt(x)");
     const auto color = index < invalid.size() ? foreground : QColor();
-    QVERIFY(renderer.renderToSvg(source, false, color, sensitive));
+    QVERIFY(renderer.renderMathToSvg(source, false, color, sensitive));
     QVERIFY(renderer.isRendering());
     QCOMPARE(completed.count(), previous);
-    QVERIFY(!renderer.renderToSvg(QStringLiteral("sqrt(y)"), false, foreground, !sensitive));
+    QVERIFY(!renderer.renderMathToSvg(QStringLiteral("sqrt(y)"), false, foreground, !sensitive));
     QVERIFY(waitUntil([&] { return completed.count() == previous + 1; }));
-    const auto failed = qvariant_cast<TypstMathRenderer::Result>(completed.last().first());
+    const auto failed = qvariant_cast<TypstFragmentRenderer::Result>(completed.last().first());
     QVERIFY2(!failed.isSuccess(),
              qPrintable(QStringLiteral("Accepted invalid case %1").arg(index)));
     QVERIFY(!failed.m_error.isEmpty());
     QVERIFY(failed.m_svg.isEmpty());
     QVERIFY(failed.m_sizePt.isEmpty());
     QCOMPARE(failed.m_baselinePt, qreal(0));
+    QCOMPARE(failed.m_pageCount, 0);
     QVERIFY(!renderer.isRendering());
 
-    QVERIFY(renderer.renderToSvg(QStringLiteral("sqrt(x)"), false, foreground, !sensitive));
+    QVERIFY(renderer.renderMathToSvg(QStringLiteral("sqrt(x)"), false, foreground, !sensitive));
     QCOMPARE(completed.count(), previous + 1);
     QVERIFY(waitUntil([&] { return completed.count() == previous + 2; }));
-    const auto recovered = qvariant_cast<TypstMathRenderer::Result>(completed.last().first());
+    const auto recovered = qvariant_cast<TypstFragmentRenderer::Result>(completed.last().first());
     QVERIFY2(recovered.isSuccess(), qPrintable(recovered.m_error));
     QVERIFY(pixelsWithColor(mathFragmentImage(recovered), foreground) > 30);
   }
   const auto boundary = QStringLiteral("sqrt(x)") + QString(64 * 1024 - 7, QLatin1Char(' '));
   QCOMPARE(boundary.toUtf8().size(), 64 * 1024);
   const int previous = completed.count();
-  QVERIFY(renderer.renderToSvg(boundary, false, foreground, sensitive));
+  QVERIFY(renderer.renderMathToSvg(boundary, false, foreground, sensitive));
   QVERIFY(waitUntil([&] { return completed.count() == previous + 1; }));
-  const auto result = qvariant_cast<TypstMathRenderer::Result>(completed.last().first());
+  const auto result = qvariant_cast<TypstFragmentRenderer::Result>(completed.last().first());
   QVERIFY2(result.isSuccess(), qPrintable(result.m_error));
   QVERIFY(pixelsWithColor(mathFragmentImage(result), foreground) > 30);
   QCoreApplication::sendPostedEvents();
@@ -1320,13 +1322,13 @@ void TestTypstEditor::mathCancellationAndDeadlineRecover() {
   QFETCH(bool, sensitive);
   TypstRuntime runtime;
   QVERIFY(runtime.isAvailable());
-  TypstMathRenderer renderer(&runtime);
-  QSignalSpy completed(&renderer, &TypstMathRenderer::finished);
+  TypstFragmentRenderer renderer(&runtime);
+  QSignalSpy completed(&renderer, &TypstFragmentRenderer::finished);
   const QColor foreground(31, 83, 157, 255);
   const auto replacement = QStringLiteral("sqrt(x)");
-  QVERIFY(renderer.renderToSvg(replacement, false, foreground));
+  QVERIFY(renderer.renderMathToSvg(replacement, false, foreground));
   QVERIFY(waitUntil([&] { return completed.count() == 1; }));
-  const auto expected = qvariant_cast<TypstMathRenderer::Result>(completed.first().first());
+  const auto expected = qvariant_cast<TypstFragmentRenderer::Result>(completed.first().first());
   QVERIFY2(expected.isSuccess(), qPrintable(expected.m_error));
   completed.clear();
   auto *deadline =
@@ -1337,8 +1339,8 @@ void TestTypstEditor::mathCancellationAndDeadlineRecover() {
   {
     RuntimeLaneGate gate(runtime); // Both native compile lanes are occupied.
     QVERIFY(gate.entered());
-    QVERIFY(renderer.renderToSvg(QStringLiteral("sum_(i=1)^n i"), true, foreground, sensitive));
-    QVERIFY(!renderer.renderToSvg(replacement, false, foreground, !sensitive));
+    QVERIFY(renderer.renderMathToSvg(QStringLiteral("sum_(i=1)^n i"), true, foreground, sensitive));
+    QVERIFY(!renderer.renderMathToSvg(replacement, false, foreground, !sensitive));
     QCoreApplication::processEvents();
     QCOMPARE(completed.count(), 0);
     QVERIFY(renderer.isRendering());
@@ -1346,7 +1348,7 @@ void TestTypstEditor::mathCancellationAndDeadlineRecover() {
     renderer.cancel();
     QCOMPARE(completed.count(), 0);
     QVERIFY(waitUntil([&] { return completed.count() == 1; }));
-    const auto cancelled = qvariant_cast<TypstMathRenderer::Result>(completed.last().first());
+    const auto cancelled = qvariant_cast<TypstFragmentRenderer::Result>(completed.last().first());
     QVERIFY(!cancelled.isSuccess());
     QVERIFY(!cancelled.m_error.isEmpty());
     QVERIFY(cancelled.m_svg.isEmpty());
@@ -1356,14 +1358,14 @@ void TestTypstEditor::mathCancellationAndDeadlineRecover() {
 
     // A replacement has its own queue-inclusive deadline while both lanes are
     // still held. No slow formula, native mock, or wall-clock race is needed.
-    QVERIFY(renderer.renderToSvg(replacement, false, foreground, !sensitive));
+    QVERIFY(renderer.renderMathToSvg(replacement, false, foreground, !sensitive));
     QCoreApplication::processEvents();
     QCOMPARE(completed.count(), 1);
     QVERIFY(deadline->isActive());
     QCOMPARE(deadline->interval(), 30000);
     deadline->setInterval(0);
     QVERIFY(waitUntil([&] { return completed.count() == 2; }));
-    const auto timedOut = qvariant_cast<TypstMathRenderer::Result>(completed.last().first());
+    const auto timedOut = qvariant_cast<TypstFragmentRenderer::Result>(completed.last().first());
     QVERIFY(!timedOut.isSuccess());
     QVERIFY(!timedOut.m_error.isEmpty());
     QVERIFY(timedOut.m_svg.isEmpty());
@@ -1371,12 +1373,12 @@ void TestTypstEditor::mathCancellationAndDeadlineRecover() {
     QCOMPARE(timedOut.m_baselinePt, qreal(0));
     QVERIFY(!renderer.isRendering());
 
-    QVERIFY(renderer.renderToSvg(replacement, false, foreground, sensitive));
+    QVERIFY(renderer.renderMathToSvg(replacement, false, foreground, sensitive));
     QCOMPARE(deadline->interval(), 30000);
-    QVERIFY(!renderer.renderToSvg(QStringLiteral("sqrt(y)"), true, foreground, !sensitive));
+    QVERIFY(!renderer.renderMathToSvg(QStringLiteral("sqrt(y)"), true, foreground, !sensitive));
     gate.release();
     QVERIFY(waitUntil([&] { return completed.count() == 3; }));
-    const auto recovered = qvariant_cast<TypstMathRenderer::Result>(completed.last().first());
+    const auto recovered = qvariant_cast<TypstFragmentRenderer::Result>(completed.last().first());
     QVERIFY2(recovered.isSuccess(), qPrintable(recovered.m_error));
     QCOMPARE(recovered.m_sizePt, expected.m_sizePt);
     QCOMPARE(recovered.m_baselinePt, expected.m_baselinePt);
@@ -1398,20 +1400,19 @@ void TestTypstEditor::mathCancellationAndDeadlineRecover() {
   bool replacementAccepted = false;
   bool busyAccepted = true;
   bool replaceOnCancellation = true;
-  const auto connection =
-      connect(&renderer, &TypstMathRenderer::finished, &renderer,
-              [&](const TypstMathRenderer::Result &p_result) {
-                if (!replaceOnCancellation)
-                  return;
-                replaceOnCancellation = false;
-                idleBeforeSignal = !renderer.isRendering() && !p_result.isSuccess();
-                // Capture a different policy while the retired native call still
-                // owns its request; a rejected busy call must change neither one.
-                replacementAccepted =
-                    renderer.renderToSvg(replacement, false, foreground, !sensitive);
-                busyAccepted =
-                    renderer.renderToSvg(QStringLiteral("sqrt(y)"), false, foreground, sensitive);
-              });
+  const auto connection = connect(
+      &renderer, &TypstFragmentRenderer::finished, &renderer,
+      [&](const TypstFragmentRenderer::Result &p_result) {
+        if (!replaceOnCancellation)
+          return;
+        replaceOnCancellation = false;
+        idleBeforeSignal = !renderer.isRendering() && !p_result.isSuccess();
+        // Capture a different policy while the retired native call still
+        // owns its request; a rejected busy call must change neither one.
+        replacementAccepted = renderer.renderMathToSvg(replacement, false, foreground, !sensitive);
+        busyAccepted =
+            renderer.renderMathToSvg(QStringLiteral("sqrt(y)"), false, foreground, sensitive);
+      });
   observer.beforeDelivery = [&] {
     intercepted = true;
     // Native work has produced a real reply, but its provisional reply and
@@ -1423,8 +1424,8 @@ void TestTypstEditor::mathCancellationAndDeadlineRecover() {
     replacementBeforeNativeDelivery = completed.count() == 1 && replacementAccepted;
   };
   delivery->installEventFilter(&observer);
-  QVERIFY(renderer.renderToSvg(QStringLiteral("frac(a^2 + b^2, sqrt(c))"), true, foreground,
-                               sensitive));
+  QVERIFY(renderer.renderMathToSvg(QStringLiteral("frac(a^2 + b^2, sqrt(c))"), true, foreground,
+                                   sensitive));
   QVERIFY(waitUntil([&] { return completed.count() == 2; }));
   QVERIFY(intercepted);
   QVERIFY(cancelWasAsynchronous);
@@ -1432,12 +1433,12 @@ void TestTypstEditor::mathCancellationAndDeadlineRecover() {
   QVERIFY(idleBeforeSignal);
   QVERIFY(replacementAccepted);
   QVERIFY(!busyAccepted);
-  const auto cancelled = qvariant_cast<TypstMathRenderer::Result>(completed.first().first());
+  const auto cancelled = qvariant_cast<TypstFragmentRenderer::Result>(completed.first().first());
   QVERIFY(!cancelled.isSuccess());
   QVERIFY(cancelled.m_svg.isEmpty());
   QVERIFY(cancelled.m_sizePt.isEmpty());
   QCOMPARE(cancelled.m_baselinePt, qreal(0));
-  const auto recovered = qvariant_cast<TypstMathRenderer::Result>(completed.last().first());
+  const auto recovered = qvariant_cast<TypstFragmentRenderer::Result>(completed.last().first());
   QVERIFY2(recovered.isSuccess(), qPrintable(recovered.m_error));
   QCOMPARE(recovered.m_sizePt, expected.m_sizePt);
   QCOMPARE(recovered.m_baselinePt, expected.m_baselinePt);
@@ -1451,22 +1452,32 @@ void TestTypstEditor::mathCancellationAndDeadlineRecover() {
 
 void TestTypstEditor::mathRendererLifetime_data() {
   QTest::addColumn<bool>("sensitive");
-  QTest::newRow("ordinary") << false;
-  QTest::newRow("sensitive") << true;
+  QTest::addColumn<bool>("markup");
+  QTest::newRow("math-ordinary") << false << false;
+  QTest::newRow("math-sensitive") << true << false;
+  QTest::newRow("markup-ordinary") << false << true;
+  QTest::newRow("markup-sensitive") << true << true;
 }
 
 void TestTypstEditor::mathRendererLifetime() {
   QFETCH(bool, sensitive);
+  QFETCH(bool, markup);
   const QColor foreground(31, 83, 157, 255);
-  const auto source = QStringLiteral("frac(a^2 + b^2, sqrt(c))");
+  const auto source = markup ? QStringLiteral("= Heading\n$frac(a^2 + b^2, sqrt(c))$")
+                             : QStringLiteral("frac(a^2 + b^2, sqrt(c))");
+  const auto submit = [&](TypstFragmentRenderer &p_renderer, const QString &p_source,
+                          bool p_sensitive) {
+    return markup ? p_renderer.renderMarkupToSvg(p_source, foreground, p_sensitive)
+                  : p_renderer.renderMathToSvg(p_source, false, foreground, p_sensitive);
+  };
   {
-    TypstMathRenderer missing(nullptr);
-    QSignalSpy completed(&missing, &TypstMathRenderer::finished);
-    QVERIFY(missing.renderToSvg(source, false, foreground, sensitive));
+    TypstFragmentRenderer missing(nullptr);
+    QSignalSpy completed(&missing, &TypstFragmentRenderer::finished);
+    QVERIFY(submit(missing, source, sensitive));
     QCOMPARE(completed.count(), 0);
-    QVERIFY(!missing.renderToSvg(source, false, foreground, !sensitive));
+    QVERIFY(!submit(missing, source, !sensitive));
     QVERIFY(waitUntil([&] { return completed.count() == 1; }));
-    const auto result = qvariant_cast<TypstMathRenderer::Result>(completed.first().first());
+    const auto result = qvariant_cast<TypstFragmentRenderer::Result>(completed.first().first());
     QVERIFY(!result.isSuccess());
     QVERIFY(!result.m_error.isEmpty());
     QVERIFY(result.m_svg.isEmpty());
@@ -1478,21 +1489,21 @@ void TestTypstEditor::mathRendererLifetime() {
     QCOMPARE(completed.count(), 1);
   }
 
-  TypstMathRenderer::Result retained;
+  TypstFragmentRenderer::Result retained;
   {
     TypstRuntime runtime; // Borrowed runtime outlives the facade, including signal deletion.
-    auto renderer = std::make_unique<TypstMathRenderer>(&runtime);
-    QPointer<TypstMathRenderer> receiver(renderer.get());
+    auto renderer = std::make_unique<TypstFragmentRenderer>(&runtime);
+    QPointer<TypstFragmentRenderer> receiver(renderer.get());
     int completions = 0;
     bool idleBeforeSignal = false;
-    connect(renderer.get(), &TypstMathRenderer::finished, this,
-            [&](const TypstMathRenderer::Result &p_result) {
+    connect(renderer.get(), &TypstFragmentRenderer::finished, this,
+            [&](const TypstFragmentRenderer::Result &p_result) {
               retained = p_result;
               ++completions;
               idleBeforeSignal = !renderer->isRendering();
               renderer.reset();
             });
-    QVERIFY(renderer->renderToSvg(source, false, foreground, sensitive));
+    QVERIFY(submit(*renderer, source, sensitive));
     QVERIFY(waitUntil([&] { return receiver.isNull(); }));
     QCOMPARE(completions, 1);
     QVERIFY(idleBeforeSignal);
@@ -1502,29 +1513,29 @@ void TestTypstEditor::mathRendererLifetime() {
 
   {
     int completions = 0;
-    auto renderer = std::make_unique<TypstMathRenderer>(nullptr);
-    connect(renderer.get(), &TypstMathRenderer::finished, this,
-            [&](const TypstMathRenderer::Result &) { ++completions; });
-    QVERIFY(renderer->renderToSvg(QString(), false, foreground, sensitive));
+    auto renderer = std::make_unique<TypstFragmentRenderer>(nullptr);
+    connect(renderer.get(), &TypstFragmentRenderer::finished, this,
+            [&](const TypstFragmentRenderer::Result &) { ++completions; });
+    QVERIFY(submit(*renderer, QString(), sensitive));
     renderer.reset(); // Even an already queued validation failure is suppressed.
     QCoreApplication::sendPostedEvents();
     QCOMPARE(completions, 0);
   }
 
   {
-    auto renderer = std::make_unique<TypstMathRenderer>(nullptr);
-    QPointer<TypstMathRenderer> receiver(renderer.get());
-    TypstMathRenderer::Result failed;
+    auto renderer = std::make_unique<TypstFragmentRenderer>(nullptr);
+    QPointer<TypstFragmentRenderer> receiver(renderer.get());
+    TypstFragmentRenderer::Result failed;
     int completions = 0;
     bool idleBeforeSignal = false;
-    connect(renderer.get(), &TypstMathRenderer::finished, this,
-            [&](const TypstMathRenderer::Result &p_result) {
+    connect(renderer.get(), &TypstFragmentRenderer::finished, this,
+            [&](const TypstFragmentRenderer::Result &p_result) {
               failed = p_result;
               ++completions;
               idleBeforeSignal = !renderer->isRendering();
               renderer.reset();
             });
-    QVERIFY(renderer->renderToSvg(source, false, foreground, sensitive));
+    QVERIFY(submit(*renderer, source, sensitive));
     QCOMPARE(completions, 0);
     QVERIFY(waitUntil([&] { return receiver.isNull(); }));
     QVERIFY(idleBeforeSignal);
@@ -1539,24 +1550,24 @@ void TestTypstEditor::mathRendererLifetime() {
   {
     TypstRuntime runtime;
     int completions = 0;
-    auto renderer = std::make_unique<TypstMathRenderer>(&runtime);
-    QPointer<TypstMathRenderer> receiver(renderer.get());
-    connect(renderer.get(), &TypstMathRenderer::finished, this,
-            [&](const TypstMathRenderer::Result &) { ++completions; });
+    auto renderer = std::make_unique<TypstFragmentRenderer>(&runtime);
+    QPointer<TypstFragmentRenderer> receiver(renderer.get());
+    connect(renderer.get(), &TypstFragmentRenderer::finished, this,
+            [&](const TypstFragmentRenderer::Result &) { ++completions; });
     auto *delivery = runtime.findChild<QObject *>(QStringLiteral("typst-delivery"));
     QVERIFY(delivery);
     NativeDeliveryObserver observer;
     observer.beforeDelivery = [&] { renderer.reset(); };
     delivery->installEventFilter(&observer);
-    QVERIFY(renderer->renderToSvg(source, false, foreground, sensitive));
+    QVERIFY(submit(*renderer, source, sensitive));
     QVERIFY(waitUntil([&] { return receiver.isNull(); }));
     QCOMPARE(completions, 0);
     delivery->removeEventFilter(&observer);
-    TypstMathRenderer recovered(&runtime);
-    QSignalSpy completed(&recovered, &TypstMathRenderer::finished);
-    QVERIFY(recovered.renderToSvg(QStringLiteral("sqrt(x)"), false, foreground, !sensitive));
+    TypstFragmentRenderer recovered(&runtime);
+    QSignalSpy completed(&recovered, &TypstFragmentRenderer::finished);
+    QVERIFY(recovered.renderMathToSvg(QStringLiteral("sqrt(x)"), false, foreground, !sensitive));
     QVERIFY(waitUntil([&] { return completed.count() == 1; }));
-    const auto result = qvariant_cast<TypstMathRenderer::Result>(completed.first().first());
+    const auto result = qvariant_cast<TypstFragmentRenderer::Result>(completed.first().first());
     QVERIFY2(result.isSuccess(), qPrintable(result.m_error));
     QCOMPARE(completions, 0);
   }
@@ -1564,21 +1575,21 @@ void TestTypstEditor::mathRendererLifetime() {
   {
     TypstRuntime runtime;
     int completions = 0;
-    auto renderer = std::make_unique<TypstMathRenderer>(&runtime);
-    connect(renderer.get(), &TypstMathRenderer::finished, this,
-            [&](const TypstMathRenderer::Result &) { ++completions; });
+    auto renderer = std::make_unique<TypstFragmentRenderer>(&runtime);
+    connect(renderer.get(), &TypstFragmentRenderer::finished, this,
+            [&](const TypstFragmentRenderer::Result &) { ++completions; });
     RuntimeLaneGate gate(runtime);
     QVERIFY(gate.entered());
-    QVERIFY(renderer->renderToSvg(source, false, foreground, sensitive));
+    QVERIFY(submit(*renderer, source, sensitive));
     QCoreApplication::processEvents();
     renderer.reset(); // Destruction must not wait for either held compile lane.
     QCOMPARE(completions, 0);
-    TypstMathRenderer recovered(&runtime);
-    QSignalSpy completed(&recovered, &TypstMathRenderer::finished);
-    QVERIFY(recovered.renderToSvg(QStringLiteral("sqrt(x)"), false, foreground, !sensitive));
+    TypstFragmentRenderer recovered(&runtime);
+    QSignalSpy completed(&recovered, &TypstFragmentRenderer::finished);
+    QVERIFY(recovered.renderMathToSvg(QStringLiteral("sqrt(x)"), false, foreground, !sensitive));
     gate.release();
     QVERIFY(waitUntil([&] { return completed.count() == 1; }));
-    const auto result = qvariant_cast<TypstMathRenderer::Result>(completed.first().first());
+    const auto result = qvariant_cast<TypstFragmentRenderer::Result>(completed.first().first());
     QVERIFY2(result.isSuccess(), qPrintable(result.m_error));
     QCoreApplication::sendPostedEvents();
     QCOMPARE(completions, 0);
@@ -1586,11 +1597,11 @@ void TestTypstEditor::mathRendererLifetime() {
 
   {
     TypstRuntime runtime;
-    TypstMathRenderer renderer(&runtime);
-    QSignalSpy completed(&renderer, &TypstMathRenderer::finished);
+    TypstFragmentRenderer renderer(&runtime);
+    QSignalSpy completed(&renderer, &TypstFragmentRenderer::finished);
     RuntimeLaneGate gate(runtime);
     QVERIFY(gate.entered());
-    QVERIFY(renderer.renderToSvg(source, false, foreground, sensitive));
+    QVERIFY(submit(renderer, source, sensitive));
     QCoreApplication::processEvents();
     QCOMPARE(completed.count(), 0);
     bool observedShutdown = false;
@@ -1608,7 +1619,7 @@ void TestTypstEditor::mathRendererLifetime() {
     QVERIFY(!runtime.isAvailable());
     QVERIFY(waitUntil([&] { return completed.count() == 1; }));
     for (int request = 0; request < 2; ++request) {
-      const auto result = qvariant_cast<TypstMathRenderer::Result>(completed.last().first());
+      const auto result = qvariant_cast<TypstFragmentRenderer::Result>(completed.last().first());
       QVERIFY(!result.isSuccess());
       QVERIFY(!result.m_error.isEmpty());
       QVERIFY(result.m_svg.isEmpty());
@@ -1616,18 +1627,18 @@ void TestTypstEditor::mathRendererLifetime() {
       QCOMPARE(result.m_baselinePt, qreal(0));
       QVERIFY(!renderer.isRendering());
       if (request == 0) {
-        QVERIFY(renderer.renderToSvg(source, false, foreground, sensitive));
+        QVERIFY(submit(renderer, source, sensitive));
         QCOMPARE(completed.count(), 1);
         QVERIFY(waitUntil([&] { return completed.count() == 2; }));
       }
     }
-    TypstMathRenderer stopped(&runtime);
-    QSignalSpy stoppedCompleted(&stopped, &TypstMathRenderer::finished);
-    QVERIFY(stopped.renderToSvg(source, false, foreground, sensitive));
+    TypstFragmentRenderer stopped(&runtime);
+    QSignalSpy stoppedCompleted(&stopped, &TypstFragmentRenderer::finished);
+    QVERIFY(submit(stopped, source, sensitive));
     QCOMPARE(stoppedCompleted.count(), 0);
     QVERIFY(waitUntil([&] { return stoppedCompleted.count() == 1; }));
     const auto stoppedResult =
-        qvariant_cast<TypstMathRenderer::Result>(stoppedCompleted.first().first());
+        qvariant_cast<TypstFragmentRenderer::Result>(stoppedCompleted.first().first());
     QVERIFY(!stoppedResult.isSuccess());
     QVERIFY(!stoppedResult.m_error.isEmpty());
     QVERIFY(stoppedResult.m_svg.isEmpty());
@@ -1641,6 +1652,292 @@ void TestTypstEditor::mathRendererLifetime() {
     for (auto *lane : runtime.findChildren<QThread *>())
       QVERIFY(!lane->isRunning());
   }
+}
+
+void TestTypstEditor::markupFragmentsRenderDocument_data() {
+  QTest::addColumn<bool>("sensitive");
+  QTest::newRow("ordinary") << false;
+  QTest::newRow("sensitive") << true;
+}
+
+void TestTypstEditor::markupFragmentsRenderDocument() {
+  QFETCH(bool, sensitive);
+  TypstFragmentRenderer renderer(&m_runtime);
+  const QColor foreground(31, 83, 157);
+  const QColor red(211, 37, 53);
+  const QColor green(13, 173, 71);
+  const auto render = [&](const QString &p_source) {
+    QSignalSpy completed(&renderer, &TypstFragmentRenderer::finished);
+    if (!renderer.renderMarkupToSvg(p_source, foreground, sensitive) ||
+        !waitUntil([&] { return completed.count() == 1; })) {
+      TypstFragmentRenderer::Result failed;
+      failed.m_error = QStringLiteral("Markup request did not complete");
+      return failed;
+    }
+    return qvariant_cast<TypstFragmentRenderer::Result>(completed.first().first());
+  };
+
+  const auto compact = render(
+      QStringLiteral("#rect(width: 30pt, height: 20pt, fill: rgb(31, 83, 157), stroke: none)"));
+  QVERIFY2(compact.isSuccess(), qPrintable(compact.m_error));
+  QCOMPARE(compact.m_pageCount, 1);
+  QCOMPARE(compact.m_baselinePt, qreal(0));
+  QVERIFY(compact.m_sizePt.width() >= 46 && compact.m_sizePt.width() < 80);
+  QVERIFY(compact.m_sizePt.height() >= 36 && compact.m_sizePt.height() < 70);
+  auto image = mathFragmentImage(compact);
+  QCOMPARE(image.pixelColor(0, 0).alpha(), 0);
+  QCOMPARE(image.pixelColor(24, 48).alpha(), 0); // Default 8pt left margin.
+  QCOMPARE(image.pixelColor(48, 48), foreground);
+  QVERIFY(pixelsWithColor(image, foreground) > 8000);
+
+  const auto source =
+      QStringLiteral("#set page(width: 180pt, height: 180pt, margin: 8pt)\n"
+                     "#show strong: it => text(fill: rgb(211, 37, 53), it)\n"
+                     "= Heading\n*Styled* and _emphasized_ $sqrt(x)$\n"
+                     "#let cell(n) = [#n]\n"
+                     "#table(columns: (50pt, 50pt), [A], [B], cell(1), cell(2))\n"
+                     "#context [Page #counter(page).display()]\n"
+                     "#pagebreak()\n#set page(width: 100pt, height: 80pt)\n"
+                     "#rect(width: 20pt, height: 12pt, fill: rgb(13, 173, 71), stroke: none)\n"
+                     "#context [Page #counter(page).display()]");
+  const auto document = render(source);
+  QVERIFY2(document.isSuccess(), qPrintable(document.m_error));
+  QCOMPARE(document.m_pageCount, 2);
+  QCOMPARE(document.m_sizePt, QSizeF(180, 268));
+  QCOMPARE(document.m_baselinePt, qreal(0));
+  QSvgRenderer svg(document.m_svg);
+  QVERIFY(svg.isValid());
+  QCOMPARE(svg.viewBoxF(), QRectF(0, 0, 180, 268));
+  image = mathFragmentImage(document);
+  QCOMPARE(image.size(), QSize(720, 1072));
+  const auto first = image.copy(0, 0, 720, 720);
+  const auto second = image.copy(0, 752, 400, 320);
+  QVERIFY(pixelsWithColor(first, foreground) > 100);
+  QVERIFY(pixelsWithColor(first, red) > 100);
+  QVERIFY(pixelsWithColor(second, foreground) > 100);
+  QVERIFY(pixelsWithColor(second, green) > 2000);
+  for (int y = 720; y < 752; ++y) {
+    for (int x = 0; x < image.width(); ++x)
+      QCOMPARE(image.pixelColor(x, y).alpha(), 0); // All eight gap points are transparent.
+  }
+  QCOMPARE(image.pixelColor(600, 850).alpha(), 0); // Narrow second page is not stretched.
+
+  // Equivalent literal pages test real page counter convergence, not the
+  // existence of an SVG or forwarding of markup as math.
+  auto literal = source;
+  const auto expression = QStringLiteral("#context [Page #counter(page).display()]");
+  literal.replace(literal.indexOf(expression), expression.size(), QStringLiteral("Page 1"));
+  literal.replace(literal.indexOf(expression), expression.size(), QStringLiteral("Page 2"));
+  const auto literalDocument = render(literal);
+  QVERIFY2(literalDocument.isSuccess(), qPrintable(literalDocument.m_error));
+  QCOMPARE(mathFragmentImage(literalDocument), image);
+
+  const auto small = render(QStringLiteral("#set text(size: 12pt)\nLetters"));
+  const auto large = render(QStringLiteral("#set text(size: 24pt)\nLetters"));
+  QVERIFY2(small.isSuccess(), qPrintable(small.m_error));
+  QVERIFY2(large.isSuccess(), qPrintable(large.m_error));
+  QVERIFY(large.m_sizePt.width() > small.m_sizePt.width() * 1.4);
+  QVERIFY(pixelsWithColor(mathFragmentImage(large), foreground) >
+          pixelsWithColor(mathFragmentImage(small), foreground) * 2);
+  const auto authored = render(
+      QStringLiteral("#set page(width: 90pt, height: 60pt, margin: 0pt, fill: rgb(17, 23, 29))\n"
+                     "#set text(fill: rgb(211, 37, 53))\nAuthored"));
+  QVERIFY2(authored.isSuccess(), qPrintable(authored.m_error));
+  QCOMPARE(authored.m_sizePt, QSizeF(90, 60));
+  image = mathFragmentImage(authored);
+  QCOMPARE(image.pixelColor(1, 1), QColor(17, 23, 29));
+  QVERIFY(pixelsWithColor(image, red) > 100);
+  QCOMPARE(pixelsWithColor(image, foreground), 0);
+
+  const auto linked = render(QStringLiteral("#link(\"https://example.com\")[Visible link]"));
+  const auto plain = render(QStringLiteral("Visible link"));
+  QVERIFY2(linked.isSuccess(), qPrintable(linked.m_error));
+  QVERIFY2(plain.isSuccess(), qPrintable(plain.m_error));
+  QVERIFY(linked.m_svg.contains("<a"));
+  QCOMPARE(mathFragmentImage(linked), mathFragmentImage(plain));
+  auto crlf = source;
+  crlf.replace(QLatin1Char('\n'), QStringLiteral("\r\n"));
+  const auto normalized = render(crlf);
+  QVERIFY2(normalized.isSuccess(), qPrintable(normalized.m_error));
+  QCOMPARE(mathFragmentImage(normalized), mathFragmentImage(document));
+}
+
+void TestTypstEditor::markupFragmentsFailClosed_data() {
+  QTest::addColumn<bool>("sensitive");
+  QTest::newRow("ordinary") << false;
+  QTest::newRow("sensitive") << true;
+}
+
+void TestTypstEditor::markupFragmentsFailClosed() {
+  QFETCH(bool, sensitive);
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto privateFile = root.filePath(QStringLiteral("private.typ"));
+  QVERIFY(writeFixture(privateFile, QByteArrayLiteral("#let secret = [private text]")));
+  TypstFragmentRenderer renderer(&m_runtime);
+  QSignalSpy completed(&renderer, &TypstFragmentRenderer::finished);
+  const QColor foreground(31, 83, 157);
+  const QStringList invalid = {
+      QString(),
+      QStringLiteral(" \r\n\t"),
+      QStringLiteral("x") + QChar(0),
+      QString(64 * 1024 + 1, QLatin1Char('x')),
+      QString(32 * 1024 + 1, QChar(0x00e9)),
+      QString(1, QChar(0xd800)),
+      QStringLiteral("#let bad = ("),
+      QStringLiteral("#read(\"%1\")").arg(privateFile),
+      QStringLiteral("#include \"%1\"").arg(privateFile),
+      QStringLiteral("#import \"%1\": *\n#secret").arg(privateFile),
+      QStringLiteral("#import \"@preview/mitex:0.2.4\": *"),
+      QStringLiteral("#read(\"fragment.typ\")"),
+      QStringLiteral("#datetime.today()"),
+      QStringLiteral(
+          "#image(bytes(\"<svg xmlns='http://www.w3.org/2000/svg' width='8' height='8'><rect "
+          "width='8' height='8' fill='red'/></svg>\"), format: \"svg\")"),
+      QStringLiteral("#set page(width: 16385pt, height: 20pt, margin: 0pt)\nx"),
+      QStringLiteral("#set page(width: 40pt, height: 9000pt, margin: 0pt)\nx #pagebreak() y"),
+      QStringLiteral("#panic(\"x\" * 70000)")};
+  for (int index = 0; index <= invalid.size(); ++index) {
+    const int previous = completed.count();
+    const auto source = index < invalid.size() ? invalid.at(index) : QStringLiteral("Valid text");
+    QVERIFY(renderer.renderMarkupToSvg(source, index < invalid.size() ? foreground : QColor(),
+                                       sensitive));
+    QCOMPARE(completed.count(), previous);
+    QVERIFY(!renderer.renderMathToSvg(QStringLiteral("sqrt(x)"), false, foreground, !sensitive));
+    QVERIFY(waitUntil([&] { return completed.count() == previous + 1; }));
+    const auto failed = qvariant_cast<TypstFragmentRenderer::Result>(completed.last().first());
+    QVERIFY2(!failed.isSuccess(), qPrintable(QStringLiteral("Accepted markup case %1").arg(index)));
+    QVERIFY(failed.m_svg.isEmpty());
+    QVERIFY(failed.m_sizePt.isEmpty());
+    QCOMPARE(failed.m_baselinePt, qreal(0));
+    QCOMPARE(failed.m_pageCount, 0);
+    QVERIFY(failed.m_error.toUtf8().size() < 64 * 1024);
+    QVERIFY(renderer.renderMathToSvg(QStringLiteral("sqrt(x)"), false, foreground, !sensitive));
+    QVERIFY(waitUntil([&] { return completed.count() == previous + 2; }));
+    const auto recovered = qvariant_cast<TypstFragmentRenderer::Result>(completed.last().first());
+    QVERIFY2(recovered.isSuccess(), qPrintable(recovered.m_error));
+    QCOMPARE(recovered.m_pageCount, 1);
+    QVERIFY(pixelsWithColor(mathFragmentImage(recovered), foreground) > 30);
+  }
+  const auto boundary = QStringLiteral("Text") + QString(64 * 1024 - 4, QLatin1Char(' '));
+  const auto previous = completed.count();
+  QVERIFY(renderer.renderMarkupToSvg(boundary, foreground, sensitive));
+  QVERIFY(waitUntil([&] { return completed.count() == previous + 1; }));
+  const auto result = qvariant_cast<TypstFragmentRenderer::Result>(completed.last().first());
+  QVERIFY2(result.isSuccess(), qPrintable(result.m_error));
+  QCOMPARE(result.m_pageCount, 1);
+  QCOMPARE(result.m_baselinePt, qreal(0));
+  QVERIFY(pixelsWithColor(mathFragmentImage(result), foreground) > 30);
+}
+
+void TestTypstEditor::fragmentKindsCancelAndReplace_data() {
+  QTest::addColumn<bool>("firstMarkup");
+  QTest::addColumn<bool>("sensitive");
+  QTest::newRow("math-ordinary-to-markup-sensitive") << false << false;
+  QTest::newRow("math-sensitive-to-markup-ordinary") << false << true;
+  QTest::newRow("markup-ordinary-to-math-sensitive") << true << false;
+  QTest::newRow("markup-sensitive-to-math-ordinary") << true << true;
+}
+
+void TestTypstEditor::fragmentKindsCancelAndReplace() {
+  QFETCH(bool, firstMarkup);
+  QFETCH(bool, sensitive);
+  TypstRuntime runtime;
+  QVERIFY(runtime.isAvailable());
+  TypstFragmentRenderer renderer(&runtime);
+  QSignalSpy completed(&renderer, &TypstFragmentRenderer::finished);
+  const QColor foreground(31, 83, 157);
+  const auto submit = [&](bool p_markup, bool p_sensitive) {
+    return p_markup ? renderer.renderMarkupToSvg(
+                          QStringLiteral(
+                              "#set page(width: 80pt, height: 48pt, margin: 8pt)\n*Replacement*"),
+                          foreground, p_sensitive)
+                    : renderer.renderMathToSvg(QStringLiteral("frac(a^2, sqrt(b))"), false,
+                                               foreground, p_sensitive);
+  };
+  QVERIFY(submit(!firstMarkup, !sensitive));
+  QVERIFY(waitUntil([&] { return completed.count() == 1; }));
+  const auto expected = qvariant_cast<TypstFragmentRenderer::Result>(completed.last().first());
+  QVERIFY2(expected.isSuccess(), qPrintable(expected.m_error));
+  QVERIFY(pixelsWithColor(mathFragmentImage(expected), foreground) > 30);
+  completed.clear();
+  auto *deadline = renderer.findChild<QTimer *>(QStringLiteral("typst-deadline"));
+  QVERIFY(deadline);
+  {
+    RuntimeLaneGate gate(runtime);
+    QVERIFY(gate.entered());
+    QVERIFY(submit(firstMarkup, sensitive));
+    QVERIFY(!submit(!firstMarkup, !sensitive));
+    renderer.cancel();
+    QCOMPARE(completed.count(), 0);
+    QVERIFY(waitUntil([&] { return completed.count() == 1; }));
+    const auto cancelled = qvariant_cast<TypstFragmentRenderer::Result>(completed.last().first());
+    QVERIFY(!cancelled.isSuccess());
+    QVERIFY(cancelled.m_svg.isEmpty());
+    QCOMPARE(cancelled.m_pageCount, 0);
+    QVERIFY(submit(!firstMarkup, !sensitive));
+    QCOMPARE(deadline->interval(), 30000);
+    deadline->setInterval(0);
+    QVERIFY(waitUntil([&] { return completed.count() == 2; }));
+    const auto expired = qvariant_cast<TypstFragmentRenderer::Result>(completed.last().first());
+    QVERIFY(!expired.isSuccess());
+    QVERIFY(expired.m_svg.isEmpty());
+    QCOMPARE(expired.m_pageCount, 0);
+    QVERIFY(submit(!firstMarkup, !sensitive));
+    QVERIFY(!submit(firstMarkup, sensitive));
+    QCOMPARE(deadline->interval(), 30000);
+    gate.release();
+    QVERIFY(waitUntil([&] { return completed.count() == 3; }));
+    const auto recovered = qvariant_cast<TypstFragmentRenderer::Result>(completed.last().first());
+    QVERIFY2(recovered.isSuccess(), qPrintable(recovered.m_error));
+    QCOMPARE(recovered.m_pageCount, expected.m_pageCount);
+    QCOMPARE(recovered.m_baselinePt, expected.m_baselinePt);
+    QCOMPARE(recovered.m_sizePt, expected.m_sizePt);
+    QCOMPARE(mathFragmentImage(recovered), mathFragmentImage(expected));
+  }
+
+  completed.clear();
+  auto *delivery = runtime.findChild<QObject *>(QStringLiteral("typst-delivery"));
+  QVERIFY(delivery);
+  NativeDeliveryObserver observer;
+  bool replacementAccepted = false;
+  bool busyAccepted = true;
+  bool idleAtCancellation = false;
+  bool replacedBeforeDelivery = false;
+  bool replace = true;
+  const auto connection = connect(&renderer, &TypstFragmentRenderer::finished, &renderer,
+                                  [&](const TypstFragmentRenderer::Result &p_result) {
+                                    if (!replace)
+                                      return;
+                                    replace = false;
+                                    idleAtCancellation =
+                                        !renderer.isRendering() && !p_result.isSuccess();
+                                    replacementAccepted = submit(!firstMarkup, !sensitive);
+                                    busyAccepted = submit(firstMarkup, sensitive);
+                                  });
+  observer.beforeDelivery = [&] {
+    renderer.cancel();
+    QCoreApplication::sendPostedEvents(&renderer, QEvent::MetaCall);
+    replacedBeforeDelivery = completed.count() == 1 && replacementAccepted;
+  };
+  delivery->installEventFilter(&observer);
+  QVERIFY(submit(firstMarkup, sensitive));
+  QVERIFY(waitUntil([&] { return completed.count() == 2; }));
+  QVERIFY(idleAtCancellation);
+  QVERIFY(replacedBeforeDelivery);
+  QVERIFY(replacementAccepted);
+  QVERIFY(!busyAccepted);
+  const auto recovered = qvariant_cast<TypstFragmentRenderer::Result>(completed.last().first());
+  QVERIFY2(recovered.isSuccess(), qPrintable(recovered.m_error));
+  QCOMPARE(recovered.m_pageCount, expected.m_pageCount);
+  QCOMPARE(recovered.m_baselinePt, expected.m_baselinePt);
+  QCOMPARE(recovered.m_sizePt, expected.m_sizePt);
+  QCOMPARE(mathFragmentImage(recovered), mathFragmentImage(expected));
+  delivery->removeEventFilter(&observer);
+  disconnect(connection);
+  renderer.cancel();
+  QCoreApplication::sendPostedEvents();
+  QCOMPARE(completed.count(), 2);
 }
 
 void TestTypstEditor::runtimeShutdownCompletesAdmittedExport() {

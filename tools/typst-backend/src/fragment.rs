@@ -11,20 +11,21 @@ use typst::routines::SpanMode;
 use typst::syntax::{Span, SyntaxMode};
 use typst::utils::{Numeric, Protected};
 use typst::World;
-use typst_layout::Page;
+use typst_layout::{Page, PagedDocument};
 
-use crate::world::MathWorld;
+use crate::world::FragmentWorld;
 
 pub const MAX_SOURCE: usize = 64 * 1024;
 pub const MAX_SVG: usize = 8 * 1024 * 1024;
 pub const MAX_REPLY: usize = 64 * 1024;
 const MAX_DIMENSION: f64 = 16384.0;
+const PAGE_GAP: f64 = 8.0;
 
 fn diagnostics(items: &[SourceDiagnostic]) -> Result<Vec<String>, String> {
     let mut bytes = 0usize;
     items.iter().map(|item| {
-        bytes = bytes.saturating_add(item.message.len());
-        if bytes > MAX_REPLY - 512 { return Err("math diagnostics exceed 64 KiB".into()); }
+        bytes = bytes.saturating_add(item.message.len()).saturating_add(3);
+        if bytes > MAX_REPLY - 512 { return Err("fragment diagnostics exceed 64 KiB".into()); }
         Ok(item.message.to_string())
     }).collect()
 }
@@ -32,17 +33,16 @@ fn diagnostics(items: &[SourceDiagnostic]) -> Result<Vec<String>, String> {
 fn failure(items: impl AsRef<[SourceDiagnostic]>) -> String {
     match diagnostics(items.as_ref()).map(|items| items.join("\n")) {
         Ok(message) if message.len() <= (MAX_REPLY - 512) / 6 => message,
-        _ => "math diagnostics exceed 64 KiB".into(),
+        _ => "fragment diagnostics exceed 64 KiB".into(),
     }
 }
 
-fn check_frame(frame: &Frame) -> Result<(), String> {
+fn check_frame(frame: &Frame, markup: bool) -> Result<(), String> {
     for (_, item) in frame.items() {
         match item {
-            FrameItem::Group(group) => check_frame(&group.frame)?,
-            FrameItem::Image(..) | FrameItem::Link(..) => {
-                return Err("math fragments cannot contain images or links".into());
-            }
+            FrameItem::Group(group) => check_frame(&group.frame, markup)?,
+            FrameItem::Image(..) => return Err("fragments cannot contain images".into()),
+            FrameItem::Link(..) if !markup => return Err("math fragments cannot contain links".into()),
             _ => {}
         }
     }
@@ -50,22 +50,37 @@ fn check_frame(frame: &Frame) -> Result<(), String> {
 }
 
 pub fn render(request: &Value) -> Result<(Value, typst::foundations::Bytes), String> {
-    let fields = ["v", "op", "epoch", "generation", "request", "source", "display", "foreground", "sensitive"];
-    let object = request.as_object().ok_or("math request must be an object")?;
-    if object.keys().any(|key| !fields.contains(&key.as_str())) {
-        return Err("unknown math request field".into());
+    let op = crate::text(request, "op")?;
+    let markup = match op {
+        "mathSvg" => false,
+        "markupSvg" => true,
+        _ => return Err("unknown fragment operation".into()),
+    };
+    let fields = ["v", "op", "epoch", "generation", "request", "source", "foreground", "sensitive"];
+    let object = request.as_object().ok_or("fragment request must be an object")?;
+    if object.keys().any(|key| !fields.contains(&key.as_str()) && (markup || key != "display")) {
+        return Err("unknown fragment request field".into());
     }
     if object.get("sensitive").is_some_and(|value| !value.is_boolean()) {
         return Err("sensitive must be boolean".into());
     }
     let source = crate::text(request, "source")?;
     if source.trim().is_empty() || source.contains('\0') || source.len() > MAX_SOURCE {
-        return Err("math source must be nonblank, NUL-free UTF-8 of at most 64 KiB".into());
+        return Err("fragment source must be nonblank, NUL-free UTF-8 of at most 64 KiB".into());
     }
-    let display = request["display"].as_bool().ok_or("display must be boolean")?;
     let foreground = serde_json::from_value::<[u8; 4]>(request["foreground"].clone())
         .map_err(|_| "foreground must contain four RGBA bytes")?;
-    let world = MathWorld::new(foreground);
+    if markup {
+        return render_markup(request, source, foreground);
+    }
+    let display = request["display"].as_bool().ok_or("display must be boolean")?;
+    render_math(request, source, display, foreground)
+}
+
+fn render_math(request: &Value, source: &str, display: bool, foreground: [u8; 4])
+    -> Result<(Value, typst::foundations::Bytes), String>
+{
+    let world = FragmentWorld::math(foreground);
     let world = &world as &dyn World;
     let library = world.library();
     let introspector = EmptyIntrospector;
@@ -102,7 +117,7 @@ pub fn render(request: &Value) -> Result<(Value, typst::foundations::Bytes), Str
     }
     let delayed = sink.delayed();
     if !delayed.is_empty() { return Err(failure(delayed)); }
-    check_frame(&frame)?;
+    check_frame(&frame, false)?;
     let size = frame.size();
     let baseline = frame.baseline();
     if !size.is_finite() || size.x <= Abs::zero() || size.y <= Abs::zero()
@@ -121,13 +136,63 @@ pub fn render(request: &Value) -> Result<(Value, typst::foundations::Bytes), Str
     let page = Page { frame, bleed: Sides::splat(Abs::zero()), fill: Smart::Custom(None),
         numbering: None, supplement: Content::empty(), number: 1 };
     let svg = typst_svg::svg(&page, &typst_svg::SvgOptions { render_bleed: false, pretty: false });
-    if svg.is_empty() || svg.len() > MAX_SVG { return Err("math SVG exceeds 8 MiB".into()); }
-    let header = json!({"v":1, "op":"mathSvg", "epoch":request["epoch"],
+    finish_svg(request, svg, padded, page.frame.baseline().to_pt(), 1, diagnostics(&sink.warnings())?)
+}
+
+fn render_markup(request: &Value, source: &str, foreground: [u8; 4])
+    -> Result<(Value, typst::foundations::Bytes), String>
+{
+    let world = FragmentWorld::markup(foreground, source);
+    // Full document evaluation/layout, including authored styles, show rules,
+    // counters, queries and normal introspection convergence. Never wrap source.
+    let result = typst::compile::<PagedDocument>(&world);
+    let document = result.output.map_err(failure)?;
+    let warnings = diagnostics(&result.warnings)?;
+    let pages = document.pages();
+    if pages.is_empty() || pages.len() > i32::MAX as usize {
+        return Err("markup document has invalid page count".into());
+    }
+    let mut size = Size::new(Abs::zero(), Abs::pt(PAGE_GAP * pages.len().saturating_sub(1) as f64));
+    for page in pages {
+        let page_size = page.frame.size();
+        check_geometry(page_size)?;
+        check_frame(&page.frame, true)?;
+        size.x = size.x.max(page_size.x);
+        size.y += page_size.y;
+        // Include every page and inter-page gap; no clipping or partial success.
+        check_geometry(size)?;
+    }
+    let svg = typst_svg::svg_merged(&document,
+        &typst_svg::SvgOptions { render_bleed: false, pretty: false }, Abs::pt(PAGE_GAP));
+    finish_svg(request, svg, size, 0.0, pages.len(), warnings)
+}
+
+fn check_geometry(size: Size) -> Result<(), String> {
+    if !size.is_finite() || size.x <= Abs::zero() || size.y <= Abs::zero()
+        || size.x.to_pt() > MAX_DIMENSION || size.y.to_pt() > MAX_DIMENSION
+    {
+        return Err("fragment viewport must be finite, positive and at most 16384pt".into());
+    }
+    Ok(())
+}
+
+fn finish_svg(request: &Value, svg: String, size: Size, baseline: f64, pages: usize,
+    diagnostics: Vec<String>) -> Result<(Value, typst::foundations::Bytes), String>
+{
+    if svg.is_empty() || svg.len() > MAX_SVG { return Err("fragment SVG exceeds 8 MiB".into()); }
+    // The trusted exporter can also emit images from color glyphs or tiling
+    // paints, outside the direct frame walk. Reject those whole outputs too.
+    // Its only other non-local references are removable link annotations; glyph,
+    // clip, gradient and tiling references are exporter-owned local definitions.
+    if svg.contains("<image") || svg.contains("<foreignObject") {
+        return Err("fragments cannot contain images".into());
+    }
+    let header = json!({"v":1, "op":request["op"], "epoch":request["epoch"],
         "generation":request["generation"], "request":request["request"],
-        "widthPt":padded.x.to_pt(), "heightPt":padded.y.to_pt(),
-        "baselinePt":page.frame.baseline().to_pt(), "diagnostics":diagnostics(&sink.warnings())?});
+        "widthPt":size.x.to_pt(), "heightPt":size.y.to_pt(),
+        "baselinePt":baseline, "pageCount":pages, "diagnostics":diagnostics});
     if serde_json::to_vec(&header).map_err(|e| e.to_string())?.len() > MAX_REPLY {
-        return Err("math header exceeds 64 KiB".into());
+        return Err("fragment header exceeds 64 KiB".into());
     }
     Ok((header, typst::foundations::Bytes::from_string(svg)))
 }
@@ -141,6 +206,143 @@ mod tests {
     fn request(source: &str, display: bool) -> Value {
         json!({"v":1,"op":"mathSvg","epoch":1,"generation":1,"request":1,
             "source":source,"display":display,"foreground":[31,83,157,255]})
+    }
+
+    fn markup_request(source: &str) -> Value {
+        json!({"v":1,"op":"markupSvg","epoch":1,"generation":1,"request":1,
+            "source":source,"foreground":[31,83,157,255]})
+    }
+
+    #[test]
+    fn markup_uses_compact_defaults_below_authored_styles() {
+        let source = "#rect(width: 30pt, height: 20pt, fill: rgb(31, 83, 157, 199), stroke: none)";
+        let (header, _) = render(&markup_request(source)).unwrap();
+        assert_eq!(header["pageCount"], 1);
+        assert_eq!(header["baselinePt"], 0.0);
+        assert!((40.0..80.0).contains(&header["widthPt"].as_f64().unwrap()));
+        assert!((30.0..70.0).contains(&header["heightPt"].as_f64().unwrap()));
+        let world = FragmentWorld::markup([31, 83, 157, 255], source);
+        let document = typst::compile::<PagedDocument>(&world).output.unwrap();
+        let options = typst_render::RenderOptions {
+            pixel_per_pt: typst::utils::Scalar::new(2.0), render_bleed: false,
+        };
+        let image = typst_render::render(&document.pages()[0], &options);
+        assert_eq!(image.pixel(0, 0).unwrap().alpha(), 0);
+        assert_eq!(image.pixel(24, 24).unwrap().alpha(), 199);
+
+        let authored = "#set page(width: 120pt, height: 80pt, margin: 0pt, fill: rgb(17, 23, 29))\n#set text(size: 24pt, fill: rgb(211, 37, 53))\n= Title\n";
+        let (header, svg) = render(&markup_request(authored)).unwrap();
+        assert_eq!(header["widthPt"], 120.0);
+        assert_eq!(header["heightPt"], 80.0);
+        let svg = std::str::from_utf8(&svg).unwrap();
+        assert!(svg.contains("#11171d"));
+        assert!(svg.contains("#d32535"));
+    }
+
+    #[test]
+    fn markup_evaluates_document_grammar_context_and_all_pages() {
+        let source = "#set page(width: 180pt, height: 180pt, margin: 8pt)\n\
+            #show strong: it => text(fill: rgb(211, 37, 53), it)\n\
+            = Heading\n*Styled* and _emphasized_ $sqrt(x)$\n\
+            #let cell(n) = [#n]\n\
+            #table(columns: (50pt, 50pt), [A], [B], cell(1), cell(2))\n\
+            #context [Page #counter(page).display()]\n\
+            #pagebreak()\n#set page(width: 100pt, height: 80pt)\n\
+            #rect(width: 20pt, height: 12pt, fill: rgb(13, 173, 71), stroke: none)\n\
+            #context [Page #counter(page).display()]";
+        let (header, svg) = render(&markup_request(source)).unwrap();
+        assert_eq!(header["pageCount"], 2);
+        assert_eq!(header["widthPt"], 180.0);
+        assert_eq!(header["heightPt"], 268.0);
+        let svg = std::str::from_utf8(&svg).unwrap();
+        assert!(svg.contains("#d32535"));
+        assert!(svg.contains("#0dad47"));
+        let world = FragmentWorld::markup([31, 83, 157, 255], source);
+        let document = typst::compile::<PagedDocument>(&world).output.unwrap();
+        for page in document.pages() {
+            let image = typst_render::render(page, &typst_render::RenderOptions {
+                pixel_per_pt: typst::utils::Scalar::new(2.0), render_bleed: false,
+            });
+            assert!(image.data().chunks_exact(4).filter(|pixel| pixel[3] > 128).count() > 100);
+        }
+    }
+
+    #[test]
+    fn markup_exposes_only_main_and_rejects_resources_and_images() {
+        let source = "A private virtual document";
+        let world = FragmentWorld::markup([0, 0, 0, 255], source);
+        assert_eq!(world.source(world.main()).unwrap().text(), source);
+        assert!(matches!(world.file(world.main()), Err(FileError::AccessDenied)));
+        let other = project_id("other.typ").unwrap();
+        assert!(matches!(world.source(other), Err(FileError::AccessDenied)));
+        assert!(matches!(world.file(other), Err(FileError::AccessDenied)));
+        assert!(world.today(None).is_none());
+        for source in ["", " \n\t", "a\0b", "#let bad = (", "#read(\"private.txt\")",
+            "#read(\"fragment.typ\")", "#include \"other.typ\"", "#import \"other.typ\": *",
+            "#import \"@preview/mitex:0.2.4\": *", "#datetime.today()",
+            "#image(\"https://example.com/image.png\")"] {
+            assert!(render(&markup_request(source)).is_err(), "accepted {source:?}");
+        }
+        let image = "image(bytes(\"<svg xmlns='http://www.w3.org/2000/svg' width='8' height='8'><rect width='8' height='8' fill='red'/></svg>\"), format: \"svg\")";
+        for source in [format!("Before #{image} after"),
+            format!("Visible first page #pagebreak() #{image}"),
+            format!("#rect(width: 30pt, height: 30pt, fill: tiling(size: (8pt, 8pt))[#{image}])")] {
+            assert_eq!(render(&markup_request(&source)).unwrap_err(), "fragments cannot contain images");
+        }
+        // Links are annotations; visible linked text stays outside the overlay.
+        let (_, svg) = render(&markup_request("#link(\"https://example.com\")[Visible link]")).unwrap();
+        let svg = std::str::from_utf8(&svg).unwrap();
+        assert!(svg.contains("<a"));
+        assert!(svg.contains("<path"));
+        assert!(svg.contains("#1f539d"));
+    }
+
+    #[test]
+    fn markup_bounds_and_schema_fail_closed() {
+        let boundary = format!("x{}", " ".repeat(MAX_SOURCE - 1));
+        assert!(render(&markup_request(&boundary)).is_ok());
+        assert!(render(&markup_request(&(boundary + " "))).is_err());
+        for source in ["#set page(width: 16385pt, height: 20pt, margin: 0pt)\nx",
+            "#set page(width: 40pt, height: 9000pt, margin: 0pt)\nx #pagebreak() y",
+            "#set page(width: 0pt, height: 20pt, margin: 0pt)\nx",
+            "#box(width: 1pt, height: 1pt, stack(spacing: 0pt, ..range(100000).map(_ => [x])))"] {
+            assert!(render(&markup_request(source)).is_err(), "accepted {source:?}");
+        }
+        let error = render(&markup_request("#panic(\"x\" * 70000)")).unwrap_err();
+        assert!(error.len() < MAX_REPLY / 6);
+        let mut request = markup_request("Hello");
+        request["display"] = json!(false);
+        assert_eq!(render(&request).unwrap_err(), "unknown fragment request field");
+        request.as_object_mut().unwrap().remove("display");
+        request["sensitive"] = json!("true");
+        assert_eq!(render(&request).unwrap_err(), "sensitive must be boolean");
+    }
+
+    #[test]
+    fn alternating_kinds_and_sensitive_completion_keep_sessions_stateless() {
+        let mut session = crate::compile::Session::default();
+        for sensitive in [false, true] {
+            for mut request in [markup_request("= Heading\n$frac(1, 2)$"), request("sqrt(x)", false)] {
+                request["sensitive"] = json!(sensitive);
+                let mut replies = 0;
+                session.handle(&request, &mut |header, svg| {
+                    replies += 1;
+                    assert_eq!(header["op"], request["op"]);
+                    assert_eq!(header["pageCount"], 1);
+                    assert!(header["widthPt"].as_f64().unwrap() > 2.0);
+                    assert!(std::str::from_utf8(&svg).unwrap().contains("#1f539d"));
+                    Ok(())
+                }).unwrap();
+                assert_eq!(replies, 1);
+                assert_eq!(session.dependencies(), json!([]));
+                assert_eq!(session.handle(&request, &mut |_, _| Err("delivery failed".into())).unwrap_err(), "delivery failed");
+                assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    session.handle(&request, &mut |_, _| panic!("delivery unwind"))
+                })).is_err());
+                request["source"] = json!("#let broken = (");
+                assert!(session.handle(&request, &mut |_, _| panic!("partial result")).is_err());
+            }
+        }
     }
 
     #[test]
@@ -239,7 +441,7 @@ mod tests {
 
     #[test]
     fn resources_and_invalid_inputs_fail_locally() {
-        let world = MathWorld::new([0, 0, 0, 255]);
+        let world = FragmentWorld::math([0, 0, 0, 255]);
         let id = project_id("private.typ").unwrap();
         assert!(matches!(world.file(id), Err(FileError::AccessDenied)));
         assert!(matches!(world.source(id), Err(FileError::AccessDenied)));

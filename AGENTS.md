@@ -439,33 +439,39 @@ CJK output requires an installed font covering the characters. Coverage: the con
 `system_fonts_shape_chinese_when_available` glyph test and the deterministic
 `explicit_font_precedence_and_frozen_fallback_survive_reset` regression.
 
-## Isolated Typst Math Fragments
+## Isolated Typst SVG Fragments
 
-`TypstMathRenderer` borrows the application runtime and accepts one logical request at a
-time. Dollar delimiters belong to the host; pass delimiter-free Typst math. Accepted
-requests complete asynchronously once, idle before `finished`, with owning SVG bytes and
-point dimensions/baseline. Busy calls return false without a completion. Cancellation and
-the 30-second queue-inclusive deadline retire delivery, never interrupt native execution;
-one replacement may wait for the old call to return before its session is replaced.
+`TypstFragmentRenderer` borrows the application runtime and accepts one logical request at a
+time, across both `renderMathToSvg` and `renderMarkupToSvg`. Results own their SVG and report
+point dimensions, page count and baseline (markup baseline is zero). Busy calls return false
+without a completion. Accepted requests finish asynchronously once, idle before `finished`.
+Cancellation and the 30-second queue-inclusive deadline retire delivery, never interrupt native
+execution; one replacement waits for actual return before a suppressed session is replaced.
 
-The stateless `mathSvg` operation uses math-mode evaluation, not document concatenation.
-Its isolated world shares runtime fonts but denies files, packages, dates and document
-introspection. It creates no project or snapshot. Defaults are 12pt and caller RGBA;
-display style changes the equation body, never block placement. Zero paragraph leading
-keeps inline ink inside the intrinsic frame; 1pt transparent padding includes the baseline.
-Source is valid, nonblank, NUL-free UTF-8 up to 64 KiB (Qt normalizes line endings). SVG is
-bounded to 8 MiB, headers to 64 KiB and dimensions to 16384pt; frame images/links fail.
-Baseline is finite but may be outside the viewport. Native status is authoritative over
-provisional replies. Coverage: the four `mathFragments*`/`mathCancellation*`/`mathRendererLifetime`
-tests in `test_typsteditor`, plus native `math::tests`.
+`mathSvg` evaluates delimiter-free math into an inline equation with body-level display style,
+zero paragraph leading and 1pt transparent padding. Math has no readable source/files/packages,
+dates or document introspection; its baseline is finite but may be outside the viewport.
 
-The host may mark `renderToSvg` sensitive. Its `mathSvg` request carries a strictly boolean
-`sensitive` field (omitted means false). An unwind-safe native completion guard clears currently
-stored global comemo results with `evict(0)` for sensitive calls, including failures and the
-eventual return of cancelled calls; ordinary requests keep `evict(10)` aging. This can make other
-Typst work recompute, but does not change project snapshots or output caches. Concurrent calls
-may retain/reinsert results, fonts remain shared runtime assets, and allocator/interner memory
-is not guaranteed erased. Never claim immediate wiping or force-stop a running native call.
+`markupSvg` compiles the supplied virtual main source as a full `PagedDocument`, including normal
+introspection and page breaks. It defaults to 12pt/current foreground, auto page dimensions,
+8pt margins and transparent fill, below authored page/text styles. Every page is merged vertically
+with an 8pt gap; `m_sizePt` includes those gaps and `m_pageCount` includes every page. Only the
+virtual main source is readable: byte/file/package access and dates remain denied. Neither path
+creates project snapshots or disk artifacts; default runtime fonts are shared.
+
+Both paths require valid, nonblank, NUL-free UTF-8 up to 64 KiB (Qt normalizes line endings), bound
+SVG to 8 MiB, headers to 64 KiB and individual/combined dimensions to 16384pt. Image-bearing
+results fail closed. Math rejects links; markup SVG may contain link annotations, so hosts must
+sanitize before live DOM insertion. VNote removes annotation overlays while retaining visible
+text. Native status is authoritative over provisional replies. Coverage: math/markup fragment,
+cross-kind cancellation and lifetime cases in `test_typsteditor`, plus native `fragment::tests`.
+
+Either request may be sensitive. The strictly boolean `sensitive` field defaults false. An
+unwind-safe native completion guard clears currently stored global comemo results with `evict(0)`
+for sensitive calls, including failures and eventual cancelled returns; ordinary requests keep
+`evict(10)` aging. This can make other Typst work recompute but does not change project snapshots
+or output caches. Concurrent calls may retain/reinsert values; allocator/interner memory is not
+guaranteed erased. Never claim immediate wiping or force-stop a running native call.
 
 ## Typst Raw Code Highlighting
 

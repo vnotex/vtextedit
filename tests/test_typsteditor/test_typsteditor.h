@@ -66,6 +66,12 @@ private slots:
   void mathCancellationAndDeadlineRecover();
   void mathRendererLifetime_data();
   void mathRendererLifetime();
+  void markupFragmentsRenderDocument_data();
+  void markupFragmentsRenderDocument();
+  void markupFragmentsFailClosed_data();
+  void markupFragmentsFailClosed();
+  void fragmentKindsCancelAndReplace_data();
+  void fragmentKindsCancelAndReplace();
   void compilerGeometryAndScale();
   void compilerBitmapOutlivesRuntime();
   void previewThemeDefaultsRespectAuthoredStyles();

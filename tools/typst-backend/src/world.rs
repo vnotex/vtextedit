@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use typst::diag::{FileError, FileResult};
 use typst::foundations::{Bytes, Datetime, Duration, Smart};
-use typst::layout::{Abs, PageElem};
+use typst::layout::{Abs, Margin, PageElem};
 use typst::syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot};
 use typst::text::{Font, FontBook, FontFamily, FontList, TextElem, TextSize};
 use typst::utils::LazyHash;
@@ -167,28 +167,45 @@ impl Fonts {
 }
 
 // Fragment evaluation has no project namespace or note-directed resource access.
-pub struct MathWorld {
+pub struct FragmentWorld {
     library: LazyHash<Library>,
     fonts: Arc<Fonts>,
+    main: Option<Source>,
 }
 
-impl MathWorld {
-    pub fn new([r, g, b, a]: [u8; 4]) -> Self {
+impl FragmentWorld {
+    pub fn math(foreground: [u8; 4]) -> Self { Self::new(foreground, None) }
+
+    pub fn markup(foreground: [u8; 4], source: &str) -> Self {
+        Self::new(foreground, Some(Source::new(project_id("fragment.typ").unwrap(), source.into())))
+    }
+
+    fn new([r, g, b, a]: [u8; 4], main: Option<Source>) -> Self {
         let mut library = Library::default();
         library.styles.set(TextElem::size, TextSize(Abs::pt(12.0).into()));
         library.styles.set(TextElem::fill, Paint::Solid(Color::from_u8(r, g, b, a)));
-        Self { library: LazyHash::new(library), fonts: Fonts::defaults() }
+        if main.is_some() {
+            library.styles.set(PageElem::width, Smart::Auto);
+            library.styles.set(PageElem::height, Smart::Auto);
+            library.styles.set(PageElem::fill, Smart::Custom(None));
+            library.styles.set(PageElem::margin,
+                Smart::Custom(Margin::splat(Some(Smart::Custom(Abs::pt(8.0).into())))));
+        }
+        Self { library: LazyHash::new(library), fonts: Fonts::defaults(), main }
     }
 }
 
-impl World for MathWorld {
+impl World for FragmentWorld {
     fn library(&self) -> &LazyHash<Library> { &self.library }
     fn book(&self) -> &LazyHash<FontBook> { &self.fonts.book }
     fn main(&self) -> FileId {
-        // World requires an identity; this virtual sentinel is never readable.
-        project_id("math.typ").unwrap()
+        // Math has only an unreadable identity; markup exposes exactly one source.
+        self.main.as_ref().map_or_else(|| project_id("math.typ").unwrap(), Source::id)
     }
-    fn source(&self, _id: FileId) -> FileResult<Source> { Err(FileError::AccessDenied) }
+    fn source(&self, id: FileId) -> FileResult<Source> {
+        self.main.as_ref().filter(|source| source.id() == id)
+            .cloned().ok_or(FileError::AccessDenied)
+    }
     fn file(&self, _id: FileId) -> FileResult<Bytes> { Err(FileError::AccessDenied) }
     fn font(&self, index: usize) -> Option<Font> { self.fonts.font(index) }
     fn today(&self, _offset: Option<Duration>) -> Option<Datetime> { None }

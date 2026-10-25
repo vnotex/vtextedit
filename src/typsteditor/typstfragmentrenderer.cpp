@@ -1,4 +1,4 @@
-#include <vtextedit/typstmathrenderer.h>
+#include <vtextedit/typstfragmentrenderer.h>
 
 #include "typstruntime_p.h"
 
@@ -10,6 +10,7 @@
 #include <QTimer>
 
 #include <cmath>
+#include <limits>
 #include <utility>
 
 using namespace vte;
@@ -21,6 +22,12 @@ constexpr size_t c_maxSvg = 8 * 1024 * 1024;
 constexpr double c_maxDimension = 16384.0;
 constexpr quint64 c_maxId = 9007199254740991ULL;
 constexpr int c_deadlineMs = 30000;
+
+enum class FragmentKind { Math, Markup };
+
+QString operationFor(FragmentKind p_kind) {
+  return p_kind == FragmentKind::Math ? QStringLiteral("mathSvg") : QStringLiteral("markupSvg");
+}
 
 quint64 identifier(const QJsonValue &p_value) {
   const double value = p_value.toDouble(-1);
@@ -39,7 +46,7 @@ QString sourceError(const QString &p_source) {
   for (qsizetype idx = 0; idx < p_source.size(); ++idx) {
     const auto ch = p_source.at(idx);
     if (ch.isNull()) {
-      return TypstMathRenderer::tr("Typst math source contains a NUL.");
+      return TypstFragmentRenderer::tr("Typst source contains a NUL.");
     }
     nonblank = nonblank || !ch.isSpace();
     if (ch.isHighSurrogate() && idx + 1 < p_source.size() &&
@@ -47,7 +54,7 @@ QString sourceError(const QString &p_source) {
       bytes += 4;
       ++idx;
     } else if (ch.isSurrogate()) {
-      return TypstMathRenderer::tr("Typst math source contains invalid Unicode.");
+      return TypstFragmentRenderer::tr("Typst source contains invalid Unicode.");
     } else {
       const auto code = ch.unicode();
       bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : 3;
@@ -57,29 +64,28 @@ QString sourceError(const QString &p_source) {
       }
     }
     if (bytes > c_maxSource) {
-      return TypstMathRenderer::tr("Typst math source exceeds 64 KiB UTF-8.");
+      return TypstFragmentRenderer::tr("Typst source exceeds 64 KiB UTF-8.");
     }
   }
-  return nonblank ? QString() : TypstMathRenderer::tr("Typst math source must not be blank.");
+  return nonblank ? QString() : TypstFragmentRenderer::tr("Typst source must not be blank.");
 }
 
-void setFailure(TypstMathRenderer::Result &p_result, const QString &p_error) {
+void setFailure(TypstFragmentRenderer::Result &p_result, const QString &p_error) {
   p_result = {};
   p_result.m_sizePt = QSizeF(0, 0);
   p_result.m_error = p_error;
 }
 } // namespace
 
-class TypstMathRenderer::Private {
+class TypstFragmentRenderer::Private {
 public:
-  Private(TypstMathRenderer *p_owner, TypstRuntime *p_runtime)
+  Private(TypstFragmentRenderer *p_owner, TypstRuntime *p_runtime)
       : q(p_owner), m_runtime(p_runtime), m_deadline(p_owner) {
     m_deadline.setSingleShot(true);
     m_deadline.setInterval(c_deadlineMs);
     m_deadline.setObjectName(QStringLiteral("typst-deadline"));
-    QObject::connect(&m_deadline, &QTimer::timeout, q, [this]() {
-      finish(TypstMathRenderer::tr("Typst math rendering timed out."));
-    });
+    QObject::connect(&m_deadline, &QTimer::timeout, q,
+                     [this]() { finish(TypstFragmentRenderer::tr("Typst rendering timed out.")); });
     if (m_runtime) {
       QObject::connect(m_runtime, &QObject::destroyed, q, [this]() { runtimeStopped(); });
     }
@@ -94,8 +100,8 @@ public:
     delete m_session;
   }
 
-  bool start(const QString &p_source, bool p_display, const QColor &p_foreground,
-             bool p_sensitive) {
+  bool start(FragmentKind p_kind, const QString &p_source, bool p_display,
+             const QColor &p_foreground, bool p_sensitive) {
     if (m_busy) {
       return false;
     }
@@ -109,7 +115,7 @@ public:
       return true;
     }
     if (!p_foreground.isValid()) {
-      finish(TypstMathRenderer::tr("Typst math foreground must be a valid color."));
+      finish(TypstFragmentRenderer::tr("Typst foreground must be a valid color."));
       return true;
     }
     auto source = p_source;
@@ -117,10 +123,13 @@ public:
     source.replace(QLatin1Char('\r'), QLatin1Char('\n'));
     m_pendingRequest = {
         {QStringLiteral("source"), source},
-        {QStringLiteral("display"), p_display},
+        {QStringLiteral("op"), operationFor(p_kind)},
         {QStringLiteral("sensitive"), p_sensitive},
         {QStringLiteral("foreground"), QJsonArray{p_foreground.red(), p_foreground.green(),
                                                   p_foreground.blue(), p_foreground.alpha()}}};
+    if (p_kind == FragmentKind::Math) {
+      m_pendingRequest.insert(QStringLiteral("display"), p_display);
+    }
     pump();
     return true;
   }
@@ -138,13 +147,13 @@ public:
       return;
     }
     if (!m_runtime || !m_runtime->isAvailable()) {
-      finish(TypstMathRenderer::tr("Typst runtime is unavailable."));
+      finish(TypstFragmentRenderer::tr("Typst runtime is unavailable."));
       return;
     }
     if (!m_session) {
       m_session = TypstRuntimePrivate::get(m_runtime)->createSession(q);
       if (!m_session) {
-        finish(TypstMathRenderer::tr("Typst runtime is unavailable."));
+        finish(TypstFragmentRenderer::tr("Typst runtime is unavailable."));
         return;
       }
       m_epoch = nextIdentifier(m_epoch);
@@ -155,7 +164,11 @@ public:
       QObject::connect(m_session, &TypstRuntimeSession::stopped, q, [this]() { runtimeStopped(); });
     }
     m_pendingRequest.insert(QStringLiteral("v"), 1);
-    m_pendingRequest.insert(QStringLiteral("op"), QStringLiteral("mathSvg"));
+    // Captured once per native dispatch. A replacement logical request cannot
+    // change the kind of an executing retired call or its immutable request bytes.
+    m_nativeKind = m_pendingRequest.value(QStringLiteral("op")) == QStringLiteral("mathSvg")
+                       ? FragmentKind::Math
+                       : FragmentKind::Markup;
     m_pendingRequest.insert(QStringLiteral("epoch"), static_cast<double>(m_epoch));
     // Each stateless fragment is its own generation; no project is initialized.
     m_pendingRequest.insert(QStringLiteral("generation"), static_cast<double>(m_requestId));
@@ -168,7 +181,7 @@ public:
     m_nativeRetired = false;
     if (!m_session->execute(std::move(request))) {
       resetSession();
-      finish(TypstMathRenderer::tr("Typst runtime is unavailable."));
+      finish(TypstFragmentRenderer::tr("Typst runtime is unavailable."));
       return;
     }
     m_nativeInFlight = true;
@@ -179,7 +192,7 @@ public:
       return;
     }
     if (m_replySeen) {
-      finish(TypstMathRenderer::tr("Typst backend returned more than one final math reply."));
+      finish(TypstFragmentRenderer::tr("Typst backend returned more than one final reply."));
       return;
     }
     m_replySeen = true;
@@ -189,7 +202,7 @@ public:
     const auto *payloadBytes = p_reply ? p_reply.payload(&payloadSize) : nullptr;
     if (!headerBytes || headerSize == 0 || headerSize > c_maxHeader || payloadSize > c_maxSvg ||
         (payloadSize != 0 && !payloadBytes)) {
-      finish(TypstMathRenderer::tr("Typst backend returned invalid math reply lengths."));
+      finish(TypstFragmentRenderer::tr("Typst backend returned invalid reply lengths."));
       return;
     }
     QJsonParseError error;
@@ -197,7 +210,7 @@ public:
         QByteArray::fromRawData(reinterpret_cast<const char *>(headerBytes), qsizetype(headerSize)),
         &error);
     if (error.error != QJsonParseError::NoError || !document.isObject()) {
-      finish(TypstMathRenderer::tr("Typst backend returned invalid math reply metadata."));
+      finish(TypstFragmentRenderer::tr("Typst backend returned invalid reply metadata."));
       return;
     }
     const auto header = document.object();
@@ -206,15 +219,15 @@ public:
         identifier(header.value(QStringLiteral("epoch"))) != m_epoch ||
         identifier(header.value(QStringLiteral("generation"))) != m_requestId ||
         identifier(header.value(QStringLiteral("request"))) != m_requestId ||
-        (operation != QStringLiteral("mathSvg") && operation != QStringLiteral("error"))) {
-      finish(TypstMathRenderer::tr("Typst math reply does not match its request."));
+        (operation != operationFor(m_nativeKind) && operation != QStringLiteral("error"))) {
+      finish(TypstFragmentRenderer::tr("Typst reply does not match its request."));
       return;
     }
     if (operation == QStringLiteral("error")) {
       const auto message = header.value(QStringLiteral("message"));
-      if (header.value(QStringLiteral("for")) != QStringLiteral("mathSvg") || payloadSize != 0 ||
+      if (header.value(QStringLiteral("for")) != operationFor(m_nativeKind) || payloadSize != 0 ||
           !message.isString() || message.toString().isEmpty()) {
-        finish(TypstMathRenderer::tr("Typst backend returned an invalid math error."));
+        finish(TypstFragmentRenderer::tr("Typst backend returned an invalid error."));
         return;
       }
       setFailure(m_result, message.toString());
@@ -224,30 +237,35 @@ public:
     const auto height = header.value(QStringLiteral("heightPt"));
     const auto baseline = header.value(QStringLiteral("baselinePt"));
     const auto diagnostics = header.value(QStringLiteral("diagnostics"));
+    const auto pageCount = identifier(header.value(QStringLiteral("pageCount")));
     if (!width.isDouble() || !height.isDouble() || !baseline.isDouble() ||
         !std::isfinite(width.toDouble()) || !std::isfinite(height.toDouble()) ||
         !std::isfinite(baseline.toDouble()) || width.toDouble() <= 0 || height.toDouble() <= 0 ||
         width.toDouble() > c_maxDimension || height.toDouble() > c_maxDimension ||
-        !diagnostics.isArray() || payloadSize == 0) {
-      finish(TypstMathRenderer::tr("Typst backend returned invalid math geometry or content."));
+        !diagnostics.isArray() || payloadSize == 0 || pageCount == 0 ||
+        pageCount > quint64(std::numeric_limits<int>::max()) ||
+        (m_nativeKind == FragmentKind::Math && pageCount != 1) ||
+        (m_nativeKind == FragmentKind::Markup && baseline.toDouble() != 0)) {
+      finish(TypstFragmentRenderer::tr("Typst backend returned invalid geometry or content."));
       return;
     }
     const QByteArrayView svg(reinterpret_cast<const char *>(payloadBytes), qsizetype(payloadSize));
     if (!svg.isValidUtf8() || svg.contains('\0')) {
-      finish(TypstMathRenderer::tr("Typst backend returned invalid UTF-8 math SVG."));
+      finish(TypstFragmentRenderer::tr("Typst backend returned invalid UTF-8 SVG."));
       return;
     }
     const auto messages = diagnostics.toArray();
     m_result.m_diagnostics.reserve(messages.size());
     for (const auto &message : messages) {
       if (!message.isString()) {
-        finish(TypstMathRenderer::tr("Typst backend returned invalid math diagnostics."));
+        finish(TypstFragmentRenderer::tr("Typst backend returned invalid diagnostics."));
         return;
       }
       m_result.m_diagnostics.append(message.toString());
     }
     m_result.m_sizePt = QSizeF(width.toDouble(), height.toDouble());
     m_result.m_baselinePt = baseline.toDouble();
+    m_result.m_pageCount = int(pageCount);
     // Copy while the reply owns its bytes, then retain no native reply handle.
     // This is provisional until the native call's authoritative status arrives.
     m_result.m_svg = QByteArray(svg.data(), svg.size());
@@ -260,7 +278,7 @@ public:
     m_nativeInFlight = false;
     if (!m_runtime || !m_runtime->isAvailable() || !m_session->isAvailable()) {
       resetSession();
-      finish(TypstMathRenderer::tr("Typst runtime is unavailable."));
+      finish(TypstFragmentRenderer::tr("Typst runtime is unavailable."));
       return;
     }
     if (m_nativeRetired) {
@@ -273,13 +291,12 @@ public:
     }
     if (p_status != VTE_TYPST_OK) {
       resetSession();
-      finish(
-          TypstMathRenderer::tr("Typst native math operation failed (status %1).").arg(p_status));
+      finish(TypstFragmentRenderer::tr("Typst native operation failed (status %1).").arg(p_status));
       return;
     }
     if (!m_replySeen) {
       resetSession();
-      finish(TypstMathRenderer::tr("Typst backend completed without a final math reply."));
+      finish(TypstFragmentRenderer::tr("Typst backend completed without a final reply."));
       return;
     }
     finish();
@@ -289,7 +306,7 @@ public:
     // Shutdown has joined the lanes, so even suppressed native work is retired.
     m_nativeInFlight = false;
     resetSession();
-    finish(TypstMathRenderer::tr("Typst runtime is unavailable."));
+    finish(TypstFragmentRenderer::tr("Typst runtime is unavailable."));
   }
 
   void finish(const QString &p_error = QString()) {
@@ -317,7 +334,7 @@ public:
     m_finishing = true;
     QTimer::singleShot(0, q, [this]() {
       if (m_result.isSuccess() && (!m_runtime || !m_runtime->isAvailable())) {
-        setFailure(m_result, TypstMathRenderer::tr("Typst runtime is unavailable."));
+        setFailure(m_result, TypstFragmentRenderer::tr("Typst runtime is unavailable."));
       }
       auto result = std::move(m_result);
       m_result = {};
@@ -328,7 +345,7 @@ public:
     });
   }
 
-  TypstMathRenderer *q;
+  TypstFragmentRenderer *q;
   QPointer<TypstRuntime> m_runtime;
   QTimer m_deadline;
   TypstRuntimeSession *m_session = nullptr;
@@ -336,6 +353,7 @@ public:
   Result m_result;
   quint64 m_epoch = 0;
   quint64 m_requestId = 0;
+  FragmentKind m_nativeKind = FragmentKind::Math;
   bool m_busy = false;
   bool m_finishing = false;
   bool m_nativeInFlight = false;
@@ -343,18 +361,23 @@ public:
   bool m_replySeen = false;
 };
 
-TypstMathRenderer::TypstMathRenderer(TypstRuntime *p_runtime, QObject *p_parent)
+TypstFragmentRenderer::TypstFragmentRenderer(TypstRuntime *p_runtime, QObject *p_parent)
     : QObject(p_parent), d(new Private(this, p_runtime)) {
-  qRegisterMetaType<TypstMathRenderer::Result>();
+  qRegisterMetaType<TypstFragmentRenderer::Result>();
 }
 
-TypstMathRenderer::~TypstMathRenderer() = default;
+TypstFragmentRenderer::~TypstFragmentRenderer() = default;
 
-bool TypstMathRenderer::renderToSvg(const QString &p_source, bool p_display,
-                                    const QColor &p_foreground, bool p_sensitive) {
-  return d->start(p_source, p_display, p_foreground, p_sensitive);
+bool TypstFragmentRenderer::renderMathToSvg(const QString &p_source, bool p_display,
+                                            const QColor &p_foreground, bool p_sensitive) {
+  return d->start(FragmentKind::Math, p_source, p_display, p_foreground, p_sensitive);
 }
 
-bool TypstMathRenderer::isRendering() const { return d->m_busy; }
+bool TypstFragmentRenderer::renderMarkupToSvg(const QString &p_source, const QColor &p_foreground,
+                                              bool p_sensitive) {
+  return d->start(FragmentKind::Markup, p_source, false, p_foreground, p_sensitive);
+}
 
-void TypstMathRenderer::cancel() { d->finish(tr("Typst math rendering was cancelled.")); }
+bool TypstFragmentRenderer::isRendering() const { return d->m_busy; }
+
+void TypstFragmentRenderer::cancel() { d->finish(tr("Typst rendering was cancelled.")); }
