@@ -654,6 +654,10 @@ whose first request they assert: native show/activation can pump events inside f
 construction. A current preview does not prove a late subscriber saw its startup request.
 Keep epoch/snapshot and actual card geometry/color counts in timeout diagnostics; do not
 replace raster assertions with the compiler's up-to-date message.
+Color-presence fixtures use filled math crops, not sparse glyph masks that disappear below
+pixel-count assertions when downscaled at native 72-DPI geometry. Keep the color/ordering/
+clipping assertions; derive soft-wrap setup from measured source width instead of a fixed
+window width that can put the equation at a wrap boundary on another font/DPI.
 
 ## Architecture
 

@@ -4001,7 +4001,7 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
   auto config = editorConfig(root.path(), &m_runtime);
   config->m_previewMaxHeight = 160;
   const auto source = QStringLiteral("#set text(size: 24pt)\n#for color in (rgb(\"#ff0000\"), "
-                                     "rgb(\"#0000ff\")) { text(fill: color)[$x$] } $y$\nAfter");
+                                     "rgb(\"#0000ff\")) { box(fill: color)[$x$] } $y$\nAfter");
   EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, config, true,
                         false);
   const auto repeated = [&]() -> QWidget * {
@@ -4065,6 +4065,7 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
   QVERIFY(!repeated()->geometry().intersects(inlineCard()->geometry()));
   QVERIFY(std::abs(repeated()->geometry().left() - sourceRect(equationStart).left()) <= 1);
 
+  const int sourcePrefixWidth = sourceRect(equationStart).left();
   const int fullRowWidth = repeated()->width();
   const int spanWidth = sourceRect(equationStart + 3).left() - sourceRect(equationStart).left();
   const int chromeWidth = fixture.editor.width() - fixture.edit()->viewport()->width();
@@ -4096,9 +4097,10 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
   QVERIFY(repeated()->width() > spanWidth);
   QVERIFY(repeated()->geometry().right() < fixture.edit()->viewport()->width());
 
-  // The claimed source is mid-line on a soft-wrapped continuation, not at its origin.
+  // Leave a substantial prefix on the continuation at any native font DPI.
+  // A fixed window width can wrap directly at the equation instead.
   fixture.edit()->setWordWrapMode(wrapMode);
-  fixture.editor.resize(450, 650);
+  fixture.editor.resize(chromeWidth + sourcePrefixWidth * 3 / 4, 650);
   QVERIFY(waitUntil([&]() {
     const auto block = fixture.editor.document()->findBlock(equationStart);
     const auto line = block.layout()->lineForTextPosition(equationStart - block.position());
@@ -5382,7 +5384,9 @@ void TestTypstEditor::rasterHandoffTransitions() {
   QFETCH(int, transition);
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  const auto source = shortSource(QStringLiteral("#set text(fill: red, size: 24pt)\n$ x $\nAfter"));
+  // Filled math crops remain measurable when native previews downscale small glyphs.
+  const auto source =
+      shortSource(QStringLiteral("#set text(size: 24pt)\n#box(fill: red)[$ x $]\nAfter"));
   const auto replacement = shortSource(QStringLiteral(
       "#set text(fill: rgb(\"#0000ff\"), size: 24pt)\n$ Omega^3 + Omega^2 + Omega $\nAfter"));
   EditorFixture fixture(m_runtime, root.path(), QString(), VTypstEditor::Mode::Edit, {}, true,
