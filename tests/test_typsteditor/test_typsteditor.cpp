@@ -4032,8 +4032,10 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
     cursor.setPosition(p_position);
     fixture.edit()->setTextCursor(cursor);
     auto *bar = fixture.edit()->horizontalScrollBar();
-    bar->setValue(bar->value() + sourceRect(p_position).left() -
-                  qRound(fixture.editor.document()->documentMargin()));
+    const int requested = bar->value() + sourceRect(p_position).left() -
+                          qRound(fixture.editor.document()->documentMargin());
+    bar->setValue(requested);
+    return requested;
   };
   const int equationStart = source.indexOf(QStringLiteral("$x$"));
   QVERIFY(sourceRect(equationStart).left() > fixture.editor.document()->documentMargin() + 10);
@@ -4111,15 +4113,41 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
   fixture.editor.setFileOverlay(QStringLiteral("main.typ"), wide);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
   const int wideStart = wide.indexOf(QStringLiteral("$x+"));
-  QVERIFY(waitUntil([&]() {
-    const auto doc = fixture.editor.document();
-    const auto block = doc->findBlock(wideStart);
-    return doc->documentLayout()->documentSize().width() >
-           block.layout()->lineAt(0).naturalTextWidth() + 2 * doc->documentMargin();
-  }));
-  scrollToSource(wideStart);
-  QVERIFY(waitUntil(
-      [&]() { return repeated() && coloredPixels(widgetImage(repeated()), false) > 10; }));
+  auto *wideScroll = fixture.edit()->horizontalScrollBar();
+  const auto rasterState = [&]() {
+    QString state;
+    QDebug debug(&state);
+    debug << "scroll value/max:" << wideScroll->value() << wideScroll->maximum()
+          << "cursor/source:" << fixture.edit()->textCursor().position() << sourceRect(wideStart)
+          << "viewport/document:" << fixture.edit()->viewport()->size()
+          << fixture.editor.document()->documentLayout()->documentSize();
+    for (auto *card : fixture.editor.findChildren<QWidget *>(QStringLiteral("typstPreviewCard"))) {
+      const auto image = widgetImage(card);
+      debug << "card geometry/visible/red/blue:" << card->geometry() << card->isVisible()
+            << coloredPixels(image, true) << coloredPixels(image, false);
+    }
+    return state;
+  };
+  QVERIFY2(waitUntil([&]() {
+             const auto doc = fixture.editor.document();
+             const auto block = doc->findBlock(wideStart);
+             return wideScroll->maximum() > 0 &&
+                    doc->documentLayout()->documentSize().width() >
+                        block.layout()->lineAt(0).naturalTextWidth() + 2 * doc->documentMargin();
+           }),
+           qPrintable(rasterState()));
+  const int scrollBefore = wideScroll->value();
+  const int maximumBefore = wideScroll->maximum();
+  const int scrollRequested = scrollToSource(wideStart);
+  const int scrollAfter = wideScroll->value();
+  QVERIFY2(
+      waitUntil([&]() { return repeated() && coloredPixels(widgetImage(repeated()), false) > 10; }),
+      qPrintable(QStringLiteral("scroll before/max/requested/after: %1 %2 %3 %4; %5")
+                     .arg(scrollBefore)
+                     .arg(maximumBefore)
+                     .arg(scrollRequested)
+                     .arg(scrollAfter)
+                     .arg(rasterState())));
   const auto wideSize = repeated()->size();
   const qreal wideDocumentWidth =
       fixture.editor.document()->documentLayout()->documentSize().width();

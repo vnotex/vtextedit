@@ -646,7 +646,9 @@ Compare configured and rendered font families through `QFontInfo`, not raw gener
 labels: Qt's stylesheet font can capitalize an equivalent alias differently from the database.
 After replacing source, raster fixtures must place the text cursor at the observed source before
 aligning horizontal scroll; deferred Qt caret visibility can otherwise rewind the viewport to
-its old cursor and clip an already-rendered preview.
+its old cursor and clip an already-rendered preview. When replacing with overwide source,
+wait for the horizontal scrollbar's nonzero range before alignment: document layout width
+alone does not establish that the scrollbar can accept the requested offset.
 
 ## Architecture
 
