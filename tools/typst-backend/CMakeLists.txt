@@ -114,7 +114,7 @@ add_custom_target(vtextedit_typst_build ALL
     ${_publish_commands}
     BYPRODUCTS ${_cargo_byproducts} ${_runtime_byproducts}
     DEPENDS Cargo.toml Cargo.lock rust-toolchain.toml
-            src/lib.rs src/ffi.rs src/world.rs src/compile.rs src/preview.rs src/highlight.rs src/resources.rs
+            src/lib.rs src/ffi.rs src/world.rs src/compile.rs src/math.rs src/preview.rs src/highlight.rs src/resources.rs
             include/vtextedit_typst.h
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMENT "Building the pinned Typst shared library"

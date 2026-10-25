@@ -166,6 +166,34 @@ impl Fonts {
     }
 }
 
+// Fragment evaluation has no project namespace or note-directed resource access.
+pub struct MathWorld {
+    library: LazyHash<Library>,
+    fonts: Arc<Fonts>,
+}
+
+impl MathWorld {
+    pub fn new([r, g, b, a]: [u8; 4]) -> Self {
+        let mut library = Library::default();
+        library.styles.set(TextElem::size, TextSize(Abs::pt(12.0).into()));
+        library.styles.set(TextElem::fill, Paint::Solid(Color::from_u8(r, g, b, a)));
+        Self { library: LazyHash::new(library), fonts: Fonts::defaults() }
+    }
+}
+
+impl World for MathWorld {
+    fn library(&self) -> &LazyHash<Library> { &self.library }
+    fn book(&self) -> &LazyHash<FontBook> { &self.fonts.book }
+    fn main(&self) -> FileId {
+        // World requires an identity; this virtual sentinel is never readable.
+        project_id("math.typ").unwrap()
+    }
+    fn source(&self, _id: FileId) -> FileResult<Source> { Err(FileError::AccessDenied) }
+    fn file(&self, _id: FileId) -> FileResult<Bytes> { Err(FileError::AccessDenied) }
+    fn font(&self, index: usize) -> Option<Font> { self.fonts.font(index) }
+    fn today(&self, _offset: Option<Duration>) -> Option<Datetime> { None }
+}
+
 #[derive(Default)]
 struct Slot {
     previous: Option<Source>,

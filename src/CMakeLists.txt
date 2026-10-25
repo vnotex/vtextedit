@@ -165,6 +165,7 @@ if(VTEXTEDIT_ENABLE_TYPST)
     target_sources(VTextEdit PRIVATE
         include/vtextedit/typstcompiler.h
         include/vtextedit/typsteditorconfig.h
+        include/vtextedit/typstmathrenderer.h
         include/vtextedit/typstruntime.h
         include/vtextedit/vtypsteditor.h
         typsteditor/typstcompiledsnapshot.h
@@ -172,6 +173,7 @@ if(VTEXTEDIT_ENABLE_TYPST)
         typsteditor/typstcompiler.cpp
         typsteditor/typstcompilerbridge.cpp typsteditor/typstcompilerbridge.h
         typsteditor/typsthighlighter.cpp typsteditor/typsthighlighter.h
+        typsteditor/typstmathrenderer.cpp
         typsteditor/typstpreviewhost.cpp typsteditor/typstpreviewhost.h
         typsteditor/typstpreviewpane.cpp typsteditor/typstpreviewpane.h
         typsteditor/typstsourceeditor.cpp typsteditor/typstsourceeditor.h

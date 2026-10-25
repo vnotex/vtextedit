@@ -439,6 +439,26 @@ CJK output requires an installed font covering the characters. Coverage: the con
 `system_fonts_shape_chinese_when_available` glyph test and the deterministic
 `explicit_font_precedence_and_frozen_fallback_survive_reset` regression.
 
+## Isolated Typst Math Fragments
+
+`TypstMathRenderer` borrows the application runtime and accepts one logical request at a
+time. Dollar delimiters belong to the host; pass delimiter-free Typst math. Accepted
+requests complete asynchronously once, idle before `finished`, with owning SVG bytes and
+point dimensions/baseline. Busy calls return false without a completion. Cancellation and
+the 30-second queue-inclusive deadline retire delivery, never interrupt native execution;
+one replacement may wait for the old call to return before its session is replaced.
+
+The stateless `mathSvg` operation uses math-mode evaluation, not document concatenation.
+Its isolated world shares runtime fonts but denies files, packages, dates and document
+introspection. It creates no project or snapshot. Defaults are 12pt and caller RGBA;
+display style changes the equation body, never block placement. Zero paragraph leading
+keeps inline ink inside the intrinsic frame; 1pt transparent padding includes the baseline.
+Source is valid, nonblank, NUL-free UTF-8 up to 64 KiB (Qt normalizes line endings). SVG is
+bounded to 8 MiB, headers to 64 KiB and dimensions to 16384pt; frame images/links fail.
+Baseline is finite but may be outside the viewport. Native status is authoritative over
+provisional replies. Coverage: the four `mathFragments*`/`mathCancellation*`/`mathRendererLifetime`
+tests in `test_typsteditor`, plus native `math::tests`.
+
 ## Typst Raw Code Highlighting
 
 `tools/typst-backend/src/highlight.rs` extracts embedded tokens from literal Raw CST nodes,

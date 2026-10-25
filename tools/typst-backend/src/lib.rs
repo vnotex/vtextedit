@@ -1,6 +1,7 @@
 mod compile;
 mod ffi;
 mod highlight;
+mod math;
 mod preview;
 mod resources;
 mod world;

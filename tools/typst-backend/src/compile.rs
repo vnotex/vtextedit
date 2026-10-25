@@ -48,6 +48,11 @@ impl Session {
 
     pub fn handle(&mut self, request: &Value, send: &mut SendReply<'_>) -> Result<(), String> {
         let op = text(request, "op")?;
+        if op == "mathSvg" {
+            let result = crate::math::render(request).and_then(|(header, svg)| send(header, svg));
+            typst::comemo::evict(10);
+            return result;
+        }
         let epoch = id(request, "epoch")?;
         if op == "initialize" {
             if self.epoch.is_some() { return Err("session is already initialized".into()); }
