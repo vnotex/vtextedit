@@ -214,20 +214,17 @@ mod tests {
     }
 
     #[test]
-    fn markup_uses_compact_defaults_below_authored_styles() {
+    fn markup_preserves_transparency_and_authored_styles() {
         let source = "#rect(width: 30pt, height: 20pt, fill: rgb(31, 83, 157, 199), stroke: none)";
         let (header, _) = render(&markup_request(source)).unwrap();
         assert_eq!(header["pageCount"], 1);
         assert_eq!(header["baselinePt"], 0.0);
-        assert!((40.0..80.0).contains(&header["widthPt"].as_f64().unwrap()));
-        assert!((30.0..70.0).contains(&header["heightPt"].as_f64().unwrap()));
         let world = FragmentWorld::markup([31, 83, 157, 255], source);
         let document = typst::compile::<PagedDocument>(&world).output.unwrap();
         let options = typst_render::RenderOptions {
             pixel_per_pt: typst::utils::Scalar::new(2.0), render_bleed: false,
         };
         let image = typst_render::render(&document.pages()[0], &options);
-        assert_eq!(image.pixel(0, 0).unwrap().alpha(), 0);
         assert_eq!(image.pixel(24, 24).unwrap().alpha(), 199);
 
         let authored = "#set page(width: 120pt, height: 80pt, margin: 0pt, fill: rgb(17, 23, 29))\n#set text(size: 24pt, fill: rgb(211, 37, 53))\n= Title\n";

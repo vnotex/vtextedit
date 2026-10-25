@@ -189,7 +189,7 @@ impl FragmentWorld {
             library.styles.set(PageElem::height, Smart::Auto);
             library.styles.set(PageElem::fill, Smart::Custom(None));
             library.styles.set(PageElem::margin,
-                Smart::Custom(Margin::splat(Some(Smart::Custom(Abs::pt(8.0).into())))));
+                Smart::Custom(Margin::splat(Some(Smart::Custom(Abs::zero().into())))));
         }
         Self { library: LazyHash::new(library), fonts: Fonts::defaults(), main }
     }

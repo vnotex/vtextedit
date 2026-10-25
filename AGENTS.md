@@ -454,7 +454,7 @@ dates or document introspection; its baseline is finite but may be outside the v
 
 `markupSvg` compiles the supplied virtual main source as a full `PagedDocument`, including normal
 introspection and page breaks. It defaults to 12pt/current foreground, auto page dimensions,
-8pt margins and transparent fill, below authored page/text styles. Every page is merged vertically
+zero margins and transparent fill, below authored page/text styles. Every page is merged vertically
 with an 8pt gap; `m_sizePt` includes those gaps and `m_pageCount` includes every page. Only the
 virtual main source is readable: byte/file/package access and dates remain denied. Neither path
 creates project snapshots or disk artifacts; default runtime fonts are shared.
