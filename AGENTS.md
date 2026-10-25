@@ -532,10 +532,13 @@ bundled-font frame/export regressions in `world.rs`.
 
 ## Typst Preview Theme Defaults
 
-`TypstEditorConfig::m_enableThemeStyleInPreview` defaults to true. When enabled, valid
-`m_pdfBackground` and `m_previewForeground` supply default page/text fills for both PDF
-and in-place previews. Invalid colors retain native Typst defaults. The canvas always
-uses `m_pdfBackground`, independently of the flag.
+`TypstEditorConfig::m_enableThemeStyleInPreview` defaults to true. When enabled,
+`getPreviewBackground()` supplies the default page fill for PDF and in-place previews:
+`typst-editor-styles.Text.background-color`, falling back to `editor-styles.Text.background-color`
+from the configured/default text-editor theme, matching the source editor. `m_previewForeground`
+continues to supply the default text fill. Invalid colors retain native Typst defaults.
+The canvas always uses `m_pdfBackground`, independently of the flag and editor background;
+page underlays use the resolved page color only while theme styling is enabled.
 
 Only the Preview bridge sends these colors. The backend installs them in `Library.styles`,
 below authored set/show/constructor styles, without rewriting source or recoloring images.

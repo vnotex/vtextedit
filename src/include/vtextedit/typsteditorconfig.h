@@ -37,12 +37,21 @@ public:
   // sequential preview is not height-capped and scrolls with the source editor.
   qreal m_previewMaxHeight = 480;
   qreal m_initialZoom = 1.0;
-  // Canvas color; also the default page fill when theme styling is enabled.
-  // Invalid leaves native Typst defaults and uses QPalette::Dark for the canvas.
+  // Canvas color, independent of preview page styling.
+  // Invalid uses QPalette::Dark for the canvas.
   QColor m_pdfBackground;
   // Preview-only color defaults. Authored styles win; TypstCompiler exports ignore these.
   bool m_enableThemeStyleInPreview = true;
   QColor m_previewForeground;
+
+  // Match the source editor's sparse Typst Text override, then its base Text style.
+  QColor getPreviewBackground() const {
+    const auto theme = m_textEditorConfig && m_textEditorConfig->m_theme
+                           ? m_textEditorConfig->m_theme
+                           : TextEditorConfig::defaultTheme();
+    const auto background = theme->typstTextStyle().backgroundColor();
+    return background.isValid() ? background : theme->editorStyle(Theme::Text).backgroundColor();
+  }
 };
 
 } // namespace vte

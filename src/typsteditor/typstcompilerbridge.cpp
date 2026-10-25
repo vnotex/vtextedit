@@ -550,7 +550,7 @@ QJsonObject TypstCompilerBridge::configuration() const {
                       QJsonArray{p_color.red(), p_color.green(), p_color.blue(), p_color.alpha()});
       }
     };
-    addColor(QStringLiteral("previewBackground"), m_config.m_pdfBackground);
+    addColor(QStringLiteral("previewBackground"), m_config.getPreviewBackground());
     addColor(QStringLiteral("previewForeground"), m_config.m_previewForeground);
   }
   return config;

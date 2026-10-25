@@ -167,6 +167,7 @@ public:
       : q(p_q), m_maxPdfBytes(qMax(qint64(0), p_config.m_maxPdfBytes)),
         m_maxBytes(qMax(qint64(0), p_config.m_maxCacheBytes)),
         m_maxPixels(qMax(0, p_config.m_maxRasterPixels)), m_background(p_config.m_pdfBackground),
+        m_pageBackground(p_config.getPreviewBackground()),
         m_themeStyleEnabled(p_config.m_enableThemeStyleInPreview),
         m_foreground(p_config.m_previewForeground),
         m_zoom(finiteCoordinate(p_config.m_initialZoom)
@@ -1224,8 +1225,9 @@ public:
       const auto pages = visiblePages(slot.m_layout);
       for (int page : pages) {
         const QRectF rect = slot.m_layout.m_pages.at(page).translated(-slot.m_layout.m_offset);
-        painter.fillRect(rect, m_themeStyleEnabled && m_background.isValid() ? m_background
-                                                                             : QColor(Qt::white));
+        painter.fillRect(rect, m_themeStyleEnabled && m_pageBackground.isValid()
+                                   ? m_pageBackground
+                                   : QColor(Qt::white));
         const int index = bestImageIndex(slot, page);
         if (index >= 0) {
           auto &image = slot.m_images[index];
@@ -1300,6 +1302,7 @@ public:
   qint64 m_maxBytes;
   qint64 m_maxPixels;
   QColor m_background;
+  QColor m_pageBackground;
   bool m_themeStyleEnabled;
   QColor m_foreground;
   std::unique_ptr<PdfSlot> m_displayed;
@@ -1365,6 +1368,7 @@ void TypstPreviewPane::applyConfig(const TypstEditorConfig &p_config) {
   m_d->m_maxBytes = qMax(qint64(0), p_config.m_maxCacheBytes);
   m_d->m_maxPixels = qMax(0, p_config.m_maxRasterPixels);
   m_d->m_background = p_config.m_pdfBackground;
+  m_d->m_pageBackground = p_config.getPreviewBackground();
   m_d->m_themeStyleEnabled = p_config.m_enableThemeStyleInPreview;
   m_d->m_foreground = p_config.m_previewForeground;
   if (m_d->m_queuedPdf.size() > m_d->m_maxPdfBytes) {

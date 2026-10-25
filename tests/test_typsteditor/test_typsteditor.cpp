@@ -2198,6 +2198,17 @@ void TestTypstEditor::previewThemeSwitchAndOptOutPreserveSource() {
   auto config = editorConfig(root.path(), &m_runtime);
   config->m_pdfBackground = QColor(30, 32, 38);
   config->m_previewForeground = QColor(224, 226, 230);
+  const auto setBackground = [&config](int p_step) {
+    const QJsonObject base =
+        p_step == 5 ? QJsonObject() : QJsonObject{{QStringLiteral("background-color"), "#dce7eb"}};
+    const QJsonObject override = p_step >= 4 ? QJsonObject()
+                                             : QJsonObject{{QStringLiteral("background-color"),
+                                                            p_step == 1 ? "#f6f4ee" : "#30343c"}};
+    config->m_textEditorConfig->m_theme = textTheme(base, override);
+  };
+  setBackground(0);
+  const QColor backgrounds[] = {QColor("#30343c"), QColor("#f6f4ee"), QColor(Qt::white),
+                                QColor("#30343c"), QColor("#dce7eb"), QColor(Qt::white)};
   const auto source = QStringLiteral("#set page(width: 320pt, height: 300pt, margin: 20pt)\n"
                                      "#set text(size: 24pt)\nTheme text\n\n$ x^2 + y^2 $\n\n"
                                      "#text(fill: rgb(\"#ef3344\"))[Explicit red]");
@@ -2209,17 +2220,19 @@ void TestTypstEditor::previewThemeSwitchAndOptOutPreserveSource() {
   auto *document = fixture.editor.document();
   document->setModified(false);
   const int undoSteps = document->availableUndoSteps();
-  for (int step = 0; step < 4; ++step) {
+  for (int step = 0; step < 6; ++step) {
     if (step) {
       config = QSharedPointer<TypstEditorConfig>::create(*config);
+      setBackground(step);
       config->m_enableThemeStyleInPreview = step != 2;
       config->m_pdfBackground = step == 1 ? QColor(246, 244, 238) : QColor(30, 32, 38);
-      config->m_previewForeground = step == 1 ? QColor(42, 48, 52) : QColor(224, 226, 230);
+      config->m_previewForeground =
+          step == 1 || step >= 4 ? QColor(42, 48, 52) : QColor(224, 226, 230);
       const int count = published.count();
       fixture.editor.setConfig(config);
       QVERIFY(waitUntil([&]() { return published.count() > count; }));
     }
-    const QColor background = step == 2 ? QColor(Qt::white) : config->m_pdfBackground;
+    const QColor background = backgrounds[step];
     const QColor foreground = step == 2 ? QColor(Qt::black) : config->m_previewForeground;
     QVERIFY(waitUntil(
         [&]() {
@@ -2259,6 +2272,9 @@ void TestTypstEditor::exportsIgnorePreviewTheme() {
   config->m_pdfBackground = QColor(30, 32, 38);
   config->m_previewForeground = QColor(224, 226, 230);
   config->m_enableThemeStyleInPreview = true;
+  config->m_textEditorConfig->m_theme =
+      textTheme({{QStringLiteral("background-color"), "#dce7eb"}},
+                {{QStringLiteral("background-color"), "#30343c"}});
   TypstCompiler compiler(*config);
   TypstCompiler unthemed(*editorConfig(root.path(), &m_runtime));
   QSignalSpy finished(&compiler, &TypstCompiler::finished);
