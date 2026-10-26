@@ -613,10 +613,13 @@ another compile; a failed compile never resurrects the dropped newest snapshot. 
 in-place surface retains its helper ID while its cached displayed frame can reappear, until
 clear or handoff. This finite third document/world increases resident compiler memory; it
 is not covered by the payload budget. Payload caching still shares the existing global
-byte budget. Heap popups retain their source/pane/card parent to preserve logical host
-focus. PDF/card menus use guarded cleanup; the standard source menu clears its scoped
-owner on destruction without deleting twice. No pointers into replaceable geometry survive
-menu execution. Regression coverage: `resourceContext*`, `resourceImageData*`,
+byte budget. Heap popups retain source/pane ancestry to preserve logical host focus.
+In-place menus belong to the source viewport, not the transient card: native menu activation
+can pump a frame-replacement timer, and QWidget deletes its children before emitting
+destroyed. Card retirement closes the menu; scoped cleanup deletes it after exec unwinds.
+PDF/card menus use guarded cleanup; the standard source menu clears its scoped owner on
+destruction without deleting twice. No pointers into replaceable geometry survive menu
+execution. Regression coverage: `resourceContext*`, `resourceImageData*`,
 `resourceIndependentSnapshotRetention`, `resourceInternalLinkNavigation`, `resourceResize*`,
 and `resourceMenusSurviveDeletion` in `tests/test_typsteditor/`.
 
