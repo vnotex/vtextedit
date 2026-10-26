@@ -3215,6 +3215,7 @@ void TestTypstEditor::previewClickPreservesSelectionLinksAndStaleOutput() {
   QTest::mouseClick(viewport, Qt::LeftButton, Qt::NoModifier, point(link.center()));
   QCOMPARE(urls.count(), 1);
   QCOMPARE(urls.first().first().toUrl(), QUrl(QStringLiteral("https://example.org/")));
+  QCOMPARE(urls.first().at(1).toBool(), false);
   QCOMPARE(fixture.edit()->textCursor().position(), 0);
 
   QTest::mouseClick(viewport, Qt::LeftButton, Qt::NoModifier, QPoint(1, 1));
@@ -7088,6 +7089,7 @@ void TestTypstEditor::resourceContextMetadataAndGestures() {
   fixture.editor.openContextLink(alteredLink);
   QCOMPARE(links.count(), 1);
   QCOMPARE(links.first().first().toUrl(), linked.m_linkUrl);
+  QCOMPARE(links.first().at(1).toBool(), true);
   for (const int offset : {source.indexOf(QStringLiteral("// #image")) + 5,
                            source.indexOf(QStringLiteral("`#image")) + 4,
                            source.indexOf(QStringLiteral("Unrelated text")) + 2}) {
@@ -7141,6 +7143,86 @@ void TestTypstEditor::resourceContextMetadataAndGestures() {
   QVERIFY(fixture.editor.isResourceContextValid(readOnly));
   QVERIFY(!readOnly.m_imageResizable);
   QVERIFY(!fixture.editor.resizeImage(readOnly, 192, 0));
+  QCOMPARE(document->toPlainText(), source);
+  QCOMPARE(document->availableUndoSteps(), undoSteps);
+  QVERIFY(!document->isModified());
+}
+
+void TestTypstEditor::resourceLinkActivationOrigins() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  QVERIFY(writeResourceImage(root.filePath(QStringLiteral("picture.png")), Qt::red));
+  QVERIFY(writeFixture(root.filePath(QStringLiteral("target.md")), QByteArray("# Beta\n")));
+  const auto source =
+      shortSource(QStringLiteral("#let destination = \"target\" + \".md#beta\"\n"
+                                 "#link(destination)[#image(\"picture.png\", width: 60pt)]"));
+  const QUrl destination(QStringLiteral("target.md#beta"));
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, false, true);
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  auto *document = fixture.editor.document();
+  document->setModified(false);
+  const int undoSteps = document->availableUndoSteps();
+  QSignalSpy links(&fixture.editor, &VTypstEditor::externalLinkRequested);
+  const auto openFromMenu = [&](const TypstResourceContext &p_context) {
+    fixture.editor.openContextLink(p_context, true);
+  };
+
+  // Host menu actions use a real captured source context and the evaluated URL.
+  const auto sourceLink =
+      sourceResourceAt(fixture, source.indexOf(QStringLiteral("picture.png")) + 2, openFromMenu);
+  QVERIFY(sourceLink.m_linkNavigable);
+  QCOMPARE(sourceLink.m_linkUrl, destination);
+  QCOMPARE(links.count(), 1);
+  QCOMPARE(links.last().at(0).toUrl(), destination);
+  QCOMPARE(links.last().at(1).toBool(), true);
+  links.clear();
+
+  QRect bounds;
+  auto *pane = fixture.pane();
+  QVERIFY(waitUntil(
+      [&]() { return coloredPixels(widgetImage(pane->viewport()), true, &bounds) > 20; }));
+  QSignalSpy mapping(pane, SIGNAL(sourceLocationRequested(quint64, int, QPointF)));
+  for (const auto modifiers : {Qt::NoModifier, Qt::ControlModifier}) {
+    // Plain clicks use the PDF link; Ctrl-clicks exercise compiler hit mapping.
+    QTest::mouseClick(pane->viewport(), Qt::LeftButton, modifiers, bounds.center());
+    QVERIFY(waitUntil([&]() { return links.count() == 1; }));
+    QCOMPARE(links.last().at(0).toUrl(), destination);
+    QCOMPARE(links.last().at(1).toBool(), false);
+    links.clear();
+  }
+  QCOMPARE(mapping.count(), 1);
+  const auto paneLink =
+      resourceMenuAt(fixture.editor, pane->viewport(), bounds.center(), openFromMenu);
+  QCOMPARE(paneLink.m_surface, TypstResourceContext::Surface::Preview);
+  QCOMPARE(paneLink.m_linkUrl, destination);
+  QCOMPARE(links.count(), 1);
+  QCOMPARE(links.last().at(0).toUrl(), destination);
+  QCOMPARE(links.last().at(1).toBool(), true);
+  links.clear();
+
+  fixture.editor.setInplacePreviewEnabled(true);
+  fixture.editor.setLivePreviewEnabled(false);
+  QPoint point;
+  QPointer<QWidget> card;
+  QVERIFY(waitUntil([&]() {
+    card = resourceCard(fixture.editor, true, &point);
+    return !card.isNull();
+  }));
+  for (const auto modifiers : {Qt::NoModifier, Qt::ControlModifier}) {
+    QVERIFY(card);
+    QTest::mouseClick(card, Qt::LeftButton, modifiers, point);
+    QCOMPARE(links.count(), 1);
+    QCOMPARE(links.last().at(0).toUrl(), destination);
+    QCOMPARE(links.last().at(1).toBool(), false);
+    links.clear();
+  }
+  QVERIFY(card);
+  const auto cardLink = resourceMenuAt(fixture.editor, card, point, openFromMenu);
+  QCOMPARE(cardLink.m_surface, TypstResourceContext::Surface::InPlace);
+  QCOMPARE(cardLink.m_linkUrl, destination);
+  QCOMPARE(links.count(), 1);
+  QCOMPARE(links.last().at(0).toUrl(), destination);
+  QCOMPARE(links.last().at(1).toBool(), true);
   QCOMPARE(document->toPlainText(), source);
   QCOMPARE(document->availableUndoSteps(), undoSteps);
   QVERIFY(!document->isModified());
@@ -7565,20 +7647,51 @@ void TestTypstEditor::resourceIndependentSnapshotRetention() {
 void TestTypstEditor::resourceInternalLinkNavigation() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  const auto source = shortSource(
-      QStringLiteral("#link(<target>)[Internal destination]\n#pagebreak()\n= Target <target>"));
+  QVERIFY(writeResourceImage(root.filePath(QStringLiteral("picture.png")), Qt::red));
+  // currentPdfPage() identifies the page at the viewport center. Keep each page
+  // taller than the viewport so returning to page zero cannot report page one.
+  const auto source =
+      QStringLiteral("#set page(width: 320pt, height: 640pt, margin: 16pt)\n") +
+      QStringLiteral("#link(<target>)[#image(\"picture.png\", width: 60pt) Internal destination]\n"
+                     "#pagebreak()\n= Target <target>");
   EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, false, false);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  QSignalSpy external(&fixture.editor, &VTypstEditor::externalLinkRequested);
   const auto context =
-      sourceResourceAt(fixture, source.indexOf(QStringLiteral("Internal destination")) + 2);
+      sourceResourceAt(fixture, source.indexOf(QStringLiteral("Internal destination")) + 2,
+                       [&](const TypstResourceContext &p_context) {
+                         auto altered = p_context;
+                         altered.m_linkPage = 0;
+                         altered.m_linkPoint = QPointF(10000, 10000);
+                         fixture.editor.openContextLink(altered, true);
+                       });
   QVERIFY(context.m_linkIndex >= 0);
   QVERIFY(context.m_linkUrl.isEmpty());
   QCOMPARE(context.m_linkPage, 1);
-  QSignalSpy external(&fixture.editor, &VTypstEditor::externalLinkRequested);
-  auto altered = context;
-  altered.m_linkPage = 0;
-  altered.m_linkPoint = QPointF(10000, 10000);
-  fixture.editor.openContextLink(altered);
+  QVERIFY(waitUntil([&]() {
+    return fixture.editor.isLivePreviewEnabled() && fixture.editor.currentPdfPage() == 1;
+  }));
+  QVERIFY(external.isEmpty());
+
+  fixture.editor.goToPdfPage(0);
+  QRect bounds;
+  QVERIFY(waitUntil([&]() {
+    return fixture.editor.currentPdfPage() == 0 &&
+           coloredPixels(widgetImage(fixture.pane()->viewport()), true, &bounds) > 20;
+  }));
+  QTest::mouseClick(fixture.pane()->viewport(), Qt::LeftButton, Qt::NoModifier, bounds.center());
+  QVERIFY(waitUntil([&]() { return fixture.editor.currentPdfPage() == 1; }));
+  QVERIFY(external.isEmpty());
+
+  fixture.editor.setInplacePreviewEnabled(true);
+  fixture.editor.setLivePreviewEnabled(false);
+  QPoint point;
+  QPointer<QWidget> card;
+  QVERIFY(waitUntil([&]() {
+    card = resourceCard(fixture.editor, true, &point);
+    return !card.isNull();
+  }));
+  QTest::mouseClick(card, Qt::LeftButton, Qt::NoModifier, point);
   QVERIFY(waitUntil([&]() {
     return fixture.editor.isLivePreviewEnabled() && fixture.editor.currentPdfPage() == 1;
   }));

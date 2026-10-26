@@ -117,7 +117,9 @@ public:
     };
     QObject::connect(pane, &TypstPreviewPane::imageActivated, q, activateImage);
     QObject::connect(host, &TypstPreviewHost::imageActivated, q, activateImage);
-    QObject::connect(host, &TypstPreviewHost::linkActivated, q, &VTypstEditor::openContextLink);
+    QObject::connect(
+        host, &TypstPreviewHost::linkActivated, q,
+        [this](const TypstResourceContext &p_context) { q->openContextLink(p_context, false); });
     QObject::connect(host, &TypstPreviewHost::sourceLocationRequested, q,
                      [this](quint64 p_snapshot, int p_page, QPointF p_point) {
                        if (mode == Mode::Edit)
@@ -330,9 +332,9 @@ public:
           pane->flashSourceLocation(p_snapshot, p_page, p_point);
         });
     QObject::connect(pane, &TypstPreviewPane::externalLinkRequested, q,
-                     &VTypstEditor::externalLinkRequested);
+                     [this](const QUrl &p_url) { emit q->externalLinkRequested(p_url, false); });
     QObject::connect(bridge, &TypstCompilerBridge::externalLinkRequested, q,
-                     &VTypstEditor::externalLinkRequested);
+                     [this](const QUrl &p_url) { emit q->externalLinkRequested(p_url, false); });
     QObject::connect(host, &TypstPreviewHost::errorOccurred, q,
                      [this](const QString &p_error) { setStatus(CompileStatus::Error, p_error); });
     QObject::connect(pane, &TypstPreviewPane::errorOccurred, q,
@@ -961,7 +963,7 @@ bool VTypstEditor::resizeImage(const TypstResourceContext &p_context, int p_widt
   return alive && doc;
 }
 
-void VTypstEditor::openContextLink(const TypstResourceContext &p_context) {
+void VTypstEditor::openContextLink(const TypstResourceContext &p_context, bool p_fromContextMenu) {
   if (!d->canNavigateLink(p_context))
     return;
   const auto snapshot = d->resourceSnapshot(p_context);
@@ -969,7 +971,7 @@ void VTypstEditor::openContextLink(const TypstResourceContext &p_context) {
                              ? snapshot->m_sourceLinks[p_context.m_linkIndex].m_link
                              : snapshot->m_links[p_context.m_linkIndex];
   if (!link.m_url.isEmpty()) {
-    emit externalLinkRequested(link.m_url);
+    emit externalLinkRequested(link.m_url, p_fromContextMenu);
   } else if (link.m_targetPage >= 0) {
     const QPointer<VTypstEditor> alive(this);
     if (d->mode == Mode::Edit && !d->livePreviewEnabled)

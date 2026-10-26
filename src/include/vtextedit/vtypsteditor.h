@@ -133,7 +133,9 @@ public:
   bool isResourceContextValid(const TypstResourceContext &p_context, bool p_forEdit = false) const;
   void requestImageData(const TypstResourceContext &p_context, quint64 p_requestId);
   bool resizeImage(const TypstResourceContext &p_context, int p_width, int p_height);
-  void openContextLink(const TypstResourceContext &p_context);
+  // Resolve the captured snapshot, not mutable context URL/page fields. Direct cards
+  // pass false; origin affects host URL routing only, never internal page navigation.
+  void openContextLink(const TypstResourceContext &p_context, bool p_fromContextMenu = true);
 
 signals:
   void modeChanged(vte::VTypstEditor::Mode p_mode);
@@ -151,7 +153,8 @@ signals:
   // Imported-file navigation is delegated to the host. Offsets are LF/UTF-16, half-open.
   void sourceLocationRequested(const QString &p_file, int p_start, int p_end);
   // The host applies its URL opening/security policy; the editor never launches URLs.
-  void externalLinkRequested(const QUrl &p_url);
+  // Menu origin is explicit; direct pane, card and compiler navigation report false.
+  void externalLinkRequested(const QUrl &p_url, bool p_fromContextMenu);
   void resourceContextMenuRequested(const vte::TypstResourceContext &p_context, QMenu *p_menu);
   void imageActivated(const vte::TypstResourceContext &p_context);
   void imageDataReady(quint64 p_requestId, const QByteArray &p_data, const QString &p_mime,

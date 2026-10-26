@@ -141,6 +141,7 @@ private slots:
   void documentResetInvalidationCanDestroyEditor();
   void repeatedCloseDuringPendingOutput();
   void resourceContextMetadataAndGestures();
+  void resourceLinkActivationOrigins();
   void resourceImageDataRetentionAndCancellation();
   void resourceImageDataBoundsAndGeneratedPixels();
   void resourceIndependentSnapshotRetention();
