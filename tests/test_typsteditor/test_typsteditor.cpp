@@ -12,6 +12,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFontDatabase>
+#include <QFontInfo>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -336,6 +337,8 @@ public:
     editor.setMode(p_mode);
     editor.resize(1000, 650);
     editor.show();
+    editor.activateWindow();
+    QApplication::setActiveWindow(&editor);
   }
   QAbstractScrollArea *pane() const {
     return editor.findChild<QAbstractScrollArea *>(QStringLiteral("typstPdf"));
@@ -1677,19 +1680,6 @@ void TestTypstEditor::markupFragmentsRenderDocument() {
     return qvariant_cast<TypstFragmentRenderer::Result>(completed.first().first());
   };
 
-  const auto compact = render(
-      QStringLiteral("#rect(width: 30pt, height: 20pt, fill: rgb(31, 83, 157), stroke: none)"));
-  QVERIFY2(compact.isSuccess(), qPrintable(compact.m_error));
-  QCOMPARE(compact.m_pageCount, 1);
-  QCOMPARE(compact.m_baselinePt, qreal(0));
-  QVERIFY(compact.m_sizePt.width() >= 46 && compact.m_sizePt.width() < 80);
-  QVERIFY(compact.m_sizePt.height() >= 36 && compact.m_sizePt.height() < 70);
-  auto image = mathFragmentImage(compact);
-  QCOMPARE(image.pixelColor(0, 0).alpha(), 0);
-  QCOMPARE(image.pixelColor(24, 48).alpha(), 0); // Default 8pt left margin.
-  QCOMPARE(image.pixelColor(48, 48), foreground);
-  QVERIFY(pixelsWithColor(image, foreground) > 8000);
-
   const auto source =
       QStringLiteral("#set page(width: 180pt, height: 180pt, margin: 8pt)\n"
                      "#show strong: it => text(fill: rgb(211, 37, 53), it)\n"
@@ -1708,7 +1698,7 @@ void TestTypstEditor::markupFragmentsRenderDocument() {
   QSvgRenderer svg(document.m_svg);
   QVERIFY(svg.isValid());
   QCOMPARE(svg.viewBoxF(), QRectF(0, 0, 180, 268));
-  image = mathFragmentImage(document);
+  auto image = mathFragmentImage(document);
   QCOMPARE(image.size(), QSize(720, 1072));
   const auto first = image.copy(0, 0, 720, 720);
   const auto second = image.copy(0, 752, 400, 320);
@@ -2355,10 +2345,11 @@ void TestTypstEditor::textStyleOverridesMergeWithoutSharedMutation() {
     auto *document = fixture.editor.document();
     const int position = source.indexOf(QStringLiteral("Inherited"));
     const auto verifySource = [&]() {
-      QCOMPARE(fixture.edit()->font().family(),
-               override.value(QStringLiteral("font-family")).toString() == otherFamily
-                   ? otherFamily
-                   : baseFamily);
+      const auto requestedFamily =
+          override.value(QStringLiteral("font-family")).toString() == otherFamily ? otherFamily
+                                                                                  : baseFamily;
+      QCOMPARE(QFontInfo(fixture.edit()->font()).family(),
+               QFontInfo(QFont(requestedFamily)).family());
       QCOMPARE(fixture.edit()->font().pointSize(),
                override.value(QStringLiteral("font-size")).toInt() > 0 ? 19 : 11);
       for (const auto &entry :
@@ -2370,7 +2361,7 @@ void TestTypstEditor::textStyleOverridesMergeWithoutSharedMutation() {
             QColor(override.value(entry.second).toString(base.value(entry.second).toString())));
       }
       const auto format = syntaxFormatAt(document, position);
-      QCOMPARE(format.fontFamily(), fixture.edit()->font().family());
+      QCOMPARE(QFontInfo(format.font()).family(), QFontInfo(fixture.edit()->font()).family());
       QCOMPARE(format.foreground().color(), fixture.edit()->palette().color(QPalette::Text));
       const QColor background(
           override.value(QStringLiteral("background-color"))
@@ -2397,7 +2388,8 @@ void TestTypstEditor::textStyleOverridesMergeWithoutSharedMutation() {
                          QSharedPointer<TextEditorParameters>::create());
     ordinary.resize(600, 300);
     ordinary.show();
-    QCOMPARE(ordinary.getTextEdit()->font().family(), baseFamily);
+    QCOMPARE(QFontInfo(ordinary.getTextEdit()->font()).family(),
+             QFontInfo(QFont(baseFamily)).family());
     QCOMPARE(ordinary.getTextEdit()->font().pointSize(), 11);
     QCOMPARE(ordinary.getTextEdit()->palette().color(QPalette::Text), QColor("#223344"));
     const auto painted = widgetImage(ordinary.getTextEdit()->viewport());
@@ -4825,7 +4817,7 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
   auto config = editorConfig(root.path(), &m_runtime);
   config->m_previewMaxHeight = 160;
   const auto source = QStringLiteral("#set text(size: 24pt)\n#for color in (rgb(\"#ff0000\"), "
-                                     "rgb(\"#0000ff\")) { text(fill: color)[$x$] } $y$\nAfter");
+                                     "rgb(\"#0000ff\")) { box(fill: color)[$x$] } $y$\nAfter");
   EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, config, true,
                         false);
   const auto repeated = [&]() -> QWidget * {
@@ -4852,9 +4844,14 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
     return fixture.edit()->cursorRect(cursor);
   };
   const auto scrollToSource = [&](int p_position) {
+    QTextCursor cursor(fixture.editor.document());
+    cursor.setPosition(p_position);
+    fixture.edit()->setTextCursor(cursor);
     auto *bar = fixture.edit()->horizontalScrollBar();
-    bar->setValue(bar->value() + sourceRect(p_position).left() -
-                  qRound(fixture.editor.document()->documentMargin()));
+    const int requested = bar->value() + sourceRect(p_position).left() -
+                          qRound(fixture.editor.document()->documentMargin());
+    bar->setValue(requested);
+    return requested;
   };
   const int equationStart = source.indexOf(QStringLiteral("$x$"));
   QVERIFY(sourceRect(equationStart).left() > fixture.editor.document()->documentMargin() + 10);
@@ -4884,6 +4881,7 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
   QVERIFY(!repeated()->geometry().intersects(inlineCard()->geometry()));
   QVERIFY(std::abs(repeated()->geometry().left() - sourceRect(equationStart).left()) <= 1);
 
+  const int sourcePrefixWidth = sourceRect(equationStart).left();
   const int fullRowWidth = repeated()->width();
   const int spanWidth = sourceRect(equationStart + 3).left() - sourceRect(equationStart).left();
   const int chromeWidth = fixture.editor.width() - fixture.edit()->viewport()->width();
@@ -4894,17 +4892,31 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
   fixture.editor.resize(chromeWidth + sourceRect(equationStart).left() + remaining +
                             qRound(fixture.editor.document()->documentMargin()) + 4,
                         650);
-  QVERIFY(waitUntil([&]() {
+  const bool fitted = waitUntil([&]() {
     return repeated() && repeated()->width() < fullRowWidth &&
            coloredPixels(widgetImage(repeated()), false) > 10;
-  }));
+  });
+  QString fitState;
+  if (!fitted) {
+    QDebug state(&fitState);
+    state << "editor/viewport/full/span:" << fixture.editor.width()
+          << fixture.edit()->viewport()->width() << fullRowWidth << spanWidth
+          << "source:" << sourceRect(equationStart);
+    for (auto *card : fixture.editor.findChildren<QWidget *>(QStringLiteral("typstPreviewCard"))) {
+      const auto image = widgetImage(card);
+      state << "card/visible/red/blue:" << card->geometry() << card->isVisible()
+            << coloredPixels(image, true) << coloredPixels(image, false);
+    }
+  }
+  QVERIFY2(fitted, qPrintable(fitState));
   QVERIFY(std::abs(repeated()->geometry().left() - sourceRect(equationStart).left()) <= 1);
   QVERIFY(repeated()->width() > spanWidth);
   QVERIFY(repeated()->geometry().right() < fixture.edit()->viewport()->width());
 
-  // The claimed source is mid-line on a soft-wrapped continuation, not at its origin.
+  // Leave a substantial prefix on the continuation at any native font DPI.
+  // A fixed window width can wrap directly at the equation instead.
   fixture.edit()->setWordWrapMode(wrapMode);
-  fixture.editor.resize(450, 650);
+  fixture.editor.resize(chromeWidth + sourcePrefixWidth * 3 / 4, 650);
   QVERIFY(waitUntil([&]() {
     const auto block = fixture.editor.document()->findBlock(equationStart);
     const auto line = block.layout()->lineForTextPosition(equationStart - block.position());
@@ -4932,15 +4944,41 @@ void TestTypstEditor::occurrencesAndSplitPartsRenderSequentially() {
   fixture.editor.setFileOverlay(QStringLiteral("main.typ"), wide);
   QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
   const int wideStart = wide.indexOf(QStringLiteral("$x+"));
-  QVERIFY(waitUntil([&]() {
-    const auto doc = fixture.editor.document();
-    const auto block = doc->findBlock(wideStart);
-    return doc->documentLayout()->documentSize().width() >
-           block.layout()->lineAt(0).naturalTextWidth() + 2 * doc->documentMargin();
-  }));
-  scrollToSource(wideStart);
-  QVERIFY(waitUntil(
-      [&]() { return repeated() && coloredPixels(widgetImage(repeated()), false) > 10; }));
+  auto *wideScroll = fixture.edit()->horizontalScrollBar();
+  const auto rasterState = [&]() {
+    QString state;
+    QDebug debug(&state);
+    debug << "scroll value/max:" << wideScroll->value() << wideScroll->maximum()
+          << "cursor/source:" << fixture.edit()->textCursor().position() << sourceRect(wideStart)
+          << "viewport/document:" << fixture.edit()->viewport()->size()
+          << fixture.editor.document()->documentLayout()->documentSize();
+    for (auto *card : fixture.editor.findChildren<QWidget *>(QStringLiteral("typstPreviewCard"))) {
+      const auto image = widgetImage(card);
+      debug << "card geometry/visible/red/blue:" << card->geometry() << card->isVisible()
+            << coloredPixels(image, true) << coloredPixels(image, false);
+    }
+    return state;
+  };
+  QVERIFY2(waitUntil([&]() {
+             const auto doc = fixture.editor.document();
+             const auto block = doc->findBlock(wideStart);
+             return wideScroll->maximum() > 0 &&
+                    doc->documentLayout()->documentSize().width() >
+                        block.layout()->lineAt(0).naturalTextWidth() + 2 * doc->documentMargin();
+           }),
+           qPrintable(rasterState()));
+  const int scrollBefore = wideScroll->value();
+  const int maximumBefore = wideScroll->maximum();
+  const int scrollRequested = scrollToSource(wideStart);
+  const int scrollAfter = wideScroll->value();
+  QVERIFY2(
+      waitUntil([&]() { return repeated() && coloredPixels(widgetImage(repeated()), false) > 10; }),
+      qPrintable(QStringLiteral("scroll before/max/requested/after: %1 %2 %3 %4; %5")
+                     .arg(scrollBefore)
+                     .arg(maximumBefore)
+                     .arg(scrollRequested)
+                     .arg(scrollAfter)
+                     .arg(rasterState())));
   const auto wideSize = repeated()->size();
   const qreal wideDocumentWidth =
       fixture.editor.document()->documentLayout()->documentSize().width();
@@ -6162,22 +6200,36 @@ void TestTypstEditor::rasterHandoffTransitions() {
   QFETCH(int, transition);
   QTemporaryDir root;
   QVERIFY(root.isValid());
-  const auto source = shortSource(QStringLiteral("#set text(fill: red, size: 24pt)\n$ x $\nAfter"));
+  // Filled math crops remain measurable when native previews downscale small glyphs.
+  const auto source =
+      shortSource(QStringLiteral("#set text(size: 24pt)\n#box(fill: red)[$ x $]\nAfter"));
   const auto replacement = shortSource(QStringLiteral(
       "#set text(fill: rgb(\"#0000ff\"), size: 24pt)\n$ Omega^3 + Omega^2 + Omega $\nAfter"));
-  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, true, false);
+  EditorFixture fixture(m_runtime, root.path(), QString(), VTypstEditor::Mode::Edit, {}, true,
+                        false);
   TypstRasterObserver observer;
-  QVERIFY(observeRasters(&fixture.editor, &observer));
   quint64 baselineEpoch = 0;
   quint64 baselineSnapshot = 0;
   observer.requested = [&](quint64 p_epoch, quint64 p_snapshot, int, qreal) {
     baselineEpoch = p_epoch;
     baselineSnapshot = p_snapshot;
   };
-  QVERIFY2(waitUntil([&]() {
-             return baselineSnapshot && previewHasOnlyColor(previewImages(fixture.editor), true);
-           }),
-           qPrintable(fixture.editor.compileMessage()));
+  // Native show/activation can pump events: subscribe before admitting the source.
+  QVERIFY(observeRasters(&fixture.editor, &observer));
+  fixture.editor.setFileOverlay(QStringLiteral("main.typ"), source);
+  const bool baselineReady = waitUntil([&]() {
+    return baselineSnapshot && previewHasOnlyColor(previewImages(fixture.editor), true);
+  });
+  QString baselineState;
+  if (!baselineReady) {
+    QDebug state(&baselineState);
+    state << fixture.editor.compileMessage() << "epoch/snapshot:" << baselineEpoch
+          << baselineSnapshot;
+    for (const auto &image : previewImages(fixture.editor))
+      state << "card/red/blue:" << image.size() << coloredPixels(image, true)
+            << coloredPixels(image, false);
+  }
+  QVERIFY2(baselineReady, qPrintable(baselineState));
   const auto lastGood = previewImages(fixture.editor);
   auto *document = fixture.editor.document();
   const auto *paneMeta = fixture.pane()->metaObject();

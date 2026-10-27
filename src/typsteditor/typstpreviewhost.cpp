@@ -244,7 +244,9 @@ protected:
     }
     const QPointer<PreviewCard> alive(this);
     const QPointer<TypstPreviewHost> host(m_host);
-    const QPointer<QMenu> menu(new QMenu(this));
+    // Frame replacement may run inside native menu activation. Keep the popup
+    // alive until exec() unwinds, but close it when its card is destroyed.
+    const QPointer<QMenu> menu(new QMenu(parentWidget()));
     const auto cleanup = qScopeGuard([menu]() { delete menu.data(); });
     connect(host, &QObject::destroyed, menu, &QMenu::close);
     connect(this, &QObject::destroyed, menu, &QMenu::close);

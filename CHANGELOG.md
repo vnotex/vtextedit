@@ -21,6 +21,7 @@
 
 ### CI fixes
 
+- Remove obsolete implicit-margin expectations from markup fragment tests after default margins were removed; retain authored-layout and rendering checks
 - Make the Typst preview shrink test independent of word-boundary wrapping and wait for
   queued card replacement before testing stale-link menus and double-clicks.
 

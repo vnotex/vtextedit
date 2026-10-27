@@ -650,10 +650,13 @@ another compile; a failed compile never resurrects the dropped newest snapshot. 
 in-place surface retains its helper ID while its cached displayed frame can reappear, until
 clear or handoff. This finite third document/world increases resident compiler memory; it
 is not covered by the payload budget. Payload caching still shares the existing global
-byte budget. Heap popups retain their source/pane/card parent to preserve logical host
-focus. PDF/card menus use guarded cleanup; the standard source menu clears its scoped
-owner on destruction without deleting twice. No pointers into replaceable geometry survive
-menu execution. Regression coverage: `resourceContext*`, `resourceImageData*`,
+byte budget. Heap popups retain source/pane ancestry to preserve logical host focus.
+In-place menus belong to the source viewport, not the transient card: native menu activation
+can pump a frame-replacement timer, and QWidget deletes its children before emitting
+destroyed. Card retirement closes the menu; scoped cleanup deletes it after exec unwinds.
+PDF/card menus use guarded cleanup; the standard source menu clears its scoped owner on
+destruction without deleting twice. No pointers into replaceable geometry survive menu
+execution. Regression coverage: `resourceContext*`, `resourceImageData*`,
 `resourceIndependentSnapshotRetention`, `resourceInternalLinkNavigation`, `resourceResize*`,
 and `resourceMenusSurviveDeletion` in `tests/test_typsteditor/`.
 
@@ -676,6 +679,25 @@ the `vtextedit` translator with its chosen `QLocale` before constructing editors
 * Tests live in `tests/test_<name>/` with their own `CMakeLists.txt`
 * Each test compiles needed source files directly (no library dependency) with `VTEXTEDIT_STATIC_DEFINE`
 * Shared test utilities in `tests/utils/`
+
+Native editor fixtures must establish Qt's active top-level window after showing it;
+`activateWindow()` alone depends on a window manager that bare Xvfb does not provide.
+Compare configured and rendered font families through `QFontInfo`, not raw generic-family
+labels: Qt's stylesheet font can capitalize an equivalent alias differently from the database.
+After replacing source, raster fixtures must place the text cursor at the observed source before
+aligning horizontal scroll; deferred Qt caret visibility can otherwise rewind the viewport to
+its old cursor and clip an already-rendered preview. When replacing with overwide source,
+wait for the horizontal scrollbar's nonzero range before alignment: document layout width
+alone does not establish that the scrollbar can accept the requested offset.
+Raster-request observers and their callbacks must be installed before admitting the source
+whose first request they assert: native show/activation can pump events inside fixture
+construction. A current preview does not prove a late subscriber saw its startup request.
+Keep epoch/snapshot and actual card geometry/color counts in timeout diagnostics; do not
+replace raster assertions with the compiler's up-to-date message.
+Color-presence fixtures use filled math crops, not sparse glyph masks that disappear below
+pixel-count assertions when downscaled at native 72-DPI geometry. Keep the color/ordering/
+clipping assertions; derive soft-wrap setup from measured source width instead of a fixed
+window width that can put the equation at a wrap boundary on another font/DPI.
 
 ## Architecture
 
