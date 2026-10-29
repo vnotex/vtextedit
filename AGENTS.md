@@ -7,7 +7,7 @@
 * **Format**: Use `.clang-format` (2-space indent, 100-column limit, `PointerAlignment: Right`, `BreakBeforeBraces: Attach`). A pre-commit hook at `scripts/pre-commit` auto-formats staged `.cpp/.h` files (excludes `libs/`)
 * **Run All Tests**: `cd build && ctest` (after building)
 * **Run Single Test**: `cd build && ctest -R test_textfolding` (pattern matching)
-* **Tests are enabled by default** — `add_subdirectory(tests)` is present in root `CMakeLists.txt`
+* **Standalone tests default to ON** via `VTEXTEDIT_BUILD_TESTS`; configure with `-DVTEXTEDIT_BUILD_TESTS=OFF` to omit test targets. When bundled by VNote, this option follows `VNOTE_BUILD_TESTS` (default OFF).
 * **Test targets**: `test_textfolding`, `test_utils`
 
 ## Checked-In Perl-Generated Syntax Definitions
