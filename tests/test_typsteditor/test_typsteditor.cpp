@@ -2028,6 +2028,100 @@ void TestTypstEditor::deadlineRetryKeepsDispatchIdentityUntilCompletion() {
   delivery->removeEventFilter(&observer);
 }
 
+void TestTypstEditor::memoryOnlyCompilerRendersAndRejectsProjectReads() {
+  auto config = editorConfig(QString(), &m_runtime);
+  config->m_memoryOnly = true;
+  TypstCompiler compiler(*config);
+  QSignalSpy completed(&compiler, &TypstCompiler::finished);
+  const auto source =
+      QStringLiteral("#set page(width: 80pt, height: 60pt, margin: 0pt)\n"
+                     "#rect(width: 40pt, height: 30pt, fill: rgb(0, 255, 0), stroke: none)");
+  QVERIFY(compiler.compileToBitmap(source));
+  QVERIFY(waitUntil([&] { return completed.count() == 1; }));
+  const auto rendered = qvariant_cast<TypstCompiler::Result>(completed.first().first());
+  QVERIFY2(rendered.isSuccess(), qPrintable(rendered.m_error));
+  QCOMPARE(rendered.m_bitmapPages.size(), 1);
+  QCOMPARE(rendered.m_bitmapPages.first().size(), QSize(80, 60));
+  QCOMPARE(rendered.m_bitmapPages.first().pixelColor(10, 10), QColor(Qt::green));
+
+  completed.clear();
+  QVERIFY(compiler.compileToSvg(QStringLiteral("#read(\"CMakeCache.txt\")")));
+  QVERIFY(waitUntil([&] { return completed.count() == 1; }));
+  const auto denied = qvariant_cast<TypstCompiler::Result>(completed.first().first());
+  QVERIFY(!denied.isSuccess());
+  QVERIFY(denied.m_svgPages.isEmpty());
+  QVERIFY(denied.m_diagnostics.join(QLatin1Char('\n')).contains(QStringLiteral("access denied")));
+
+  completed.clear();
+  QVERIFY(compiler.compileToSvg(source));
+  QVERIFY(waitUntil([&] { return completed.count() == 1; }));
+  const auto recovered = qvariant_cast<TypstCompiler::Result>(completed.first().first());
+  QVERIFY2(recovered.isSuccess(), qPrintable(recovered.m_error));
+  QCOMPARE(recovered.m_svgPages.size(), 1);
+  QVERIFY(recovered.m_svgPages.first().contains("<svg"));
+}
+
+void TestTypstEditor::memoryOnlyEditorOverlayAndRootedTransition() {
+  auto config = editorConfig(QString(), &m_runtime);
+  config->m_memoryOnly = true;
+  const auto source =
+      QStringLiteral("#set page(width: 320pt, height: 640pt, margin: 16pt)\n"
+                     "= Memory heading\n#link(\"https://example.test/memory\")[Network]\n"
+                     "#link(<destination>)[Internal destination]\n$ x^2 $\n"
+                     "#pagebreak()\n= Destination <destination>");
+  EditorFixture fixture(m_runtime, QString(), source, VTypstEditor::Mode::Edit, config, true, true);
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  QVERIFY(fixture.editor.getConfig().m_projectRoot.isEmpty());
+  QCOMPARE(fixture.editor.activeFile(), QStringLiteral("main.typ"));
+  QVERIFY(waitUntil([&] { return fixture.editor.pdfPageCount() == 2; }));
+  QVERIFY(fixture.selectPage().contains(QStringLiteral("Memory heading")));
+  fixture.clearSelection();
+  QVERIFY(waitUntil([&] { return !previewImages(fixture.editor).isEmpty(); }));
+
+  QSignalSpy external(&fixture.editor, &VTypstEditor::externalLinkRequested);
+  const auto network = sourceResourceAt(fixture, source.indexOf(QStringLiteral("Network")) + 2);
+  QVERIFY(network.m_linkNavigable);
+  fixture.editor.openContextLink(network);
+  QCOMPARE(external.count(), 1);
+  QCOMPARE(external.first().first().toUrl(), QUrl(QStringLiteral("https://example.test/memory")));
+  const auto internal =
+      sourceResourceAt(fixture, source.indexOf(QStringLiteral("Internal destination")) + 2);
+  QVERIFY(internal.m_linkNavigable);
+  fixture.editor.openContextLink(internal);
+  QVERIFY(waitUntil([&] { return fixture.editor.currentPdfPage() == 1; }));
+  QCOMPARE(external.count(), 1);
+
+  fixture.editor.setProject(QString(), QStringLiteral("main.typ"));
+  QVERIFY(fixture.editor.getConfig().m_projectRoot.isEmpty());
+  fixture.editor.setConfig(config);
+  QVERIFY(fixture.editor.getConfig().m_projectRoot.isEmpty());
+  QCOMPARE(fixture.editor.document()->toPlainText(), source);
+
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  QFile imported(root.filePath(QStringLiteral("import.typ")));
+  QVERIFY(imported.open(QIODevice::WriteOnly));
+  QVERIFY(imported.write("= Rooted import") > 0);
+  imported.close();
+  auto rooted = editorConfig(root.path(), &m_runtime);
+  fixture.editor.resetForNewDocument();
+  fixture.editor.setConfig(rooted);
+  fixture.editor.setActiveFile(QStringLiteral("main.typ"));
+  fixture.editor.setFileOverlay(QStringLiteral("main.typ"),
+                                shortSource(QStringLiteral("#include \"import.typ\"")));
+  fixture.editor.finishDocumentReset();
+  QVERIFY2(fixture.ready(), qPrintable(fixture.editor.compileMessage()));
+  QVERIFY(waitUntil([&] { return fixture.editor.pdfPageCount() == 1; }));
+  QVERIFY(fixture.selectPage().contains(QStringLiteral("Rooted import")));
+  fixture.clearSelection();
+  fixture.editor.setConfig(config);
+  QVERIFY(waitUntil(
+      [&] { return fixture.editor.compileStatus() == VTypstEditor::CompileStatus::Error; }));
+  QVERIFY(fixture.editor.diagnostics()
+              .join(QLatin1Char('\n'))
+              .contains(QStringLiteral("access denied")));
+}
+
 void TestTypstEditor::compilerGeometryAndScale() {
   QTemporaryDir root;
   QVERIFY(root.isValid());

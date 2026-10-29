@@ -20,7 +20,9 @@ public:
 
   Private(TypstCompiler *p_owner, const TypstEditorConfig &p_config)
       : q(p_owner), m_config(p_config), m_bridge(nullptr, TypstCompilerBridge::Mode::Export) {
-    m_config.m_projectRoot = QDir(m_config.m_projectRoot).absolutePath();
+    if (!m_config.m_memoryOnly || !m_config.m_projectRoot.isEmpty()) {
+      m_config.m_projectRoot = QDir(m_config.m_projectRoot).absolutePath();
+    }
     QObject::connect(&m_bridge, &TypstCompilerBridge::diagnosticsReady, q,
                      [this](const QVector<TypstDiagnostic> &p_diagnostics) {
                        if (!m_busy || m_finishing) {

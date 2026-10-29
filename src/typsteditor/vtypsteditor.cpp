@@ -29,6 +29,10 @@
 using namespace vte;
 
 namespace {
+QString normalizedRoot(const QString &p_root, bool p_memoryOnly) {
+  return p_memoryOnly && p_root.isEmpty() ? QString() : QDir(p_root).absolutePath();
+}
+
 QString normalizedFile(const QString &p_file) {
   return QDir::cleanPath(QDir::fromNativeSeparators(p_file));
 }
@@ -361,7 +365,7 @@ public:
   }
 
   void normalizeConfig() {
-    config->m_projectRoot = QDir(config->m_projectRoot).absolutePath();
+    config->m_projectRoot = normalizedRoot(config->m_projectRoot, config->m_memoryOnly);
     config->m_mainFile = normalizedFile(config->m_mainFile);
     if (!config->m_textEditorConfig) {
       config->m_textEditorConfig = QSharedPointer<TextEditorConfig>::create();
@@ -728,7 +732,8 @@ void VTypstEditor::setConfig(const QSharedPointer<TypstEditorConfig> &p_config) 
   if (!p_config) {
     return;
   }
-  if (d->config->m_projectRoot != QDir(p_config->m_projectRoot).absolutePath() ||
+  if (d->config->m_memoryOnly != p_config->m_memoryOnly ||
+      d->config->m_projectRoot != normalizedRoot(p_config->m_projectRoot, p_config->m_memoryOnly) ||
       d->config->m_mainFile != normalizedFile(p_config->m_mainFile)) {
     d->host->clear();
     d->source->typstHighlighter()->invalidate();
@@ -793,7 +798,7 @@ void VTypstEditor::finishDocumentReset() {
 }
 
 void VTypstEditor::setProject(const QString &p_root, const QString &p_mainFile) {
-  const auto root = QDir(p_root).absolutePath();
+  const auto root = normalizedRoot(p_root, d->config->m_memoryOnly);
   const auto mainFile = normalizedFile(p_mainFile);
   if (d->config->m_projectRoot != root || d->config->m_mainFile != mainFile) {
     d->host->clear();

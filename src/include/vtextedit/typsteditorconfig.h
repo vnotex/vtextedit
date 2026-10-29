@@ -23,6 +23,8 @@ public:
   // Application-owned; must outlive every editor/compiler using this configuration.
   // A missing or stopped runtime leaves source editing available without compilation.
   TypstRuntime *m_runtime = nullptr;
+  // Memory-only projects use overlays, never project filesystem reads or a CWD root.
+  bool m_memoryOnly = false;
   QString m_projectRoot;
   QString m_mainFile = QStringLiteral("main.typ");
   QStringList m_fontPaths;

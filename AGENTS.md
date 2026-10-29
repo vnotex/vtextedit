@@ -410,6 +410,16 @@ is no in-editor route back to pipe syntax.
 
 ## Typst Native Runtime
 
+`TypstEditorConfig::m_memoryOnly` explicitly selects an overlay-only project. Its default is
+false, preserving rooted file projects. In memory-only mode an empty project root remains
+empty through editor/compiler/bridge configuration; Rust `memoryOnly` denies project-file
+resolution before filesystem access and compiles the supplied overlays. No cwd fallback or
+temporary document is used. Configured fonts/packages retain their existing policies.
+Hosts with an explicit resource directory use normal rooted mode while supplying the main
+body as an overlay. Source/preview navigation stays available without filesystem insertion
+capabilities. Shared Markdown relative URL resolution also rejects an empty base rather than
+probing cwd; explicit absolute/QRC/remote URLs keep their normal semantics.
+
 `TypstRuntime` is application-owned and explicitly injected through
 `TypstEditorConfig::m_runtime`; construct it after the Qt application and before consumers.
 The Rust cdylib is directly linked through C ABI 1, with opaque lane-confined sessions

@@ -72,6 +72,8 @@ private slots:
   void markupFragmentsFailClosed();
   void fragmentKindsCancelAndReplace_data();
   void fragmentKindsCancelAndReplace();
+  void memoryOnlyCompilerRendersAndRejectsProjectReads();
+  void memoryOnlyEditorOverlayAndRootedTransition();
   void compilerGeometryAndScale();
   void compilerBitmapOutlivesRuntime();
   void previewThemeDefaultsRespectAuthoredStyles();

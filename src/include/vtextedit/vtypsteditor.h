@@ -96,6 +96,7 @@ public:
   // Call only after the incoming project, active file and validated source are installed.
   // An unsuccessful source load must leave the reset unfinished. No-op outside a reset.
   void finishDocumentReset();
+  // Preserves the configured memory-only policy; use setConfig() to change that policy.
   void setProject(const QString &p_root, const QString &p_mainFile);
   QString activeFile() const;
   // Changes this buffer's identity, not its contents. The host supplies the new text.

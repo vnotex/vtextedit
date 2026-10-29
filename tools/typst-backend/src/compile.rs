@@ -599,6 +599,35 @@ mod tests {
     }
 
     #[test]
+    fn memory_only_overlay_renders_and_project_reads_are_denied() {
+        let mut session = Session::default();
+        let config = json!({"memoryOnly":true,"projectRoot":"","mainFile":"main.typ"});
+        let mut initialize = request("initialize");
+        initialize["config"] = config.clone();
+        session.handle(&initialize, &mut |_, _| Ok(())).unwrap();
+        let source = "#set page(width:80pt,height:60pt,margin:0pt)\n#rect(width:40pt,height:30pt,fill:rgb(0,255,0),stroke:none)";
+        let mut responses = Vec::new();
+        session.handle(&compile_request(&config, source, json!([]), 1), &mut |v, _| { responses.push(v); Ok(()) }).unwrap();
+        let snapshot = responses[1]["snapshot"].as_u64().unwrap();
+        assert_eq!(responses[1]["diagnostics"], json!([]));
+        assert_eq!(session.dependencies(), json!([]));
+        let mut raster = request("raster");
+        raster["snapshot"] = json!(snapshot); raster["page"] = json!(0); raster["scale"] = json!(1);
+        let mut image = Bytes::new([]);
+        session.handle(&raster, &mut |_, bytes| { image = bytes; Ok(()) }).unwrap();
+        assert_eq!(image.len(), 80 * 60 * 4);
+        assert_eq!(&image[(10 * 80 + 10) * 4..(10 * 80 + 10) * 4 + 4], &[0, 255, 0, 255]);
+        let mut pdf = request("pdf"); pdf["snapshot"] = json!(snapshot);
+        session.handle(&pdf, &mut |_, bytes| { assert!(bytes.starts_with(b"%PDF-")); Ok(()) }).unwrap();
+        responses.clear();
+        session.handle(&compile_request(&config, "#read(\"Cargo.toml\")", json!([snapshot]), 2), &mut |v, _| { responses.push(v); Ok(()) }).unwrap();
+        assert!(responses[1].get("snapshot").is_none());
+        assert!(responses[1]["diagnostics"].as_array().unwrap().iter().any(|d|
+            d["severity"] == "error" && d["message"].as_str().unwrap().contains("access denied")));
+        assert_eq!(session.dependencies(), json!([]));
+    }
+
+    #[test]
     fn raw_highlights_survive_evaluation_errors() {
         let (mut session, config) = configured();
         let text = "é😀\n```rust\n/// documentation\nfn main() {\n  let s = \"é😀\";\n  // comment\n  if true { let n = 42; let hex = 0xff; let f = 1.5; }\n}\n```\n#missing_name";

@@ -526,7 +526,10 @@ void TypstCompilerBridge::start() {
 
 QJsonObject TypstCompilerBridge::configuration() const {
   QJsonObject config{
-      {QStringLiteral("projectRoot"), QDir(m_config.m_projectRoot).absolutePath()},
+      {QStringLiteral("memoryOnly"), m_config.m_memoryOnly},
+      {QStringLiteral("projectRoot"), m_config.m_memoryOnly && m_config.m_projectRoot.isEmpty()
+                                          ? QString()
+                                          : QDir(m_config.m_projectRoot).absolutePath()},
       {QStringLiteral("mainFile"), m_config.m_mainFile},
       {QStringLiteral("fontPaths"), QJsonArray::fromStringList(m_config.m_fontPaths)},
       {QStringLiteral("packagePaths"), QJsonArray::fromStringList(m_config.m_packagePaths)},

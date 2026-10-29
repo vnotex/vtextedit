@@ -109,6 +109,10 @@ bool MarkdownUtils::isFencedCodeBlockStartMark(const QString &p_text) {
 }
 
 QString MarkdownUtils::linkUrlToPath(const QString &p_basePath, const QString &p_url) {
+  if (p_basePath.isEmpty() && QUrl(p_url).isRelative() && !QFileInfo(p_url).isAbsolute() &&
+      !isQrcPath(p_url)) {
+    return {};
+  }
   QString fullPath;
   QFileInfo info(p_basePath, TextUtils::purifyUrl(p_url));
   if (info.exists()) {

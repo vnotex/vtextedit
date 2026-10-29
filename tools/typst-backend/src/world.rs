@@ -25,6 +25,7 @@ use typst_kit::packages::SystemPackages;
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Config {
     pub project_root: PathBuf,
+    pub memory_only: bool,
     pub main_file: String,
     pub font_paths: Vec<PathBuf>,
     pub package_paths: Vec<PathBuf>,
@@ -42,7 +43,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            project_root: PathBuf::new(), main_file: "main.typ".into(),
+            project_root: PathBuf::new(), memory_only: false, main_file: "main.typ".into(),
             font_paths: vec![], package_paths: vec![], allow_downloads: false,
             max_pdf_bytes: 64 * 1024 * 1024, max_raster_pixels: 16 * 1024 * 1024,
             max_cache_bytes: 256 * 1024 * 1024,
@@ -74,10 +75,12 @@ impl Config {
     }
 
     pub fn validate(mut self) -> Result<Self, String> {
-        if !self.project_root.is_absolute() { return Err("projectRoot must be absolute".into()); }
-        self.project_root = fs::canonicalize(&self.project_root)
-            .map_err(|e| format!("cannot resolve projectRoot: {e}"))?;
-        if !self.project_root.is_dir() { return Err("projectRoot must be a directory".into()); }
+        if !self.memory_only || !self.project_root.as_os_str().is_empty() {
+            if !self.project_root.is_absolute() { return Err("projectRoot must be absolute".into()); }
+            self.project_root = fs::canonicalize(&self.project_root)
+                .map_err(|e| format!("cannot resolve projectRoot: {e}"))?;
+            if !self.project_root.is_dir() { return Err("projectRoot must be a directory".into()); }
+        }
         project_id(&self.main_file)?;
         if self.text_font_size.is_some_and(|size| size == 0 || size > i32::MAX as u32) {
             return Err("textFontSize must be positive and fit a signed 32-bit integer".into());
@@ -270,7 +273,8 @@ impl ProjectWorld {
                 return Err("duplicate overlay path".into());
             }
         }
-        let same_root = self.config.project_root == config.project_root;
+        let same_root = self.config.project_root == config.project_root
+            && self.config.memory_only == config.memory_only;
         let reload_fonts = self.config.font_paths != config.font_paths
             || self.font_dependencies.iter().any(|(path, old)| !dependency_matches(path, old));
         self.packages = SystemPackages::new(PolicyDownloader::new(config.allow_downloads, config.max_cache_bytes));
@@ -343,6 +347,7 @@ impl ProjectWorld {
 
     fn resolve(&self, id: FileId, reads: &mut Reads) -> FileResult<PathBuf> {
         let root = match id.root() {
+            VirtualRoot::Project if self.config.memory_only => return Err(FileError::AccessDenied),
             VirtualRoot::Project => self.config.project_root.clone(),
             VirtualRoot::Package(spec) => {
                 let suffix = format!("{}/{}/{}", spec.namespace, spec.name, spec.version);
@@ -947,6 +952,35 @@ mod tests {
     }
 
     #[test]
+    fn memory_only_projects_never_read_disk_and_can_return_to_rooted_mode() {
+        assert!(Config::default().validate().is_err());
+        let config = Config { memory_only: true, ..Config::default() };
+        let mut world = ProjectWorld::new(config.clone()).unwrap();
+        assert!(world.config.project_root.as_os_str().is_empty());
+        world.update(config.clone(), vec![Overlay { file: "main.typ".into(), text: "Memory source".into() }]).unwrap();
+        assert_eq!(world.source(world.main()).unwrap().text(), "Memory source");
+        assert_eq!(world.file(world.main()).unwrap().as_slice(), b"Memory source");
+        assert!(matches!(world.file(project_id("Cargo.toml").unwrap()), Err(FileError::AccessDenied)));
+        assert_eq!(world.dependencies(), json!([]));
+        world.update(config, vec![]).unwrap();
+        assert!(matches!(world.source(world.main()), Err(FileError::AccessDenied)));
+
+        let root = std::env::temp_dir().join(format!("vtextedit-memory-root-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("main.typ"), "Disk source").unwrap();
+        let rooted = Config { project_root: root.clone(), ..Config::default() };
+        world.update(rooted.clone(), vec![]).unwrap();
+        assert_eq!(world.source(world.main()).unwrap().text(), "Disk source");
+        world.update(Config { memory_only: true, ..rooted.clone() }, vec![]).unwrap();
+        assert!(matches!(world.source(world.main()), Err(FileError::AccessDenied)));
+        assert_eq!(world.dependencies(), json!([]));
+        world.update(rooted, vec![]).unwrap();
+        assert_eq!(world.source(world.main()).unwrap().text(), "Disk source");
+        fs::remove_file(root.join("main.typ")).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
     fn removed_overlay_restores_missing_dependency_and_old_world_stays_frozen() {
         let root = std::env::temp_dir().join(format!("vtextedit-world-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
@@ -975,17 +1009,22 @@ mod tests {
         fs::create_dir_all(&package).unwrap();
         fs::write(package.join("typst.toml"), "[package]\nname = \"example\"\nversion = \"0.1.0\"\nentrypoint = \"lib.typ\"\n").unwrap();
         fs::write(package.join("lib.typ"), "#let value = 7").unwrap();
-        let config = Config { project_root: root.clone(), package_paths: vec![packages], ..Config::default() };
-        let mut world = ProjectWorld::new(config.clone()).unwrap();
-        world.update(config, vec![
-            Overlay { file: "main.typ".into(), text: "#import \"@local/example:0.1.0\": value\n#import \"unsaved.typ\": twice\n#assert(twice(value) == 14)\n$ x = #value $".into() },
-            Overlay { file: "unsaved.typ".into(), text: "#let twice(x) = 2 * x".into() },
-        ]).unwrap();
-        let result = typst::compile::<typst_layout::PagedDocument>(&world);
-        assert!(result.output.is_ok(), "{:?}", result.output.err());
-        let deps = world.dependencies();
-        assert!(deps.as_array().unwrap().iter().any(|d| d["path"].as_str().unwrap().ends_with("lib.typ")));
-        assert!(world.font(usize::MAX).is_none());
+        for memory_only in [false, true] {
+            let config = Config {
+                project_root: if memory_only { PathBuf::new() } else { root.clone() },
+                memory_only, package_paths: vec![packages.clone()], ..Config::default()
+            };
+            let mut world = ProjectWorld::new(config.clone()).unwrap();
+            world.update(config, vec![
+                Overlay { file: "main.typ".into(), text: "#import \"@local/example:0.1.0\": value\n#import \"unsaved.typ\": twice\n#assert(twice(value) == 14)\n$ x = #value $".into() },
+                Overlay { file: "unsaved.typ".into(), text: "#let twice(x) = 2 * x".into() },
+            ]).unwrap();
+            let result = typst::compile::<typst_layout::PagedDocument>(&world);
+            assert!(result.output.is_ok(), "{:?}", result.output.err());
+            let deps = world.dependencies();
+            assert!(deps.as_array().unwrap().iter().any(|d| d["path"].as_str().unwrap().ends_with("lib.typ")));
+            assert!(world.font(usize::MAX).is_none());
+        }
         let downloader = PolicyDownloader::new(false, 1024);
         assert_eq!(downloader.stream(&(), "https://packages.typst.org/preview/test").err().unwrap().kind(), io::ErrorKind::PermissionDenied);
         fs::remove_file(package.join("lib.typ")).unwrap();
