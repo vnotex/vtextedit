@@ -50,6 +50,7 @@
 #include <texteditor/inputmodestatuswidget.h>
 #include <vtextedit/htmltablescanner.h>
 #include <vtextedit/markdownutils.h>
+#include <vtextedit/theme.h>
 #include <vtextedit/vmarkdowneditor.h>
 
 #include "hlformatresolver.h"
@@ -2534,7 +2535,11 @@ void TablePreviewDocument::applyPalette(const QPalette &p_palette) {
   QTextTableFormat format = m_table->format().toTableFormat();
   // The only colour the table itself owns: everything else (text, selection,
   // the band behind it) is resolved from the palette by the paint path.
-  format.setBorderBrush(p_palette.brush(QPalette::Mid));
+  const bool hasBorderColor =
+      m_syntaxStyles.size() > Theme::TABLEBORDER &&
+      m_syntaxStyles.at(Theme::TABLEBORDER).hasProperty(QTextFormat::ForegroundBrush);
+  format.setBorderBrush(hasBorderColor ? m_syntaxStyles.at(Theme::TABLEBORDER).foreground()
+                                       : p_palette.brush(QPalette::Text));
   m_table->setFormat(format);
 }
 
@@ -5092,6 +5097,7 @@ void TablePreviewWidget::setSyntaxStyles(const QVector<QTextCharFormat> &p_style
                                          int p_parseOptions) {
   QScopedValueRollback<bool> applying(m_applyingSource, true);
   m_document->setSyntaxStyles(p_styles, p_parseOptions);
+  m_sheet->refreshPalette();
   if (m_document->refreshCellSyntaxFormats()) {
     updateGeometry();
   }

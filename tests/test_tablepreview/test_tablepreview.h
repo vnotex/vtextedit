@@ -201,6 +201,7 @@ private slots:
 
   // Palette.
   void testDarkPaletteReachesTheSheet();
+  void testTableBorderStyleAndFallback();
 };
 } // namespace tests
 

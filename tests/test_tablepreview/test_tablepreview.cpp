@@ -30,6 +30,7 @@
 #include <vtextedit/htmltablescanner.h>
 #include <vtextedit/markdowndocument.h>
 #include <vtextedit/preview.h>
+#include <vtextedit/theme.h>
 #include <vtextedit/vmarkdowneditor.h>
 
 #include "hlformatresolver.h"
@@ -4454,10 +4455,10 @@ void TestTablePreview::testDarkPaletteReachesTheSheet() {
   QCOMPARE(sheet->palette().color(QPalette::Base).alpha(), 0);
   QVERIFY(!sheet->viewport()->autoFillBackground());
 
-  // And the one colour the table itself owns follows too.
+  // Without a TABLEBORDER foreground, the grid follows the readable text colour.
   QTextTable *table = tableOf(sheet->document());
   QVERIFY(table);
-  QCOMPARE(table->format().toTableFormat().borderBrush().color(), QColor(90, 90, 90));
+  QCOMPARE(table->format().toTableFormat().borderBrush(), dark.brush(QPalette::Text));
 
   // A later theme change still reaches the sheet: applying a palette must not
   // pin it to the one it was given.
@@ -4468,7 +4469,84 @@ void TestTablePreview::testDarkPaletteReachesTheSheet() {
   settle();
 
   QCOMPARE(sheet->palette().color(QPalette::Text), QColor(20, 20, 20));
-  QCOMPARE(table->format().toTableFormat().borderBrush().color(), QColor(200, 200, 200));
+  QCOMPARE(table->format().toTableFormat().borderBrush(), light.brush(QPalette::Text));
+}
+
+void TestTablePreview::testTableBorderStyleAndFallback() {
+  const auto snapshot = makeCommittableTable();
+  QVector<QTextCharFormat> styles(Theme::MaxMarkdownSyntaxStyle);
+  styles[Theme::TABLEBORDER].setForeground(Qt::green);
+  styles[Theme::TABLEBORDER].setBackground(Qt::red);
+
+  // The factory supplies syntax styles before the first table is bound.
+  TablePreviewWidget initial(nullptr, nullptr);
+  initial.setSyntaxStyles(styles);
+  QVERIFY(initial.setPreview(snapshot));
+  auto initialSheet = sheetOf(initial);
+  QVERIFY(initialSheet);
+  auto initialTable = tableOf(initialSheet->document());
+  QVERIFY(initialTable);
+  QCOMPARE(initialTable->format().toTableFormat().borderBrush().color(), QColor(Qt::green));
+
+  SheetHarness harness(snapshot);
+  auto widget = harness.widget();
+  auto sheet = harness.sheet();
+  QVERIFY(sheet);
+  auto document = sheet->tableDocument();
+  QVERIFY(document);
+  auto table = document->table();
+  QVERIFY(table);
+  QPalette palette;
+  palette.setColor(QPalette::Text, QColor(230, 230, 230));
+  palette.setColor(QPalette::Mid, QColor(30, 30, 30));
+  widget->setPalette(palette);
+  widget->setSyntaxStyles(styles);
+  QCOMPARE(table->format().toTableFormat().borderBrush().color(), QColor(Qt::green));
+
+  // A palette update must not override an explicit syntax foreground.
+  palette.setColor(QPalette::Text, QColor(20, 20, 20));
+  widget->setPalette(palette);
+  QCOMPARE(table->format().toTableFormat().borderBrush().color(), QColor(Qt::green));
+
+  const auto cell = table->cellAt(1, 0);
+  QTextCursor cursor = cell.firstCursorPosition();
+  cursor.setPosition(cell.lastCursorPosition().position(), QTextCursor::KeepAnchor);
+  const QString edited = QStringLiteral("uncommitted");
+  sheet->setTextCursor(cursor);
+  cursor.insertText(edited);
+  cursor.setPosition(cell.firstCursorPosition().position(), QTextCursor::KeepAnchor);
+  sheet->setTextCursor(cursor);
+  const int caret = cursor.position();
+  const int anchor = cursor.anchor();
+  const QString selected = cursor.selectedText();
+  const QString source = document->toMarkdown();
+  QCOMPARE(harness.requestCount(), 0);
+
+  styles[Theme::TABLEBORDER].setForeground(Qt::blue);
+  widget->setSyntaxStyles(styles);
+  QCOMPARE(table->format().toTableFormat().borderBrush().color(), QColor(Qt::blue));
+  QCOMPARE(sheet->textCursor().position(), caret);
+  QCOMPARE(sheet->textCursor().anchor(), anchor);
+  QCOMPARE(sheet->textCursor().selectedText(), selected);
+  QCOMPARE(cellText(sheet->document(), 1, 0), edited);
+  QCOMPARE(document->toMarkdown(), source);
+  QCOMPARE(harness.requestCount(), 0);
+  QCOMPARE(harness.boundSource(), snapshot->sourceMarkdown());
+
+  // A background-only style is not a border colour.
+  styles[Theme::TABLEBORDER].clearForeground();
+  widget->setSyntaxStyles(styles);
+  QCOMPARE(table->format().toTableFormat().borderBrush(), palette.brush(QPalette::Text));
+  palette.setColor(QPalette::Text, QColor(210, 210, 210));
+  widget->setPalette(palette);
+  QCOMPARE(table->format().toTableFormat().borderBrush(), palette.brush(QPalette::Text));
+
+  // Older/partial style arrays may not contain the TABLEBORDER slot at all.
+  styles.resize(Theme::TABLEBORDER);
+  widget->setSyntaxStyles(styles);
+  QCOMPARE(table->format().toTableFormat().borderBrush(), palette.brush(QPalette::Text));
+  widget->setSyntaxStyles({});
+  QCOMPARE(table->format().toTableFormat().borderBrush(), palette.brush(QPalette::Text));
 }
 
 // ---------------------------------------------------------------------------
