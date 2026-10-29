@@ -19,6 +19,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include <texteditor/extraselectionmgr.h>
+
 #include <vtextedit/previewdata.h>
 #include <vtextedit/textblockdata.h>
 
@@ -1450,7 +1452,22 @@ void TextDocumentLayout::draw(QPainter *p_painter, const PaintContext &p_context
         // the original selection order, including search/extra selections.
         if (selection.length > 0 && selection.start < marker.m_hiddenEnd &&
             qint64(selection.start) + selection.length > marker.m_hiddenStart) {
-          markerSelections.append({0, int(marker.m_layout->text().size()), selection.format});
+          QTextCharFormat format;
+          if (selection.format.boolProperty(c_cursorLineFormatProperty)) {
+            // The source layout already painted the passive line fill. Forward
+            // only its optional foreground; never cover the marker's own background.
+            if (!selection.format.hasProperty(QTextFormat::ForegroundBrush)) {
+              continue;
+            }
+            format.setForeground(selection.format.foreground());
+          } else {
+            format = selection.format;
+            // Full-width geometry belongs to the source line, not this small layout.
+            if (format.hasProperty(QTextFormat::FullWidthSelection)) {
+              format.clearProperty(QTextFormat::FullWidthSelection);
+            }
+          }
+          markerSelections.append({0, int(marker.m_layout->text().size()), format});
         }
       }
       marker.m_layout->draw(p_painter, offset + marker.m_rect.topLeft(), markerSelections,
@@ -1495,6 +1512,32 @@ TextDocumentLayout::formatRangeFromSelection(const QTextBlock &p_block,
 
   int blpos = p_block.position();
   int bllen = p_block.length();
+  const auto appendRange = [&](const QTextLayout::FormatRange &p_range) {
+    ret.append(p_range);
+    if (!p_range.format.boolProperty(c_cursorLineFormatProperty) ||
+        p_range.format.background().style() == Qt::NoBrush) {
+      return;
+    }
+    // Qt paints extra-selection backgrounds over syntax backgrounds. Restore
+    // real source fills directly after the passive cursor-line fill, so later
+    // search, selected-text and other explicit overlays keep their precedence.
+    for (const auto &source : p_block.layout()->formats()) {
+      const auto background = source.format.background();
+      if (background.style() == Qt::NoBrush) {
+        continue;
+      }
+      const int start = qMax(p_range.start, source.start);
+      const qint64 end =
+          qMin(qint64(p_range.start) + p_range.length, qint64(source.start) + source.length);
+      if (start < end) {
+        QTextLayout::FormatRange restored;
+        restored.start = start;
+        restored.length = int(end - start);
+        restored.format.setBackground(background);
+        ret.append(restored);
+      }
+    }
+  };
   for (int i = 0; i < p_selections.size(); ++i) {
     const QAbstractTextDocumentLayout::Selection &range = p_selections.at(i);
     const int selStart = range.cursor.selectionStart() - blpos;
@@ -1504,7 +1547,7 @@ TextDocumentLayout::formatRangeFromSelection(const QTextBlock &p_block,
       o.start = selStart;
       o.length = selEnd - selStart;
       o.format = range.format;
-      ret.append(o);
+      appendRange(o);
     } else if (!range.cursor.hasSelection() &&
                range.format.hasProperty(QTextFormat::FullWidthSelection) &&
                p_block.contains(range.cursor.position())) {
@@ -1525,7 +1568,7 @@ TextDocumentLayout::formatRangeFromSelection(const QTextBlock &p_block,
       }
 
       o.format = range.format;
-      ret.append(o);
+      appendRange(o);
     }
   }
 

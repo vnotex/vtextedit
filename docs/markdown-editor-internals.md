@@ -412,8 +412,12 @@ line-breaking attributes are restored after line creation. Busy transitions defe
 and `concealmentChanged()` fires after complete geometry at the outermost idle boundary.
 
 `Theme::ConcealedText` styles compact destinations, including retained ends. Syntax hiding keeps
-ordinary syntax formats. Selection/search keep their normal precedence. Hovering compact URL
-text shows its complete escaped raw source without changing selection or layout;
+ordinary syntax formats. Markdown source painting treats the tagged cursor-line background as
+passive: actual syntax backgrounds (including mark and compact-destination fills) remain above
+it, while selection/search and untagged explicit overlays retain their normal precedence.
+This also applies with concealment disabled. Synthetic replacements never inherit full-width
+selection geometry or cursor-line fill; an explicit cursor-line foreground still applies.
+Hovering compact URL text shows its complete escaped raw source without changing selection or layout;
 `concealedSourceAt()` excludes revealed/invalid groups and nearby whitespace. Configuration
 reapplication preserves text and history. Builds require matching `Qt6::GuiPrivate` headers
 and runtime kit; the private dependency is not exposed through public headers.

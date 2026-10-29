@@ -27,6 +27,12 @@
   paths avoid the extra metadata; unrelated typing retains the single-block layout fast path.
 - Opt the demo into the new syntax rules and include heading, variable-code and formula examples.
 
+### Fixes
+
+- Preserve Markdown syntax backgrounds, including mark highlighting, above the passive
+  cursor-line background with concealment enabled or disabled. Real selections and explicit
+  overlays retain precedence; compact URL markers no longer propagate full-width fills.
+
 ## 10.0.0 (unreleased)
 
 ### Breaking changes

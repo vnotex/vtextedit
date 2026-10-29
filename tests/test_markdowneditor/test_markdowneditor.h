@@ -36,6 +36,8 @@ private slots:
   void testConcealNestedAndMultilineSyntax();
   void testConcealCustomDestinationRule();
   void testConcealHeadingAndFormulaBoundaries();
+  void testMarkBackgroundOnCursorLine_data();
+  void testMarkBackgroundOnCursorLine();
 
   void testMultilineReplaceAllUndoRedo();
   void testMultilineReplacementCaptures();

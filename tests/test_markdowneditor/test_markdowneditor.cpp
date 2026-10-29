@@ -951,6 +951,123 @@ static void concealConfigSaveImage(const QImage &p_image, const QString &p_name)
 }
 } // namespace
 
+void TestMarkdownEditor::testMarkBackgroundOnCursorLine_data() {
+  QTest::addColumn<bool>("conceal");
+  QTest::newRow("ordinary-source") << false;
+  QTest::newRow("concealed-source-and-url") << true;
+}
+
+void TestMarkdownEditor::testMarkBackgroundOnCursorLine() {
+  QFETCH(bool, conceal);
+  const QColor markBackground(QStringLiteral("#ffee52"));
+  const QColor cursorBackground(QStringLiteral("#c8d8f8"));
+  const QColor cursorForeground(QStringLiteral("#162c52"));
+  const QColor compactBackground(QStringLiteral("#d4f0de"));
+  const QColor compactForeground(QStringLiteral("#2352a7"));
+  const QColor overlayBackground(QStringLiteral("#ee88cc"));
+  const QJsonObject json{
+      {QStringLiteral("metadata"),
+       QJsonObject{{QStringLiteral("type"), QStringLiteral("vtextedit")}}},
+      {QStringLiteral("editor-styles"),
+       QJsonObject{{QStringLiteral("Text"),
+                    QJsonObject{{QStringLiteral("font-family"), QStringLiteral("Arial")},
+                                {QStringLiteral("font-size"), 14},
+                                {QStringLiteral("text-color"), QStringLiteral("#202020")},
+                                {QStringLiteral("background-color"), QStringLiteral("#ffffff")}}},
+                   {QStringLiteral("CursorLine"),
+                    QJsonObject{{QStringLiteral("background-color"), cursorBackground.name()},
+                                {QStringLiteral("text-color"), cursorForeground.name()}}},
+                   {QStringLiteral("ConcealedText"),
+                    QJsonObject{{QStringLiteral("background-color"), compactBackground.name()},
+                                {QStringLiteral("text-color"), compactForeground.name()}}}}},
+      {QStringLiteral("markdown-syntax-styles"),
+       QJsonObject{{QStringLiteral("MARK"),
+                    QJsonObject{{QStringLiteral("background-color"), markBackground.name()}}}}}};
+  auto config = makeConcealConfig();
+  config->m_textEditorConfig->m_theme = Theme::createThemeFromContent(
+      QString::fromUtf8(QJsonDocument(json).toJson(QJsonDocument::Compact)));
+  QVERIFY(config->m_textEditorConfig->m_theme);
+  if (conceal) {
+    config->m_concealRules.set(MarkdownConcealElement::MarkMarkers, MarkdownConcealHideSyntax{});
+  } else {
+    config->m_concealRules.clear();
+  }
+  const auto source =
+      QStringLiteral("prefix [link](abcdefghijklmnopqrstuvwxyz) ==marked== suffix\nother line");
+  const int markStart = source.indexOf(QStringLiteral("==marked=="));
+  const int contentStart = markStart + 2;
+  const int contentEnd = contentStart + 6;
+  const int urlStart = source.indexOf(QStringLiteral("abcdefghijklmnopqrstuvwxyz"));
+  const int urlEnd = urlStart + 26;
+  Fixture f(source, -1, -1, config);
+  QVERIFY(!renderConcealEditor(f).isNull());
+  waitForConcealPublication(f);
+  auto *doc = f.editor()->document();
+  doc->clearUndoRedoStacks();
+  doc->setModified(false);
+
+  // Off-line, revealed, and re-concealed while the caret remains in the same block.
+  for (int position : {int(source.size()), contentStart + 2, 2}) {
+    setConcealCursor(f, position);
+    const auto image = renderConcealEditor(f);
+    QVERIFY(concealConfigColorCount(image, concealConfigViewportRange(f, contentStart, contentEnd),
+                                    markBackground) > 10);
+    const bool activeLine = position < f.blockEnd(0);
+    if (activeLine) {
+      QVERIFY(concealConfigColorCount(image, concealConfigViewportRange(f, 0, 6),
+                                      cursorBackground) > 10);
+    }
+    const qreal markerWidth = concealConfigRangeWidth(f, markStart, contentStart);
+    if (conceal && position != contentStart + 2) {
+      QVERIFY(qAbs(markerWidth) < 0.1);
+    } else {
+      QVERIFY(markerWidth > 1);
+    }
+    if (conceal) {
+      for (const auto &part :
+           {qMakePair(urlStart, urlStart + 3), qMakePair(urlStart + 3, urlEnd - 3),
+            qMakePair(urlEnd - 3, urlEnd)}) {
+        const auto rect = concealConfigViewportRange(f, part.first, part.second);
+        QVERIFY(concealConfigColorCount(image, rect, compactBackground) > 10);
+        QVERIFY(concealConfigColorCount(image, rect,
+                                        activeLine ? cursorForeground : compactForeground,
+                                        compactBackground) > 0);
+      }
+    }
+  }
+
+  // Real text selection must still win, with unselected marked text retaining yellow.
+  QTextCursor selection(doc);
+  selection.setPosition(contentStart);
+  selection.setPosition(contentStart + 3, QTextCursor::KeepAnchor);
+  f.edit()->setTextCursor(selection);
+  auto image = renderConcealEditor(f);
+  const auto selectionBackground = f.edit()->palette().color(QPalette::Active, QPalette::Highlight);
+  QVERIFY(concealConfigColorCount(image,
+                                  concealConfigViewportRange(f, contentStart, contentStart + 3),
+                                  selectionBackground) > 10);
+  QVERIFY(concealConfigColorCount(image,
+                                  concealConfigViewportRange(f, contentStart + 3, contentEnd),
+                                  markBackground) > 10);
+
+  // A non-cursor full-width overlay retains normal overlay precedence.
+  setConcealCursor(f, 2);
+  auto extras = f.edit()->extraSelections();
+  QTextEdit::ExtraSelection overlay;
+  overlay.cursor = f.edit()->textCursor();
+  overlay.format.setProperty(QTextFormat::FullWidthSelection, true);
+  overlay.format.setBackground(overlayBackground);
+  extras.append(overlay);
+  f.edit()->setExtraSelections(extras);
+  image = renderConcealEditor(f);
+  const auto markedRect = concealConfigViewportRange(f, contentStart, contentEnd);
+  QVERIFY(concealConfigColorCount(image, markedRect, overlayBackground) > 10);
+  QCOMPARE(concealConfigColorCount(image, markedRect, markBackground), 0);
+  QCOMPARE(f.text(), source);
+  QVERIFY(!doc->isModified());
+  QVERIFY(!doc->isUndoAvailable());
+}
+
 void TestMarkdownEditor::testConcealHoverToolTip() {
   // HTML src can contain literal markup and repeated spaces: neither may be interpreted
   // or collapsed by the tooltip's rich-text renderer.

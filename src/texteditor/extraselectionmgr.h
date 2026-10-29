@@ -9,6 +9,9 @@
 class QTimer;
 
 namespace vte {
+// Internal paint hint: passive cursor-line fill must not cover syntax backgrounds.
+constexpr int c_cursorLineFormatProperty = QTextFormat::UserProperty + 0x5655;
+
 class ExtraSelectionInterface {
 public:
   virtual ~ExtraSelectionInterface() {}

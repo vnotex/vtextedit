@@ -212,6 +212,7 @@ void ExtraSelectionMgr::highlightCursorLine(bool p_applyNow) {
 
     QTextEdit::ExtraSelection select;
     select.format = extraSelection.format();
+    select.format.setProperty(c_cursorLineFormatProperty, true);
 
     auto cursor = m_interface->textCursor();
     if (m_highlightCursorVisualLineEnabled) {
