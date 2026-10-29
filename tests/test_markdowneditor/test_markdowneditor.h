@@ -110,6 +110,8 @@ private slots:
   // Seeded image data (PreviewMgr::seedImageData).
   void testSeededImageAvoidsDownload();
 
+  void testRootlessImageResourcesRespectIoPolicy();
+
   void testSeededImageBufferIsBounded();
 
   // Multi-line inline markers (typeMarker over a cross-block selection).

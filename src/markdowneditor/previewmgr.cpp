@@ -229,15 +229,13 @@ void PreviewMgr::buildImageLinksForLayout(const QVector<md::ImageLinkInfo> &p_li
     }
 
     link.m_linkShortUrl = info.m_destination;
+    // An empty resolved path forbids I/O, not reader or seeded image lookup.
     link.m_linkUrl =
         m_exclusiveResourceReader
             ? info.m_destination
             : MarkdownUtils::linkUrlToPath(m_interface->basePath(), info.m_destination);
     link.m_width = clampPreviewDimension(info.m_width);
     link.m_height = clampPreviewDimension(info.m_height);
-    if (link.m_linkUrl.isEmpty()) {
-      continue;
-    }
 
     p_imageLinks.append(link);
   }
@@ -321,7 +319,7 @@ QString PreviewMgr::imageResourceName(const ImageLink &p_link) {
   QString imgPath = p_link.m_linkUrl;
   if (!image.isNull()) {
     // Authenticated memory supplied by the current reader; no path fallback.
-  } else if (QFileInfo::exists(imgPath)) {
+  } else if (!imgPath.isEmpty() && QFileInfo::exists(imgPath)) {
     // Local file.
     // Sometimes the suffix of the image may mislead the codec. Directly load
     // from the data and then load from file path.
@@ -337,16 +335,18 @@ QString PreviewMgr::imageResourceName(const ImageLink &p_link) {
       return QString();
     }
   } else {
-    // URL.
-    // First check whether the application already handed us the bytes of this
-    // image (e.g. right after uploading it to an image host), which saves a
-    // round trip to fetch back what we just sent.
-    const int seededIdx = indexOfSeededImage(imgPath);
+    // The application may supply image bytes without granting a filesystem base.
+    // Keep the normalized destination as their identity, not as an I/O path.
+    const QString key = imgPath.isEmpty() ? QUrl(p_link.m_linkShortUrl).toString() : imgPath;
+    const int seededIdx = indexOfSeededImage(key);
     if (seededIdx != -1) {
       image = m_seededImages[seededIdx].second;
       // Do NOT erase the seed on use: one URL may be requested at several
       // declared sizes, each of which is a distinct resource.
     } else {
+      if (imgPath.isEmpty()) {
+        return QString();
+      }
       // Try to download it.
       // qrc:// files will touch this path.
       auto &pending = m_urlMap[imgPath];
@@ -409,9 +409,9 @@ void PreviewMgr::seedImageData(const QString &p_url, const QByteArray &p_data) {
     return;
   }
 
-  // Normalize through the very same call the link path uses, so the key matches
-  // the imgPath computed when the link is previewed.
-  const QString key = MarkdownUtils::linkUrlToPath(m_interface->basePath(), p_url);
+  // Match the preview lookup identity even when there is no permitted I/O path.
+  const QString path = MarkdownUtils::linkUrlToPath(m_interface->basePath(), p_url);
+  const QString key = path.isEmpty() ? QUrl(p_url).toString() : path;
   if (key.isEmpty()) {
     return;
   }

@@ -15,6 +15,7 @@
 #include <QMimeData>
 #include <QPainter>
 #include <QPixmap>
+#include <QScopeGuard>
 #include <QScrollBar>
 #include <QSharedPointer>
 #include <QSignalSpy>
@@ -307,9 +308,9 @@ void TestMarkdownEditor::testNativeSyntaxNameFallback() {
   config->m_textEditorConfig->m_syntaxTheme = themePath;
   // Typst has no *.typst extension. Uppercase *.C selects C++, not the language named C.
   // The indented fence also exercises unindent before PlantUML's firstNonSpace comment.
-  const QString source = QStringLiteral(
-      "```typst\n// source\n```\n\n```C\nnamespace example {}\n```\n\n"
-      "  ```plantuml\n    ' actual comment\n  ```\n");
+  const QString source =
+      QStringLiteral("```typst\n// source\n```\n\n```C\nnamespace example {}\n```\n\n"
+                     "  ```plantuml\n    ' actual comment\n  ```\n");
   Fixture fixture(source, 11, 0, config);
   fixture.editor()->setSpellCheckEnabled(false);
   QTRY_COMPARE_WITH_TIMEOUT(highlightForeground(fixture, 1), QColor("#238151"), 5000);
@@ -332,10 +333,9 @@ void TestMarkdownEditor::testDiagramSyntaxBoundaries_data() {
                         "Alice <--> Bob : class isn't /' a comment\n"
                         "  ' actual comment\n/' block\ncomment '/ Alice -> Bob : resumed")
       << QList<int>{0, 0, 1, 1, 2, 3, 4, 4}
-      << QStringList{"participant", "Admin", "<-->", "class", "actual", "block",
-                     "comment", "Alice"}
-      << QList<int>{ST::Keyword, ST::String, ST::Operator, ST::String, ST::Comment,
-                    ST::Comment, ST::Comment, ST::Variable};
+      << QStringList{"participant", "Admin", "<-->", "class", "actual", "block", "comment", "Alice"}
+      << QList<int>{ST::Keyword, ST::String,  ST::Operator, ST::String,
+                    ST::Comment, ST::Comment, ST::Comment,  ST::Variable};
   QTest::newRow("plantuml-multiline-prose")
       << QStringLiteral("plantuml")
       << QStringLiteral("note right of Widget\n' class /' ordinary note text\nend note\n"
@@ -343,8 +343,8 @@ void TestMarkdownEditor::testDiagramSyntaxBoundaries_data() {
                         ":class isn't /' a comment\nstill ordinary prose;\nstop")
       << QList<int>{1, 2, 4, 5, 6, 7, 8, 9}
       << QStringList{"class", "end", "class", "end", "class", "class", "ordinary", "stop"}
-      << QList<int>{ST::String, ST::Keyword, ST::String, ST::Keyword, ST::Keyword,
-                    ST::String, ST::String, ST::ControlFlow};
+      << QList<int>{ST::String,  ST::Keyword, ST::String, ST::Keyword,
+                    ST::Keyword, ST::String,  ST::String, ST::ControlFlow};
   QTest::newRow("flowchart-label-to-statement")
       << QStringLiteral("flowchart")
       << QStringLiteral("cond=>condition: operation yes\nstill parallel prose\n"
@@ -353,22 +353,23 @@ void TestMarkdownEditor::testDiagramSyntaxBoundaries_data() {
                         "next=>end: Finished|approved:>https://example.org/a->b\n"
                         "cond@>next({\"stroke\":\"red})@>\",\"stroke-width\":6})")
       << QList<int>{0, 0, 1, 2, 3, 4, 4, 4, 5, 5, 6, 6}
-      << QStringList{"condition", "operation", "parallel", "operation", "continued",
-                     "true", "linear", "right", "approved", "https", "stroke", "red"}
-      << QList<int>{ST::DataType, ST::String, ST::String, ST::DataType, ST::String,
-                    ST::Keyword, ST::String, ST::Keyword, ST::Attribute, ST::String,
-                    ST::DataType, ST::String};
+      << QStringList{"condition", "operation", "parallel", "operation", "continued", "true",
+                     "linear",    "right",     "approved", "https",     "stroke",    "red"}
+      << QList<int>{ST::DataType,  ST::String,  ST::String,   ST::DataType,
+                    ST::String,    ST::Keyword, ST::String,   ST::Keyword,
+                    ST::Attribute, ST::String,  ST::DataType, ST::String};
   QTest::newRow("wavedrom-keys-comments-and-nesting")
       << QStringLiteral("wavedrom")
-      << QStringLiteral("{ signal: [\n['group', {name: 'clk', wave: \"p...\", phase: -0.5,}],\n"
-                        "], /* retained\ncomment */ \"config\": {hscale: 2, enabled: true,},\n"
-                        "head: {text: \"https://host/*literal*/ \\\"title\\\"\"},\n// line comment\n}")
+      << QStringLiteral(
+             "{ signal: [\n['group', {name: 'clk', wave: \"p...\", phase: -0.5,}],\n"
+             "], /* retained\ncomment */ \"config\": {hscale: 2, enabled: true,},\n"
+             "head: {text: \"https://host/*literal*/ \\\"title\\\"\"},\n// line comment\n}")
       << QList<int>{0, 1, 1, 1, 1, 2, 3, 3, 3, 3, 4, 5}
-      << QStringList{"signal", "group", "name", "p...", "-0.5", "retained", "comment",
-                     "config", "hscale", "true", "/*literal*/", "line comment"}
-      << QList<int>{ST::DataType, ST::String, ST::DataType, ST::String, ST::Float,
-                    ST::Comment, ST::Comment, ST::DataType, ST::DataType, ST::Constant,
-                    ST::String, ST::Comment};
+      << QStringList{"signal",  "group",  "name",   "p...", "-0.5",        "retained",
+                     "comment", "config", "hscale", "true", "/*literal*/", "line comment"}
+      << QList<int>{ST::DataType, ST::String,   ST::DataType, ST::String,
+                    ST::Float,    ST::Comment,  ST::Comment,  ST::DataType,
+                    ST::DataType, ST::Constant, ST::String,   ST::Comment};
   QTest::newRow("wavedrom-unfinished-string-recovery")
       << QStringLiteral("wavedrom")
       << QStringLiteral("{name: 'unfinished\n, wave: \"p...\",\ntext: 'continued\\\n"
@@ -402,7 +403,7 @@ void TestMarkdownEditor::testDiagramSyntaxBoundaries() {
     const QColor expected = QColor::fromRgb(
         theme.textColor(static_cast<KSyntaxHighlighting::Theme::TextStyle>(styles.at(i))));
     QTRY_COMPARE_WITH_TIMEOUT(highlightForeground(fixture, lines.at(i) + 1, column), expected,
-                             5000);
+                              5000);
   }
   QCOMPARE(fixture.text(), source);
   QCOMPARE(doc->isModified(), modified);
@@ -2355,6 +2356,46 @@ void TestMarkdownEditor::testSeededImageAvoidsDownload() {
       5000);
   QCOMPARE(natural->width(), 60);
   QCOMPARE(sized->width(), 300);
+}
+
+void TestMarkdownEditor::testRootlessImageResourcesRespectIoPolicy() {
+  QTemporaryDir dir;
+  QVERIFY(dir.isValid());
+  // Both disk images are red; only explicitly supplied blue bytes may render.
+  const auto seededUrl = QStringLiteral("seeded.png");
+  const auto unseededUrl = QStringLiteral("unseeded.png");
+  QVERIFY(!writeTestImage(dir, seededUrl, 40, 20).isEmpty());
+  QVERIFY(!writeTestImage(dir, unseededUrl, 40, 20).isEmpty());
+  const auto previousCwd = QDir::currentPath();
+  const auto restoreCwd = qScopeGuard([&] { QDir::setCurrent(previousCwd); });
+  QVERIFY(QDir::setCurrent(dir.path()));
+
+  Fixture fixture(QString(), 0);
+  QVERIFY(fixture.editor()->getBasePath().isEmpty());
+  auto *manager = fixture.editor()->getPreviewMgr();
+  const auto bytes = testImageData(60, 30);
+  QVERIFY(!bytes.isEmpty());
+  manager->seedImageData(seededUrl, bytes);
+
+  auto cursor = QTextCursor(fixture.editor()->document());
+  cursor.insertText(QStringLiteral("![](seeded.png)\n\n![](unseeded.png)\n"));
+  fixture.editor()->getHighlighter()->updateHighlight();
+  fixture.waitForFreshAst(0);
+
+  const QPixmap *seeded = nullptr;
+  QTRY_VERIFY_WITH_TIMEOUT((seeded = fixture.editor()->findImageFromDocumentResourceMgr(
+                                resourceName(seededUrl, 0, 0))) != nullptr,
+                           5000);
+  QCOMPARE(seeded->size(), QSize(60, 30));
+  QCOMPARE(seeded->toImage().pixel(0, 0), qRgb(0, 0, 255));
+  QVERIFY(!fixture.editor()->findImageFromDocumentResourceMgr(resourceName(unseededUrl, 0, 0)));
+
+  // Revocation must discard the cached image and reject any attempt to reseed it.
+  manager->setResourceReader({}, true);
+  manager->seedImageData(seededUrl, bytes);
+  manager->updateImageLinks(fixture.editor()->getHighlighter()->getImageLinks());
+  QVERIFY(!fixture.editor()->findImageFromDocumentResourceMgr(resourceName(seededUrl, 0, 0)));
+  QVERIFY(!fixture.editor()->findImageFromDocumentResourceMgr(resourceName(unseededUrl, 0, 0)));
 }
 
 // The hand-off buffer is bounded and keyed: re-seeding one URL replaces, and a
@@ -6654,7 +6695,8 @@ void TestMarkdownEditor::testHeadingSourceTitleAndEmpty_data() {
       << QStringLiteral("## Before\n\n[ref]: /url\nAlpha\n-----\n\n## After\n")
       << QVector<QString>{QStringLiteral("1."), QString(), QStringLiteral("2.")}
       << QStringLiteral("## 1. Before\n\n[ref]: /url\nAlpha\n-----\n\n## 2. After\n")
-      << QStringList{QStringLiteral("1. Before"), QStringLiteral("Alpha"), QStringLiteral("2. After")}
+      << QStringList{QStringLiteral("1. Before"), QStringLiteral("Alpha"),
+                     QStringLiteral("2. After")}
       << true;
 }
 

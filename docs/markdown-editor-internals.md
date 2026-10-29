@@ -266,15 +266,28 @@ destination span, but its resolved destination is known, so it previews like any
 > `tests/utils/test_image_parser_drift.cpp` in vnote now fails the build on any string literal
 > that looks like an image-link regular expression.
 
-`MarkdownUtils::linkUrlToPath()` checks encoded and decoded base-path-relative candidates. It
-returns a base-path-qualified local path only when one of those candidates already exists. If
-neither exists, it converts the original short destination directly through `QUrl`; a nonexistent
-relative destination therefore remains relative. Resource lookup then follows this order:
+`MarkdownUtils::linkUrlToPath()` returns an empty I/O path for a relative destination without
+an explicit base; it must not resolve that destination against the process working directory.
+With a base, it checks encoded and decoded candidates and returns a base-path-qualified local
+path only when one already exists. Otherwise it converts the original destination through
+`QUrl`. Preview resource identity is separate from I/O permission: an empty I/O path still
+allows the parsed destination to identify bytes supplied by the application.
 
-1. Reuse an existing pixmap keyed by the short destination.
-2. If the resolved path exists according to `QFileInfo`, load it as local data or a pixmap.
-3. Otherwise pass the returned string to `NetworkAccess::requestAsync()`, without resolving a
-   relative URL against a network base URL.
+Resource lookup follows this order:
+
+1. Reuse an existing pixmap keyed by the short destination and declared size.
+2. Ask the resource reader using the parsed destination. An exclusive reader's failure,
+   including a revoked/empty reader, is terminal; no seed, file, or network lookup follows.
+3. If the nonempty resolved I/O path exists according to `QFileInfo`, load it as local data
+   or a pixmap.
+4. Use bytes handed over through `seedImageData()`, keyed by the resolved path or, when that
+   path is empty, the `QUrl`-normalized parsed destination. Rootless seeds never authorize
+   filesystem access, even when a same-named image exists in the working directory.
+5. On a seed miss, an empty I/O path is terminal. Otherwise pass the path to
+   `NetworkAccess::requestAsync()`, without resolving a relative URL against a network base.
+
+Changing the resource-reader policy clears cached resources, seeds, and pending downloads.
+Exclusive policies reject new seeds as well, so reseeding cannot bypass revocation.
 
 There is no dedicated qrc loader branch in `PreviewMgr`; a value not accepted by the file check,
 including the commented `qrc://` case, follows the asynchronous request path.

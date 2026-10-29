@@ -122,8 +122,10 @@ public:
   // in-place preview of @p_url does not have to download it back.
   //
   // The key is normalized exactly like a link destination is, so pass the URL as
-  // it will be spelled in the document. A payload that does not decode into an
-  // image is dropped silently.
+  // it will be spelled in the document. Relative keys without a base identify
+  // supplied bytes only; they never authorize current-directory filesystem I/O.
+  // A payload that does not decode into an image is dropped silently. Exclusive
+  // resource readers disable seeding, including while revoked.
   //
   // This is a small bounded hand-off buffer, not a cache.
   void seedImageData(const QString &p_url, const QByteArray &p_data);
@@ -199,7 +201,7 @@ private:
     // Used as the ID of the image.
     QString m_linkShortUrl;
 
-    // Full URL of the link.
+    // Resolved I/O path of the link; empty forbids filesystem/network lookup.
     QString m_linkUrl;
 
     // Declared size from the `=WxH` extension. 0 means unspecified for that
