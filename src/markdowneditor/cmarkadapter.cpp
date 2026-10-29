@@ -697,6 +697,7 @@ vte::md::HeadingInfo vte::md::headingInfo(cmark_node *p_node, int p_absStart, in
   heading.m_renderOrder = headingFootnoteGroup(p_node);
   heading.m_level = cmark_node_get_heading_level(p_node);
   heading.m_isEmpty = cmark_node_first_child(p_node) == nullptr;
+  heading.m_isSetext = p_node->as.heading.setext;
   appendHeadingText(p_node, heading.m_title, heading.m_anchorText);
   // Only the display title is trimmed; see the note above on why the anchor
   // input must keep markdown-it-anchor's raw concatenation.

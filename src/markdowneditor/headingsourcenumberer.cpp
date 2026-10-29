@@ -421,80 +421,73 @@ bool HeadingSourceNumberer::prepare(const QSharedPointer<MarkdownHighlighterResu
   plan.m_valid = true;
   if (m_provider) {
     const auto &headings = p_result->m_headingElements;
-    QVector<SourceHeading> sources;
-    sources.reserve(headings.size());
+    // Keep the callable alive if a host replaces it from inside its callback.
+    const auto provider = m_provider;
+    const auto desired = provider(headings);
+    if (!isCurrent(plan)) {
+      return false;
+    }
+    plan.m_valid = desired.size() == headings.size();
+    qint64 resultingCharacters = m_doc->characterCount();
     int previousEnd = 0;
-    for (const auto &heading : headings) {
-      SourceHeading source;
-      if (heading.m_startPos < previousEnd || !resolveHeading(heading, source)) {
+    for (int i = 0; plan.m_valid && i < desired.size(); ++i) {
+      const auto &heading = headings[i];
+      if (heading.m_startPos < previousEnd) {
         plan.m_valid = false;
         break;
       }
       previousEnd = heading.m_endPos;
-      sources.append(std::move(source));
-    }
-    if (plan.m_valid) {
-      // Keep the callable alive if a host replaces it from inside its callback.
-      const auto provider = m_provider;
-      const auto desired = provider(headings);
-      if (!isCurrent(plan)) {
-        return false;
+      if (desired[i].isEmpty()) {
+        continue;
       }
-      plan.m_valid = desired.size() == headings.size();
-      qint64 resultingCharacters = m_doc->characterCount();
-      for (int i = 0; plan.m_valid && i < desired.size(); ++i) {
-        if (desired[i].isEmpty()) {
-          continue;
+      SourceHeading source;
+      if (!c_providerPrefix.match(desired[i]).hasMatch() || !resolveHeading(heading, source)) {
+        plan.m_valid = false;
+        break;
+      }
+      ++plan.m_eligible;
+      // Borrow the stable block text for the regex; only saved prefix bytes
+      // need an owning copy after preparation returns.
+      const QString firstLine = QString::fromRawData(source.m_text.constData() + source.m_content,
+                                                     source.m_lineEnd - source.m_content);
+      const auto match = c_sourcePrefix.match(firstLine);
+      int prefixLength = match.hasMatch() ? int(match.capturedLength()) : 0;
+      // If a number is the entire first line of a multiline Setext title,
+      // its trailing two-space hard break is syntax, not disposable spacing.
+      if (source.m_continuation && prefixLength == firstLine.size()) {
+        int spaces = 0;
+        while (spaces < prefixLength &&
+               firstLine[prefixLength - spaces - 1] == QLatin1Char(' ')) {
+          ++spaces;
         }
-        if (!c_providerPrefix.match(desired[i]).hasMatch()) {
+        if (spaces >= 2) {
+          prefixLength -= spaces - 1;
+        }
+      }
+      QString after = desired[i];
+      if (source.m_setext) {
+        int digits = 0;
+        while (digits < after.size() && after[digits].isDigit()) {
+          ++digits;
+        }
+        if (digits == after.size() - 1) {
+          // A single-component terminator otherwise turns Setext into a list.
+          after.insert(digits, QLatin1Char('\\'));
+        }
+      }
+      after += QLatin1Char(' ');
+      if (source.m_needsSeparator) {
+        after.prepend(QLatin1Char(' '));
+      }
+      const QString before(firstLine.constData(), prefixLength);
+      if (before != after) {
+        resultingCharacters += after.size() - before.size();
+        if (resultingCharacters > std::numeric_limits<int>::max()) {
           plan.m_valid = false;
           break;
         }
-        ++plan.m_eligible;
-        const auto &source = sources[i];
-        // Borrow the stable block text for the regex; only saved prefix bytes
-        // need an owning copy after preparation returns.
-        const QString firstLine = QString::fromRawData(source.m_text.constData() + source.m_content,
-                                                       source.m_lineEnd - source.m_content);
-        const auto match = c_sourcePrefix.match(firstLine);
-        int prefixLength = match.hasMatch() ? int(match.capturedLength()) : 0;
-        // If a number is the entire first line of a multiline Setext title,
-        // its trailing two-space hard break is syntax, not disposable spacing.
-        if (source.m_continuation && prefixLength == firstLine.size()) {
-          int spaces = 0;
-          while (spaces < prefixLength &&
-                 firstLine[prefixLength - spaces - 1] == QLatin1Char(' ')) {
-            ++spaces;
-          }
-          if (spaces >= 2) {
-            prefixLength -= spaces - 1;
-          }
-        }
-        QString after = desired[i];
-        if (source.m_setext) {
-          int digits = 0;
-          while (digits < after.size() && after[digits].isDigit()) {
-            ++digits;
-          }
-          if (digits == after.size() - 1) {
-            // A single-component terminator otherwise turns Setext into a list.
-            after.insert(digits, QLatin1Char('\\'));
-          }
-        }
-        after += QLatin1Char(' ');
-        if (source.m_needsSeparator) {
-          after.prepend(QLatin1Char(' '));
-        }
-        const QString before(firstLine.constData(), prefixLength);
-        if (before != after) {
-          resultingCharacters += after.size() - before.size();
-          if (resultingCharacters > std::numeric_limits<int>::max()) {
-            plan.m_valid = false;
-            break;
-          }
-          plan.m_replacements.append({source.m_block.position() + source.m_content, before,
-                                      std::move(after), source.m_needsSeparator});
-        }
+        plan.m_replacements.append({source.m_block.position() + source.m_content, before,
+                                    std::move(after), source.m_needsSeparator});
       }
     }
   }

@@ -6351,6 +6351,12 @@ void TestMarkdownEditor::testHeadingSourceTitleAndEmpty_data() {
       << QVector<QString>{QStringLiteral("1."), QStringLiteral("1.1.")}
       << QStringLiteral("## 1. \n###   1.1. \n")
       << QStringList{QStringLiteral("1."), QStringLiteral("1.1.")} << true;
+  QTest::newRow("skipped-unresolved-setext")
+      << QStringLiteral("## Before\n\n[ref]: /url\nAlpha\n-----\n\n## After\n")
+      << QVector<QString>{QStringLiteral("1."), QString(), QStringLiteral("2.")}
+      << QStringLiteral("## 1. Before\n\n[ref]: /url\nAlpha\n-----\n\n## 2. After\n")
+      << QStringList{QStringLiteral("1. Before"), QStringLiteral("Alpha"), QStringLiteral("2. After")}
+      << true;
 }
 
 void TestMarkdownEditor::testHeadingSourceTitleAndEmpty() {
@@ -6524,16 +6530,11 @@ void TestMarkdownEditor::testHeadingSourceUnresolvedSetextBoundary() {
   const int revision = doc->revision();
   const int undoSteps = doc->availableUndoSteps();
   doc->setModified(false);
-  int providerCalls = 0;
-  editor->setHeadingSectionNumberProvider([&providerCalls](const QVector<md::HeadingInfo> &) {
-    ++providerCalls;
-    return QVector<QString>{QStringLiteral("1.")};
-  });
+  editor->setHeadingSectionNumberProvider(headingPrefixes({QStringLiteral("1.")}));
   editor->setHeadingSectionNumberingActive(true);
   QTest::qWait(800);
   // cmark's heading origin may include a discarded reference definition.
-  // An unresolved title boundary must never be passed to the host or rewritten.
-  QCOMPARE(providerCalls, 0);
+  // An unresolved title boundary must never be rewritten.
   QCOMPARE(fixture.text(), source);
   QCOMPARE(snapshot.titles(), QStringList{QStringLiteral("Alpha")});
   QVERIFY(!snapshot.m_numbered);

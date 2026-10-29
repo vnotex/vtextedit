@@ -222,6 +222,8 @@ struct HeadingInfo {
 
   // No inline AST children, unlike image/HTML-only headings with an empty title.
   bool m_isEmpty = false;
+  // Underlined heading syntax rather than hash-style ATX.
+  bool m_isSetext = false;
 
   // AST-derived rendered text of the heading, trimmed. For display.
   QString m_title;

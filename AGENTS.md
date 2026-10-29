@@ -111,13 +111,19 @@ Heading records include zero-based source lines and rendered order. Unreferenced
 headings have no rendered rank and must not reserve reader slugs. Shared title extraction is
 iterative so deeply nested inline formatting does not overflow the native stack.
 
-## Empty Heading Metadata
+## Heading Eligibility Metadata
 
 `md::HeadingInfo::m_isEmpty` records that the cmark heading has no inline AST children.
 Bare ATX markers, whitespace-only contents and closing-marker-only contents are empty.
 Do not derive this flag from `m_title`: images and inline HTML can have an empty display
 title despite containing source content. Parsing, highlighting and heading publication
 retain empty headings; the host decides whether to number them.
+
+`m_isSetext` records cmark's underlined (`-` or `=`) heading syntax. The shared `headingInfo()`
+constructor supplies both flags to live editor and immutable document records. Hosts may
+skip Setext via empty provider entries; the generic provider still supports numbering it.
+Empty entries bypass source-boundary and prefix resolution, but all headings retain source-order
+checks. Invalid requested rewrites reject the whole plan, including ambiguous Setext origins.
 
 ## Session-Owned Heading Source Numbers
 
