@@ -137,19 +137,36 @@ public:
     PreviewElementType m_type = PreviewElementType::Image;
   };
 
-  // Source-indexed, half-open offsets within a single block.
-  struct ConcealSpec {
-    QTextBlock m_block;
+  // Absolute, half-open UTF-16 source positions. Runs never cross a block;
+  // groups and their reveal regions may span multiple blocks.
+  struct ConcealRun {
     int m_start = 0;
     int m_end = 0;
+    QString m_replacement;
+  };
+
+  struct ConcealGroup {
+    int m_start = 0;
+    int m_end = 0;
+    int m_revealStart = 0;
+    int m_revealEnd = 0;
+    bool m_revealAtEnd = false;
+    int m_firstRun = 0;
+    int m_runCount = 0;
+    QTextCharFormat m_format;
+    bool m_tooltip = false;
+  };
+
+  struct ConcealSnapshot {
+    QVector<ConcealGroup> m_groups;
+    QVector<ConcealRun> m_runs;
   };
 
   TextDocumentLayout(QTextDocument *p_doc, DocumentResourceMgr *p_resourceMgr);
 
-  bool conceal(const QTextBlock &p_block, int p_start, int p_end);
-  bool setConcealedRanges(const QVector<ConcealSpec> &p_ranges);
-  void setConcealFormat(const QTextCharFormat &p_format);
+  void setConcealment(const ConcealSnapshot &p_snapshot);
   void setConcealCursorPosition(int p_position);
+  bool concealedSourceAt(const QPointF &p_point, int &p_start, int &p_end, QRectF &p_rect) const;
 
   void draw(QPainter *p_painter, const PaintContext &p_context) Q_DECL_OVERRIDE;
 
@@ -440,14 +457,54 @@ private:
 
   void queueConcealRelayout(const QTextBlock &p_block);
   void flushConcealRelayout();
-  void invalidateConcealRanges(const QTextBlock &p_block);
+  struct ConcealPosition {
+    QTextBlock m_block;
+    int m_offset = 0;
+    int position() const { return m_block.position() + m_offset; }
+  };
+  struct ConcealDependency {
+    QTextBlock m_block;
+    int m_revision = -1;
+  };
+  struct LiveConcealRun {
+    QTextBlock m_block;
+    ConcealedRange m_range;
+  };
+  struct LiveConcealGroup {
+    ConcealGroup m_spec;
+    ConcealPosition m_start, m_end, m_revealStart, m_revealEnd;
+    int m_firstDependency = 0;
+    int m_dependencyCount = 0;
+    bool m_valid = true;
+    bool m_active = false;
+    bool m_composing = false;
+  };
 
-  // Live handles survive shifts caused by edits in preceding blocks. Pending
-  // handles likewise must not be stored as block numbers across a busy pass.
+  int concealCursorPosition() const;
+  bool concealGroupRevealed(const LiveConcealGroup &p_group, int p_cursor) const;
+  void queueConcealGroup(const LiveConcealGroup &p_group);
+  void refreshConcealGroups();
+  void failConcealGroups(const QVector<int> &p_groups);
+  QVector<ConcealedRange> concealRunsForBlock(const QTextBlock &p_block,
+                                              QVector<int> &p_failedGroups) const;
+  QVector<QTextLayout::FormatRange>
+  concealFormatsForBlock(const QTextBlock &p_block, const QVector<ConcealedRange> &p_runs) const;
+  void layoutConcealBlocks(OrderedIntSet &p_blocks);
+  QTextOption blockTextOption(const QTextBlock &p_block) const;
+
+  // Only live block handles and local offsets survive preceding-block edits.
+  // A revision change in ANY dependency invalidates the complete group.
+  QVector<LiveConcealGroup> m_concealGroups;
+  QVector<LiveConcealRun> m_concealRuns;
+  QVector<ConcealDependency> m_concealDependencies;
   QVector<QTextBlock> m_concealBlocks;
   QVector<QTextBlock> m_pendingConcealBlocks;
-  QTextCharFormat m_concealFormat;
-  int m_concealCursor = -1;
+  ConcealSnapshot m_deferredConcealment;
+  int m_deferredConcealRevision = -1;
+  bool m_hasDeferredConcealment = false;
+  bool m_hasDeferredConcealCursor = false;
+  int m_deferredConcealCursor = -1;
+  ConcealPosition m_concealCursorAnchor;
   bool m_concealTimerPending = false;
   bool m_concealGeometryChanged = false;
 

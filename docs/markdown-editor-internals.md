@@ -38,8 +38,7 @@ The Markdown-specific configuration is in `MarkdownEditorConfig`:
 | Field or method | Effect |
 |-----------------|--------|
 | `m_inplacePreviewSources` | Enables the `ImageLink`, `CodeBlock`, `Math` and/or `Table` preview sources. The first three are enabled by default; `Table` is opt-in, because its sheet writes back to the document. |
-| `m_concealElements` | Eligible `ImageUrl`, `LinkUrl`, `ReferenceUrl` flags; all enabled by default. An empty mask disables automatic concealment. |
-| `m_concealLengthThreshold` | Common grapheme threshold, default 20; destinations must exceed it and the nine-grapheme compact display. |
+| `m_concealRules` | Typed per-kind rules. URL shortening is enabled by default; syntax hiding is opt-in. An empty rule set disables concealment. |
 | `m_constrainInplacePreviewWidthEnabled` | Allows block preview images to shrink to the text layout width. |
 | `m_webCodeBlockHighlighterEnabled` | Selects the web or KSyntax fenced-code source highlighter during construction. |
 | `m_autoFoldPreviewedBlocksEnabled` | Folds a foldable region as soon as it first gets a valid in-place preview. Default on. See [Preview driven folding](#preview-driven-folding). |
@@ -337,46 +336,87 @@ line count zero, and a non-null rectangle with zero height. The non-null width p
 
 ### Source-preserving inline concealment
 
-`MarkdownHighlighter::concealRangesUpdated()` publishes only timestamp-matched full-parse
-`md::ConcealRange` snapshots. `getConcealRanges()` is empty while the complete result is stale.
-Candidates are absolute, half-open UTF-16 spans of raw destinations: inline links/images,
-URL/email autolinks, reference definitions (including unused/duplicate definitions), and the
-existing HTML image scanner's effective `src` value. Labels, titles, quotes and angle delimiters
-remain visible. Definitions are observed at cmark's authoritative consumption point; no second
-Markdown or HTML parser is used. Code, comments, raw-text HTML and multiline payloads are excluded.
+`MarkdownEditorConfig::m_concealRules` is the single selection and configuration table.
+Missing kinds are disabled; `clear()` disables all concealment. `set()` rejects an invalid
+kind/operation pairing. The default table contains `ImageUrl`, `LinkUrl` and `ReferenceUrl`
+with `MarkdownConcealShortenDestination{}`: threshold 20, three retained graphemes at each
+end, and three U+00B7 middle dots. A destination must exceed both the threshold and the
+compact spelling's grapheme count. Negative thresholds act as zero; invalid lengths or
+multiline replacements leave the source visible.
 
-The editor filters kinds and counts grapheme clusters. A destination must be strictly longer
-than both `max(0, m_concealLengthThreshold)` and nine graphemes. The display retains three
-graphemes at each end with three U+00B7 middle dots between them. The moving caret reveals
-the full submitted `[start, end)` range, including either retained end; a caret at `end` is
-outside. Selection alone does not reveal it. An IME preedit reveals its whole block temporarily.
+Syntax kinds use `MarkdownConcealHideSyntax{}` and are opt-in:
 
-Hovering the dots or either retained end shows the complete raw destination in a tooltip,
-without changing the caret, selection or layout. The viewport tooltip handler uses exact
-layout hit testing and requires a current painted conceal marker; revealed or invalidated
-ranges and nearby whitespace do not qualify. Tooltip contents are escaped as literal text,
-with source whitespace preserved.
+| Kind | Concealed source | Visible content |
+|------|------------------|-----------------|
+| `EmphasisMarkers`, `StrongMarkers` | Matched opening/closing `*` or `_` runs | Emphasized text |
+| `StrikethroughMarkers`, `MarkMarkers` | Matched `~~` or `==` delimiters | Formatted text |
+| `InlineCodeMarkers` | Actual matched backtick runs, of any accepted length | Original code contents |
+| `LinkSyntax` | Opening `[` and the complete closing/destination or reference suffix; explicit autolinks hide only `<` and `>` | Link label or autolink destination; image syntax is not included |
+| `HeadingMarkers` | ATX opening hashes/separator and any recognized closing hash suffix/separator | Heading text, indentation and section numbers; Setext underlines are untouched |
+| `InlineFormulaMarkers` | `$...$` or single-line `$$...$$` delimiters | Formula source, not a new rendered preview; multiline math blocks are untouched |
 
-The internal layout exposes `conceal(block, start, end)`, atomic `setConcealedRanges()`,
-`setConcealFormat()` and `setConcealCursorPosition()`. Invalid batches leave the old snapshot
-unchanged; duplicates are idempotent. Submissions survive ordinary cache resets, but a changed
-block revision invalidates its local ranges. Targeted relayout preserves preview bands and the
-document offset chain; busy passes defer transitions, and `concealmentChanged()` fires only
-after the resulting geometry is complete and the outer pass is idle.
+For example, opt into heading and formula markers without changing the URL defaults:
 
-The canonical document-attached `QTextLayout` remains the sole geometry source. An isolated
-Qt-private adapter changes cached glyph advances and clusters, never document text or source
-indexes. The marker is a single visual cluster, with temporary break suppression restored
-after line creation. Its advancing script item uses two blank glyphs in one cluster (zero
-advance first) to avoid Qt's literal soft-hyphen width branch. Ordinary script inheritance
-preserves font fallback; Qt's synthetic emoji classification does not apply to the dots.
+```cpp
+config->m_concealRules.set(MarkdownConcealElement::HeadingMarkers,
+                           MarkdownConcealHideSyntax{});
+config->m_concealRules.set(MarkdownConcealElement::InlineFormulaMarkers,
+                           MarkdownConcealHideSyntax{});
+```
 
-`Theme::ConcealedText` styles the whole compact range. Omitted custom-theme properties inherit
-source formatting; selection/search retain their normal precedence. Reveal restores syntax
-formats. Copy, cut, search, undo and Vi counts use original source. Configuration reapplication
-does not rewrite text; unchanged line spacing also avoids an otherwise redundant formatting
-undo command. Builds require the matching `Qt5::GuiPrivate` or `Qt6::GuiPrivate` development
-headers and runtime kit. The private dependency is not exposed through public headers.
+`MarkdownHighlighter::concealRangesUpdated()` publishes timestamp-matched full-parse
+`md::ConcealRanges` snapshots: flat element descriptors plus exact syntax spans, in absolute
+half-open UTF-16 positions. `getConcealRanges()` is empty while the complete result is stale.
+URL candidates retain their raw destination extents, including unused/duplicate reference
+definitions and HTML image `src` values. Syntax recognition belongs to cmark, not a second
+Markdown parser. Escaped/unmatched delimiters, comments, raw-text HTML contents and syntax
+inside code do not become marker candidates; enabled grammar extensions remain authoritative.
+
+Full editor projections opt into cmark's `CMARK_OPT_SOURCE_SYNTAX` only while at least one
+syntax rule is selected. URL-only, disabled, fast and render-only paths avoid this metadata.
+Changing syntax-rule demand retires stale projection generations without changing source or
+the host grammar profile. The parser records exact
+per-line input mappings and consumed syntax bytes at recognition, including container prefixes,
+tabs, table cells and multiline spans. The adapter verifies those bytes and grapheme boundaries
+before publication. Stripped indentation and paragraph separators are never hidden by a
+multiline suffix. The internal projection option does not change the immutable document's
+host grammar/profile identity.
+
+The editor translates selected policies into a generic `TextDocumentLayout::ConcealSnapshot`.
+Each group owns a source extent, a reveal region, optional compact formatting/tooltip and a
+slice of replacement runs. Each run replaces an exact block-local source span with arbitrary
+single-line text, including an empty string or text longer than its source. Groups may span
+blocks; neither source nor replacement may consume or introduce a paragraph separator.
+Shortening thresholds and delimiter recognition never enter the layout engine.
+
+The caret reveals an entire group when it enters its reveal region or any run. Syntax groups
+also reveal at their exclusive end, keeping closing delimiters and empty headings editable at
+EOF; URL groups retain their half-open boundary behavior. Selection alone does not reveal a
+group. IME preedit reveals its block and affected groups across blocks. A nonempty replacement
+hit maps to its source start; zero-width boundaries use native source hit-testing with visible
+neighbor affinity and an exclusive-end fallback. Completely hidden paragraphs retain an
+editable line height. Copy, cut, search, undo and counted Vi motions always use original source.
+
+Nested empty hides combine without losing ownership; a containing hide suppresses an inner
+replacement. Revealing the outer group allows independent inner rules to apply. Incompatible
+partial replacements leave the implicated groups visible, not unrelated groups. Submission
+always replaces the previous snapshot, and validation/shaping succeeds for every run of a
+group or reveals the whole group. Any revision change in a block intersecting the group's
+source extent invalidates all its runs, including edits in a visible middle block. Live block
+handles preserve positions only across changes in other, unedited blocks. Unrelated edits and
+edits in already revealed groups retain the same-height single-block layout fast path.
+
+The canonical document-attached `QTextLayout` remains the sole geometry source. The Qt-private
+adapter changes cached glyph advances/clusters, never source text or document formats; temporary
+line-breaking attributes are restored after line creation. Busy transitions defer until safe,
+and `concealmentChanged()` fires after complete geometry at the outermost idle boundary.
+
+`Theme::ConcealedText` styles compact destinations, including retained ends. Syntax hiding keeps
+ordinary syntax formats. Selection/search keep their normal precedence. Hovering compact URL
+text shows its complete escaped raw source without changing selection or layout;
+`concealedSourceAt()` excludes revealed/invalid groups and nearby whitespace. Configuration
+reapplication preserves text and history. Builds require matching `Qt6::GuiPrivate` headers
+and runtime kit; the private dependency is not exposed through public headers.
 
 ### Inline previews
 

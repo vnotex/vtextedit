@@ -46,6 +46,10 @@ private slots:
   void testReferences();
   void testConcealUrlSpans();
   void testConcealReferenceDestinations();
+  void testConcealSyntaxDelimiters();
+  void testConcealSyntaxLinks();
+  void testConcealSyntaxHeadings();
+  void testConcealSyntaxExclusions();
   void testStrikethrough();
   void testMark();
   void testFootnotes();

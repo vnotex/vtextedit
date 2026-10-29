@@ -4,7 +4,96 @@
 #include "global.h"
 #include "texteditorconfig.h"
 
+#include <array>
+#include <initializer_list>
+#include <optional>
+#include <utility>
+#include <variant>
+
 namespace vte {
+struct MarkdownConcealShortenDestination {
+  int m_threshold = 20;
+  int m_keepPrefix = 3;
+  int m_keepSuffix = 3;
+  QString m_replacement = QString(3, QChar(0x00b7));
+};
+
+struct MarkdownConcealHideSyntax {};
+
+using MarkdownConcealRule =
+    std::variant<MarkdownConcealShortenDestination, MarkdownConcealHideSyntax>;
+
+// One optional rule per kind. There is no separate enablement mask to get out of sync.
+class MarkdownConcealRules {
+public:
+  MarkdownConcealRules() = default;
+  MarkdownConcealRules(
+      std::initializer_list<std::pair<MarkdownConcealElement, MarkdownConcealRule>> p_rules) {
+    for (const auto &entry : p_rules) {
+      set(entry.first, entry.second);
+    }
+  }
+
+  static bool isDestination(MarkdownConcealElement p_kind) {
+    return p_kind == MarkdownConcealElement::ImageUrl ||
+           p_kind == MarkdownConcealElement::LinkUrl ||
+           p_kind == MarkdownConcealElement::ReferenceUrl;
+  }
+
+  // Invalid kind/operation combinations are rejected, never reinterpreted.
+  bool set(MarkdownConcealElement p_kind, const MarkdownConcealRule &p_rule) {
+    if (p_kind <= MarkdownConcealElement::None || p_kind >= MarkdownConcealElement::Count ||
+        isDestination(p_kind) !=
+            std::holds_alternative<MarkdownConcealShortenDestination>(p_rule)) {
+      return false;
+    }
+    m_rules[static_cast<size_t>(p_kind)] = p_rule;
+    return true;
+  }
+
+  void remove(MarkdownConcealElement p_kind) {
+    if (p_kind > MarkdownConcealElement::None && p_kind < MarkdownConcealElement::Count) {
+      m_rules[static_cast<size_t>(p_kind)].reset();
+    }
+  }
+
+  const MarkdownConcealRule *get(MarkdownConcealElement p_kind) const {
+    if (p_kind <= MarkdownConcealElement::None || p_kind >= MarkdownConcealElement::Count) {
+      return nullptr;
+    }
+    const auto &rule = m_rules[static_cast<size_t>(p_kind)];
+    return rule ? &*rule : nullptr;
+  }
+
+  void clear() {
+    for (auto &rule : m_rules) {
+      rule.reset();
+    }
+  }
+
+  bool isEmpty() const {
+    for (const auto &rule : m_rules) {
+      if (rule) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool hasSyntaxRules() const {
+    for (const auto &rule : m_rules) {
+      if (rule && std::holds_alternative<MarkdownConcealHideSyntax>(*rule)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+private:
+  std::array<std::optional<MarkdownConcealRule>, static_cast<size_t>(MarkdownConcealElement::Count)>
+      m_rules;
+};
+
 class VTEXTEDIT_EXPORT MarkdownEditorConfig {
 public:
   enum InplacePreviewSource {
@@ -37,13 +126,11 @@ public:
 
   InplacePreviewSources m_inplacePreviewSources;
 
-  // Empty disables automatic concealment; source text is never changed.
-  MarkdownConcealElements m_concealElements = MarkdownConcealElement::ImageUrl |
-                                              MarkdownConcealElement::LinkUrl |
-                                              MarkdownConcealElement::ReferenceUrl;
-
-  // Conceal only destinations longer than this many grapheme clusters.
-  int m_concealLengthThreshold = 20;
+  // Syntax rules are opt-in. Empty disables concealment; source text is never changed.
+  MarkdownConcealRules m_concealRules = {
+      {MarkdownConcealElement::ImageUrl, MarkdownConcealShortenDestination{}},
+      {MarkdownConcealElement::LinkUrl, MarkdownConcealShortenDestination{}},
+      {MarkdownConcealElement::ReferenceUrl, MarkdownConcealShortenDestination{}}};
 
   // Native KSyntaxHighlighting is the default for code blocks. Set true before
   // constructing the editor to use the host-provided external/web highlighter.

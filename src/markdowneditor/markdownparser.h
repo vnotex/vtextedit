@@ -36,6 +36,9 @@ struct MarkdownParseConfig {
   // Fast parse.
   bool m_fast = false;
 
+  // Full editor projection only; URL shortening needs no syntax-marker metadata.
+  bool m_collectConcealSyntax = false;
+
   QString toString() const {
     return QStringLiteral("MarkdownParseConfig ts %1 data %2 blocks %3")
         .arg(m_timeStamp)
@@ -77,7 +80,7 @@ struct MarkdownParseResult {
   // All image link regions.
   QVector<ElementRegion> m_imageRegions;
 
-  QVector<ConcealRange> m_concealRanges;
+  ConcealRanges m_concealRanges;
 
   // All header regions.
   // Sorted by start position.

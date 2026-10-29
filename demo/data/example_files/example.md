@@ -1,17 +1,17 @@
 # VTextEdit: core editor component of VNote
 **Test Page** with *all elements*, such as `inline code`, ~~strike~~, $a * b = c$, and so on.
 
-## Inline destination concealment
+## Source-preserving concealment ##
 
-Destinations longer than 20 graphemes keep three at each end around three middle dots.
-Hover over the dots or either visible end to see the full source in a tooltip.
-Move the caret into either visible end or click the dots to reveal the full source inline.
-Leave the destination to conceal it again; copying always uses the original text.
+The demo hides heading hashes and the markers of **bold**, *italic*, ~~strike~~ and ==mark==.
+Inline code can use ``two ` backticks``; formulas include $x + y$ and $$a^2 + b^2$$.
+Move the caret into an element to reveal all its syntax; leave it to hide the syntax again.
+Links keep their label visible. Copy, search and Vi motions always use the original source.
 
 [Alphabet](abcdefghijklmnopqrstuvwxyz) followed by ordinary text.
 In Vi normal mode, place the caret on the opening parenthesis and type `5l` to reach `e`.
 
-[Web link](https://example.com/abcdefghijklmnopqrstuvwxyz "The title stays visible")
+[Web link](https://example.com/abcdefghijklmnopqrstuvwxyz "The title is part of the hidden suffix")
 
 Autolink: <https://example.com/abcdefghijklmnopqrstuvwxyz>
 
@@ -19,8 +19,11 @@ Autolink: <https://example.com/abcdefghijklmnopqrstuvwxyz>
 
 [conceal-example]: https://example.com/abcdefghijklmnopqrstuvwxyz "Reference title"
 
-Threshold boundary: [20 graphemes](abcdefghijklmnopqrst) stays visible;
-[21 graphemes](abcdefghijklmnopqrstu) is concealed.
+Destination-only rules shorten text over 20 graphemes to three at each end around middle dots.
+Hover over a compact destination to see its complete raw source.
+
+[20-graphemes]: abcdefghijklmnopqrst
+[21-graphemes]: abcdefghijklmnopqrstu
 
 Markdown image: ![Bundled icon](:/demo/data/example_files/vnote.png "Local preview" =64x64) uses an offline resource.
 

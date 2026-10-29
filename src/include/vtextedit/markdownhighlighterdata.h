@@ -2,6 +2,7 @@
 #define MARKDOWNHIGHLIGHTERDATA_H
 
 #include <QTextCharFormat>
+#include <QVector>
 
 #include "vtextedit_export.h"
 #include <vtextedit/global.h>
@@ -145,9 +146,23 @@ struct ElementRegion {
   int m_endPos = 0;
 };
 
-// Raw URL payload, in absolute half-open UTF-16 document positions.
+// Parser-proven element extent and its syntax spans, in absolute half-open UTF-16 positions.
+// URL candidates have no syntax spans: shortening is an editor policy.
 struct ConcealRange : ElementRegion {
   MarkdownConcealElement m_element = MarkdownConcealElement::None;
+  int m_firstSpan = 0;
+  int m_spanCount = 0;
+};
+
+struct ConcealRanges {
+  QVector<ConcealRange> m_elements;
+  QVector<ElementRegion> m_spans;
+
+  bool isEmpty() const { return m_elements.isEmpty(); }
+  void clear() {
+    m_elements.clear();
+    m_spans.clear();
+  }
 };
 
 // One image link found by the parse that produced the current highlighting,

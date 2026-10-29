@@ -239,7 +239,7 @@ struct ASTWalkResult {
   QVector<ElementRegion> tableHeaderRegions;
   QVector<ElementRegion> tableBorderRegions;
   QVector<FoldingRegion> foldingRegions;
-  QVector<ConcealRange> concealRanges; // full parse only; raw URL payloads
+  ConcealRanges concealRanges; // full parse only; URL payloads and exact syntax spans
 
   // Typed element data for interactive previews.
   QVector<ImageElement> imageElements;
@@ -263,7 +263,8 @@ struct ASTWalkResult {
 ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int p_offset = 0,
                              int p_startBlock = 0, bool p_fast = false, bool p_collectLists = false,
                              int p_parseOptions = 0,
-                             MarkdownDocumentRequest *p_documentRequest = nullptr);
+                             MarkdownDocumentRequest *p_documentRequest = nullptr,
+                             bool p_collectConcealSyntax = false);
 
 // Project the walker's image elements onto what the highlighter publishes:
 // region, destination and declared size. Order is preserved, one entry per

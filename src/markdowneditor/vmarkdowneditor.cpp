@@ -2018,7 +2018,7 @@ void VMarkdownEditor::setupSyntaxHighlighter() {
   connect(getHighlighter(), &MarkdownHighlighter::listItemRangesUpdated, documentLayout(),
           &TextDocumentLayout::setListItemRanges);
   connect(getHighlighter(), &MarkdownHighlighter::concealRangesUpdated, this,
-          [this](TimeStamp p_timeStamp, const QVector<md::ConcealRange> &p_ranges) {
+          [this](TimeStamp p_timeStamp, const md::ConcealRanges &p_ranges) {
             Q_UNUSED(p_timeStamp);
             applyConcealRanges(p_ranges);
           });
@@ -2293,6 +2293,7 @@ void VMarkdownEditor::updateFromConfig() {
   Q_ASSERT(m_config);
 
   getHighlighter()->setDocumentParseOptions(m_config->m_documentParseOptions);
+  getHighlighter()->setSyntaxConcealmentEnabled(m_config->m_concealRules.hasSyntaxRules());
 
   documentLayout()->setConstrainPreviewWidthEnabled(
       m_config->m_constrainInplacePreviewWidthEnabled);
@@ -2300,7 +2301,6 @@ void VMarkdownEditor::updateFromConfig() {
   documentLayout()->setListItemDecorationColors(
       theme()->editorStyle(Theme::ListItemGuide).textColor(),
       theme()->editorStyle(Theme::ActiveListItem).backgroundColor());
-  documentLayout()->setConcealFormat(theme()->editorStyle(Theme::ConcealedText).toTextCharFormat());
   applyConcealRanges(getHighlighter()->getConcealRanges());
 
   updateInplacePreviewSources();
@@ -2328,60 +2328,131 @@ void VMarkdownEditor::updateFromConfig() {
   updateSpaceWidth();
 }
 
-void VMarkdownEditor::applyConcealRanges(const QVector<md::ConcealRange> &p_ranges) {
+void VMarkdownEditor::applyConcealRanges(const md::ConcealRanges &p_ranges) {
   auto *layout = documentLayout();
-  if (!m_config->m_concealElements || p_ranges.isEmpty()) {
-    layout->setConcealedRanges({});
+  if (m_config->m_concealRules.isEmpty() || p_ranges.isEmpty()) {
+    layout->setConcealment({});
     return;
   }
 
   auto *doc = document();
   const int documentEnd = doc->characterCount() - 1;
-  const int minimumLength = qMax(9, m_config->m_concealLengthThreshold);
-  QVector<TextDocumentLayout::ConcealSpec> specs;
-  specs.reserve(p_ranges.size());
+  TextDocumentLayout::ConcealSnapshot snapshot;
+  snapshot.m_groups.reserve(p_ranges.m_elements.size());
+  snapshot.m_runs.reserve(p_ranges.m_spans.size() + p_ranges.m_elements.size());
+  const auto compactFormat = theme()->editorStyle(Theme::ConcealedText).toTextCharFormat();
+  std::array<int, static_cast<size_t>(MarkdownConcealElement::Count)> replacementLengths;
+  replacementLengths.fill(-1);
   QTextBlock previousBlock;
   QTextBoundaryFinder finder;
-  for (const auto &range : p_ranges) {
-    if (range.m_element == MarkdownConcealElement::None ||
-        !m_config->m_concealElements.testFlag(range.m_element) || range.m_startPos < 0 ||
-        range.m_endPos <= range.m_startPos || range.m_endPos > documentEnd) {
+  for (const auto &range : p_ranges.m_elements) {
+    const auto *rule = m_config->m_concealRules.get(range.m_element);
+    if (!rule || range.m_startPos < 0 || range.m_endPos <= range.m_startPos ||
+        range.m_endPos > documentEnd) {
       continue;
     }
-    const auto block = doc->findBlock(range.m_startPos);
-    if (!block.isValid() || range.m_endPos - block.position() > block.length() - 1) {
-      continue;
-    }
-    // Candidates are source ordered; build grapheme attributes only once per block.
-    if (block != previousBlock) {
-      finder = QTextBoundaryFinder(QTextBoundaryFinder::Grapheme, block.text());
-      previousBlock = block;
-    }
-    const int start = range.m_startPos - block.position();
-    const int end = range.m_endPos - block.position();
-    finder.setPosition(end);
-    if (!finder.isAtBoundary()) {
-      continue;
-    }
-    finder.setPosition(start);
-    if (!finder.isAtBoundary()) {
-      continue;
-    }
-    int length = 0;
-    while (finder.position() < end && length <= minimumLength) {
-      if (finder.toNextBoundary() < 0) {
-        break;
+    TextDocumentLayout::ConcealGroup group;
+    group.m_start = group.m_revealStart = range.m_startPos;
+    group.m_end = group.m_revealEnd = range.m_endPos;
+    group.m_firstRun = snapshot.m_runs.size();
+    if (const auto *shorten = std::get_if<MarkdownConcealShortenDestination>(rule)) {
+      if (shorten->m_keepPrefix < 0 || shorten->m_keepSuffix < 0) {
+        continue;
       }
-      ++length;
+      auto &replacementLength = replacementLengths[static_cast<size_t>(range.m_element)];
+      if (replacementLength == -1) {
+        replacementLength = 0;
+        for (const auto ch : shorten->m_replacement) {
+          if (ch.isNull() || ch == QLatin1Char('\n') || ch == QLatin1Char('\r') ||
+              ch == QChar::ParagraphSeparator || ch == QChar::LineSeparator) {
+            replacementLength = -2;
+            break;
+          }
+        }
+        if (replacementLength == 0) {
+          QTextBoundaryFinder marker(QTextBoundaryFinder::Grapheme, shorten->m_replacement);
+          while (marker.toNextBoundary() >= 0) {
+            ++replacementLength;
+          }
+        }
+      }
+      if (replacementLength < 0) {
+        continue;
+      }
+      const qint64 minimumLength =
+          qMax<qint64>(qMax(0, shorten->m_threshold),
+                       qint64(shorten->m_keepPrefix) + shorten->m_keepSuffix + replacementLength);
+      if (minimumLength >= range.m_endPos - range.m_startPos) {
+        continue;
+      }
+      const auto block = doc->findBlock(range.m_startPos);
+      if (!block.isValid() || range.m_endPos - block.position() > block.length() - 1) {
+        continue;
+      }
+      // Build source grapheme attributes once per participating block.
+      if (block != previousBlock) {
+        finder = QTextBoundaryFinder(QTextBoundaryFinder::Grapheme, block.text());
+        previousBlock = block;
+      }
+      const int start = range.m_startPos - block.position();
+      const int end = range.m_endPos - block.position();
+      finder.setPosition(end);
+      if (!finder.isAtBoundary()) {
+        continue;
+      }
+      finder.setPosition(start);
+      if (!finder.isAtBoundary()) {
+        continue;
+      }
+      int length = 0;
+      while (finder.position() < end && length <= minimumLength) {
+        if (finder.toNextBoundary() < 0) {
+          break;
+        }
+        ++length;
+      }
+      if (length <= minimumLength) {
+        continue;
+      }
+      finder.setPosition(start);
+      for (int i = 0; i < shorten->m_keepPrefix; ++i) {
+        finder.toNextBoundary();
+      }
+      const int hiddenStart = block.position() + finder.position();
+      finder.setPosition(end);
+      for (int i = 0; i < shorten->m_keepSuffix; ++i) {
+        finder.toPreviousBoundary();
+      }
+      snapshot.m_runs.append(
+          {hiddenStart, int(block.position() + finder.position()), shorten->m_replacement});
+      group.m_format = compactFormat;
+      group.m_tooltip = true;
+    } else {
+      if (range.m_firstSpan < 0 || range.m_spanCount <= 0 ||
+          range.m_firstSpan > p_ranges.m_spans.size() ||
+          range.m_spanCount > p_ranges.m_spans.size() - range.m_firstSpan) {
+        continue;
+      }
+      bool valid = true;
+      for (int i = 0; i < range.m_spanCount; ++i) {
+        const auto &span = p_ranges.m_spans.at(range.m_firstSpan + i);
+        if (span.m_startPos < range.m_startPos || span.m_endPos > range.m_endPos ||
+            span.m_endPos <= span.m_startPos) {
+          valid = false;
+          break;
+        }
+        snapshot.m_runs.append({span.m_startPos, span.m_endPos, {}});
+      }
+      if (!valid) {
+        snapshot.m_runs.resize(group.m_firstRun);
+        continue;
+      }
+      group.m_revealAtEnd = true;
     }
-    if (length > minimumLength) {
-      specs.append({block, start, end});
-    }
+    group.m_runCount = snapshot.m_runs.size() - group.m_firstRun;
+    snapshot.m_groups.append(std::move(group));
   }
-  if (!layout->setConcealedRanges(specs)) {
-    // Never leave an old snapshot attached to a newly rejected parse result.
-    layout->setConcealedRanges({});
-  }
+  layout->setConcealment(snapshot);
 }
 
 void VMarkdownEditor::applyPreviewFolding() {
@@ -2585,41 +2656,17 @@ bool VMarkdownEditor::eventFilter(QObject *p_obj, QEvent *p_event) {
                             ? horizontalBar->maximum() - horizontalBar->value()
                             : horizontalBar->value(),
                         m_textEdit->verticalScrollBar()->value());
-    const int position = documentLayout()->hitTest(helpEvent->pos() + scroll, Qt::ExactHit);
-    const auto block = position < 0 ? QTextBlock() : document()->findBlock(position);
-    if (block.isValid() && block.isVisible()) {
-      const auto data = BlockLayoutData::get(block);
-      if (data->m_concealRevision == block.revision()) {
-        const int column = position - block.position();
-        for (const auto &range : data->m_concealedRanges) {
-          if (column < range.m_start || column >= range.m_end) {
-            continue;
-          }
-          // A submitted range may be revealed by the caret or IME, or rejected by shaping.
-          const auto marker =
-              std::find_if(data->m_concealMarkers.cbegin(), data->m_concealMarkers.cend(),
-                           [&range](const ConcealPaintData &p_marker) {
-                             return p_marker.m_hiddenStart == range.m_hiddenStart &&
-                                    p_marker.m_hiddenEnd == range.m_hiddenEnd;
-                           });
-          if (marker == data->m_concealMarkers.cend()) {
-            break;
-          }
-          const auto line = block.layout()->lineForTextPosition(column);
-          const qreal start = line.cursorToX(qMax(range.m_start, line.textStart()));
-          const qreal end = line.cursorToX(qMin(range.m_end, line.textStart() + line.textLength()));
-          QRectF rect(qMin(start, end), line.y(), qAbs(end - start), line.height());
-          if (line.lineNumber() ==
-              block.layout()->lineForTextPosition(marker->m_hiddenStart).lineNumber()) {
-            rect = rect.united(marker->m_rect);
-          }
-          rect.translate(-scroll.x(), data->top() - scroll.y());
-          const auto text = block.text().mid(range.m_start, range.m_end - range.m_start);
-          QToolTip::showText(helpEvent->globalPos(), Qt::convertFromPlainText(text), viewport,
-                             rect.toAlignedRect());
-          return true;
-        }
-      }
+    int start = 0;
+    int end = 0;
+    QRectF rect;
+    if (documentLayout()->concealedSourceAt(helpEvent->pos() + scroll, start, end, rect)) {
+      QTextCursor cursor(document());
+      cursor.setPosition(start);
+      cursor.setPosition(end, QTextCursor::KeepAnchor);
+      rect.translate(-scroll.x(), -scroll.y());
+      QToolTip::showText(helpEvent->globalPos(), Qt::convertFromPlainText(cursor.selectedText()),
+                         viewport, rect.toAlignedRect());
+      return true;
     }
     QToolTip::hideText();
     p_event->ignore();

@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.21)
 # — not the root CMakeLists.txt — is what the SOVERSION at the bottom of this file
 # actually reads. The two declarations MUST be bumped together; bumping only the
 # root leaves the installed library carrying the previous soname.
-project(VTextEdit VERSION 10.0.0 LANGUAGES C CXX)
+project(VTextEdit VERSION 11.0.0 LANGUAGES C CXX)
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
@@ -279,6 +279,9 @@ target_link_libraries(VTextEdit PUBLIC Qt6::Core5Compat)
 # 10.0: TypstEditorConfig replaces its executable QString with a non-owning
 # TypstRuntime pointer, changing its exported layout; collectImageReferences()
 # also takes that runtime instead of an executable path. Rebuild every consumer.
+#
+# 11.0: typed concealment rules replace the config flags/threshold, and the
+# highlighter publishes grouped source spans. Rebuild every consumer.
 set_target_properties(VTextEdit PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION ${PROJECT_VERSION_MAJOR}

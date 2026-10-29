@@ -444,6 +444,36 @@ bool cmarkNodeUrlSpan(cmark_node *p_node, const LineOffsetTable &p_offsets, int 
                              cmark_node_get_url_end_column(p_node), p_startQChar, p_endQChar);
 }
 
+bool cmarkNodeSyntaxExtent(cmark_node *p_node, const LineOffsetTable &p_offsets, int &p_startQChar,
+                           int &p_endQChar) {
+  int sl = 0, sc = 0, el = 0, ec = 0;
+  int rawStart = 0, startLength = 0, rawEnd = 0, endLength = 0;
+  if (!cmark_node_get_syntax_extent(p_node, &sl, &sc, &el, &ec) ||
+      !p_offsets.lineByteRange(sl - 1, rawStart, startLength) ||
+      !p_offsets.lineByteRange(el - 1, rawEnd, endLength) || sc <= 0 || ec <= 0 ||
+      sc - 1 >= startLength || ec - 1 > endLength) {
+    return false;
+  }
+  p_startQChar = p_offsets.toDocPosition(sl, sc);
+  p_endQChar = p_offsets.toDocPosition(el, ec);
+  return p_endQChar > p_startQChar;
+}
+
+bool cmarkNodeSyntaxSpan(cmark_node *p_node, int p_index, const QByteArray &p_source,
+                         const LineOffsetTable &p_offsets, int &p_startQChar, int &p_endQChar) {
+  int line = 0, column = 0, length = 0, rawStart = 0, rawLength = 0;
+  const char *bytes = cmark_node_get_syntax_span(p_node, p_index, &line, &column, &length);
+  if (!bytes || length <= 0 || column <= 0 ||
+      !p_offsets.lineByteRange(line - 1, rawStart, rawLength) || column - 1 > rawLength ||
+      length > rawLength - (column - 1) ||
+      std::memcmp(p_source.constData() + rawStart + column - 1, bytes, length) != 0) {
+    return false;
+  }
+  p_startQChar = p_offsets.toDocPosition(line, column);
+  p_endQChar = p_offsets.toDocPosition(line, column + length);
+  return p_endQChar > p_startQChar;
+}
+
 bool resolveHtmlNodeSpan(const QString &p_content, cmark_node *p_node,
                          const LineOffsetTable &p_offsets, int &p_startQChar, int &p_endQChar) {
   const cmark_node_type type = cmark_node_get_type(p_node);

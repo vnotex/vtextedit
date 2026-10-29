@@ -11,6 +11,7 @@
 
 #include <QColor>
 #include <QStringView>
+#include <QTextBoundaryFinder>
 #include <QThread>
 
 #include <vtextedit/htmlimgscanner.h>
@@ -1845,7 +1846,7 @@ static int lineIndexOfDocPos(const LineOffsetTable &p_offsets, int p_pos) {
 }
 
 // Append only source-local, one-line payloads, adding the document offset once.
-static void appendConcealRange(QVector<ConcealRange> &p_ranges, const LineOffsetTable &p_offsets,
+static void appendConcealRange(ConcealRanges &p_ranges, const LineOffsetTable &p_offsets,
                                int p_start, int p_end, MarkdownConcealElement p_element,
                                int p_offset) {
   if (p_start < 0 || p_end <= p_start || p_offset < 0 ||
@@ -1860,12 +1861,11 @@ static void appendConcealRange(QVector<ConcealRange> &p_ranges, const LineOffset
   range.m_startPos = p_offset + p_start;
   range.m_endPos = p_offset + p_end;
   range.m_element = p_element;
-  p_ranges.append(range);
+  p_ranges.m_elements.append(range);
 }
 
 static void extractInlineConcealRange(cmark_node *p_node, const QByteArray &p_source,
-                                      const LineOffsetTable &p_offsets,
-                                      QVector<ConcealRange> &p_ranges,
+                                      const LineOffsetTable &p_offsets, ConcealRanges &p_ranges,
                                       MarkdownConcealElement p_element, int p_offset) {
   const int line = cmark_node_get_url_start_line(p_node);
   int lineStart = 0;
@@ -1894,10 +1894,75 @@ static void extractInlineConcealRange(cmark_node *p_node, const QByteArray &p_so
   appendConcealRange(p_ranges, p_offsets, start, end, p_element, p_offset);
 }
 
+static MarkdownConcealElement syntaxConcealElement(cmark_node_type p_type) {
+  switch (p_type) {
+  case CMARK_NODE_EMPH:
+    return MarkdownConcealElement::EmphasisMarkers;
+  case CMARK_NODE_STRONG:
+    return MarkdownConcealElement::StrongMarkers;
+  case CMARK_NODE_STRIKETHROUGH:
+    return MarkdownConcealElement::StrikethroughMarkers;
+  case CMARK_NODE_MARK:
+    return MarkdownConcealElement::MarkMarkers;
+  case CMARK_NODE_CODE:
+    return MarkdownConcealElement::InlineCodeMarkers;
+  case CMARK_NODE_LINK:
+    return MarkdownConcealElement::LinkSyntax;
+  case CMARK_NODE_HEADING:
+    return MarkdownConcealElement::HeadingMarkers;
+  case CMARK_NODE_FORMULA_INLINE:
+    return MarkdownConcealElement::InlineFormulaMarkers;
+  default:
+    return MarkdownConcealElement::None;
+  }
+}
+
+static void extractSyntaxConcealRange(cmark_node *p_node, const QByteArray &p_source,
+                                      const LineOffsetTable &p_offsets,
+                                      QTextBoundaryFinder &p_boundaries, ConcealRanges &p_ranges,
+                                      int p_offset) {
+  const auto element = syntaxConcealElement(cmark_node_get_type(p_node));
+  const int count = cmark_node_get_syntax_span_count(p_node);
+  int start = 0, end = 0;
+  if (element == MarkdownConcealElement::None || count <= 0 || p_offset < 0 ||
+      !cmarkNodeSyntaxExtent(p_node, p_offsets, start, end) ||
+      end > std::numeric_limits<int>::max() - p_offset ||
+      (element == MarkdownConcealElement::InlineFormulaMarkers &&
+       lineIndexOfDocPos(p_offsets, start) != lineIndexOfDocPos(p_offsets, end - 1))) {
+    return;
+  }
+  const int first = p_ranges.m_spans.size();
+  int previousEnd = start;
+  for (int i = 0; i < count; ++i) {
+    int spanStart = 0, spanEnd = 0;
+    if (!cmarkNodeSyntaxSpan(p_node, i, p_source, p_offsets, spanStart, spanEnd) ||
+        spanStart < previousEnd || spanEnd > end) {
+      p_ranges.m_spans.resize(first);
+      return;
+    }
+    p_boundaries.setPosition(spanStart);
+    const bool startBoundary = p_boundaries.isAtBoundary();
+    p_boundaries.setPosition(spanEnd);
+    if (!startBoundary || !p_boundaries.isAtBoundary()) {
+      p_ranges.m_spans.resize(first);
+      return;
+    }
+    p_ranges.m_spans.append(ElementRegion(p_offset + spanStart, p_offset + spanEnd));
+    previousEnd = spanEnd;
+  }
+  ConcealRange range;
+  range.m_startPos = p_offset + start;
+  range.m_endPos = p_offset + end;
+  range.m_element = element;
+  range.m_firstSpan = first;
+  range.m_spanCount = count;
+  p_ranges.m_elements.append(range);
+}
+
 struct ReferenceConcealContext {
   const QByteArray &m_source;
   const LineOffsetTable &m_offsets;
-  QVector<ConcealRange> &m_ranges;
+  ConcealRanges &m_ranges;
   int m_offset;
 };
 
@@ -2488,7 +2553,8 @@ static void extractTypedElement(cmark_node *p_node, cmark_node_type p_type, int 
 
 ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int p_offset,
                              int p_startBlock, bool p_fast, bool p_collectLists, int p_parseOptions,
-                             MarkdownDocumentRequest *p_documentRequest) {
+                             MarkdownDocumentRequest *p_documentRequest,
+                             bool p_collectConcealSyntax) {
   const bool collectLists = p_collectLists && !p_fast;
   ASTWalkResult result;
   result.blocksHighlights.resize(p_numBlocks);
@@ -2505,7 +2571,10 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
 
   LineOffsetTable offsets(p_utf8Text);
   ReferenceConcealContext referenceContext{p_utf8Text, offsets, result.concealRanges, p_offset};
-  cmark_parser *parser = cmark_parser_new(p_parseOptions);
+  const bool collectConcealSyntax = p_collectConcealSyntax && !p_fast;
+  const int parserOptions = collectConcealSyntax ? (p_parseOptions | CMARK_OPT_SOURCE_SYNTAX)
+                                                 : (p_parseOptions & ~CMARK_OPT_SOURCE_SYNTAX);
+  cmark_parser *parser = cmark_parser_new(parserOptions);
   if (!parser) {
     if (p_documentRequest) {
       p_documentRequest->finish(nullptr, p_utf8Text, p_parseOptions, {});
@@ -2531,9 +2600,9 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
   ListCollector lists(result.listStructure, p_utf8Text, offsets, listMarkers, p_offset,
                       p_startBlock);
 
-  // Decode only when an HTML node needs verified QChar source positions.
-  // Ordinary Markdown, including code that merely spells HTML, needs no copy.
+  // Decode lazily for HTML or syntax grapheme-boundary verification.
   QString text;
+  std::unique_ptr<QTextBoundaryFinder> syntaxBoundaries;
   FontColorCollector fontColors;
 
   // Per-WALK raw-text context; see extractHtmlImages().
@@ -2598,6 +2667,18 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
       extractInlineConcealRange(node, p_utf8Text, offsets, result.concealRanges,
                                 type == CMARK_NODE_IMAGE ? MarkdownConcealElement::ImageUrl
                                                          : MarkdownConcealElement::LinkUrl,
+                                p_offset);
+    }
+
+    if (collectConcealSyntax && rawText.m_element.isEmpty() &&
+        cmark_node_get_syntax_span_count(node) > 0) {
+      if (!syntaxBoundaries) {
+        if (text.isNull()) {
+          text = QString::fromUtf8(p_utf8Text);
+        }
+        syntaxBoundaries.reset(new QTextBoundaryFinder(QTextBoundaryFinder::Grapheme, text));
+      }
+      extractSyntaxConcealRange(node, p_utf8Text, offsets, *syntaxBoundaries, result.concealRanges,
                                 p_offset);
     }
 
@@ -2711,23 +2792,40 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
 
   // Sort region vectors that need sorting.
   if (!p_fast) {
-    std::sort(result.concealRanges.begin(), result.concealRanges.end(),
-              [](const ConcealRange &a, const ConcealRange &b) {
-                if (a.m_startPos != b.m_startPos) {
-                  return a.m_startPos < b.m_startPos;
-                }
-                if (a.m_endPos != b.m_endPos) {
-                  return a.m_endPos < b.m_endPos;
-                }
-                return static_cast<int>(a.m_element) < static_cast<int>(b.m_element);
-              });
-    result.concealRanges.erase(std::unique(result.concealRanges.begin(), result.concealRanges.end(),
-                                           [](const ConcealRange &a, const ConcealRange &b) {
-                                             return a.m_startPos == b.m_startPos &&
-                                                    a.m_endPos == b.m_endPos &&
-                                                    a.m_element == b.m_element;
-                                           }),
-                               result.concealRanges.end());
+    // Sorting descriptors never moves the flat span pool: their slices stay valid.
+    auto &elements = result.concealRanges.m_elements;
+    const auto &spans = result.concealRanges.m_spans;
+    const auto less = [&spans](const ConcealRange &a, const ConcealRange &b) {
+      if (a.m_startPos != b.m_startPos) {
+        return a.m_startPos < b.m_startPos;
+      }
+      if (a.m_endPos != b.m_endPos) {
+        return a.m_endPos < b.m_endPos;
+      }
+      if (a.m_element != b.m_element) {
+        return static_cast<int>(a.m_element) < static_cast<int>(b.m_element);
+      }
+      if (a.m_spanCount != b.m_spanCount) {
+        return a.m_spanCount < b.m_spanCount;
+      }
+      for (int i = 0; i < a.m_spanCount; ++i) {
+        const auto &as = spans.at(a.m_firstSpan + i);
+        const auto &bs = spans.at(b.m_firstSpan + i);
+        if (as.m_startPos != bs.m_startPos) {
+          return as.m_startPos < bs.m_startPos;
+        }
+        if (as.m_endPos != bs.m_endPos) {
+          return as.m_endPos < bs.m_endPos;
+        }
+      }
+      return false;
+    };
+    std::sort(elements.begin(), elements.end(), less);
+    elements.erase(std::unique(elements.begin(), elements.end(),
+                               [&less](const ConcealRange &a, const ConcealRange &b) {
+                                 return !less(a, b) && !less(b, a);
+                               }),
+                   elements.end());
     std::sort(result.headerRegions.begin(), result.headerRegions.end());
     std::sort(result.displayFormulaRegions.begin(), result.displayFormulaRegions.end());
     std::sort(result.tableRegions.begin(), result.tableRegions.end());

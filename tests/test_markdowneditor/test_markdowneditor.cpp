@@ -34,6 +34,7 @@
 #include <KSyntaxHighlighting/Repository>
 #include <KSyntaxHighlighting/Theme>
 
+#include <climits>
 #include <memory>
 
 #include <vtextedit/markdowneditorconfig.h>
@@ -771,9 +772,8 @@ static void waitForConcealPublication(Fixture &p_fixture) {
   int publications = 0;
   // A fast BlockContext is insufficient. This signal is emitted only for a
   // full result matching the current source, including an empty range vector.
-  QObject::connect(
-      highlighter, &MarkdownHighlighter::concealRangesUpdated, &receiver,
-      [&publications](TimeStamp, const QVector<md::ConcealRange> &) { ++publications; });
+  QObject::connect(highlighter, &MarkdownHighlighter::concealRangesUpdated, &receiver,
+                   [&publications](TimeStamp, const md::ConcealRanges &) { ++publications; });
   highlighter->updateHighlight();
   QTRY_VERIFY_WITH_TIMEOUT(publications > 0, 5000);
   // Full publication precedes the queued rehighlight/idle layout passes.
@@ -800,6 +800,7 @@ static QImage renderConcealEditor(Fixture &p_fixture) {
   }
   // Preserve subsequent explicit sizes for wrapping and scrolling scenarios.
   editor->activateWindow();
+  QApplication::setActiveWindow(editor);
   edit->setFocus();
   QTest::qWait(20);
   auto viewport = edit->viewport();
@@ -830,7 +831,7 @@ static qreal concealConfigExpectedWidth(Fixture &p_fixture, int p_start, int p_e
   config->m_textEditorConfig->m_theme =
       QSharedPointer<Theme>::create(*config->m_textEditorConfig->m_theme);
   config->m_textEditorConfig->m_inputMode = InputMode::NormalMode;
-  config->m_concealElements = {};
+  config->m_concealRules.clear();
   const auto source = p_fixture.text();
   const auto displayed = source.left(p_start) + p_display + source.mid(p_end);
   qreal expected;
@@ -1034,7 +1035,8 @@ void TestMarkdownEditor::testConcealMarkdownConfig() {
   for (const auto &item : cases) {
     auto config = makeConcealConfig();
     if (item.m_threshold != 20) {
-      config->m_concealLengthThreshold = item.m_threshold;
+      config->m_concealRules.set(MarkdownConcealElement::LinkUrl,
+                                 MarkdownConcealShortenDestination{item.m_threshold});
     }
     const auto source = QStringLiteral("[x](") + item.m_payload + QStringLiteral(") tail\noutside");
     Fixture fixture(source, 1, 0, config);
@@ -1097,15 +1099,14 @@ void TestMarkdownEditor::testConcealMarkdownConfig() {
       {MarkdownConcealElement::ImageUrl,
        static_cast<int>(source.indexOf(alphabet, source.indexOf(alphabet) + 1))},
       {MarkdownConcealElement::ReferenceUrl, static_cast<int>(source.lastIndexOf(alphabet))}};
-  const MarkdownConcealElements all = MarkdownConcealElement::ImageUrl |
-                                      MarkdownConcealElement::LinkUrl |
-                                      MarkdownConcealElement::ReferenceUrl;
+  const auto all = config->m_concealRules;
   // Actual default behavior: each authored destination is shortened, not labels/titles.
   for (const auto &item : kinds) {
     concealConfigVerifyWidth(fixture, item.m_start, item.m_start + alphabet.size(), compact);
   }
   for (const auto &disabled : kinds) {
-    config->m_concealElements = all & ~MarkdownConcealElements(disabled.m_kind);
+    config->m_concealRules = all;
+    config->m_concealRules.remove(disabled.m_kind);
     fixture.editor()->setConfig(config);
     waitForConcealPublication(fixture);
     for (const auto &item : kinds) {
@@ -1114,7 +1115,7 @@ void TestMarkdownEditor::testConcealMarkdownConfig() {
     }
     verifySourceUnchanged();
   }
-  config->m_concealElements = MarkdownConcealElements();
+  config->m_concealRules.clear();
   fixture.editor()->setConfig(config);
   // Clearing is synchronous; no parse or source edit is needed to disable it.
   for (const auto &item : kinds) {
@@ -1122,9 +1123,11 @@ void TestMarkdownEditor::testConcealMarkdownConfig() {
   }
   waitForConcealPublication(fixture);
   verifySourceUnchanged();
-  config->m_concealElements = all;
+  config->m_concealRules = all;
   for (int threshold : {26, 25}) {
-    config->m_concealLengthThreshold = threshold;
+    for (const auto &kind : kinds) {
+      config->m_concealRules.set(kind.m_kind, MarkdownConcealShortenDestination{threshold});
+    }
     fixture.editor()->setConfig(config);
     waitForConcealPublication(fixture);
     for (const auto &item : kinds) {
@@ -1199,6 +1202,185 @@ void TestMarkdownEditor::testConcealMarkdownConfig() {
   QCOMPARE(fixture.text(), preservedSource);
   fixture.edit()->undo();
   QCOMPARE(fixture.text(), source);
+}
+
+void TestMarkdownEditor::testConcealSyntaxRules_data() {
+  QTest::addColumn<int>("kind");
+  QTest::addColumn<QString>("opening");
+  QTest::addColumn<QString>("body");
+  QTest::addColumn<QString>("closing");
+  const auto add = [](const char *p_name, MarkdownConcealElement p_kind, const QString &p_opening,
+                      const QString &p_body, const QString &p_closing) {
+    QTest::newRow(p_name) << int(p_kind) << p_opening << p_body << p_closing;
+  };
+  add("emphasis", MarkdownConcealElement::EmphasisMarkers, QStringLiteral("_"),
+      QStringLiteral("italic"), QStringLiteral("_"));
+  add("strong", MarkdownConcealElement::StrongMarkers, QStringLiteral("**"), QStringLiteral("bold"),
+      QStringLiteral("**"));
+  add("strike", MarkdownConcealElement::StrikethroughMarkers, QStringLiteral("~~"),
+      QStringLiteral("deleted"), QStringLiteral("~~"));
+  add("mark", MarkdownConcealElement::MarkMarkers, QStringLiteral("=="), QStringLiteral("marked"),
+      QStringLiteral("=="));
+  add("code", MarkdownConcealElement::InlineCodeMarkers, QStringLiteral("``"),
+      QStringLiteral("a ` b"), QStringLiteral("``"));
+  add("link", MarkdownConcealElement::LinkSyntax, QStringLiteral("["), QStringLiteral("label"),
+      QStringLiteral("](abcdefghijklmnopqrstuvwxyz \"title\")"));
+  add("heading", MarkdownConcealElement::HeadingMarkers, QStringLiteral("### "),
+      QStringLiteral("1.2 Heading"), QStringLiteral(" ###"));
+  add("inline-formula", MarkdownConcealElement::InlineFormulaMarkers, QStringLiteral("$"),
+      QStringLiteral("x + y"), QStringLiteral("$"));
+  add("display-inline-formula", MarkdownConcealElement::InlineFormulaMarkers, QStringLiteral("$$"),
+      QStringLiteral("x + y"), QStringLiteral("$$"));
+}
+
+void TestMarkdownEditor::testConcealSyntaxRules() {
+  QFETCH(int, kind);
+  QFETCH(QString, opening);
+  QFETCH(QString, body);
+  QFETCH(QString, closing);
+  const auto source = opening + body + closing + QStringLiteral("\n\noutside");
+  const int closingStart = opening.size() + body.size();
+  const int elementEnd = closingStart + closing.size();
+  auto config = makeConcealConfig();
+  config->m_concealRules.clear();
+  Fixture f(source, -1, -1, config);
+  QVERIFY(!renderConcealEditor(f).isNull());
+  waitForConcealPublication(f);
+  QVERIFY(concealConfigRangeWidth(f, 0, opening.size()) > 1);
+  QVERIFY(concealConfigRangeWidth(f, closingStart, elementEnd) > 1);
+  auto *doc = f.editor()->document();
+  doc->clearUndoRedoStacks();
+  doc->setModified(false);
+  config->m_concealRules.set(static_cast<MarkdownConcealElement>(kind),
+                             MarkdownConcealHideSyntax{});
+  f.editor()->setConfig(config);
+  waitForConcealPublication(f);
+  QVERIFY(qAbs(concealConfigRangeWidth(f, 0, opening.size())) < 0.1);
+  QVERIFY(qAbs(concealConfigRangeWidth(f, closingStart, elementEnd)) < 0.1);
+  QVERIFY(concealConfigRangeWidth(f, opening.size(), closingStart) > 1);
+
+  // The visible interior and both source boundaries restore the complete group.
+  for (int position : {0, int(opening.size() + 1), elementEnd}) {
+    setConcealCursor(f, position);
+    QVERIFY(concealConfigRangeWidth(f, 0, opening.size()) > 1);
+    QVERIFY(concealConfigRangeWidth(f, closingStart, elementEnd) > 1);
+    setConcealCursor(f, source.size());
+    QVERIFY(qAbs(concealConfigRangeWidth(f, 0, opening.size())) < 0.1);
+    QVERIFY(qAbs(concealConfigRangeWidth(f, closingStart, elementEnd)) < 0.1);
+  }
+  f.selectAll();
+  QCOMPARE(f.edit()->selectedText().replace(QChar::ParagraphSeparator, QLatin1Char('\n')), source);
+  QVERIFY(qAbs(concealConfigRangeWidth(f, 0, opening.size())) < 0.1);
+  f.edit()->copy();
+  QCOMPARE(QApplication::clipboard()->text(), source);
+  QCOMPARE(f.text(), source);
+  QVERIFY(!doc->isModified());
+  QVERIFY(!doc->isUndoAvailable());
+  config->m_concealRules.clear();
+  f.editor()->setConfig(config);
+  QVERIFY(concealConfigRangeWidth(f, 0, opening.size()) > 1);
+  QVERIFY(concealConfigRangeWidth(f, closingStart, elementEnd) > 1);
+  QCOMPARE(f.text(), source);
+  QVERIFY(!doc->isUndoAvailable());
+}
+
+void TestMarkdownEditor::testConcealNestedAndMultilineSyntax() {
+  auto config = makeConcealConfig();
+  config->m_concealRules.set(MarkdownConcealElement::StrongMarkers, MarkdownConcealHideSyntax{});
+  config->m_concealRules.set(MarkdownConcealElement::LinkSyntax, MarkdownConcealHideSyntax{});
+  const auto source = QStringLiteral("**[label](abcdefghijklmnopqrstuvwxyz)** tail\n\noutside");
+  Fixture f(source, -1, -1, config);
+  QVERIFY(!renderConcealEditor(f).isNull());
+  waitForConcealPublication(f);
+  const int urlStart = source.indexOf(QStringLiteral("abcdefghijklmnopqrstuvwxyz"));
+  const int urlEnd = urlStart + 26;
+  QVERIFY(qAbs(concealConfigRangeWidth(f, 0, 3)) < 0.1);
+  QVERIFY(qAbs(concealConfigRangeWidth(f, urlStart, urlEnd)) < 0.1);
+  // Revealing the outer link lets the independent URL policy shorten its destination.
+  setConcealCursor(f, 4);
+  QVERIFY(concealConfigRangeWidth(f, 0, 3) > 1);
+  concealConfigVerifyWidth(f, urlStart, urlEnd, QStringLiteral("abc\u00b7\u00b7\u00b7xyz"));
+  setConcealCursor(f, urlStart + 5);
+  concealConfigVerifyWidth(f, urlStart, urlEnd, QStringLiteral("abcdefghijklmnopqrstuvwxyz"));
+  QCOMPARE(f.text(), source);
+
+  const auto multiline = QStringLiteral("**first\nmiddle\nlast** tail\n\noutside");
+  Fixture m(multiline, -1, -1, config);
+  QVERIFY(!renderConcealEditor(m).isNull());
+  waitForConcealPublication(m);
+  const int close = multiline.indexOf(QStringLiteral("** tail"));
+  QVERIFY(qAbs(concealConfigRangeWidth(m, 0, 2)) < 0.1);
+  QVERIFY(qAbs(concealConfigRangeWidth(m, close, close + 2)) < 0.1);
+  setConcealCursor(m, multiline.indexOf(QStringLiteral("middle")) + 2);
+  QVERIFY(concealConfigRangeWidth(m, 0, 2) > 1);
+  QVERIFY(concealConfigRangeWidth(m, close, close + 2) > 1);
+  setConcealCursor(m, multiline.size());
+  QVERIFY(qAbs(concealConfigRangeWidth(m, 0, 2)) < 0.1);
+  QVERIFY(qAbs(concealConfigRangeWidth(m, close, close + 2)) < 0.1);
+  // A change in the visible middle block invalidates both distant delimiter runs immediately.
+  QTextCursor edit(m.editor()->document());
+  edit.setPosition(multiline.indexOf(QStringLiteral("middle")) + 2);
+  edit.insertText(QStringLiteral("X"));
+  QVERIFY(concealConfigRangeWidth(m, 0, 2) > 1);
+  QVERIFY(concealConfigRangeWidth(m, close + 1, close + 3) > 1);
+  m.edit()->undo();
+  QCOMPARE(m.text(), multiline);
+  setConcealCursor(m, multiline.size());
+  waitForConcealPublication(m);
+  QVERIFY(qAbs(concealConfigRangeWidth(m, 0, 2)) < 0.1);
+  QVERIFY(qAbs(concealConfigRangeWidth(m, close, close + 2)) < 0.1);
+}
+
+void TestMarkdownEditor::testConcealHeadingAndFormulaBoundaries() {
+  auto config = makeConcealConfig();
+  config->m_concealRules.set(MarkdownConcealElement::HeadingMarkers, MarkdownConcealHideSyntax{});
+  config->m_concealRules.set(MarkdownConcealElement::InlineFormulaMarkers,
+                             MarkdownConcealHideSyntax{});
+  for (const auto &element : {QStringLiteral("### Heading ###"), QStringLiteral("$x + y$"),
+                              QStringLiteral("$$x + y$$"), QStringLiteral("###")}) {
+    const auto source = QStringLiteral("outside\n\n") + element;
+    Fixture f(source, 0, 0, config);
+    QVERIFY(!renderConcealEditor(f).isNull());
+    waitForConcealPublication(f);
+    const int start = source.size() - element.size();
+    const int prefix = element.startsWith(QLatin1Char('#'))       ? 3
+                       : element.startsWith(QStringLiteral("$$")) ? 2
+                                                                  : 1;
+    QVERIFY(qAbs(concealConfigRangeWidth(f, start, start + prefix)) < 0.1);
+    setConcealCursor(f, source.size());
+    QVERIFY(concealConfigRangeWidth(f, start, start + prefix) > 1);
+    QCOMPARE(f.text(), source);
+    QVERIFY(!f.editor()->document()->isUndoAvailable());
+  }
+  // Neither Setext underlines nor multiline display-math fences belong to these rules.
+  const auto excluded = QStringLiteral("Setext\n======\n\n$$\nx + y\n$$\n\noutside");
+  Fixture f(excluded, -1, -1, config);
+  QVERIFY(!renderConcealEditor(f).isNull());
+  waitForConcealPublication(f);
+  for (const auto &token : {QStringLiteral("======"), QStringLiteral("$$")}) {
+    const int start = excluded.indexOf(token);
+    QVERIFY(concealConfigRangeWidth(f, start, start + token.size()) > 1);
+  }
+}
+
+void TestMarkdownEditor::testConcealCustomDestinationRule() {
+  const auto source = QStringLiteral("[label](abcdefghijklmnopqrstuvwxyz) tail\n\noutside");
+  auto config = makeConcealConfig();
+  config->m_concealRules.set(MarkdownConcealElement::LinkUrl,
+                             MarkdownConcealShortenDestination{0, 1, 2, QStringLiteral("<>")});
+  Fixture f(source, -1, -1, config);
+  QVERIFY(!renderConcealEditor(f).isNull());
+  waitForConcealPublication(f);
+  const int start = source.indexOf(QStringLiteral("abcdefghijklmnopqrstuvwxyz"));
+  concealConfigVerifyWidth(f, start, start + 26, QStringLiteral("a<>yz"));
+  // A compact spelling must actually shorten the destination; oversized options reveal it.
+  config->m_concealRules.set(
+      MarkdownConcealElement::LinkUrl,
+      MarkdownConcealShortenDestination{0, INT_MAX, 2, QStringLiteral("<>")});
+  f.editor()->setConfig(config);
+  concealConfigVerifyWidth(f, start, start + 26, QStringLiteral("abcdefghijklmnopqrstuvwxyz"));
+  QCOMPARE(f.text(), source);
+  QVERIFY(!f.editor()->document()->isUndoAvailable());
 }
 
 void TestMarkdownEditor::testConcealCaretAndViMotion() {
@@ -5686,7 +5868,7 @@ concealEditConfig(bool p_enabled = true,
       QString::fromUtf8(QJsonDocument(json).toJson(QJsonDocument::Compact)));
   Q_ASSERT(config->m_textEditorConfig->m_theme);
   if (!p_enabled) {
-    config->m_concealElements = MarkdownConcealElements();
+    config->m_concealRules.clear();
   }
   return config;
 }

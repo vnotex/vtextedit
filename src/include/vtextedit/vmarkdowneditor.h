@@ -186,7 +186,7 @@ private:
 
   void updateFromConfig();
 
-  void applyConcealRanges(const QVector<md::ConcealRange> &p_ranges);
+  void applyConcealRanges(const md::ConcealRanges &p_ranges);
 
   // Re-evaluate the preview driven fold state of every foldable region and
   // write the outcome back onto the interactive preview items. Always called

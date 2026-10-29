@@ -31,6 +31,11 @@ private slots:
   void testConcealMarkdownConfig();
   void testConcealHoverToolTip();
   void testConcealCaretAndViMotion();
+  void testConcealSyntaxRules_data();
+  void testConcealSyntaxRules();
+  void testConcealNestedAndMultilineSyntax();
+  void testConcealCustomDestinationRule();
+  void testConcealHeadingAndFormulaBoundaries();
 
   void testMultilineReplaceAllUndoRedo();
   void testMultilineReplacementCaptures();

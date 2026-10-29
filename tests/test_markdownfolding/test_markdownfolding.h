@@ -114,6 +114,12 @@ private slots:
 
   void testConcealWrappingAndSelection();
 
+  void testConcealGenericRuns();
+
+  void testConcealNestingAndConflicts();
+
+  void testConcealMultiblockGroups();
+
   void testInPlaceRewriteKeepsFoldRange();
 
   void testLiveRangeIsNotRecreated();

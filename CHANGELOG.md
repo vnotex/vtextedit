@@ -1,5 +1,32 @@
 # Changelog
 
+## 11.0.0 (unreleased)
+
+### Breaking changes
+
+- Replace `MarkdownEditorConfig::m_concealElements` and `m_concealLengthThreshold` with
+  `m_concealRules`, an enum-indexed typed rule set. Use `MarkdownConcealShortenDestination`
+  for URL kinds and `MarkdownConcealHideSyntax` for syntax kinds; missing entries are disabled.
+- The highlighter concealment channel now carries `md::ConcealRanges`, containing flat
+  element descriptors and source spans. Rebuild consumers; VTextEdit SOVERSION is 11.
+
+### Features
+
+- Generalize source-preserving concealment to grouped, variable-length display replacements,
+  including zero-width hiding of both ends. Existing URL shortening remains the default.
+- Add opt-in emphasis, strong, strikethrough, mark, inline-code and link-syntax rules. Links
+  retain their label while hiding the destination/reference suffix; images remain independent.
+- Add ATX heading hash/separator concealment, preserving indentation and section numbers,
+  and inline formula delimiter concealment for both `$...$` and single-line `$$...$$`.
+  Setext underlines, multiline math blocks and formula rendering are unchanged.
+- Reveal grouped markers together on caret entry, including syntax end boundaries; retain
+  original copy/cut/search/Vi/undo behavior and editable height for hidden-only paragraphs.
+  Invalidate all runs when a dependent block changes and keep unrelated valid groups active.
+- Record parser-proven syntax spans with exact container/tab/table mappings only for full
+  editor projections with syntax rules enabled. URL-only, disabled, fast and render-only
+  paths avoid the extra metadata; unrelated typing retains the single-block layout fast path.
+- Opt the demo into the new syntax rules and include heading, variable-code and formula examples.
+
 ## 10.0.0 (unreleased)
 
 ### Breaking changes

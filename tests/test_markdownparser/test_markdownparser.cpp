@@ -1267,9 +1267,15 @@ static void checkConcealRanges(const QString &p_source,
   const QByteArray utf8 = p_source.toUtf8();
   const int numBlocks = countBlocks(utf8) + p_startBlock;
   const auto result = vte::md::walkAndConvert(utf8, numBlocks, p_offset, p_startBlock, false, true);
-  QVERIFY2(result.concealRanges.size() == p_expected.size(), qPrintable(p_source));
+  QVector<vte::md::ConcealRange> destinations;
+  for (const auto &range : result.concealRanges.m_elements) {
+    if (range.m_spanCount == 0) {
+      destinations.append(range);
+    }
+  }
+  QVERIFY2(destinations.size() == p_expected.size(), qPrintable(p_source));
   for (int i = 0; i < p_expected.size(); ++i) {
-    const auto &range = result.concealRanges.at(i);
+    const auto &range = destinations.at(i);
     const auto &expected = p_expected.at(i);
     QCOMPARE(range.m_element, expected.element);
     QCOMPARE(range.m_startPos, p_offset + expected.start);
@@ -1486,6 +1492,331 @@ void TestMarkdownParser::testConcealReferenceDestinations() {
   };
   for (const char *source : excluded) {
     checkConcealRanges(QString::fromUtf8(source), {});
+  }
+}
+
+struct SyntaxConcealExpectation {
+  int start;
+  int end;
+  vte::MarkdownConcealElement element;
+  QVector<QPair<int, QString>> spans;
+};
+
+static void checkSyntaxConcealRanges(const QString &p_source,
+                                     const QVector<SyntaxConcealExpectation> &p_expected,
+                                     int p_options = CMARK_OPT_DEFAULT) {
+  const QByteArray utf8 = p_source.toUtf8();
+  for (int offset : {0, 37}) {
+    const int startBlock = offset ? 3 : 0;
+    const int numBlocks = countBlocks(utf8) + startBlock;
+    const auto result = vte::md::walkAndConvert(utf8, numBlocks, offset, startBlock, false, true,
+                                                p_options, nullptr, true);
+    QVector<vte::md::ConcealRange> syntax;
+    for (const auto &range : result.concealRanges.m_elements) {
+      if (range.m_spanCount > 0) {
+        syntax.append(range);
+      }
+    }
+    QVERIFY2(syntax.size() == p_expected.size(), qPrintable(p_source));
+    for (int i = 0; i < syntax.size(); ++i) {
+      const auto &range = syntax.at(i);
+      const auto &expected = p_expected.at(i);
+      QCOMPARE(range.m_element, expected.element);
+      QCOMPARE(range.m_startPos, offset + expected.start);
+      QCOMPARE(range.m_endPos, offset + expected.end);
+      QCOMPARE(range.m_spanCount, int(expected.spans.size()));
+      QVERIFY(range.m_firstSpan >= 0);
+      QVERIFY(range.m_firstSpan + range.m_spanCount <= result.concealRanges.m_spans.size());
+      for (int j = 0; j < range.m_spanCount; ++j) {
+        const auto &span = result.concealRanges.m_spans.at(range.m_firstSpan + j);
+        const auto &expectedSpan = expected.spans.at(j);
+        QCOMPARE(span.m_startPos, offset + expectedSpan.first);
+        QCOMPARE(span.m_endPos, offset + expectedSpan.first + int(expectedSpan.second.size()));
+        QCOMPARE(p_source.mid(span.m_startPos - offset, span.m_endPos - span.m_startPos),
+                 expectedSpan.second);
+        QVERIFY(!expectedSpan.second.contains(QLatin1Char('\n')));
+        QVERIFY(!expectedSpan.second.contains(QLatin1Char('\r')));
+      }
+    }
+    const auto fast =
+        vte::md::walkAndConvert(utf8, numBlocks, offset, startBlock, true, true, p_options);
+    QVERIFY(fast.concealRanges.isEmpty());
+    QVERIFY(fast.concealRanges.m_spans.isEmpty());
+  }
+}
+
+void TestMarkdownParser::testConcealSyntaxDelimiters() {
+  using Element = vte::MarkdownConcealElement;
+  struct Case {
+    const char *prefix;
+    const char *open;
+    const char *body;
+    const char *close;
+    Element element;
+  };
+  const QVector<Case> cases{
+      {"", "*", "emphasis", "*", Element::EmphasisMarkers},
+      {"", "_", "emphasis", "_", Element::EmphasisMarkers},
+      {"", "**", "strong", "**", Element::StrongMarkers},
+      {"", "__", "strong", "__", Element::StrongMarkers},
+      {"", "~~", "strike", "~~", Element::StrikethroughMarkers},
+      {"", "==", "mark", "==", Element::MarkMarkers},
+      {"", "`", "code", "`", Element::InlineCodeMarkers},
+      {"", "``", "a ` b", "``", Element::InlineCodeMarkers},
+      {"", "````", " a ``` b ", "````", Element::InlineCodeMarkers},
+      {"", "`", "**not strong** $not math$ [not link](u)", "`", Element::InlineCodeMarkers},
+      {"", "$", "x+1", "$", Element::InlineFormulaMarkers},
+      {"before ", "$$", "x+1", "$$", Element::InlineFormulaMarkers},
+      {"\xf0\x9f\x92\x8e \xc3\xa9 ", "**", "\xe4\xb8\xad\xf0\x9f\x92\x8e", "**",
+       Element::StrongMarkers},
+      {"", "*", "first\nsecond", "*", Element::EmphasisMarkers},
+      {"> ", "**", "first\n> second", "**", Element::StrongMarkers},
+      {"- ", "*", "first\n  second", "*", Element::EmphasisMarkers},
+      {"> - ", "_", "first\n>   second", "_", Element::EmphasisMarkers},
+      {"> - ", "_", "first\n>     second", "_", Element::EmphasisMarkers},
+      {"> ", "*", "first\nsecond", "*", Element::EmphasisMarkers},
+      {"> ", "*", "first\r\n> second", "*", Element::EmphasisMarkers},
+      {"- ", "**", "first\nsecond", "**", Element::StrongMarkers},
+      {">\t", "*", "first\n>\tsecond", "*", Element::EmphasisMarkers},
+      {"- ", "*", "first\n\tsecond", "*", Element::EmphasisMarkers},
+      {"> ", "``", "first\n> second", "``", Element::InlineCodeMarkers},
+      {"> ", "`", "first\nsecond", "`", Element::InlineCodeMarkers},
+      {"- ", "`", "first\n\tsecond", "`", Element::InlineCodeMarkers},
+      {"[r]: url\n", "*", "after definition", "*", Element::EmphasisMarkers},
+      {"> [r]: url\n", "*", "lazy after definition", "*", Element::EmphasisMarkers},
+      {"| ", "**", "cell", "**", Element::StrongMarkers},
+  };
+  for (const auto &c : cases) {
+    const QString prefix = QString::fromUtf8(c.prefix);
+    const QString open = QString::fromUtf8(c.open);
+    const QString body = QString::fromUtf8(c.body);
+    const QString close = QString::fromUtf8(c.close);
+    const QString suffix =
+        prefix == QStringLiteral("| ") ? QStringLiteral(" |\n| --- |\n") : QStringLiteral("\n");
+    const QString source = prefix + open + body + close + suffix;
+    const int start = prefix.size();
+    const int closing = start + open.size() + body.size();
+    checkSyntaxConcealRanges(
+        source,
+        {{start, closing + int(close.size()), c.element, {{start, open}, {closing, close}}}});
+  }
+
+  for (const QString &prefix : {QString(), QStringLiteral("> - ")}) {
+    const QString continuation = prefix.isEmpty() ? QString() : QStringLiteral(">   ");
+    const QString source = prefix + QStringLiteral("| $$x$$ |\n") + continuation +
+                           QStringLiteral("| --- |\n") + continuation + QStringLiteral("| $y$ |\n");
+    const int display = source.indexOf(QStringLiteral("$$x$$"));
+    const int inlineMath = source.indexOf(QStringLiteral("$y$"));
+    const QVector<SyntaxConcealExpectation> expected{
+        {display,
+         display + 5,
+         Element::InlineFormulaMarkers,
+         {{display, QStringLiteral("$$")}, {display + 3, QStringLiteral("$$")}}},
+        {inlineMath,
+         inlineMath + 3,
+         Element::InlineFormulaMarkers,
+         {{inlineMath, QStringLiteral("$")}, {inlineMath + 2, QStringLiteral("$")}}}};
+    checkSyntaxConcealRanges(source, expected);
+    checkSyntaxConcealRanges(source, expected, CMARK_OPT_VIEWER_COMPAT);
+  }
+  checkSyntaxConcealRanges(
+      QStringLiteral("text *before*\n| header |\n| --- |\n"),
+      {{5, 13, Element::EmphasisMarkers, {{5, QStringLiteral("*")}, {12, QStringLiteral("*")}}}});
+  checkSyntaxConcealRanges(
+      QStringLiteral("***nested***\n"),
+      {{0, 12, Element::EmphasisMarkers, {{0, QStringLiteral("*")}, {11, QStringLiteral("*")}}},
+       {1, 11, Element::StrongMarkers, {{1, QStringLiteral("**")}, {9, QStringLiteral("**")}}}});
+  checkSyntaxConcealRanges(
+      QStringLiteral("*one* **two** *one*\n"),
+      {{0, 5, Element::EmphasisMarkers, {{0, QStringLiteral("*")}, {4, QStringLiteral("*")}}},
+       {6, 13, Element::StrongMarkers, {{6, QStringLiteral("**")}, {11, QStringLiteral("**")}}},
+       {14, 19, Element::EmphasisMarkers, {{14, QStringLiteral("*")}, {18, QStringLiteral("*")}}}});
+  for (const QString &fence : {QStringLiteral("$"), QStringLiteral("$$")}) {
+    const QString source = QStringLiteral("before ") + fence + QStringLiteral("x+1") + fence;
+    const int end = source.size();
+    checkSyntaxConcealRanges(
+        source,
+        {{7, end, Element::InlineFormulaMarkers, {{7, fence}, {end - int(fence.size()), fence}}}},
+        CMARK_OPT_VIEWER_COMPAT);
+  }
+}
+
+void TestMarkdownParser::testConcealSyntaxLinks() {
+  using Element = vte::MarkdownConcealElement;
+  struct Case {
+    const char *prefix;
+    const char *label;
+    const char *suffix;
+    const char *after;
+  };
+  const QVector<Case> cases{
+      {"", "label", "](destination \"title\")", ""},
+      {"", "label", "](<a b> 'title')", ""},
+      {"", "label", "]()", ""},
+      {"", "label", "](<>)", ""},
+      {"", "escaped \\] label", "](a\\(b\\))", ""},
+      {"", "nested [label] text", "](url)", ""},
+      {"", "\xf0\x9f\x92\x8e \xc3\xa9", "](url)", ""},
+      {"", "multi\nline", "](url)", ""},
+      {"> ", "multi\n> line", "](url)", ""},
+      {"> ", "multi\nline", "](url)", ""},
+      {"- ", "multi\n\tline", "](url)", ""},
+      {"", "label", "][reference]", "\n\n[reference]: url"},
+      {"", "label", "][]", "\n\n[label]: url"},
+      {"", "label", "]", "\n\n[label]: url"},
+  };
+  for (const auto &c : cases) {
+    const QString prefix = QString::fromUtf8(c.prefix);
+    const QString label = QString::fromUtf8(c.label);
+    const QString suffix = QString::fromUtf8(c.suffix);
+    const int start = prefix.size(), close = start + 1 + label.size();
+    const QString source = prefix + QLatin1Char('[') + label + suffix + QString::fromUtf8(c.after);
+    checkSyntaxConcealRanges(source, {{start,
+                                       close + int(suffix.size()),
+                                       Element::LinkSyntax,
+                                       {{start, QStringLiteral("[")}, {close, suffix}}}});
+  }
+  const QString multiline = QStringLiteral("> [label](\n>\turl\n>   \"title\"\n> )\n");
+  checkSyntaxConcealRanges(
+      multiline,
+      {{2,
+        int(multiline.size()) - 1,
+        Element::LinkSyntax,
+        {{2, QStringLiteral("[")},
+         {8, QStringLiteral("](")},
+         {int(multiline.indexOf(QStringLiteral("url"))), QStringLiteral("url")},
+         // Indentation stripped before inline parsing remains source, not link syntax.
+         {int(multiline.indexOf(QStringLiteral("\"title\""))), QStringLiteral("\"title\"")},
+         {int(multiline.lastIndexOf(QLatin1Char(')'))), QStringLiteral(")")}}}});
+  const QString reference =
+      QStringLiteral("> [label][multi\n> reference]\n\n[multi reference]: url\n");
+  checkSyntaxConcealRanges(
+      reference,
+      {{2,
+        int(reference.indexOf(QStringLiteral("reference]"))) + 10,
+        Element::LinkSyntax,
+        {{2, QStringLiteral("[")},
+         {8, QStringLiteral("][multi")},
+         {int(reference.indexOf(QStringLiteral("reference]"))), QStringLiteral("reference]")}}}});
+  for (const QString &destination :
+       {QStringLiteral("https://example.test/a"), QStringLiteral("name@example.test")}) {
+    const QString source = QLatin1Char('<') + destination + QLatin1Char('>');
+    checkSyntaxConcealRanges(
+        source, {{0,
+                  int(source.size()),
+                  Element::LinkSyntax,
+                  {{0, QStringLiteral("<")}, {int(source.size()) - 1, QStringLiteral(">")}}}});
+  }
+  checkSyntaxConcealRanges(
+      QStringLiteral("[**label**](url)\n"),
+      {{0, 16, Element::LinkSyntax, {{0, QStringLiteral("[")}, {10, QStringLiteral("](url)")}}},
+       {1, 10, Element::StrongMarkers, {{1, QStringLiteral("**")}, {8, QStringLiteral("**")}}}});
+  checkSyntaxConcealRanges(QStringLiteral("![label](url) https://example.test/a\n"), {},
+                           CMARK_OPT_LINKIFY);
+}
+
+void TestMarkdownParser::testConcealSyntaxHeadings() {
+  using Element = vte::MarkdownConcealElement;
+  struct Case {
+    const char *prefix;
+    const char *open;
+    const char *body;
+    const char *close;
+  };
+  const QVector<Case> cases{
+      {"", "# ", "Heading", ""},
+      {"  ", "###   ", "1.2 Heading", "  ##  "},
+      {"", "######\t", "Heading", "\t###"},
+      {"> ", "## ", "Heading", " ##"},
+      {"- ", "# ", "Heading", " #"},
+      {">\t", "##\t", "Heading", " ##"},
+      {"", "#", "", ""},
+      {"", "##  ", "", ""},
+      {"> ", "# ", "", ""},
+      {"- ", "##", "", ""},
+      {"", "# ", "", "###"},
+      {"", "# ", "literal#", ""},
+      {"", "# ", "escaped \\#", ""},
+      {"", "# ", "literal # text", ""},
+  };
+  for (const auto &c : cases) {
+    const QString prefix = QString::fromUtf8(c.prefix), open = QString::fromUtf8(c.open);
+    const QString body = QString::fromUtf8(c.body), close = QString::fromUtf8(c.close);
+    const QString source = prefix + open + body + close;
+    QVector<QPair<int, QString>> spans{{int(prefix.size()), open}};
+    if (!close.isEmpty()) {
+      spans.append({int(prefix.size() + open.size() + body.size()), close});
+    }
+    checkSyntaxConcealRanges(
+        source, {{int(prefix.size()), int(source.size()), Element::HeadingMarkers, spans}});
+  }
+  checkSyntaxConcealRanges(QStringLiteral("Heading\n===\n\nHeading\n---\n"), {});
+  checkSyntaxConcealRanges(QStringLiteral("####### invalid\n#nospace\n\\# escaped\n"), {});
+}
+
+void TestMarkdownParser::testConcealSyntaxExclusions() {
+  const QVector<const char *> excluded{
+      "\\*escaped\\* \\_escaped\\_ \\`code\\` \\$math\\$\n",
+      "*unclosed **unclosed ~~unclosed ==unclosed `unclosed $unclosed\n",
+      "[missing] [x][missing] [x](unclosed\n",
+      "```markdown\n*fake* **fake** ~~fake~~ ==fake== $fake$ [fake](url)\n```\n",
+      "    *fake* **fake** ~~fake~~ ==fake== $fake$ [fake](url)\n",
+      "<!-- *fake* **fake** ~~fake~~ ==fake== $fake$ [fake](url) -->\n",
+      "<script>\n*fake* **fake** ~~fake~~ ==fake== $fake$ [fake](url)\n</script>\n",
+      "prefix <script>*fake* [fake](url)</script>\n",
+      "<span title='*fake* [fake](url)'>text</span>\n",
+      "$$\nformula\n$$\n",
+      "before $$first\nsecond$$ after\n",
+      // A delimiter plus a combining mark is one grapheme: never split it.
+      "`code`\xcc\x81\n",
+  };
+  for (const char *source : excluded) {
+    checkSyntaxConcealRanges(QString::fromUtf8(source), {});
+  }
+  checkSyntaxConcealRanges(QStringLiteral("~~strike~~ ==mark== $math$ before $$math$$\n"), {},
+                           CMARK_OPT_NO_EXTENSIONS);
+  checkSyntaxConcealRanges(QStringLiteral("before $$first\nsecond$$ after\n"), {},
+                           CMARK_OPT_VIEWER_COMPAT);
+  using Element = vte::MarkdownConcealElement;
+  for (const QString &source : {QStringLiteral("$$unclosed\n*valid*\n# Heading\n"),
+                                QStringLiteral("> - $$unclosed\n>   *valid*\n>   # Heading\n"),
+                                QStringLiteral("\\begin{align}\n*valid*\n# Heading\n")}) {
+    const int emphasis = source.indexOf(QStringLiteral("*valid*"));
+    const int heading = source.indexOf(QStringLiteral("# Heading"));
+    checkSyntaxConcealRanges(
+        source,
+        {{emphasis,
+          emphasis + 7,
+          Element::EmphasisMarkers,
+          {{emphasis, QStringLiteral("*")}, {emphasis + 6, QStringLiteral("*")}}},
+         {heading, heading + 9, Element::HeadingMarkers, {{heading, QStringLiteral("# ")}}}},
+        CMARK_OPT_VIEWER_COMPAT | CMARK_OPT_MATH_RAW);
+  }
+
+  // Render-only trees pay no source-projection allocation. Opt-in metadata owns
+  // its raw bytes after the parser and the block inline buffers have gone away.
+  const QByteArray code("``code``");
+  for (int options : {CMARK_OPT_DEFAULT, CMARK_OPT_SOURCE_SYNTAX}) {
+    cmark_node *doc = cmark_parse_document(code.constData(), code.size(), options);
+    QVERIFY(doc);
+    cmark_node *node = cmark_node_first_child(cmark_node_first_child(doc));
+    QVERIFY(node);
+    QCOMPARE(cmark_node_get_syntax_span_count(node), options ? 2 : 0);
+    if (options) {
+      int line = 0, column = 0, length = 0;
+      const char *bytes = cmark_node_get_syntax_span(node, 1, &line, &column, &length);
+      QVERIFY(bytes);
+      QCOMPARE(line, 1);
+      QCOMPARE(column, 7);
+      QCOMPARE(QByteArray(bytes, length), QByteArray("``"));
+      int startLine = 0, startColumn = 0, endLine = 0, endColumn = 0;
+      QVERIFY(cmark_node_get_syntax_extent(node, &startLine, &startColumn, &endLine, &endColumn));
+      QCOMPARE(startLine, 1);
+      QCOMPARE(startColumn, 1);
+      QCOMPARE(endLine, 1);
+      QCOMPARE(endColumn, 9);
+    }
+    cmark_node_free(doc);
   }
 }
 
@@ -3798,7 +4129,7 @@ void TestMarkdownParser::testMarkdownDocumentSnapshot() {
   QCOMPARE(retained->headings().at(1).m_startLine, 2);
   QVERIFY(retained->headings().at(1).m_isEmpty);
   bool referenceConcealed = false;
-  for (const auto &range : result->m_concealRanges) {
+  for (const auto &range : result->m_concealRanges.m_elements) {
     if (range.m_element == vte::MarkdownConcealElement::ReferenceUrl) {
       QCOMPARE(QString::fromUtf8(source).mid(range.m_startPos, range.m_endPos - range.m_startPos),
                QStringLiteral("target.md"));

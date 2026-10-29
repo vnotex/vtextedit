@@ -43,19 +43,16 @@ struct WidgetPaintData {
   QRectF m_rect;
 };
 
-// Validated source coordinates, independent of cached layout geometry.
+// Block-local normalized run, independent of cached layout geometry.
 struct ConcealedRange {
-  bool operator==(const ConcealedRange &p_other) const {
-    return m_start == p_other.m_start && m_end == p_other.m_end;
-  }
-
-  int m_start = 0;
-  int m_end = 0;
   int m_hiddenStart = 0;
   int m_hiddenEnd = 0;
+  QString m_replacement;
+  int m_group = -1;
 };
 
 struct ConcealPaintData {
+  int m_group = -1;
   int m_hiddenStart = 0;
   int m_hiddenEnd = 0;
   // Block-relative, just like the source QTextLine positions.
@@ -72,6 +69,7 @@ struct BlockLayoutData {
     m_images.clear();
     m_widgets.clear();
     m_concealMarkers.clear();
+    m_concealPreflightMarkers.clear();
   }
 
   bool isNull() const { return m_rect.isNull(); }
@@ -98,10 +96,12 @@ struct BlockLayoutData {
     return data;
   }
 
-  // Submissions survive reset(); only a source revision change invalidates them.
-  QVector<ConcealedRange> m_concealedRanges;
-  int m_concealRevision = -1;
+  // Indices into the layout's flat group array, including visible interior
+  // dependency blocks. Survive geometry resets, never a new snapshot.
+  QVector<int> m_concealGroups;
   QVector<ConcealPaintData> m_concealMarkers;
+  // Retain shaped replacements only across the atomic preflight/layout pass.
+  QVector<ConcealPaintData> m_concealPreflightMarkers;
 
   // Remember the ordinary cache policy while synthetic glyphs require caching.
   bool m_concealOwnsCache = false;

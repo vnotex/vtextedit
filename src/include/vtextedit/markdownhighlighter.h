@@ -62,6 +62,8 @@ public:
 
   void setDocumentParseOptions(int p_options);
   int documentParseOptions() const;
+  // Editor projection demand, independent of the host grammar profile.
+  void setSyntaxConcealmentEnabled(bool p_enabled);
   void setDocumentRetentionEnabled(bool p_enabled);
   MarkdownDocumentPtr currentDocument() const;
   // A full parse of this source/profile is scheduled or in flight.
@@ -87,7 +89,7 @@ public:
   const QVector<md::ImageLinkInfo> &getImageLinks() const;
 
   // Empty unless the complete parse result matches the current document.
-  const QVector<md::ConcealRange> &getConcealRanges() const;
+  const md::ConcealRanges &getConcealRanges() const;
 
   const QVector<md::FencedCodeBlock> &getCodeBlocks() const;
 
@@ -146,7 +148,7 @@ signals:
   void listItemRangesUpdated(TimeStamp p_timeStamp, const QVector<md::ListItemRange> &p_ranges);
 
   // Includes empty snapshots so a fresh parse clears old concealment.
-  void concealRangesUpdated(TimeStamp p_timeStamp, const QVector<md::ConcealRange> &p_ranges);
+  void concealRangesUpdated(TimeStamp p_timeStamp, const md::ConcealRanges &p_ranges);
 
   // Emitted when immutable typed preview snapshots have been produced from an
   // accepted parse result. @p_revision is the parse generation of the result.
@@ -285,6 +287,7 @@ private:
   QElapsedTimer m_contentChangeTime;
 
   bool m_notifyHighlightComplete = false;
+  bool m_syntaxConcealmentEnabled = false;
 
   // Managed by QObject.
   QTimer *m_rehighlightTimer = nullptr;

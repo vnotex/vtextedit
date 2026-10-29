@@ -82,7 +82,7 @@ public:
   // walker's sorted image elements.
   QVector<md::ImageLinkInfo> m_imageLinks;
 
-  QVector<md::ConcealRange> m_concealRanges;
+  md::ConcealRanges m_concealRanges;
 
   // All header regions.
   // Sorted by start position.

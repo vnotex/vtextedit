@@ -121,6 +121,14 @@ bool cmarkNodeSpan(cmark_node *p_node, const LineOffsetTable &p_offsets, int &p_
 bool cmarkNodeUrlSpan(cmark_node *p_node, const LineOffsetTable &p_offsets, int &p_startQChar,
                       int &p_endQChar);
 
+// Exact parser-recognized syntax uses its own per-line byte mapping, never the
+// approximate block_offset correction above. Span bytes are compared verbatim
+// with the original input; returned positions are half-open UTF-16 offsets.
+bool cmarkNodeSyntaxExtent(cmark_node *p_node, const LineOffsetTable &p_offsets, int &p_startQChar,
+                           int &p_endQChar);
+bool cmarkNodeSyntaxSpan(cmark_node *p_node, int p_index, const QByteArray &p_source,
+                         const LineOffsetTable &p_offsets, int &p_startQChar, int &p_endQChar);
+
 // Half-open QChar span of a CMARK_NODE_HTML_INLINE / CMARK_NODE_HTML_BLOCK node
 // in @p_content, VERIFIED against the source. Returns false when the node
 // cannot be located, in which case the caller must skip it (but must still

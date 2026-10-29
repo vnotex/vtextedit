@@ -6,6 +6,7 @@
 #include <QPainter>
 #include <QSignalSpy>
 #include <QTextBlock>
+#include <QTextBoundaryFinder>
 #include <QTextCursor>
 #include <QTextDocument>
 
@@ -1593,6 +1594,43 @@ void TestMarkdownFolding::testSourceTextRectSharesWidgetCoordinates() {
                    widgetRect.width()));
 }
 
+// URL policy belongs to the caller. These fixtures intentionally construct
+// explicit generic snapshots rather than asking the layout to shorten text.
+struct ShortenSpec {
+  QTextBlock m_block;
+  int m_start = 0;
+  int m_end = 0;
+};
+
+static TextDocumentLayout::ConcealSnapshot shortenedSnapshot(const QVector<ShortenSpec> &p_specs,
+                                                             const QTextCharFormat &p_format = {}) {
+  TextDocumentLayout::ConcealSnapshot snapshot;
+  for (const auto &spec : p_specs) {
+    QTextBoundaryFinder finder(QTextBoundaryFinder::Grapheme, spec.m_block.text());
+    finder.setPosition(spec.m_start);
+    for (int i = 0; i < 3; ++i) {
+      finder.toNextBoundary();
+    }
+    const int hiddenStart = finder.position();
+    finder.setPosition(spec.m_end);
+    for (int i = 0; i < 3; ++i) {
+      finder.toPreviousBoundary();
+    }
+    const int offset = spec.m_block.position();
+    TextDocumentLayout::ConcealGroup group;
+    group.m_start = group.m_revealStart = offset + spec.m_start;
+    group.m_end = group.m_revealEnd = offset + spec.m_end;
+    group.m_firstRun = snapshot.m_runs.size();
+    group.m_runCount = 1;
+    group.m_format = p_format;
+    group.m_tooltip = true;
+    snapshot.m_groups.append(group);
+    snapshot.m_runs.append({offset + hiddenStart, offset + static_cast<int>(finder.position()),
+                            QStringLiteral("\u00b7\u00b7\u00b7")});
+  }
+  return snapshot;
+}
+
 static TextDocumentLayout *makeConcealLayout(QTextDocument &p_doc,
                                              DocumentResourceMgr &p_resourceMgr, QImage &p_device) {
   QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
@@ -1687,7 +1725,6 @@ void TestMarkdownFolding::testConcealLayout() {
   const QColor background(225, 235, 250);
   format.setForeground(foreground);
   format.setBackground(background);
-  layout->setConcealFormat(format);
   layout->setConcealCursorPosition(-1);
   reference.firstBlock().layout()->setFormats({{start, 9, format}});
   referenceLayout->relayout();
@@ -1700,7 +1737,7 @@ void TestMarkdownFolding::testConcealLayout() {
     notifiedTail = layout->sourceTextRect(end + 1, end + 6);
   });
 
-  QVERIFY(layout->conceal(doc.firstBlock(), start, end));
+  layout->setConcealment(shortenedSnapshot({{doc.firstBlock(), start, end}}, format));
   QCOMPARE(changed.count(), 1);
   QVERIFY(!emittedWhileBusy);
   QCOMPARE(notifiedTail, expectedTail);
@@ -1733,14 +1770,14 @@ void TestMarkdownFolding::testConcealLayout() {
   replacement.setFont(replacementFont);
   replacement.setForeground(QColor(180, 45, 20));
   replacement.setBackground(QColor(225, 250, 225));
-  layout->setConcealFormat(replacement);
+  layout->setConcealment(shortenedSnapshot({{doc.firstBlock(), start, end}}, replacement));
   reference.firstBlock().layout()->setFormats({{start, 9, replacement}});
   referenceLayout->relayout();
   QCOMPARE(layout->sourceTextRect(end + 1, end + 6),
            referenceLayout->sourceTextRect(start + 10, start + 15));
   QVERIFY(layout->sourceTextRect(end + 1, end + 6) != expectedTail);
   QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
-  layout->setConcealFormat(format);
+  layout->setConcealment(shortenedSnapshot({{doc.firstBlock(), start, end}}, format));
   reference.firstBlock().layout()->setFormats({{start, 9, format}});
   referenceLayout->relayout();
   QCOMPARE(renderConcealLayout(layout, device), compactImage);
@@ -1767,9 +1804,21 @@ void TestMarkdownFolding::testConcealLayout() {
     tailPoint.rx() += (nextTailPoint.x() - tailPoint.x()) / 4;
     QCOMPARE(layout->hitTest(tailPoint, accuracy), end + 2);
   }
+  int tooltipStart = -1;
+  int tooltipEnd = -1;
+  QRectF tooltipRect;
+  for (const QPointF &point : {marker.center(), layout->sourceTextRect(start, hiddenStart).center(),
+                               layout->sourceTextRect(hiddenEnd, end).center()}) {
+    QVERIFY(layout->concealedSourceAt(point, tooltipStart, tooltipEnd, tooltipRect));
+    QCOMPARE(tooltipStart, start);
+    QCOMPARE(tooltipEnd, end);
+  }
+  QVERIFY(!layout->concealedSourceAt(layout->sourceTextRect(end, end + 1).center(), tooltipStart,
+                                     tooltipEnd, tooltipRect));
   layout->setConcealCursorPosition(layout->hitTest(marker.center(), Qt::ExactHit));
+  QVERIFY(!layout->concealedSourceAt(marker.center(), tooltipStart, tooltipEnd, tooltipRect));
   QCOMPARE(layout->sourceTextRect(end + 1, end + 6), sourceTail);
-  QVERIFY(layout->setConcealedRanges({}));
+  layout->setConcealment({});
   layout->setConcealCursorPosition(-1);
   QCOMPARE(layout->sourceTextRect(end + 1, end + 6), sourceTail);
   QCOMPARE(renderConcealLayout(layout, device), sourceImage);
@@ -1795,12 +1844,11 @@ void TestMarkdownFolding::testConcealBoundaries() {
   QTextDocument doc(source);
   QTextDocument reference(firstCompact + QStringLiteral(" | ") + secondCompact +
                           QStringLiteral(" tail"));
-  QTextDocument foreign(alphabet);
   auto *layout = makeConcealLayout(doc, resources, device);
   auto *referenceLayout = makeConcealLayout(reference, resources, device);
   const QTextBlock block = doc.firstBlock();
-  const TextDocumentLayout::ConcealSpec first{block, 0, 26};
-  const TextDocumentLayout::ConcealSpec second{block, secondStart, secondStart + 26};
+  const ShortenSpec first{block, 0, 26};
+  const ShortenSpec second{block, secondStart, secondStart + 26};
   const auto expectedTail = [&]() {
     const int pos = reference.toPlainText().indexOf(QStringLiteral("tail"));
     return referenceLayout->sourceTextRect(pos, pos + 4);
@@ -1811,33 +1859,33 @@ void TestMarkdownFolding::testConcealBoundaries() {
     return referenceLayout->sourceTextRect(pos, pos + 1);
   };
   layout->setConcealCursorPosition(-1);
-  QVERIFY(layout->setConcealedRanges({second, first, second}));
+  layout->setConcealment(shortenedSnapshot({second, first, second}));
   QCOMPARE(actualTail(), expectedTail());
   const QRectF bothCompactTail = actualTail();
   QSignalSpy changed(layout, &TextDocumentLayout::concealmentChanged);
   QSignalSpy updated(layout, &TextDocumentLayout::update);
 
-  // Reordering or duplicating a snapshot must not cause a paint/geometry pass.
-  QVERIFY(layout->setConcealedRanges({first, second, first}));
-  QVERIFY(layout->conceal(block, 0, 26));
-  QCOMPARE(changed.count(), 0);
-  QCOMPARE(updated.count(), 0);
-  QCOMPARE(actualTail(), bothCompactTail);
-  const QVector<TextDocumentLayout::ConcealSpec> invalidRanges{
-      {QTextBlock(), 0, 26}, {foreign.firstBlock(), 0, 26},
-      {block, -1, 26},       {block, 0, std::numeric_limits<int>::max()},
-      {block, 26, 0},        {block, 0, 0},
-      {block, 0, 9},         {block, 1, 20}};
+  // Every submission replaces the snapshot. One malformed group does not
+  // suppress an independent valid group, nor preserve stale old geometry.
   const int revision = doc.revision();
-  for (const auto &invalid : invalidRanges) {
-    QVERIFY(!layout->conceal(invalid.m_block, invalid.m_start, invalid.m_end));
-    // A valid prefix of the batch is not permission to publish half a snapshot.
-    QVERIFY(!layout->setConcealedRanges({first, invalid}));
-    QCOMPARE(actualTail(), bothCompactTail);
-    QCOMPARE(changed.count(), 0);
-    QCOMPARE(updated.count(), 0);
+  for (int invalidCase = 0; invalidCase < 4; ++invalidCase) {
+    auto snapshot = shortenedSnapshot({first, second});
+    if (invalidCase == 0) {
+      snapshot.m_groups[0].m_start = -1;
+    } else if (invalidCase == 1) {
+      snapshot.m_groups[0].m_runCount = std::numeric_limits<int>::max();
+    } else if (invalidCase == 2) {
+      snapshot.m_runs[0].m_end = std::numeric_limits<int>::max();
+    } else {
+      snapshot.m_runs[0].m_replacement = QStringLiteral("bad\nreplacement");
+    }
+    layout->setConcealment(snapshot);
+    reference.setPlainText(alphabet + QStringLiteral(" | ") + secondCompact +
+                           QStringLiteral(" tail"));
+    QCOMPARE(actualTail(), expectedTail());
     QCOMPARE(doc.revision(), revision);
   }
+  layout->setConcealment(shortenedSnapshot({first, second}));
 
   layout->setConcealCursorPosition(0);
   reference.setPlainText(alphabet + QStringLiteral(" | ") + secondCompact +
@@ -1858,17 +1906,17 @@ void TestMarkdownFolding::testConcealBoundaries() {
   QCOMPARE(layout->sourceTextRect(27, 28), expectedSeparator());
   layout->setConcealCursorPosition(secondStart + 26);
   QCOMPARE(actualTail(), bothCompactTail);
-  QVERIFY(layout->setConcealedRanges({first}));
+  layout->setConcealment(shortenedSnapshot({first}));
   QCOMPARE(actualTail(), expectedTail());
-  QVERIFY(layout->setConcealedRanges({}));
+  layout->setConcealment({});
   reference.setPlainText(source);
   QCOMPARE(actualTail(), expectedTail());
 
-  // The primitive's only length threshold is nine graphemes, not Markdown's 20.
-  QVERIFY(layout->setConcealedRanges({{block, 0, 10}}));
+  // Caller-provided runs can shorten small source spans and be adjacent.
+  layout->setConcealment(shortenedSnapshot({{block, 0, 10}}));
   reference.setPlainText(QStringLiteral("abc") + dots + source.mid(7));
   QCOMPARE(actualTail(), expectedTail());
-  QVERIFY(layout->setConcealedRanges({{block, 0, 13}, {block, 13, 26}}));
+  layout->setConcealment(shortenedSnapshot({{block, 0, 13}, {block, 13, 26}}));
   reference.setPlainText(QStringLiteral("abc") + dots + QStringLiteral("klmnop") + dots +
                          QStringLiteral("xyz") + source.mid(26));
   QCOMPARE(actualTail(), expectedTail());
@@ -1880,11 +1928,13 @@ void TestMarkdownFolding::testConcealBoundaries() {
   const QTextBlock unicodeBlock = unicodeDoc.firstBlock();
   const int unicodeEnd = unicode.size();
   const qreal unicodeWidth = unicodeBlock.layout()->lineAt(0).naturalTextWidth();
-  QVERIFY(!unicodeLayout->conceal(unicodeBlock, 1, unicodeEnd));
-  QVERIFY(!unicodeLayout->conceal(unicodeBlock, 3, unicodeEnd));
-  QCOMPARE(unicodeBlock.layout()->lineAt(0).naturalTextWidth(), unicodeWidth);
-  QVERIFY(unicodeLayout->conceal(unicodeBlock, 0, unicodeEnd));
-  QVERIFY(!unicodeLayout->setConcealedRanges({{unicodeBlock, 1, unicodeEnd}}));
+  for (int invalidStart : {1, 3}) {
+    auto snapshot = shortenedSnapshot({{unicodeBlock, 0, unicodeEnd}});
+    snapshot.m_runs[0].m_start = invalidStart;
+    unicodeLayout->setConcealment(snapshot);
+    QCOMPARE(unicodeBlock.layout()->lineAt(0).naturalTextWidth(), unicodeWidth);
+  }
+  unicodeLayout->setConcealment(shortenedSnapshot({{unicodeBlock, 0, unicodeEnd}}));
   reference.setPlainText(QStringLiteral("a\u0301\U0001f642b") + dots + QStringLiteral("xyz"));
   QCOMPARE(unicodeBlock.layout()->lineAt(0).naturalTextWidth(),
            reference.firstBlock().layout()->lineAt(0).naturalTextWidth());
@@ -1895,7 +1945,7 @@ void TestMarkdownFolding::testConcealBoundaries() {
   auto *shiftedLayout = makeConcealLayout(shifted, resources, device);
   const QTextBlock edited = shifted.findBlockByNumber(1);
   const QTextBlock untouched = shifted.findBlockByNumber(2);
-  QVERIFY(shiftedLayout->setConcealedRanges({{edited, 0, 26}, {untouched, 0, 26}}));
+  shiftedLayout->setConcealment(shortenedSnapshot({{edited, 0, 26}, {untouched, 0, 26}}));
   const qreal compactWidth = edited.layout()->lineAt(0).naturalTextWidth();
   const int untouchedRevision = untouched.revision();
   QTextCursor cursor(&shifted);
@@ -1909,13 +1959,13 @@ void TestMarkdownFolding::testConcealBoundaries() {
   QCOMPARE(edited.layout()->lineAt(0).naturalTextWidth(),
            reference.firstBlock().layout()->lineAt(0).naturalTextWidth());
   QCOMPARE(untouched.layout()->lineAt(0).naturalTextWidth(), compactWidth);
-  QVERIFY(
-      shiftedLayout->setConcealedRanges({{edited, 0, edited.length() - 1}, {untouched, 0, 26}}));
+  shiftedLayout->setConcealment(
+      shortenedSnapshot({{edited, 0, edited.length() - 1}, {untouched, 0, 26}}));
   QCOMPARE(edited.layout()->lineAt(0).naturalTextWidth(), compactWidth);
   cursor.setPosition(edited.position());
   cursor.setPosition(untouched.position(), QTextCursor::KeepAnchor);
   cursor.removeSelectedText();
-  QVERIFY(shiftedLayout->setConcealedRanges({}));
+  shiftedLayout->setConcealment({});
   reference.setPlainText(shifted.toPlainText());
   QCOMPARE(renderConcealLayout(shiftedLayout, device),
            renderConcealLayout(referenceLayout, device));
@@ -1969,10 +2019,7 @@ void TestMarkdownFolding::testConcealWrappingAndSelection() {
     const QVector<int> previousWords = concealCursorStops(doc, QTextCursor::PreviousWord, true);
     QVERIFY(!nextCharacters.contains(start + 1));
     QVERIFY(!nextCharacters.contains(start + 3));
-    QVERIFY(!layout->conceal(block, start, end - 1));
-    QVERIFY(!layout->conceal(block, start, end - 3));
-    layout->setConcealFormat(concealedFormat);
-    QVERIFY(layout->conceal(block, start, end));
+    layout->setConcealment(shortenedSnapshot({{block, start, end}}, concealedFormat));
 
     // Enough room for all three dots; suffix/following text still wraps. The
     // source contains tabs, spaces, soft hyphen and independent syntax runs.
@@ -2083,7 +2130,7 @@ void TestMarkdownFolding::testConcealWrappingAndSelection() {
     reference.firstBlock().layout()->setFormats({{start, compactEnd - start, concealedFormat}});
     referenceLayout->relayout();
     QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
-    QVERIFY(layout->setConcealedRanges({}));
+    layout->setConcealment({});
     reference.setPlainText(source);
     reference.firstBlock().layout()->setFormats(syntax);
     referenceLayout->relayout();
@@ -2123,7 +2170,7 @@ void TestMarkdownFolding::testConcealWrappingAndSelection() {
         outsideWidth + expectedMarker.right() - referenceLine.x() + halfSuffixCharacter;
     const qreal forcedWidth =
         outsideWidth + expectedMarker.left() - referenceLine.x() + expectedMarker.width() / 2;
-    QVERIFY(layout->conceal(doc.firstBlock(), start, end));
+    layout->setConcealment(shortenedSnapshot({{doc.firstBlock(), start, end}}));
     doc.setTextWidth(narrowWidth);
     reference.setTextWidth(narrowWidth);
     const QTextBlock block = doc.firstBlock();
@@ -2162,8 +2209,7 @@ void TestMarkdownFolding::testConcealWrappingAndSelection() {
     QTextDocument reference(compact);
     auto *layout = makeConcealLayout(doc, resources, device);
     auto *referenceLayout = makeConcealLayout(reference, resources, device);
-    layout->setConcealFormat(concealedFormat);
-    QVERIFY(layout->conceal(doc.firstBlock(), start, end));
+    layout->setConcealment(shortenedSnapshot({{doc.firstBlock(), start, end}}, concealedFormat));
     reference.firstBlock().layout()->setFormats({{start, 9, concealedFormat}});
     referenceLayout->relayout();
     const QRectF marker = layout->sourceTextRect(hiddenStart, hiddenEnd);
@@ -2254,8 +2300,7 @@ void TestMarkdownFolding::testConcealWrappingAndSelection() {
     auto *layout = makeConcealLayout(doc, resources, device);
     auto *referenceLayout = makeConcealLayout(reference, resources, device);
     QCOMPARE(doc.firstBlock().textDirection(), Qt::RightToLeft);
-    layout->setConcealFormat(concealedFormat);
-    QVERIFY(layout->conceal(doc.firstBlock(), start, end));
+    layout->setConcealment(shortenedSnapshot({{doc.firstBlock(), start, end}}, concealedFormat));
     reference.firstBlock().layout()->setFormats({{start, 9, concealedFormat}});
     referenceLayout->relayout();
     const QRectF marker = layout->sourceTextRect(start + 3, end - 3);
@@ -2299,7 +2344,7 @@ void TestMarkdownFolding::testConcealWrappingAndSelection() {
     const int compactBandStart = reference.findBlockByNumber(1).position() + start + 10;
     layout->setPreviewEnabled(true);
     referenceLayout->setPreviewEnabled(true);
-    QVERIFY(layout->conceal(block, start, end));
+    layout->setConcealment(shortenedSnapshot({{block, start, end}}));
     auto spec = makeSpec(71, bandStart, bandStart + 5, 80, 24, PreviewPlacement::InlineAboveLine);
     auto referenceSpec = makeSpec(71, compactBandStart, compactBandStart + 5, 80, 24,
                                   PreviewPlacement::InlineAboveLine);
@@ -2388,6 +2433,304 @@ void TestMarkdownFolding::testConcealWrappingAndSelection() {
     QCOMPARE(layout->documentSize(), referenceLayout->documentSize());
     QCOMPARE(doc.toPlainText(), source);
   }
+}
+
+void TestMarkdownFolding::testConcealGenericRuns() {
+  QImage device(1200, 900, QImage::Format_ARGB32_Premultiplied);
+  device.fill(Qt::white);
+  DocumentResourceMgr resources;
+  const QString source = QStringLiteral("**visible** tail");
+  QTextDocument doc(source);
+  QTextDocument reference(QStringLiteral("visible tail"));
+  auto *layout = makeConcealLayout(doc, resources, device);
+  auto *referenceLayout = makeConcealLayout(reference, resources, device);
+  const int revision = doc.revision();
+  const auto stops = concealCursorStops(doc, QTextCursor::NextCharacter);
+  const bool undoAvailable = doc.isUndoAvailable();
+  TextDocumentLayout::ConcealSnapshot snapshot;
+  TextDocumentLayout::ConcealGroup group;
+  group.m_start = group.m_revealStart = 0;
+  group.m_end = group.m_revealEnd = 11;
+  group.m_revealAtEnd = true;
+  group.m_runCount = 2;
+  snapshot.m_groups = {group};
+  snapshot.m_runs = {{0, 2, {}}, {9, 11, {}}};
+  layout->setConcealment(snapshot);
+  QCOMPARE(layout->sourceTextRect(0, 2).width(), 0.0);
+  QCOMPARE(layout->sourceTextRect(9, 11).width(), 0.0);
+  QCOMPARE(layout->sourceTextRect(2, 9), referenceLayout->sourceTextRect(0, 7));
+  QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
+  QCOMPARE(concealCursorStops(doc, QTextCursor::NextCharacter), stops);
+  const auto boundary = concealCursorPoint(layout, doc.firstBlock(), 2);
+  QCOMPARE(layout->hitTest(boundary, Qt::FuzzyHit), 2);
+  for (int position : {0, 1, 2, 8, 9, 10, 11}) {
+    layout->setConcealCursorPosition(position);
+    QVERIFY(layout->sourceTextRect(0, 2).width() > 0);
+    QVERIFY(layout->sourceTextRect(9, 11).width() > 0);
+    layout->setConcealCursorPosition(12);
+    QCOMPARE(layout->sourceTextRect(0, 2).width(), 0.0);
+    QCOMPARE(layout->sourceTextRect(9, 11).width(), 0.0);
+  }
+  QTextCursor selection(&doc);
+  selection.select(QTextCursor::Document);
+  QCOMPARE(selection.selectedText(), source);
+  QCOMPARE(doc.revision(), revision);
+  QCOMPARE(doc.isUndoAvailable(), undoAvailable);
+
+  // An empty suffix at EOF remains editable through the explicit end policy.
+  QTextDocument eof(QStringLiteral("**visible**"));
+  auto *eofLayout = makeConcealLayout(eof, resources, device);
+  eofLayout->setConcealment(snapshot);
+  QCOMPARE(eofLayout->sourceTextRect(9, 11).width(), 0.0);
+  eofLayout->setConcealCursorPosition(eof.characterCount() - 1);
+  QVERIFY(eofLayout->sourceTextRect(9, 11).width() > 0);
+
+  // Hiding the complete paragraph retains its editable native line height,
+  // and a hit with no visible neighbor resolves to the exclusive source end.
+  QTextDocument empty(QStringLiteral("hide"));
+  auto *emptyLayout = makeConcealLayout(empty, resources, device);
+  auto emptySnapshot = snapshot;
+  emptySnapshot.m_groups[0].m_end = emptySnapshot.m_groups[0].m_revealEnd = 4;
+  emptySnapshot.m_groups[0].m_runCount = 1;
+  emptySnapshot.m_runs = {{0, 4, {}}};
+  emptyLayout->setConcealment(emptySnapshot);
+  QCOMPARE(emptyLayout->sourceTextRect(0, 4).width(), 0.0);
+  QVERIFY(empty.firstBlock().layout()->lineAt(0).height() > 0);
+  QCOMPARE(
+      emptyLayout->hitTest(concealCursorPoint(emptyLayout, empty.firstBlock(), 0), Qt::FuzzyHit),
+      4);
+
+  // No relationship between source length and replacement length is required.
+  const QString replacement = QStringLiteral("arbitrarily long replacement");
+  QTextDocument expanded(QStringLiteral("pre X tail"));
+  QTextDocument expandedReference(QStringLiteral("pre ") + replacement + QStringLiteral(" tail"));
+  auto *expandedLayout = makeConcealLayout(expanded, resources, device);
+  auto *expandedReferenceLayout = makeConcealLayout(expandedReference, resources, device);
+  group.m_start = group.m_revealStart = 4;
+  group.m_end = group.m_revealEnd = 5;
+  group.m_runCount = 1;
+  group.m_tooltip = true;
+  snapshot.m_groups = {group};
+  snapshot.m_runs = {{4, 5, replacement}};
+  expandedLayout->setConcealment(snapshot);
+  QCOMPARE(renderConcealLayout(expandedLayout, device),
+           renderConcealLayout(expandedReferenceLayout, device));
+  const QRectF marker = expandedLayout->sourceTextRect(4, 5);
+  QCOMPARE(expandedLayout->hitTest(marker.center(), Qt::ExactHit), 4);
+  int tooltipStart = -1;
+  int tooltipEnd = -1;
+  QRectF tooltipRect;
+  QVERIFY(
+      expandedLayout->concealedSourceAt(marker.center(), tooltipStart, tooltipEnd, tooltipRect));
+  QCOMPARE(tooltipStart, 4);
+  QCOMPARE(tooltipEnd, 5);
+  QCOMPARE(tooltipRect, marker);
+  QVERIFY(!expandedLayout->concealedSourceAt(marker.topRight() + QPointF(30, 2), tooltipStart,
+                                             tooltipEnd, tooltipRect));
+  expandedLayout->setConcealCursorPosition(4);
+  QVERIFY(
+      !expandedLayout->concealedSourceAt(marker.center(), tooltipStart, tooltipEnd, tooltipRect));
+  QCOMPARE(expanded.toPlainText(), QStringLiteral("pre X tail"));
+
+  // Zero-width hit boundaries use visual neighbors in an RTL paragraph too.
+  QTextDocument rtl(QStringLiteral("**\u05d0\u05d1\u05d2**"));
+  auto *rtlLayout = makeConcealLayout(rtl, resources, device);
+  group.m_start = group.m_revealStart = 0;
+  group.m_end = group.m_revealEnd = 7;
+  group.m_runCount = 2;
+  group.m_tooltip = false;
+  snapshot.m_groups = {group};
+  snapshot.m_runs = {{0, 2, {}}, {5, 7, {}}};
+  rtlLayout->setConcealment(snapshot);
+  const auto rtlBoundary = concealCursorPoint(rtlLayout, rtl.firstBlock(), 2);
+  const int rtlHit = rtlLayout->hitTest(rtlBoundary, Qt::FuzzyHit);
+  QVERIFY(rtlHit >= 2 && rtlHit < 5);
+}
+
+void TestMarkdownFolding::testConcealNestingAndConflicts() {
+  QImage device(1200, 900, QImage::Format_ARGB32_Premultiplied);
+  device.fill(Qt::white);
+  DocumentResourceMgr resources;
+  QTextDocument doc(QStringLiteral("abcdefghijklmnop tail"));
+  auto *layout = makeConcealLayout(doc, resources, device);
+  QTextDocument reference(QStringLiteral("abklmX tail"));
+  auto *referenceLayout = makeConcealLayout(reference, resources, device);
+  TextDocumentLayout::ConcealSnapshot snapshot;
+  const auto append = [&](int p_start, int p_end, int p_revealStart, int p_revealEnd,
+                          int p_runStart, int p_runEnd, const QString &p_text) {
+    TextDocumentLayout::ConcealGroup group;
+    group.m_start = p_start;
+    group.m_end = p_end;
+    group.m_revealStart = p_revealStart;
+    group.m_revealEnd = p_revealEnd;
+    group.m_firstRun = snapshot.m_runs.size();
+    group.m_runCount = 1;
+    snapshot.m_groups.append(group);
+    snapshot.m_runs.append({p_runStart, p_runEnd, p_text});
+  };
+  append(0, 12, 0, 2, 2, 10, QString());
+  append(3, 8, 3, 8, 4, 7, QStringLiteral("nested"));
+  append(13, 16, 13, 16, 13, 16, QStringLiteral("X"));
+  layout->setConcealment(snapshot);
+  QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
+  // Revealing the outer group resurrects the nested replacement, without
+  // disturbing the unrelated group later in the same block.
+  layout->setConcealCursorPosition(0);
+  reference.setPlainText(QStringLiteral("abcdnestedhijklmX tail"));
+  QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
+  layout->setConcealCursorPosition(5);
+  reference.setPlainText(QStringLiteral("abcdefghijklmX tail"));
+  QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
+  layout->setConcealCursorPosition(-1);
+
+  // A suppressed descendant replacement must not poison a crossing empty
+  // hide. The unrelated tail replacement also remains present.
+  snapshot.m_groups.clear();
+  snapshot.m_runs.clear();
+  append(0, 12, 0, 2, 2, 10, QString());
+  append(3, 8, 3, 8, 4, 7, QStringLiteral("nested"));
+  append(6, 16, 6, 16, 6, 16, QString());
+  append(17, 21, 17, 21, 17, 21, QStringLiteral("Y"));
+  layout->setConcealment(snapshot);
+  reference.setPlainText(QStringLiteral("ab Y"));
+  QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
+  reference.setPlainText(QStringLiteral("abcdefghijklmX tail"));
+
+  // Partial replacement overlaps fail open per implicated group. The third
+  // replacement survives; a later snapshot is not a failed-batch no-op.
+  snapshot.m_groups.clear();
+  snapshot.m_runs.clear();
+  append(0, 10, 0, 10, 1, 6, QStringLiteral("first"));
+  append(3, 12, 3, 12, 4, 8, QStringLiteral("second"));
+  append(13, 16, 13, 16, 13, 16, QStringLiteral("X"));
+  layout->setConcealment(snapshot);
+  QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
+
+  // Overlapping empty hides normalize, and adjacent replacements remain
+  // independent even when their formats are identical.
+  snapshot.m_runs[0].m_replacement.clear();
+  snapshot.m_runs[1].m_replacement.clear();
+  layout->setConcealment(snapshot);
+  reference.setPlainText(QStringLiteral("aijklmX tail"));
+  QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
+  snapshot.m_groups.clear();
+  snapshot.m_runs.clear();
+  append(0, 4, 0, 4, 0, 4, QStringLiteral("LEFT"));
+  append(4, 8, 4, 8, 4, 8, QStringLiteral("RIGHT"));
+  layout->setConcealment(snapshot);
+  reference.setPlainText(QStringLiteral("LEFTRIGHTijklmnop tail"));
+  QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
+
+  // A malformed second run rejects both runs of that group, not only the bad
+  // suffix. An independent group's replacement still takes effect.
+  snapshot.m_groups[0].m_end = snapshot.m_groups[0].m_revealEnd = 8;
+  snapshot.m_groups[0].m_runCount = 2;
+  snapshot.m_runs[1].m_replacement = QStringLiteral("bad\nline");
+  snapshot.m_groups[1].m_start = snapshot.m_groups[1].m_revealStart = 13;
+  snapshot.m_groups[1].m_end = snapshot.m_groups[1].m_revealEnd = 16;
+  snapshot.m_groups[1].m_firstRun = 2;
+  snapshot.m_runs.append({13, 16, QStringLiteral("X")});
+  layout->setConcealment(snapshot);
+  reference.setPlainText(QStringLiteral("abcdefghijklmX tail"));
+  QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
+
+  // Ownership applies to formatting as well as glyphs. A hidden child's
+  // format must not recolor the replacement of its ancestor at a shared start.
+  QTextDocument styled(QStringLiteral("abcdefgh"));
+  QTextDocument styledReference(QStringLiteral("abOUTgh"));
+  auto *styledLayout = makeConcealLayout(styled, resources, device);
+  auto *styledReferenceLayout = makeConcealLayout(styledReference, resources, device);
+  snapshot.m_groups.clear();
+  snapshot.m_runs.clear();
+  append(0, 8, 0, 8, 2, 6, QStringLiteral("OUT"));
+  append(2, 5, 2, 5, 2, 4, QStringLiteral("IN"));
+  snapshot.m_groups[0].m_format.setForeground(Qt::blue);
+  snapshot.m_groups[1].m_format.setForeground(Qt::red);
+  styledReference.firstBlock().layout()->setFormats({{0, 7, snapshot.m_groups[0].m_format}});
+  styledReferenceLayout->relayout();
+  styledLayout->setConcealment(snapshot);
+  QCOMPARE(renderConcealLayout(styledLayout, device),
+           renderConcealLayout(styledReferenceLayout, device));
+}
+
+void TestMarkdownFolding::testConcealMultiblockGroups() {
+  QImage device(1200, 900, QImage::Format_ARGB32_Premultiplied);
+  device.fill(Qt::white);
+  DocumentResourceMgr resources;
+  const QString source = QStringLiteral("heading\n**first\nvisible middle\nlast**\ntail");
+  QTextDocument doc(source);
+  auto *layout = makeConcealLayout(doc, resources, device);
+  const QTextBlock first = doc.findBlockByNumber(1);
+  const QTextBlock middle = doc.findBlockByNumber(2);
+  const QTextBlock last = doc.findBlockByNumber(3);
+  TextDocumentLayout::ConcealSnapshot snapshot;
+  TextDocumentLayout::ConcealGroup group;
+  group.m_start = group.m_revealStart = first.position();
+  group.m_end = group.m_revealEnd = last.position() + last.length() - 1;
+  group.m_revealAtEnd = true;
+  group.m_runCount = 2;
+  snapshot.m_groups = {group};
+  snapshot.m_runs = {{first.position(), first.position() + 2, {}},
+                     {last.position() + 4, last.position() + 6, {}}};
+  const auto hidden = [&]() {
+    return layout->sourceTextRect(first.position(), first.position() + 2).width() == 0 &&
+           layout->sourceTextRect(last.position() + 4, last.position() + 6).width() == 0;
+  };
+  const auto revealed = [&]() {
+    return layout->sourceTextRect(first.position(), first.position() + 2).width() > 0 &&
+           layout->sourceTextRect(last.position() + 4, last.position() + 6).width() > 0;
+  };
+  layout->setConcealment(snapshot);
+  QVERIFY(hidden());
+  bool notifiedBusy = false;
+  bool notifiedPartial = false;
+  connect(layout, &TextDocumentLayout::concealmentChanged, this, [&]() {
+    notifiedBusy |= layout->isBusy();
+    notifiedPartial |= !hidden() && !revealed();
+  });
+  QSignalSpy changed(layout, &TextDocumentLayout::concealmentChanged);
+  layout->setConcealCursorPosition(middle.position() + 3);
+  QVERIFY(revealed());
+  QCOMPARE(changed.count(), 1);
+  layout->setConcealCursorPosition(-1);
+  QVERIFY(hidden());
+
+  // Composition in a visible middle block reveals both distant delimiters.
+  middle.layout()->setPreeditArea(3, QStringLiteral("IME"));
+  OrderedIntSet onlyMiddle;
+  onlyMiddle.insert(middle.blockNumber(), QMapDummyValue());
+  layout->relayout(onlyMiddle);
+  QVERIFY(revealed());
+  middle.layout()->setPreeditArea(-1, QString());
+  layout->relayout(onlyMiddle);
+  QVERIFY(hidden());
+  QCOMPARE(doc.toPlainText(), source);
+
+  // A visible interior edit invalidates the entire original snapshot before
+  // a geometry callback can observe one concealed delimiter and one revealed.
+  QTextCursor cursor(&doc);
+  cursor.setPosition(middle.position() + 4);
+  cursor.insertText(QStringLiteral("changed"));
+  QVERIFY(revealed());
+  layout->setConcealCursorPosition(0);
+  QVERIFY(revealed());
+  QVERIFY(!notifiedBusy);
+  QVERIFY(!notifiedPartial);
+
+  // Fresh positions recover concealment. Preceding-block insertion rebases
+  // live handles, while an edit before a run in its own block invalidates it.
+  snapshot.m_groups[0].m_end = snapshot.m_groups[0].m_revealEnd =
+      last.position() + last.length() - 1;
+  snapshot.m_runs[1] = {last.position() + 4, last.position() + 6, {}};
+  layout->setConcealCursorPosition(-1);
+  layout->setConcealment(snapshot);
+  QVERIFY(hidden());
+  cursor.setPosition(0);
+  cursor.insertText(QStringLiteral("inserted\n"));
+  QVERIFY(hidden());
+  cursor.setPosition(first.position());
+  cursor.insertText(QStringLiteral("prefix"));
+  QVERIFY(layout->sourceTextRect(last.position() + 4, last.position() + 6).width() > 0);
 }
 
 // An element whose source is rewritten in one go - what the preview write-back

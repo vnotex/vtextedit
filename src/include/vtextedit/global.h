@@ -99,8 +99,21 @@ enum FindFlag {
 };
 Q_DECLARE_FLAGS(FindFlags, FindFlag);
 
-enum class MarkdownConcealElement { None = 0, ImageUrl = 0x1, LinkUrl = 0x2, ReferenceUrl = 0x4 };
-Q_DECLARE_FLAGS(MarkdownConcealElements, MarkdownConcealElement);
+enum class MarkdownConcealElement {
+  None,
+  ImageUrl,
+  LinkUrl,
+  ReferenceUrl,
+  EmphasisMarkers,
+  StrongMarkers,
+  StrikethroughMarkers,
+  MarkMarkers,
+  InlineCodeMarkers,
+  LinkSyntax,
+  HeadingMarkers,
+  InlineFormulaMarkers,
+  Count
+};
 
 enum class LineEndingPolicy { Platform, File, LF, CRLF, CR };
 
@@ -134,6 +147,5 @@ struct Key {
 } // namespace vte
 
 Q_DECLARE_OPERATORS_FOR_FLAGS(vte::FindFlags)
-Q_DECLARE_OPERATORS_FOR_FLAGS(vte::MarkdownConcealElements)
 
 #endif // VTEXTEDIT_GLOBAL_H

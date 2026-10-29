@@ -306,6 +306,7 @@ void MarkdownHighlighter::startParse() {
   config->m_data = document()->toPlainText().toUtf8();
   config->m_numOfBlocks = document()->blockCount();
   config->m_parseOptions = m_parseOptions;
+  config->m_collectConcealSyntax = m_syntaxConcealmentEnabled;
 
   qCDebug(previewSnapshotLog) << "parse scheduled" << "timestamp" << m_timeStamp
                               << "document revision" << document()->revision() << "removed"
@@ -1047,8 +1048,8 @@ const QVector<md::ImageLinkInfo> &MarkdownHighlighter::getImageLinks() const {
   return m_result->m_imageLinks;
 }
 
-const QVector<md::ConcealRange> &MarkdownHighlighter::getConcealRanges() const {
-  static const QVector<md::ConcealRange> empty;
+const md::ConcealRanges &MarkdownHighlighter::getConcealRanges() const {
+  static const md::ConcealRanges empty;
   return m_result && m_result->matched(m_timeStamp) ? m_result->m_concealRanges : empty;
 }
 
@@ -1187,6 +1188,20 @@ void MarkdownHighlighter::setDocumentParseOptions(int p_options) {
 }
 
 int MarkdownHighlighter::documentParseOptions() const { return m_parseOptions; }
+
+void MarkdownHighlighter::setSyntaxConcealmentEnabled(bool p_enabled) {
+  if (m_syntaxConcealmentEnabled == p_enabled) {
+    return;
+  }
+  m_syntaxConcealmentEnabled = p_enabled;
+  // Retire in-flight projection results without changing the source or grammar profile.
+  ++m_timeStamp;
+  m_result->m_document.clear();
+  m_parser->discardDocuments();
+  clearFastParseResult();
+  m_fastParseTimer->stop();
+  m_parseTimer->start(0);
+}
 
 void MarkdownHighlighter::setDocumentRetentionEnabled(bool p_enabled) {
   m_parser->setDocumentRetentionEnabled(p_enabled);

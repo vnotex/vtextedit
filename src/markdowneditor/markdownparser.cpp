@@ -51,9 +51,10 @@ MarkdownParserWorker::parseMarkdown(const QSharedPointer<MarkdownParseConfig> &p
                                     QAtomicInt &p_stop) {
   QSharedPointer<MarkdownParseResult> result(new MarkdownParseResult(p_config));
 
-  auto walkResult = walkAndConvert(p_config->m_data, p_config->m_numOfBlocks, p_config->m_offset, 0,
-                                   p_config->m_fast, !p_config->m_fast, p_config->m_parseOptions,
-                                   p_config->m_documentRequest.data());
+  auto walkResult =
+      walkAndConvert(p_config->m_data, p_config->m_numOfBlocks, p_config->m_offset, 0,
+                     p_config->m_fast, !p_config->m_fast, p_config->m_parseOptions,
+                     p_config->m_documentRequest.data(), p_config->m_collectConcealSyntax);
 
   if (p_stop.loadAcquire() == 1) {
     if (p_config->m_documentRequest) {
@@ -139,9 +140,10 @@ MarkdownParser::parse(const QSharedPointer<MarkdownParseConfig> &p_config) {
   }
   QSharedPointer<MarkdownParseResult> result(new MarkdownParseResult(p_config));
 
-  auto walkResult = walkAndConvert(p_config->m_data, p_config->m_numOfBlocks, p_config->m_offset, 0,
-                                   p_config->m_fast, !p_config->m_fast, p_config->m_parseOptions,
-                                   p_config->m_documentRequest.data());
+  auto walkResult =
+      walkAndConvert(p_config->m_data, p_config->m_numOfBlocks, p_config->m_offset, 0,
+                     p_config->m_fast, !p_config->m_fast, p_config->m_parseOptions,
+                     p_config->m_documentRequest.data(), p_config->m_collectConcealSyntax);
 
   result->m_blocksHighlights = std::move(walkResult.blocksHighlights);
   result->m_blockOverlays = std::move(walkResult.blockOverlays);

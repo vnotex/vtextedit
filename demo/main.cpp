@@ -77,10 +77,14 @@ static VMarkdownEditor *setupMarkdownEditor(QWidget *p_parent) {
   markdownEditorConfig->m_inplacePreviewSources |= MarkdownEditorConfig::Table;
   markdownEditorConfig->m_autoFormatTableSourceEnabled = true;
   markdownEditorConfig->m_autoNumberOrderedListsEnabled = true;
-  markdownEditorConfig->m_concealElements = MarkdownConcealElement::ImageUrl |
-                                            MarkdownConcealElement::LinkUrl |
-                                            MarkdownConcealElement::ReferenceUrl;
-  markdownEditorConfig->m_concealLengthThreshold = 20;
+  // Destination shortening remains the library default; the demo opts into syntax hiding.
+  for (const auto kind :
+       {MarkdownConcealElement::EmphasisMarkers, MarkdownConcealElement::StrongMarkers,
+        MarkdownConcealElement::StrikethroughMarkers, MarkdownConcealElement::MarkMarkers,
+        MarkdownConcealElement::InlineCodeMarkers, MarkdownConcealElement::LinkSyntax,
+        MarkdownConcealElement::HeadingMarkers, MarkdownConcealElement::InlineFormulaMarkers}) {
+    markdownEditorConfig->m_concealRules.set(kind, MarkdownConcealHideSyntax{});
+  }
   auto editorParas = QSharedPointer<TextEditorParameters>::create();
   editorParas->m_spellCheckEnabled = false;
 
