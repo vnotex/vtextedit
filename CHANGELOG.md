@@ -29,6 +29,8 @@
 
 ### Fixes
 
+- Include optional closing ATX heading hashes and trailing whitespace in source ranges,
+  so the closing markers receive the heading style without changing titles or rendered HTML.
 - Preserve Markdown syntax backgrounds, including mark highlighting, above the passive
   cursor-line background with concealment enabled or disabled. Real selections and explicit
   overlays retain precedence; compact URL markers no longer propagate full-width fills.

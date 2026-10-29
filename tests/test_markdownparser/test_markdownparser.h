@@ -12,6 +12,7 @@ private slots:
 
   // T5: Block element tests
   void testHeadings();
+  void testHeadingClosingMarkers();
   void testBlockquotes();
   void testBlockquoteNestingDepth();
   void testHorizontalRules();

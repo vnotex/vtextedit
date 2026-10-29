@@ -194,6 +194,54 @@ void TestMarkdownParser::testHeadings() {
   QCOMPARE(result.headerRegions[5].m_endPos, 44);
 }
 
+void TestMarkdownParser::testHeadingClosingMarkers() {
+  auto theme = vte::Theme::createThemeFromContent(QStringLiteral(R"({
+    "metadata": {"type": "vtextedit", "name": "HeadingMarkersTest"},
+    "markdown-syntax-styles": {
+      "H2": {"font-size": 24, "bold": true, "text-color": "#123456"},
+      "STRONG": {"bold": true}
+    }
+  })"));
+  QVERIFY(theme);
+  auto textConfig = QSharedPointer<vte::TextEditorConfig>::create();
+  textConfig->m_theme = theme;
+  auto config = QSharedPointer<vte::MarkdownEditorConfig>::create(textConfig);
+  config->m_inplacePreviewSources = vte::MarkdownEditorConfig::NoInplacePreview;
+  auto parameters = QSharedPointer<vte::TextEditorParameters>::create();
+  vte::VMarkdownEditor editor(config, parameters);
+  QSignalSpy completed(editor.getHighlighter(), &vte::MarkdownHighlighter::highlightCompleted);
+  const QStringList headings{QStringLiteral("## Source-preserving concealment ##"),
+                             QStringLiteral("## Source-preserving **concealment** ##")};
+  for (const auto &heading : headings) {
+    const QString source = heading + QStringLiteral("\nordinary text");
+    const QByteArray utf8 = source.toUtf8();
+    for (bool fast : {false, true}) {
+      const auto result = vte::md::walkAndConvert(utf8, 2, 0, 0, fast);
+      QCOMPARE(findElements(result, HLT_H2, source),
+               (QVector<QPair<unsigned long, unsigned long>>{
+                   {0, static_cast<unsigned long>(heading.size())}}));
+      if (!fast) {
+        QCOMPARE(result.headingElements.size(), 1);
+        QCOMPARE(result.headingElements.first().m_title,
+                 QStringLiteral("Source-preserving concealment"));
+      }
+    }
+    completed.clear();
+    editor.setText(source);
+    editor.getHighlighter()->updateHighlight();
+    QTRY_VERIFY(!completed.isEmpty());
+    const auto block = editor.document()->firstBlock();
+    const auto opener = formatAt(block, 0);
+    QCOMPARE(opener.fontPointSize(), 24.0);
+    QCOMPARE(opener.fontWeight(), int(QFont::Bold));
+    QCOMPARE(opener.foreground().color(), QColor(QStringLiteral("#123456")));
+    QCOMPARE(formatAt(block, heading.size() - 2), opener);
+    QCOMPARE(formatAt(block, heading.size() - 1), opener);
+    QVERIFY(formatAt(block.next(), 0).fontPointSize() != 24.0);
+    QCOMPARE(editor.getText(), source);
+  }
+}
+
 void TestMarkdownParser::testBlockquotes() {
   const QString input = QStringLiteral("> quoted text\n> more quoted\n");
   auto result = parse(input);
