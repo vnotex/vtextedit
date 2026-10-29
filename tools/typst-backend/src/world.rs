@@ -15,7 +15,7 @@ use typst::syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot};
 use typst::text::{Font, FontBook, FontFamily, FontList, TextElem, TextSize};
 use typst::utils::LazyHash;
 use typst::visualize::{Color, Paint};
-use typst::{Library, LibraryExt, World};
+use typst::{Feature, Features, Library, LibraryExt, World};
 use typst_kit::datetime::Time;
 use typst_kit::downloader::{Downloader, SystemDownloader};
 use typst_kit::fonts::FontStore;
@@ -38,6 +38,9 @@ pub struct Config {
     pub preview_foreground: Option<[u8; 4]>,
     pub text_font_families: Vec<String>,
     pub text_font_size: Option<u32>,
+    // Selected by the compile operation, never by untrusted config JSON.
+    #[serde(skip)]
+    pub html_export: bool,
 }
 
 impl Default for Config {
@@ -49,13 +52,18 @@ impl Default for Config {
             max_cache_bytes: 256 * 1024 * 1024,
             preview_background: None, preview_foreground: None,
             text_font_families: vec![], text_font_size: None,
+            html_export: false,
         }
     }
 }
 
 impl Config {
     fn library(&self) -> Arc<LazyHash<Library>> {
-        let mut library = Library::default();
+        let mut library = if self.html_export {
+            Library::builder().with_features(Features::from_iter([Feature::Html])).build()
+        } else {
+            Library::default()
+        };
         // Library defaults sit below authored set/show rules without changing source spans.
         if !self.text_font_families.is_empty() {
             library.styles.set(TextElem::font,
@@ -284,6 +292,7 @@ impl ProjectWorld {
             || self.config.preview_foreground != config.preview_foreground
             || self.config.text_font_families != config.text_font_families
             || self.config.text_font_size != config.text_font_size
+            || self.config.html_export != config.html_export
         {
             self.library = config.library();
         }
@@ -735,6 +744,9 @@ mod tests {
         let omitted: Config = serde_json::from_value(json!({})).unwrap();
         assert!(omitted.text_font_families.is_empty());
         assert_eq!(omitted.text_font_size, None);
+        assert!(!omitted.html_export);
+        assert!(serde_json::from_value::<Config>(json!({"htmlExport":true})).is_err(),
+            "config JSON must not enable runtime-only HTML features");
         let empty: Config = serde_json::from_value(json!({"textFontFamilies":[], "textFontSize":null})).unwrap();
         assert!(empty.text_font_families.is_empty());
         assert_eq!(empty.text_font_size, None);
@@ -753,6 +765,43 @@ mod tests {
         }
         for size in [json!(-1), json!(1.5), json!(u32::MAX as u64 + 1), json!("19")] {
             assert!(serde_json::from_value::<Config>(json!({"textFontSize":size})).is_err());
+        }
+    }
+
+    #[test]
+    fn html_mode_switch_rebuilds_only_the_library_and_preserves_font_defaults() {
+        for (families, configured_size, default_family, default_size) in [
+            (vec![], None, "Libertinus Serif", 11.0),
+            (vec!["DejaVu Sans Mono".into()], Some(19), "DejaVu Sans Mono", 19.0),
+        ] {
+            let mut world = text_font_world(Config {
+                text_font_families: families, text_font_size: configured_size, ..Config::default()
+            });
+            let fonts = world.fonts.clone();
+            for (rules, family, size) in [
+                ("", default_family, default_size),
+                ("#set text(font: \"Libertinus Serif\", size: 13pt)\n", "Libertinus Serif", 13.0),
+            ] {
+                let source = format!("{rules}#context {{ assert(text.size == {size}pt, message: repr(text.size)); assert(text.font == \"{}\", message: repr(text.font)) }}\nFontprobe", family.to_lowercase());
+                for html_export in [true, true, false, false] {
+                    let previous = world.library.clone();
+                    let changed = world.config.html_export != html_export;
+                    let config = Config { html_export, ..world.config.clone() };
+                    world.update(config, vec![Overlay { file: "main.typ".into(), text: source.clone() }]).unwrap();
+                    assert_eq!(!Arc::ptr_eq(&previous, &world.library), changed);
+                    assert!(Arc::ptr_eq(&fonts, &world.fonts), "mode changes must not reload fonts");
+                    assert_eq!(world.library.features.is_enabled(Feature::Html), html_export);
+                    assert!(!world.library.features.is_enabled(Feature::Bundle));
+                    if html_export {
+                        let result = typst::compile::<typst_html::HtmlDocument>(&world);
+                        let document = result.output.unwrap();
+                        let html = typst_html::html(&document, &typst_html::HtmlOptions { pretty: false }).unwrap();
+                        assert!(html.contains("Fontprobe"));
+                    } else {
+                        assert_text_font(&world, &source, family, size);
+                    }
+                }
+            }
         }
     }
 

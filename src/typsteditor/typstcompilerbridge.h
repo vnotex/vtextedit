@@ -22,11 +22,12 @@ class TypstCompilerBridge : public QObject {
 public:
   enum class State { Idle, Starting, Compiling, Ready, Error, Unavailable };
   enum class Mode { Preview, Export };
+  enum class Output { Paged, Html };
   explicit TypstCompilerBridge(QObject *p_parent = nullptr, Mode p_mode = Mode::Preview);
   ~TypstCompilerBridge() Q_DECL_OVERRIDE;
 
   void updateProject(const TypstEditorConfig &p_config, const QString &p_activeFile,
-                     const QMap<QString, QString> &p_overlays);
+                     const QMap<QString, QString> &p_overlays, Output p_output = Output::Paged);
   void resetForNewDocument();
   void finishDocumentReset();
   void retry();
@@ -52,6 +53,7 @@ signals:
   void diagnosticsReady(const QVector<vte::TypstDiagnostic> &p_diagnostics);
   void snapshotReady(const vte::TypstSnapshot &p_snapshot);
   void pdfReady(const vte::TypstSnapshot &p_snapshot, const QByteArray &p_pdf);
+  void htmlReady(quint64 p_epoch, quint64 p_generation, const QByteArray &p_html);
   // Each admitted raster completes once: a ready image (null on failure), or cancellation.
   void pageImageReady(quint64 p_epoch, quint64 p_snapshot, int p_page, qreal p_scale,
                       const QImage &p_image);
@@ -92,6 +94,7 @@ private:
 
   const Mode m_mode;
   TypstEditorConfig m_config;
+  Output m_output = Output::Paged;
   QString m_activeFile;
   QMap<QString, QString> m_overlays;
   TypstRuntimeSession *m_session = nullptr;

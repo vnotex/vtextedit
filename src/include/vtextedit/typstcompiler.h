@@ -20,10 +20,12 @@ class VTEXTEDIT_EXPORT TypstCompiler : public QObject {
   Q_OBJECT
 public:
   struct Result {
-    // One entry per page, in document order. Only the requested format is populated.
-    // Failure leaves both vectors empty. Returned values own their data.
+    // Page vectors have one entry per page, in document order.
+    // Only the requested output is populated; failure clears all outputs. Values own their data.
     QVector<QByteArray> m_svgPages;
     QVector<QImage> m_bitmapPages;
+    QByteArray m_pdf;
+    QByteArray m_html;
     QString m_error;
     // Compilation warnings/errors, including source identity and UTF-16 offset if available.
     QStringList m_diagnostics;
@@ -60,11 +62,14 @@ public:
   bool compileToSvg(const QString &p_text);
   // Native RGBA bitmap; 1 pixel per point = 72 dpi. Scale must be finite and positive.
   bool compileToBitmap(const QString &p_text, qreal p_pixelsPerPoint = 1.0);
+  // Native PDF retains authored page geometry; HTML is semantic, reflowable UTF-8.
+  bool compileToPdf(const QString &p_text);
+  bool compileToHtml(const QString &p_text);
   bool isCompiling() const;
 
 signals:
   // Exactly once, asynchronously, for each accepted call while this object is alive.
-  // All-or-nothing result, with total page bytes bounded by m_maxCacheBytes.
+  // All-or-nothing result, with total output bytes bounded by m_maxCacheBytes.
   // The compiler is idle here; slots may immediately start another job.
   void finished(const vte::TypstCompiler::Result &p_result);
 

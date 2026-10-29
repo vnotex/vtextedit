@@ -16,7 +16,7 @@ using namespace vte;
 
 class TypstCompiler::Private {
 public:
-  enum class Format { Svg, Bitmap };
+  enum class Format { Svg, Bitmap, Pdf, Html };
 
   Private(TypstCompiler *p_owner, const TypstEditorConfig &p_config)
       : q(p_owner), m_config(p_config), m_bridge(nullptr, TypstCompilerBridge::Mode::Export) {
@@ -51,10 +51,16 @@ public:
                      [this](const QString &, const QString &p_message) { finish(p_message); });
     QObject::connect(&m_bridge, &TypstCompilerBridge::snapshotReady, q,
                      [this](const TypstSnapshot &p_snapshot) {
-                       if (!m_busy || m_finishing) {
+                       if (!m_busy || m_finishing || m_format == Format::Html ||
+                           p_snapshot->m_epoch != m_bridge.epoch() ||
+                           p_snapshot->m_generation != m_bridge.generation()) {
                          return;
                        }
                        m_snapshot = p_snapshot;
+                       if (m_format == Format::Pdf) {
+                         m_bridge.requestPdf(m_snapshot->m_id);
+                         return;
+                       }
                        if (m_format == Format::Svg) {
                          m_result.m_svgPages.reserve(m_snapshot->m_pages.size());
                        } else {
@@ -90,6 +96,33 @@ public:
             requestPage();
           }
         });
+    QObject::connect(&m_bridge, &TypstCompilerBridge::pdfReady, q,
+                     [this](const TypstSnapshot &p_snapshot, const QByteArray &p_pdf) {
+                       if (!m_busy || m_finishing || m_format != Format::Pdf || !m_snapshot ||
+                           p_snapshot != m_snapshot || p_snapshot->m_epoch != m_bridge.epoch() ||
+                           p_snapshot->m_generation != m_bridge.generation()) {
+                         return;
+                       }
+                       if (p_pdf.isEmpty() || p_pdf.size() > m_config.m_maxPdfBytes) {
+                         finish(TypstCompiler::tr("Typst PDF exceeds the configured size limit."));
+                       } else if (admitBytes(p_pdf.size())) {
+                         m_result.m_pdf = p_pdf;
+                         finish();
+                       }
+                     });
+    QObject::connect(&m_bridge, &TypstCompilerBridge::htmlReady, q,
+                     [this](quint64 p_epoch, quint64 p_generation, const QByteArray &p_html) {
+                       if (!m_busy || m_finishing || m_format != Format::Html ||
+                           p_epoch != m_bridge.epoch() || p_generation != m_bridge.generation()) {
+                         return;
+                       }
+                       if (p_html.isEmpty()) {
+                         finish(TypstCompiler::tr("Could not export Typst HTML."));
+                       } else if (admitBytes(p_html.size())) {
+                         m_result.m_html = p_html;
+                         finish();
+                       }
+                     });
     QObject::connect(&m_bridge, &TypstCompilerBridge::rasterCancelled, q,
                      [this](quint64 p_epoch, quint64 p_snapshot, int p_page, qreal) {
                        if (acceptsPage(p_epoch, p_snapshot, p_page)) {
@@ -116,7 +149,9 @@ public:
     auto text = p_text;
     text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
     text.replace(QLatin1Char('\r'), QLatin1Char('\n'));
-    m_bridge.updateProject(m_config, m_config.m_mainFile, {{m_config.m_mainFile, text}});
+    m_bridge.updateProject(m_config, m_config.m_mainFile, {{m_config.m_mainFile, text}},
+                           p_format == Format::Html ? TypstCompilerBridge::Output::Html
+                                                    : TypstCompilerBridge::Output::Paged);
     return true;
   }
 
@@ -127,7 +162,7 @@ public:
 
   bool admitBytes(qint64 p_bytes) {
     if (p_bytes > m_config.m_maxCacheBytes - m_bytes) {
-      finish(TypstCompiler::tr("Typst output exceeds the configured total page size limit."));
+      finish(TypstCompiler::tr("Typst output exceeds the configured total output size limit."));
       return false;
     }
     m_bytes += p_bytes;
@@ -154,6 +189,8 @@ public:
       m_result.m_error = p_error;
       m_result.m_svgPages.clear();
       m_result.m_bitmapPages.clear();
+      m_result.m_pdf.clear();
+      m_result.m_html.clear();
     }
     if (m_finishing) {
       return;
@@ -196,6 +233,14 @@ bool TypstCompiler::compileToSvg(const QString &p_text) {
 
 bool TypstCompiler::compileToBitmap(const QString &p_text, qreal p_pixelsPerPoint) {
   return d->start(p_text, Private::Format::Bitmap, p_pixelsPerPoint);
+}
+
+bool TypstCompiler::compileToPdf(const QString &p_text) {
+  return d->start(p_text, Private::Format::Pdf, 1.0);
+}
+
+bool TypstCompiler::compileToHtml(const QString &p_text) {
+  return d->start(p_text, Private::Format::Html, 1.0);
 }
 
 bool TypstCompiler::isCompiling() const { return d->m_busy; }

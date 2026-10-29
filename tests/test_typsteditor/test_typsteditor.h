@@ -54,9 +54,11 @@ private slots:
   void scannerFailsClosedWithoutEvaluation();
   void scannerDeadlineAndBusyFailClosed();
   void runtimeDrainsRunningNativeCall();
+  void runtimeShutdownCompletesAdmittedExport_data();
   void runtimeShutdownCompletesAdmittedExport();
   void deadlineRetryKeepsDispatchIdentityUntilCompletion();
   void runtimeDropsRepliesForDeletedReceiver();
+  void compilerCompletionCanDestroyReceiver_data();
   void compilerCompletionCanDestroyReceiver();
   void mathFragmentsRenderWithBaseline_data();
   void mathFragmentsRenderWithBaseline();
@@ -74,6 +76,14 @@ private slots:
   void fragmentKindsCancelAndReplace();
   void memoryOnlyCompilerRendersAndRejectsProjectReads();
   void memoryOnlyEditorOverlayAndRootedTransition();
+  void compilerNativeExportsAndModeSwitch();
+  void compilerNativeFontDefaultsSurviveModeSwitch();
+  void compilerNativeExportFailures_data();
+  void compilerNativeExportFailures();
+  void compilerNativeExportBudgets_data();
+  void compilerNativeExportBudgets();
+  void compilerNativeExportRetirement_data();
+  void compilerNativeExportRetirement();
   void compilerGeometryAndScale();
   void compilerBitmapOutlivesRuntime();
   void previewThemeDefaultsRespectAuthoredStyles();

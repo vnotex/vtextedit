@@ -1122,7 +1122,15 @@ void TestTypstEditor::runtimeDropsRepliesForDeletedReceiver() {
   QCOMPARE(recovered.selectPage().trimmed(), QStringLiteral("Receiver recovered"));
 }
 
+void TestTypstEditor::compilerCompletionCanDestroyReceiver_data() {
+  QTest::addColumn<QString>("format");
+  QTest::newRow("svg") << QStringLiteral("svg");
+  QTest::newRow("pdf") << QStringLiteral("pdf");
+  QTest::newRow("html") << QStringLiteral("html");
+}
+
 void TestTypstEditor::compilerCompletionCanDestroyReceiver() {
+  QFETCH(QString, format);
   QTemporaryDir root;
   QVERIFY(root.isValid());
   auto compiler = std::make_unique<TypstCompiler>(*editorConfig(root.path(), &m_runtime));
@@ -1135,13 +1143,28 @@ void TestTypstEditor::compilerCompletionCanDestroyReceiver() {
             ++completions;
             compiler.reset();
           });
-  QVERIFY(compiler->compileToSvg(shortSource(QStringLiteral("Delete on result"))));
+  const auto source = shortSource(QStringLiteral("Delete on result"));
+  QVERIFY(format == QStringLiteral("html")  ? compiler->compileToHtml(source)
+          : format == QStringLiteral("pdf") ? compiler->compileToPdf(source)
+                                            : compiler->compileToSvg(source));
   QVERIFY(waitUntil([&] { return receiver.isNull(); }));
   QCOMPARE(completions, 1);
   QVERIFY2(result.isSuccess(), qPrintable(result.m_error));
-  QCOMPARE(result.m_svgPages.size(), 1);
-  QSvgRenderer renderer(result.m_svgPages.first());
-  QVERIFY(renderer.isValid());
+  if (format == QStringLiteral("html")) {
+    QVERIFY(result.m_html.contains("Delete on result"));
+    QVERIFY(result.m_pdf.isEmpty());
+    QVERIFY(result.m_svgPages.isEmpty());
+  } else if (format == QStringLiteral("pdf")) {
+    Pdf pdf(result.m_pdf);
+    QVERIFY(pdf.load());
+    QCOMPARE(pdf.text(), QStringLiteral("Delete on result"));
+    QVERIFY(result.m_html.isEmpty());
+    QVERIFY(result.m_svgPages.isEmpty());
+  } else {
+    QCOMPARE(result.m_svgPages.size(), 1);
+    QSvgRenderer renderer(result.m_svgPages.first());
+    QVERIFY(renderer.isValid());
+  }
 }
 
 void TestTypstEditor::mathFragmentsRenderWithBaseline_data() {
@@ -1930,7 +1953,15 @@ void TestTypstEditor::fragmentKindsCancelAndReplace() {
   QCOMPARE(completed.count(), 2);
 }
 
+void TestTypstEditor::runtimeShutdownCompletesAdmittedExport_data() {
+  QTest::addColumn<QString>("format");
+  QTest::newRow("svg") << QStringLiteral("svg");
+  QTest::newRow("pdf") << QStringLiteral("pdf");
+  QTest::newRow("html") << QStringLiteral("html");
+}
+
 void TestTypstEditor::runtimeShutdownCompletesAdmittedExport() {
+  QFETCH(QString, format);
   QTemporaryDir root;
   QVERIFY(root.isValid());
   TypstRuntime runtime;
@@ -1939,7 +1970,9 @@ void TestTypstEditor::runtimeShutdownCompletesAdmittedExport() {
   RuntimeLaneGate gate(runtime);
   QVERIFY(gate.entered());
   const auto source = shortSource(QStringLiteral("Cancelled queued export"));
-  QVERIFY(compiler.compileToSvg(source));
+  QVERIFY(format == QStringLiteral("html")  ? compiler.compileToHtml(source)
+          : format == QStringLiteral("pdf") ? compiler.compileToPdf(source)
+                                            : compiler.compileToSvg(source));
   QCoreApplication::processEvents(); // Dispatch initialization behind the held lane.
   QCOMPARE(completed.count(), 0);
   QVERIFY(compiler.isCompiling());
@@ -1958,6 +1991,9 @@ void TestTypstEditor::runtimeShutdownCompletesAdmittedExport() {
   QVERIFY(!result.isSuccess());
   QVERIFY(!result.m_error.isEmpty());
   QVERIFY(result.m_svgPages.isEmpty());
+  QVERIFY(result.m_bitmapPages.isEmpty());
+  QVERIFY(result.m_pdf.isEmpty());
+  QVERIFY(result.m_html.isEmpty());
   QVERIFY(!compiler.isCompiling());
   QVERIFY(compiler.compileToBitmap(source));
   QVERIFY(waitUntil([&] { return completed.count() == 2; }));
@@ -1965,6 +2001,9 @@ void TestTypstEditor::runtimeShutdownCompletesAdmittedExport() {
   QVERIFY(!result.isSuccess());
   QVERIFY(!result.m_error.isEmpty());
   QVERIFY(result.m_bitmapPages.isEmpty());
+  QVERIFY(result.m_svgPages.isEmpty());
+  QVERIFY(result.m_pdf.isEmpty());
+  QVERIFY(result.m_html.isEmpty());
   runtime.shutdown();
   QCoreApplication::sendPostedEvents();
   QCOMPARE(completed.count(), 2);
@@ -2120,6 +2159,358 @@ void TestTypstEditor::memoryOnlyEditorOverlayAndRootedTransition() {
   QVERIFY(fixture.editor.diagnostics()
               .join(QLatin1Char('\n'))
               .contains(QStringLiteral("access denied")));
+}
+
+void TestTypstEditor::compilerNativeExportsAndModeSwitch() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto mainPath = root.filePath(QStringLiteral("main.typst"));
+  const QByteArray diskSource("#let disk_source_must_not_be_compiled = (\r\n");
+  QVERIFY(writeFixture(mainPath, diskSource));
+  QVERIFY(writeFixture(root.filePath(QStringLiteral("part.typst")), "#let answer = 42"));
+  QImage pixel(12, 8, QImage::Format_RGB32);
+  pixel.fill(Qt::red);
+  QVERIFY(pixel.save(root.filePath(QStringLiteral("pixel.png"))));
+  auto config = *editorConfig(root.path(), &m_runtime);
+  config.m_mainFile = QStringLiteral("main.typst");
+  config.m_pdfBackground = QColor("#202020");
+  config.m_previewForeground = QColor("#eeeeee");
+  TypstCompiler compiler(config);
+  QSignalSpy completed(&compiler, &TypstCompiler::finished);
+  const auto source =
+      QStringLiteral("#import \"part.typst\": answer\r\n"
+                     "#set page(width: 120pt, height: 80pt, margin: 8pt)\r"
+                     "#assert(not read(\"main.typst\").contains(\"\\r\"))\r\n"
+                     "= Native export\r\n#image(\"pixel.png\", width: 12pt)\r\n$answer$");
+  bool idleAtCompletion = true;
+  bool chained = true;
+  int callbacks = 0;
+  const auto chain =
+      connect(&compiler, &TypstCompiler::finished, &compiler, [&](const TypstCompiler::Result &) {
+        idleAtCompletion = idleAtCompletion && !compiler.isCompiling();
+        if (++callbacks == 1)
+          chained = chained && compiler.compileToPdf(source);
+        else if (callbacks == 2)
+          chained = chained && compiler.compileToSvg(source);
+      });
+  QVERIFY(compiler.compileToHtml(source));
+  QCOMPARE(completed.count(), 0);
+  QVERIFY(compiler.isCompiling());
+  QVERIFY(!compiler.compileToHtml(QStringLiteral("Rejected HTML")));
+  QVERIFY(!compiler.compileToPdf(QStringLiteral("Rejected PDF")));
+  QVERIFY(!compiler.compileToSvg(QStringLiteral("Rejected SVG")));
+  QVERIFY(!compiler.compileToBitmap(QStringLiteral("Rejected bitmap")));
+  QCOMPARE(completed.count(), 0);
+  QVERIFY(waitUntil([&] { return completed.count() == 3; }));
+  disconnect(chain);
+  QVERIFY(chained);
+  QVERIFY(idleAtCompletion);
+  QCOMPARE(callbacks, 3);
+  QVERIFY(!compiler.isCompiling());
+  const auto html = qvariant_cast<TypstCompiler::Result>(completed.at(0).first());
+  QVERIFY2(html.isSuccess(), qPrintable(html.m_error));
+  QVERIFY(html.m_pdf.isEmpty());
+  QVERIFY(html.m_svgPages.isEmpty());
+  QVERIFY(html.m_bitmapPages.isEmpty());
+  QVERIFY(html.m_html.isValidUtf8());
+  QVERIFY(html.m_html.startsWith("<!DOCTYPE html>"));
+  QVERIFY(html.m_html.contains("Native export"));
+  QVERIFY(html.m_html.contains("<img"));
+  QVERIFY(html.m_html.contains("data:image/png;base64,"));
+  // Native math may use MathML or a generated frame; the surrounding document stays semantic.
+  QVERIFY(html.m_html.contains("<math") || html.m_html.contains("<svg"));
+  QVERIFY(!html.m_html.contains("$answer$"));
+  QVERIFY(html.m_diagnostics.join(QLatin1Char('\n')).contains(QStringLiteral("warning:")));
+  const auto pdfResult = qvariant_cast<TypstCompiler::Result>(completed.at(1).first());
+  QVERIFY2(pdfResult.isSuccess(), qPrintable(pdfResult.m_error));
+  QVERIFY(pdfResult.m_html.isEmpty());
+  QVERIFY(pdfResult.m_svgPages.isEmpty());
+  QVERIFY(pdfResult.m_bitmapPages.isEmpty());
+  Pdf pdf(pdfResult.m_pdf);
+  QVERIFY(pdf.load());
+  QVERIFY(pdf.document.pageCount() > 0);
+  QString text;
+  for (int page = 0; page < pdf.document.pageCount(); ++page) {
+    QCOMPARE(pdf.size(page), QSizeF(120, 80));
+    text += pdf.text(page);
+  }
+  QVERIFY(text.contains(QStringLiteral("Native export")));
+  QVERIFY(text.contains(QStringLiteral("42")));
+  const auto renderedPdf = pdf.document.render(0, QSize(240, 160));
+  QVERIFY(!renderedPdf.isNull());
+  QVERIFY(renderedPdf.pixelColor(0, 0) != config.m_pdfBackground);
+  const auto svg = qvariant_cast<TypstCompiler::Result>(completed.at(2).first());
+  QVERIFY2(svg.isSuccess(), qPrintable(svg.m_error));
+  QVERIFY(svg.m_pdf.isEmpty());
+  QVERIFY(svg.m_html.isEmpty());
+  QVERIFY(svg.m_bitmapPages.isEmpty());
+  QCOMPARE(svg.m_svgPages.size(), pdf.document.pageCount());
+  for (const auto &page : svg.m_svgPages) {
+    QSvgRenderer renderer(page);
+    QVERIFY(renderer.isValid());
+    QCOMPARE(renderer.viewBoxF(), QRectF(0, 0, 120, 80));
+  }
+
+  // This source cannot compile as a paged document, even as an intermediate stage.
+  const auto htmlOnly = QStringLiteral("#html.elem(\"article\")[HTML-only]");
+  QVERIFY(compiler.compileToHtml(htmlOnly));
+  QVERIFY(waitUntil([&] { return completed.count() == 4; }));
+  const auto article = qvariant_cast<TypstCompiler::Result>(completed.at(3).first());
+  QVERIFY2(article.isSuccess(), qPrintable(article.m_error));
+  QVERIFY(article.m_html.contains("<article"));
+  QVERIFY(article.m_html.contains("HTML-only"));
+  QVERIFY(article.m_html.contains("</article>"));
+  QVERIFY(compiler.compileToPdf(htmlOnly));
+  QVERIFY(waitUntil([&] { return completed.count() == 5; }));
+  const auto paged = qvariant_cast<TypstCompiler::Result>(completed.at(4).first());
+  QVERIFY(!paged.isSuccess());
+  QVERIFY(paged.m_pdf.isEmpty());
+  QVERIFY(paged.m_html.isEmpty());
+  QVERIFY(paged.m_svgPages.isEmpty());
+  QVERIFY(paged.m_bitmapPages.isEmpty());
+  QVERIFY(paged.m_diagnostics.join(QLatin1Char('\n')).contains(QStringLiteral("unknown variable")));
+  QVERIFY(compiler.compileToHtml(htmlOnly));
+  QVERIFY(waitUntil([&] { return completed.count() == 6; }));
+  const auto restored = qvariant_cast<TypstCompiler::Result>(completed.at(5).first());
+  QVERIFY2(restored.isSuccess(), qPrintable(restored.m_error));
+  QCOMPARE(restored.m_html, article.m_html);
+  QFile main(mainPath);
+  QVERIFY(main.open(QIODevice::ReadOnly));
+  QCOMPARE(main.readAll(), diskSource);
+  QCoreApplication::sendPostedEvents();
+  QCOMPARE(completed.count(), 6);
+}
+
+void TestTypstEditor::compilerNativeFontDefaultsSurviveModeSwitch() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  auto config = *editorConfig(root.path(), &m_runtime);
+  config.m_textEditorConfig->m_theme = textTheme(
+      {{QStringLiteral("font-family"), "Arial"}, {QStringLiteral("font-size"), 43}},
+      {{QStringLiteral("font-family"), "DejaVu Sans Mono"}, {QStringLiteral("font-size"), 19}});
+  config.m_pdfBackground = QColor("#202020");
+  config.m_previewForeground = QColor("#eeeeee");
+  TypstCompiler compiler(config);
+  TypstCompiler reference(*editorConfig(root.path(), &m_runtime));
+  QSignalSpy completed(&compiler, &TypstCompiler::finished);
+  QSignalSpy referenceCompleted(&reference, &TypstCompiler::finished);
+  for (bool authored : {false, true}) {
+    const auto defaults = QStringLiteral("#set text(font: \"DejaVu Sans Mono\", size: 19pt)\n");
+    const auto source = shortSource(
+        (authored ? QStringLiteral("#set text(font: \"Libertinus Serif\", size: 13pt)\n")
+                  : QString()) +
+        QStringLiteral("Font defaults Wiim 0123\n\n#context [#repr(text.font) #repr(text.size)]"));
+    for (bool html : {true, false}) {
+      completed.clear();
+      referenceCompleted.clear();
+      QVERIFY(html ? compiler.compileToHtml(source) : compiler.compileToPdf(source));
+      QVERIFY(html ? reference.compileToHtml(defaults + source)
+                   : reference.compileToPdf(defaults + source));
+      QVERIFY(waitUntil([&] { return completed.count() == 1 && referenceCompleted.count() == 1; }));
+      const auto actual = qvariant_cast<TypstCompiler::Result>(completed.first().first());
+      const auto expected =
+          qvariant_cast<TypstCompiler::Result>(referenceCompleted.first().first());
+      QVERIFY2(actual.isSuccess(), qPrintable(actual.m_error));
+      QVERIFY2(expected.isSuccess(), qPrintable(expected.m_error));
+      if (html) {
+        // Contextual font values must agree, as must the native HTML style serialization.
+        QCOMPARE(actual.m_html, expected.m_html);
+        QVERIFY(actual.m_html.contains("Font defaults Wiim 0123"));
+        QVERIFY(actual.m_html.contains(authored ? "13pt" : "19pt"));
+      } else {
+        Pdf actualPdf(actual.m_pdf);
+        Pdf expectedPdf(expected.m_pdf);
+        QVERIFY(actualPdf.load());
+        QVERIFY(expectedPdf.load());
+        QCOMPARE(actualPdf.document.pageCount(), expectedPdf.document.pageCount());
+        for (int page = 0; page < actualPdf.document.pageCount(); ++page) {
+          const auto rendered = actualPdf.document.render(page, QSize(480, 320));
+          QVERIFY(!rendered.isNull());
+          QCOMPARE(rendered, expectedPdf.document.render(page, QSize(480, 320)));
+        }
+      }
+    }
+  }
+}
+
+void TestTypstEditor::compilerNativeExportFailures_data() {
+  QTest::addColumn<bool>("html");
+  QTest::addColumn<QString>("source");
+  QTest::newRow("html-syntax") << true << QStringLiteral("#let broken = (");
+  QTest::newRow("pdf-syntax") << false << QStringLiteral("#let broken = (");
+  QTest::newRow("html-missing-import") << true << QStringLiteral("#include \"missing.typst\"");
+  QTest::newRow("pdf-missing-import") << false << QStringLiteral("#include \"missing.typst\"");
+  QTest::newRow("html-serialization")
+      << true << QStringLiteral("#html.elem(\"script\")[#(\"</script>\")]");
+}
+
+void TestTypstEditor::compilerNativeExportFailures() {
+  QFETCH(bool, html);
+  QFETCH(QString, source);
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  TypstCompiler compiler(*editorConfig(root.path(), &m_runtime));
+  QSignalSpy completed(&compiler, &TypstCompiler::finished);
+  const auto submit = [&](const QString &p_source) {
+    return html ? compiler.compileToHtml(p_source) : compiler.compileToPdf(p_source);
+  };
+  const auto valid = shortSource(QStringLiteral("Successful owned output"));
+  QVERIFY(submit(valid));
+  QVERIFY(waitUntil([&] { return completed.count() == 1; }));
+  const auto first = qvariant_cast<TypstCompiler::Result>(completed.first().first());
+  QVERIFY2(first.isSuccess(), qPrintable(first.m_error));
+  QVERIFY(!(html ? first.m_html : first.m_pdf).isEmpty());
+  QVERIFY(submit(source));
+  QCOMPARE(completed.count(), 1);
+  QVERIFY(waitUntil([&] { return completed.count() == 2; }));
+  const auto failed = qvariant_cast<TypstCompiler::Result>(completed.at(1).first());
+  QVERIFY(!failed.isSuccess());
+  QVERIFY(!failed.m_error.isEmpty());
+  QVERIFY(!failed.m_diagnostics.isEmpty());
+  QVERIFY(failed.m_diagnostics.join(QLatin1Char('\n')).contains(QStringLiteral("error:")));
+  QVERIFY(failed.m_svgPages.isEmpty());
+  QVERIFY(failed.m_bitmapPages.isEmpty());
+  QVERIFY(failed.m_pdf.isEmpty());
+  QVERIFY(failed.m_html.isEmpty());
+  QVERIFY(!compiler.isCompiling());
+  QVERIFY(submit(valid));
+  QVERIFY(waitUntil([&] { return completed.count() == 3; }));
+  const auto recovered = qvariant_cast<TypstCompiler::Result>(completed.last().first());
+  QVERIFY2(recovered.isSuccess(), qPrintable(recovered.m_error));
+  QVERIFY(!(html ? recovered.m_html : recovered.m_pdf).isEmpty());
+  QCoreApplication::sendPostedEvents();
+  QCOMPARE(completed.count(), 3);
+}
+
+void TestTypstEditor::compilerNativeExportBudgets_data() {
+  QTest::addColumn<bool>("html");
+  QTest::addColumn<bool>("pdfLimit");
+  QTest::newRow("html-cache-limit") << true << false;
+  QTest::newRow("pdf-cache-limit") << false << false;
+  QTest::newRow("pdf-output-limit") << false << true;
+}
+
+void TestTypstEditor::compilerNativeExportBudgets() {
+  QFETCH(bool, html);
+  QFETCH(bool, pdfLimit);
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto source = shortSource(QStringLiteral("Bounded native export $x^2$"));
+  const auto submit = [&](TypstCompiler &p_compiler) {
+    return html ? p_compiler.compileToHtml(source) : p_compiler.compileToPdf(source);
+  };
+  auto config = *editorConfig(root.path(), &m_runtime);
+  TypstCompiler baseline(config);
+  QSignalSpy baselineFinished(&baseline, &TypstCompiler::finished);
+  QVERIFY(submit(baseline));
+  QVERIFY(waitUntil([&] { return baselineFinished.count() == 1; }));
+  const auto reference = qvariant_cast<TypstCompiler::Result>(baselineFinished.first().first());
+  QVERIFY2(reference.isSuccess(), qPrintable(reference.m_error));
+  const auto bytes = html ? reference.m_html.size() : reference.m_pdf.size();
+  QVERIFY(bytes > 1);
+  // Use half the actual encoded result, not a platform-dependent guessed document size.
+  if (pdfLimit)
+    config.m_maxPdfBytes = bytes / 2;
+  else
+    config.m_maxCacheBytes = bytes / 2;
+  TypstCompiler limited(config);
+  QSignalSpy completed(&limited, &TypstCompiler::finished);
+  QVERIFY(submit(limited));
+  QCOMPARE(completed.count(), 0);
+  QVERIFY(waitUntil([&] { return completed.count() == 1; }));
+  const auto failed = qvariant_cast<TypstCompiler::Result>(completed.first().first());
+  QVERIFY(!failed.isSuccess());
+  QVERIFY(!failed.m_error.isEmpty());
+  QVERIFY(failed.m_svgPages.isEmpty());
+  QVERIFY(failed.m_bitmapPages.isEmpty());
+  QVERIFY(failed.m_pdf.isEmpty());
+  QVERIFY(failed.m_html.isEmpty());
+  QVERIFY(!limited.isCompiling());
+  QCoreApplication::sendPostedEvents();
+  QCOMPARE(completed.count(), 1);
+}
+
+void TestTypstEditor::compilerNativeExportRetirement_data() {
+  QTest::addColumn<bool>("html");
+  QTest::addColumn<bool>("initialized");
+  QTest::addColumn<bool>("beforeNativeReturn");
+  QTest::newRow("html-initialize-queued") << true << false << false;
+  QTest::newRow("html-compile-queued") << true << true << false;
+  QTest::newRow("pdf-initialize-queued") << false << false << false;
+  QTest::newRow("pdf-compile-queued") << false << true << false;
+  QTest::newRow("html-terminal-before-native-return") << true << true << true;
+  QTest::newRow("pdf-terminal-before-native-return") << false << true << true;
+}
+
+void TestTypstEditor::compilerNativeExportRetirement() {
+  QFETCH(bool, html);
+  QFETCH(bool, initialized);
+  QFETCH(bool, beforeNativeReturn);
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  TypstRuntime runtime;
+  const auto config = *editorConfig(root.path(), &runtime);
+  const auto submit = [&](TypstCompiler &p_compiler, const QString &p_text) {
+    return html ? p_compiler.compileToHtml(p_text) : p_compiler.compileToPdf(shortSource(p_text));
+  };
+  auto compiler = std::make_unique<TypstCompiler>(config);
+  if (initialized) {
+    QSignalSpy warmup(compiler.get(), &TypstCompiler::finished);
+    QVERIFY(submit(*compiler, QStringLiteral("Warm native session")));
+    QVERIFY(waitUntil([&] { return warmup.count() == 1; }));
+    const auto result = qvariant_cast<TypstCompiler::Result>(warmup.first().first());
+    QVERIFY2(result.isSuccess(), qPrintable(result.m_error));
+  }
+  int retiredCompletions = 0;
+  connect(compiler.get(), &TypstCompiler::finished, this,
+          [&](const TypstCompiler::Result &) { ++retiredCompletions; });
+  const auto retiredSource = QStringLiteral("Retired source must never publish");
+  const auto replacementSource = QStringLiteral("Replacement native output");
+  TypstCompiler recovered(config);
+  QSignalSpy completed(&recovered, &TypstCompiler::finished);
+  if (beforeNativeReturn) {
+    auto *delivery = runtime.findChild<QObject *>(QStringLiteral("typst-delivery"));
+    QVERIFY(delivery);
+    NativeDeliveryObserver observer;
+    int deliveries = 0;
+    // HTML: terminal, return. PDF: parsed, compiled, return, PDF terminal, return.
+    // Retire after the real terminal bytes arrive, but before nativeFinished consumes them.
+    observer.shouldIntercept = [&] { return ++deliveries == (html ? 2 : 5); };
+    bool replaced = false;
+    observer.beforeDelivery = [&] {
+      compiler.reset();
+      replaced = submit(recovered, replacementSource);
+    };
+    delivery->installEventFilter(&observer);
+    QVERIFY(submit(*compiler, retiredSource));
+    QVERIFY(waitUntil([&] { return !compiler; }));
+    QVERIFY(replaced);
+    delivery->removeEventFilter(&observer);
+  } else {
+    RuntimeLaneGate gate(runtime);
+    QVERIFY(gate.entered());
+    QVERIFY(submit(*compiler, retiredSource));
+    QCoreApplication::processEvents();
+    QVERIFY(compiler->isCompiling());
+    compiler.reset(); // Returns while both real native lanes remain blocked.
+    QCOMPARE(retiredCompletions, 0);
+    QVERIFY(submit(recovered, replacementSource));
+    gate.release();
+  }
+  QVERIFY(waitUntil([&] { return completed.count() == 1; }));
+  const auto result = qvariant_cast<TypstCompiler::Result>(completed.first().first());
+  QVERIFY2(result.isSuccess(), qPrintable(result.m_error));
+  if (html) {
+    QVERIFY(result.m_html.contains("Replacement native output"));
+    QVERIFY(!result.m_html.contains("Retired source"));
+  } else {
+    Pdf pdf(result.m_pdf);
+    QVERIFY(pdf.load());
+    QCOMPARE(pdf.text(), QStringLiteral("Replacement native output"));
+  }
+  QCoreApplication::sendPostedEvents();
+  QCOMPARE(retiredCompletions, 0);
+  QCOMPARE(completed.count(), 1);
 }
 
 void TestTypstEditor::compilerGeometryAndScale() {
@@ -2780,6 +3171,8 @@ void TestTypstEditor::compilerAsyncFailureAndRecovery() {
   QVERIFY(compiler.isCompiling());
   QVERIFY(!compiler.compileToSvg(shortSource(QStringLiteral("Rejected SVG"))));
   QVERIFY(!compiler.compileToBitmap(shortSource(QStringLiteral("Rejected bitmap"))));
+  QVERIFY(!compiler.compileToPdf(shortSource(QStringLiteral("Rejected PDF"))));
+  QVERIFY(!compiler.compileToHtml(shortSource(QStringLiteral("Rejected HTML"))));
   QCOMPARE(completed.count(), 0);
   returnedFromSubmit = true;
   QVERIFY(waitUntil([&]() { return completed.count() == 2; }));
@@ -2794,6 +3187,8 @@ void TestTypstEditor::compilerAsyncFailureAndRecovery() {
   QVERIFY(!failure.m_diagnostics.join(QLatin1Char('\n')).trimmed().isEmpty());
   QVERIFY(failure.m_svgPages.isEmpty());
   QVERIFY(failure.m_bitmapPages.isEmpty());
+  QVERIFY(failure.m_pdf.isEmpty());
+  QVERIFY(failure.m_html.isEmpty());
   const auto recovered = qvariant_cast<TypstCompiler::Result>(completed.at(1).at(0));
   QVERIFY2(recovered.isSuccess(), qPrintable(recovered.m_error));
   QCOMPARE(recovered.m_svgPages.size(), 1);
@@ -2904,6 +3299,8 @@ void TestTypstEditor::compilerResultBudgetClearsPartialPages() {
   QVERIFY(!failure.m_error.isEmpty());
   QVERIFY(failure.m_svgPages.isEmpty());
   QVERIFY(failure.m_bitmapPages.isEmpty());
+  QVERIFY(failure.m_pdf.isEmpty());
+  QVERIFY(failure.m_html.isEmpty());
   QVERIFY(!limited.isCompiling());
   QVERIFY(submit(limited, singlePage));
   QVERIFY(waitUntil([&]() { return completed.count() == 3; }));

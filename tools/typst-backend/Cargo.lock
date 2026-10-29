@@ -3223,6 +3223,7 @@ dependencies = [
  "serde_json",
  "syntect",
  "typst",
+ "typst-html",
  "typst-ide",
  "typst-kit",
  "typst-layout",

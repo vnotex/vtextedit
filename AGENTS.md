@@ -455,6 +455,25 @@ CJK output requires an installed font covering the characters. Coverage: the con
 `system_fonts_shape_chinese_when_available` glyph test and the deterministic
 `explicit_font_precedence_and_frozen_fallback_survive_reset` regression.
 
+## Typst Document Exports
+
+`TypstCompiler` exports native SVG pages, bitmaps, PDF or semantic HTML without widgets.
+It borrows the application runtime, overlays only the supplied main-file text and normalizes
+CR/CRLF for compilation, never on disk. Busy calls reject without a signal; accepted calls
+complete asynchronously once, idle before `finished`. Failure clears every result payload.
+PDF uses paged compilation plus native PDF serialization, retaining authored geometry.
+
+HTML is a one-shot `compile` request with `output: "html"`, returning terminal `op: "html"`
+with success, diagnostics, dependencies and UTF-8 bytes, never a paged snapshot or cache entry.
+Only that operation enables `Feature::Html` through runtime-only configuration; a following
+paged operation removes HTML-only definitions. Preserve native warnings and document font
+precedence. HTML is reflowable, not pixel-identical PDF; native images/math are embedded, but
+arbitrary authored HTML URLs are not rewritten or bundled. PDF and HTML enforce output/cache
+bounds before copying replies. Retired replies cannot complete later jobs.
+
+Coverage: `compilerNative*` in `tests/test_typsteditor`, HTML protocol/mode-switch regressions
+in `compile.rs`/`world.rs`, and host `test_typstexport` for browser decoding after project removal.
+
 ## Isolated Typst SVG Fragments
 
 `TypstFragmentRenderer` borrows the application runtime and accepts one logical request at a

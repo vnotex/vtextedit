@@ -396,6 +396,17 @@ mod tests {
             "images":["earlier.png", "later.png"],
             "strings":["earlier.png", "later.png"], "complete":true,
         }));
+        let source = r##"#image("assets/literal%20name.png")
+#image("assets/literal\u{25}20name.png")
+#image("assets/literal name.png")
+#image("assets/../images/hash#query?.png")"##;
+        assert_eq!(image_references(source).unwrap(), json!({
+            "images":["assets/literal%20name.png", "assets/literal name.png",
+                "assets/../images/hash#query?.png"],
+            "strings":["assets/literal%20name.png", "assets/literal name.png",
+                "assets/../images/hash#query?.png"],
+            "complete":true,
+        }));
     }
 
     #[test]
@@ -420,6 +431,7 @@ mod tests {
 #image("example.png")
 #let f = image
 #include "external.typ"
+#image("unfinished.png"
 ```
 #image("actual.png")"###;
         assert_eq!(image_references(source).unwrap(), json!({
@@ -468,6 +480,20 @@ mod tests {
         }
         let result = image_references("#image(\"positive.png\", ..options)").unwrap();
         assert_eq!(result, json!({"images":["positive.png"], "strings":["positive.png"], "complete":false}));
+        for (uncertain, uncertain_strings) in [
+            (r#"#let path = "dynamic.png"; #image(path)"#, vec!["dynamic.png"]),
+            (r#"#image("dir/" + "computed.png")"#, vec!["dir/", "computed.png"]),
+            (r#"#import "missing.typ": *"#, vec!["missing.typ"]),
+            (r#"#include "missing.typst""#, vec!["missing.typst"]),
+            ("#let invalid = (", vec![]),
+        ] {
+            let source = format!("#image(\"known%20.png\")\n{uncertain}");
+            let mut strings = vec!["known%20.png"];
+            strings.extend(uncertain_strings);
+            assert_eq!(image_references(&source).unwrap(), json!({
+                "images":["known%20.png"], "strings":strings, "complete":false,
+            }), "{uncertain}");
+        }
     }
 
     #[test]

@@ -1,5 +1,6 @@
 #include "typstcompilerbridge.h"
 
+#include <QByteArrayView>
 #include <QDir>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -330,11 +331,12 @@ TypstCompilerBridge::~TypstCompilerBridge() {
 
 void TypstCompilerBridge::updateProject(const TypstEditorConfig &p_config,
                                         const QString &p_activeFile,
-                                        const QMap<QString, QString> &p_overlays) {
+                                        const QMap<QString, QString> &p_overlays, Output p_output) {
   const bool runtimeChanged = m_config.m_runtime != p_config.m_runtime;
   m_config = p_config;
   m_activeFile = p_activeFile;
   m_overlays = p_overlays;
+  m_output = p_output;
   const QPointer<TypstCompilerBridge> alive(this);
   if (runtimeChanged && m_session)
     stop();
@@ -595,6 +597,8 @@ void TypstCompilerBridge::pump() {
     m_compileDue = false;
     const QPointer<TypstCompilerBridge> alive(this);
     send({{QStringLiteral("op"), QStringLiteral("compile")},
+          {QStringLiteral("output"),
+           m_output == Output::Html ? QStringLiteral("html") : QStringLiteral("paged")},
           {QStringLiteral("config"), configuration()},
           {QStringLiteral("activeFile"), m_activeFile},
           {QStringLiteral("overlays"), overlays},
@@ -781,10 +785,13 @@ void TypstCompilerBridge::receiveReply(const TypstRuntimeReply &p_reply) {
   size_t headerSize = 0;
   size_t payloadSize = 0;
   const auto *bytes = p_reply.header(&headerSize);
-  p_reply.payload(&payloadSize);
+  const auto *payload = p_reply.payload(&payloadSize);
   if (!bytes || headerSize == 0 || headerSize > c_maxHeader || payloadSize > c_maxPayload ||
+      (!payload && payloadSize) ||
       (m_request.value(QStringLiteral("op")) == QStringLiteral("imageData") &&
        payloadSize > 32U * 1024 * 1024) ||
+      (m_request.value(QStringLiteral("op")) == QStringLiteral("pdf") &&
+       static_cast<qint64>(payloadSize) > m_config.m_maxPdfBytes) ||
       static_cast<qint64>(payloadSize) > m_config.m_maxCacheBytes) {
     fail(tr("Typst backend returned an oversized reply."));
     return;
@@ -812,6 +819,8 @@ void TypstCompilerBridge::receiveReply(const TypstRuntimeReply &p_reply) {
 }
 
 void TypstCompilerBridge::nativeFinished(int p_status) {
+  if (!m_nativeInFlight)
+    return;
   m_nativeInFlight = false;
   m_timeout.stop();
   const QPointer<TypstCompilerBridge> alive(this);
@@ -886,6 +895,10 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header,
   const auto requested = m_request.value(QStringLiteral("op")).toString();
   const bool current = isCurrent(p_header);
   if (operation == QStringLiteral("parsed") && requested == QStringLiteral("compile")) {
+    if (m_request.value(QStringLiteral("output")) == QStringLiteral("html")) {
+      fail(tr("Typst backend returned an unexpected HTML parsed reply."));
+      return;
+    }
     if (current) {
       emit highlightsReady(m_generation,
                            highlights(p_header.value(QStringLiteral("highlights")).toArray()),
@@ -953,6 +966,64 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header,
   // consumer gets an independent owning payload; obsolete replies need no copy.
   size_t payloadSize = 0;
   const auto *payloadBytes = p_reply ? p_reply.payload(&payloadSize) : nullptr;
+  if (operation == QStringLiteral("html")) {
+    const auto success = p_header.value(QStringLiteral("success"));
+    const auto diagnosticValues = p_header.value(QStringLiteral("diagnostics"));
+    if (requested != QStringLiteral("compile") ||
+        m_request.value(QStringLiteral("output")) != QStringLiteral("html") || !success.isBool() ||
+        !diagnosticValues.isArray() || !p_header.value(QStringLiteral("dependencies")).isArray() ||
+        p_header.value(QStringLiteral("activeFile")) !=
+            m_request.value(QStringLiteral("activeFile")) ||
+        p_header.contains(QStringLiteral("snapshot")) ||
+        p_header.contains(QStringLiteral("pages")) ||
+        (success.toBool() ? payloadSize == 0 : payloadSize != 0)) {
+      fail(tr("Typst backend returned invalid HTML metadata."));
+      return;
+    }
+    QString error;
+    for (const auto &value : diagnosticValues.toArray()) {
+      const auto diagnostic = value.toObject();
+      const auto severity = diagnostic.value(QStringLiteral("severity")).toString();
+      const auto message = diagnostic.value(QStringLiteral("message")).toString();
+      if (!value.isObject() || message.isEmpty() ||
+          (severity != QStringLiteral("error") && severity != QStringLiteral("warning"))) {
+        fail(tr("Typst backend returned invalid HTML diagnostics."));
+        return;
+      }
+      if (severity == QStringLiteral("error") && error.isEmpty())
+        error = message;
+    }
+    const QByteArrayView html(reinterpret_cast<const char *>(payloadBytes), qsizetype(payloadSize));
+    if ((success.toBool() && !error.isEmpty()) || !html.isValidUtf8() || html.contains('\0')) {
+      fail(tr("Typst backend returned invalid UTF-8 HTML."));
+      return;
+    }
+    const auto messages = diagnostics(diagnosticValues.toArray());
+    emit diagnosticsReady(messages);
+    if (!alive || !pending())
+      return;
+    if (!isCurrent(p_header) || m_requestRetired) {
+      finishRequest(requestId);
+      return;
+    }
+    if (!success.toBool()) {
+      emit stateChanged(State::Error,
+                        error.isEmpty() ? tr("Typst HTML compilation failed.") : error);
+    } else {
+      emit stateChanged(State::Ready, tr("Typst HTML export is ready."));
+      if (!alive || !pending())
+        return;
+      if (isCurrent(p_header) && !m_requestRetired) {
+        // Validate the borrowed payload before allocating its independently owned Qt result.
+        const QByteArray ownedHtml(html.data(), html.size());
+        emit htmlReady(identifier(p_header.value(QStringLiteral("epoch"))),
+                       identifier(p_header.value(QStringLiteral("generation"))), ownedHtml);
+      }
+    }
+    if (alive)
+      finishRequest(requestId);
+    return;
+  }
   QByteArray p_payload;
   if (payloadSize && operation != QStringLiteral("raster"))
     p_payload = QByteArray(reinterpret_cast<const char *>(payloadBytes), qsizetype(payloadSize));
@@ -960,7 +1031,8 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header,
     const auto capabilities = p_header.value(QStringLiteral("capabilities")).toArray();
     const auto requiredCapabilities =
         m_mode == Mode::Export
-            ? QStringList{QStringLiteral("svg"), QStringLiteral("raster")}
+            ? QStringList{QStringLiteral("svg"), QStringLiteral("raster"), QStringLiteral("pdf"),
+                          QStringLiteral("html")}
             : QStringList{QStringLiteral("pdf"),        QStringLiteral("raster"),
                           QStringLiteral("navigation"), QStringLiteral("previews"),
                           QStringLiteral("highlights"), QStringLiteral("headings"),
@@ -972,7 +1044,8 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header,
       }
     }
     m_ready = true;
-  } else if (operation == QStringLiteral("compiled") && requested == QStringLiteral("compile")) {
+  } else if (operation == QStringLiteral("compiled") && requested == QStringLiteral("compile") &&
+             m_request.value(QStringLiteral("output")) == QStringLiteral("paged")) {
     if (current) {
       updateDependencies(p_header.value(QStringLiteral("dependencies")).toArray());
       if (!alive || !pending())
@@ -1029,6 +1102,11 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header,
       }
     }
   } else if (operation == QStringLiteral("pdf") && requested == operation) {
+    if (identifier(p_header.value(QStringLiteral("snapshot"))) !=
+        identifier(m_request.value(QStringLiteral("snapshot")))) {
+      fail(tr("Typst backend returned a mismatched PDF snapshot."));
+      return;
+    }
     if (current && m_latest &&
         identifier(p_header.value(QStringLiteral("snapshot"))) == m_latest->m_id) {
       if (p_payload.isEmpty() || p_payload.size() > m_config.m_maxPdfBytes) {

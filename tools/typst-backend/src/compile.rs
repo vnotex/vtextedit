@@ -69,7 +69,7 @@ impl Session {
             self.epoch = Some(epoch);
             self.world = Some(world);
             send(json!({"op":"ready", "version":1,
-                "capabilities":["pdf","raster","svg","navigation","previews","highlights","headings","resources"]}), Bytes::new([]))?;
+                "capabilities":["pdf","raster","svg","html","navigation","previews","highlights","headings","resources"]}), Bytes::new([]))?;
             return Ok(());
         }
         if self.epoch != Some(epoch) { return Err("session is not initialized for this epoch".into()); }
@@ -112,10 +112,17 @@ impl Session {
     }
 
     fn compile(&mut self, request: &Value, send: &mut SendReply<'_>) -> Result<(), String> {
+        let html_export = match request.get("output") {
+            None => false,
+            Some(Value::String(output)) if output == "paged" => false,
+            Some(Value::String(output)) if output == "html" => true,
+            _ => return Err("output must be paged or html".into()),
+        };
         self.retain(request)?;
         let generation = id(request, "generation")?;
         if generation < self.generation { return Err("compile generation moved backwards".into()); }
-        let config = Config::deserialize(&request["config"]).map_err(|e| format!("invalid config: {e}"))?;
+        let mut config = Config::deserialize(&request["config"]).map_err(|e| format!("invalid config: {e}"))?;
+        config.html_export = html_export;
         let overlays = Vec::<Overlay>::deserialize(&request["overlays"]).map_err(|e| format!("invalid overlays: {e}"))?;
         let preview_metadata = request["previewMetadata"] != Value::Bool(false);
         let active_file = text(request, "activeFile")?;
@@ -123,9 +130,15 @@ impl Session {
         self.generation = generation;
         let world = self.world.as_mut().unwrap();
         if let Err(error) = world.update(config, overlays) {
+            if html_export {
+                return send(json!({"op":"html", "activeFile":active_file,
+                    "diagnostics":[unmapped_diagnostic(&error)], "dependencies":world.dependencies(),
+                    "success":false}), Bytes::new([]));
+            }
             send(json!({"op":"parsed", "activeFile":active_file, "highlights":[], "diagnostics":[]}), Bytes::new([]))?;
             return Err(error);
         }
+        if html_export { return Self::compile_html(world, active_file, send); }
         let mut highlights = Vec::new();
         let mut diagnostics = Vec::new();
         let parsed = (|| {
@@ -224,6 +237,38 @@ impl Session {
         }
         self.trim_cache(0);
         Ok(())
+    }
+
+    fn compile_html(world: &ProjectWorld, active_file: &str, send: &mut SendReply<'_>) -> Result<(), String> {
+        let mut diagnostics = Vec::new();
+        let output = (|| {
+            let result = typst::compile::<typst_html::HtmlDocument>(world);
+            for diagnostic in &result.warnings { push_diagnostic(world, diagnostic, &mut diagnostics)?; }
+            let html = match result.output.and_then(|document|
+                typst_html::html(&document, &typst_html::HtmlOptions { pretty: false })) {
+                Ok(html) => Some(html),
+                Err(errors) => {
+                    for diagnostic in &errors { push_diagnostic(world, diagnostic, &mut diagnostics)?; }
+                    None
+                }
+            };
+            // Serialization can read resources too: validate the complete read set
+            // at publication, without creating a paged snapshot or retained cache.
+            if let Some(error) = world.resource_error() { return Err(error); }
+            world.check_dependencies()?;
+            if html.as_ref().is_some_and(|html| html.len() > world.config.max_cache_bytes.min(MAX_BINARY)) {
+                return Err("HTML exceeds maxCacheBytes or binary output limit".into());
+            }
+            Ok(html)
+        })();
+        let html = match output {
+            Ok(html) => html,
+            Err(error) => { diagnostics.push(unmapped_diagnostic(&error)); None }
+        };
+        let reply = json!({"op":"html", "activeFile":active_file, "diagnostics":diagnostics,
+            "dependencies":world.dependencies(), "success":html.is_some()});
+        check_metadata_size(&reply)?;
+        send(reply, html.map_or_else(|| Bytes::new([]), Bytes::from_string))
     }
 
     fn cached(&mut self, key: &CacheKey) -> Option<Bytes> {
@@ -596,6 +641,145 @@ mod tests {
         request["activeFile"] = json!("main.typ"); request["generation"] = json!(generation);
         request["overlays"] = json!([{"file":"main.typ","text":text}]);
         request
+    }
+
+    fn html_response(session: &mut Session, config: &Value, source: &str, generation: u64) -> (Value, Bytes) {
+        let mut compile = compile_request(config, source, json!([]), generation);
+        compile["output"] = json!("html");
+        let mut responses = Vec::new();
+        session.handle(&compile, &mut |header, bytes| { responses.push((header, bytes)); Ok(()) }).unwrap();
+        assert_eq!(responses.len(), 1, "HTML must not enter parsed/paged publication");
+        let (header, bytes) = responses.pop().unwrap();
+        assert_eq!(header["op"], "html");
+        assert_eq!(header["activeFile"], "main.typ");
+        assert!(header["diagnostics"].is_array());
+        assert!(header["dependencies"].is_array());
+        for key in ["snapshot", "pages", "highlights", "previews", "images"] {
+            assert!(header.get(key).is_none(), "unexpected HTML metadata: {key}");
+        }
+        assert!(session.snapshots.is_empty());
+        assert!(session.cache.is_empty());
+        assert_eq!(session.cache_bytes, 0);
+        assert_eq!(session.next_snapshot, 0, "HTML must not allocate a paged snapshot");
+        (header, bytes)
+    }
+
+    #[test]
+    fn html_is_semantic_and_embeds_native_image_and_math() {
+        let (mut session, mut config) = configured();
+        let root = std::env::temp_dir().join(format!("vte-html-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("part.typ"), "#let answer = 42").unwrap();
+        std::fs::write(root.join("pixel.svg"),
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="12" height="8"><rect width="12" height="8" fill="red"/></svg>"#).unwrap();
+        config["projectRoot"] = json!(root);
+        let (header, bytes) = html_response(&mut session, &config,
+            "#import \"part.typ\": answer\n#set page(width:120pt,height:80pt,margin:8pt)\n= Native export\n#answer\n#image(\"pixel.svg\", width:12pt)\n$x^2$", 1);
+        assert_eq!(header["success"], true, "{header}");
+        assert!(header["diagnostics"].as_array().unwrap().iter().any(|d|
+            d["severity"] == "warning"));
+        assert!(!header["diagnostics"].as_array().unwrap().iter().any(|d| d["severity"] == "error"));
+        assert!(header["dependencies"].as_array().unwrap().len() >= 2);
+        // Keep the world's frozen reads, then change a dependency before the
+        // one-shot publication stage. This exercises invalidation without races.
+        std::fs::write(root.join("part.typ"), "#let answer = 43").unwrap();
+        let mut failures = Vec::new();
+        Session::compile_html(session.world.as_ref().unwrap(), "main.typ", &mut |header, bytes| {
+            failures.push((header, bytes)); Ok(())
+        }).unwrap();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].0["op"], "html");
+        assert_eq!(failures[0].0["success"], false);
+        assert!(failures[0].1.is_empty());
+        assert!(failures[0].0["diagnostics"].as_array().unwrap().iter().any(|d|
+            d["message"].as_str().unwrap().contains("read dependency changed")));
+        std::fs::write(root.join("large.typ"), "x".repeat(2048)).unwrap();
+        config["maxCacheBytes"] = json!(1024);
+        let (failed, no_bytes) = html_response(&mut session, &config, "#include \"large.typ\"", 2);
+        assert_eq!(failed["success"], false, "{failed}");
+        assert!(no_bytes.is_empty());
+        assert!(failed["diagnostics"].as_array().unwrap().iter().any(|d|
+            d["message"].as_str().unwrap().contains("exceeds maxCacheBytes")));
+        std::fs::remove_dir_all(&root).unwrap();
+        let html = std::str::from_utf8(bytes.as_slice()).unwrap();
+        assert!(html.starts_with("<!DOCTYPE html>"), "{html}");
+        assert!(html.contains("Native export"), "{html}");
+        assert!(html.contains("42"), "{html}");
+        assert!(html.contains("<img") && html.contains("data:image/"), "{html}");
+        assert!(html.contains("<math") || html.contains("<svg"), "native math is missing: {html}");
+        assert!(!html.contains("src=\"pixel.svg\""), "image must not depend on the original project");
+    }
+
+    #[test]
+    fn html_only_elements_succeed_and_paged_output_removes_definitions() {
+        let (mut session, config) = configured();
+        let source = "#html.elem(\"article\")[HTML-only]";
+        let (header, bytes) = html_response(&mut session, &config, source, 1);
+        assert_eq!(header["success"], true, "{header}");
+        let html = std::str::from_utf8(bytes.as_slice()).unwrap();
+        assert!(html.contains("<article>") && html.contains("HTML-only"), "{html}");
+        for (generation, explicit) in [(2, true), (3, false)] {
+            let mut compile = compile_request(&config, source, json!([]), generation);
+            if explicit { compile["output"] = json!("paged"); }
+            let mut responses = Vec::new();
+            session.handle(&compile, &mut |header, _| { responses.push(header); Ok(()) }).unwrap();
+            assert_eq!(responses[1]["op"], "compiled");
+            assert!(responses[1].get("snapshot").is_none());
+            assert!(responses[1]["diagnostics"].as_array().unwrap().iter().any(|d|
+                d["severity"] == "error" && d["message"].as_str().unwrap().contains("html")));
+            assert!(!session.world.as_ref().unwrap().config.html_export);
+        }
+        let (header, _) = html_response(&mut session, &config, source, 4);
+        assert_eq!(header["success"], true, "{header}");
+    }
+
+    #[test]
+    fn html_failures_publish_no_bytes_and_do_not_poison_next_compile() {
+        let (mut session, mut config) = configured();
+        for (generation, source) in [
+            (1, "#let broken ="),
+            (2, "#import \"vte-html-definitely-missing/part.typ\""),
+            (3, "#html.elem(\"script\")[</script>]"),
+        ] {
+            let (header, bytes) = html_response(&mut session, &config, source, generation);
+            assert_eq!(header["success"], false, "{header}");
+            assert!(bytes.is_empty());
+            assert!(header["diagnostics"].as_array().unwrap().iter().any(|d| d["severity"] == "error"));
+        }
+        config["maxCacheBytes"] = json!(1024);
+        let (header, bytes) = html_response(&mut session, &config, "#for _ in range(1000) [expanded]", 4);
+        assert_eq!(header["success"], false, "{header}");
+        assert!(bytes.is_empty());
+        assert!(header["diagnostics"].as_array().unwrap().iter().any(|d|
+            d["severity"] == "error" && d["message"].as_str().unwrap().contains("HTML exceeds")));
+        config["maxCacheBytes"] = json!(64);
+        let (header, bytes) = html_response(&mut session, &config, &"x".repeat(65), 5);
+        assert_eq!(header["success"], false, "{header}");
+        assert!(bytes.is_empty());
+        assert!(header["diagnostics"].as_array().unwrap().iter().any(|d|
+            d["message"].as_str().unwrap().contains("overlays exceed")));
+        config["maxCacheBytes"] = json!(Config::default().max_cache_bytes);
+        let (header, bytes) = html_response(&mut session, &config, "= Recovered", 6);
+        assert_eq!(header["success"], true, "{header}");
+        assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn invalid_output_is_rejected_before_world_or_retention_changes() {
+        let (mut session, config) = configured();
+        session.handle(&compile_request(&config, "Kept", json!([]), 1), &mut |_, _| Ok(())).unwrap();
+        assert_eq!(session.snapshots.len(), 1);
+        for output in [json!("pdf"), json!(null), json!(true), json!(7)] {
+            let mut compile = compile_request(&config, "Must not replace source", json!([]), 2);
+            compile["output"] = output;
+            assert!(session.handle(&compile, &mut |_, _| panic!("invalid output published")).unwrap_err().contains("output"));
+            assert_eq!(session.generation, 1);
+            assert_eq!(session.snapshots.len(), 1);
+            let world = session.world.as_ref().unwrap();
+            assert!(!world.config.html_export);
+            assert_eq!(world.source(world.main()).unwrap().text(), "Kept");
+        }
     }
 
     #[test]
