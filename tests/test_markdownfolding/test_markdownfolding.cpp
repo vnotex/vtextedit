@@ -2718,7 +2718,7 @@ void TestMarkdownFolding::testConcealMultiblockGroups() {
   QVERIFY(!notifiedPartial);
 
   // Fresh positions recover concealment. Preceding-block insertion rebases
-  // live handles, while an edit before a run in its own block invalidates it.
+  // live handles without revealing the group.
   snapshot.m_groups[0].m_end = snapshot.m_groups[0].m_revealEnd =
       last.position() + last.length() - 1;
   snapshot.m_runs[1] = {last.position() + 4, last.position() + 6, {}};
@@ -2728,9 +2728,6 @@ void TestMarkdownFolding::testConcealMultiblockGroups() {
   cursor.setPosition(0);
   cursor.insertText(QStringLiteral("inserted\n"));
   QVERIFY(hidden());
-  cursor.setPosition(first.position());
-  cursor.insertText(QStringLiteral("prefix"));
-  QVERIFY(layout->sourceTextRect(last.position() + 4, last.position() + 6).width() > 0);
 }
 
 // An element whose source is rewritten in one go - what the preview write-back

@@ -469,6 +469,8 @@ private:
   struct LiveConcealRun {
     QTextBlock m_block;
     ConcealedRange m_range;
+    int m_sourceStart = 0;
+    int m_sourceEnd = 0;
   };
   struct LiveConcealGroup {
     ConcealGroup m_spec;
@@ -481,6 +483,7 @@ private:
   };
 
   int concealCursorPosition() const;
+  void updateConcealSource(int p_position, int p_removed, int p_added);
   bool concealGroupRevealed(const LiveConcealGroup &p_group, int p_cursor) const;
   void queueConcealGroup(const LiveConcealGroup &p_group);
   void refreshConcealGroups();
@@ -492,8 +495,9 @@ private:
   void layoutConcealBlocks(OrderedIntSet &p_blocks);
   QTextOption blockTextOption(const QTextBlock &p_block) const;
 
-  // Only live block handles and local offsets survive preceding-block edits.
-  // A revision change in ANY dependency invalidates the complete group.
+  // Retain the accepted projection until a new parse arrives. Source edits map
+  // untouched groups; an unhandled dependency revision still invalidates them.
+  int m_concealSourceRevision = -1;
   QVector<LiveConcealGroup> m_concealGroups;
   QVector<LiveConcealRun> m_concealRuns;
   QVector<ConcealDependency> m_concealDependencies;

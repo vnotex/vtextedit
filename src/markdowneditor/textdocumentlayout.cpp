@@ -416,6 +416,11 @@ TextDocumentLayout::PassGuard::~PassGuard() {
 TextDocumentLayout::TextDocumentLayout(QTextDocument *p_doc, DocumentResourceMgr *p_resourceMgr)
     : QAbstractTextDocumentLayout(p_doc), m_margin(p_doc->documentMargin()),
       m_resourceMgr(p_resourceMgr) {
+  m_concealSourceRevision = p_doc->revision();
+  // Track source before the highlighter can trigger layout with a coalesced
+  // formatting change. documentChanged() is too late to map source positions.
+  connect(p_doc, &QTextDocument::contentsChange, this, &TextDocumentLayout::updateConcealSource);
+
   connect(this, &TextDocumentLayout::becameIdle, this, [this]() {
     if ((m_pendingConcealBlocks.isEmpty() && !m_hasDeferredConcealment &&
          !m_hasDeferredConcealCursor) ||
@@ -497,7 +502,9 @@ void TextDocumentLayout::setConcealment(const ConcealSnapshot &p_snapshot) {
       }
       m_concealRuns.append({block,
                             {run.m_start - block.position(), run.m_end - block.position(),
-                             run.m_replacement, groupIndex}});
+                             run.m_replacement, groupIndex},
+                            run.m_start,
+                            run.m_end});
     }
     if (!valid) {
       m_concealRuns.resize(firstRun);
@@ -563,6 +570,122 @@ void TextDocumentLayout::queueConcealGroup(const LiveConcealGroup &p_group) {
   for (int i = p_group.m_firstDependency; i < p_group.m_firstDependency + p_group.m_dependencyCount;
        ++i) {
     queueConcealRelayout(m_concealDependencies.at(i).m_block);
+  }
+}
+
+void TextDocumentLayout::updateConcealSource(int p_position, int p_removed, int p_added) {
+  auto *doc = document();
+  // Rehighlighting emits replacement-shaped format notifications too.
+  if (m_concealSourceRevision == doc->revision()) {
+    return;
+  }
+  m_concealSourceRevision = doc->revision();
+  if (p_removed == 0 && p_added == 0) {
+    return;
+  }
+  const int removedEnd = p_position + p_removed;
+  const int delta = p_added - p_removed;
+  for (int index = 0; index < m_concealGroups.size(); ++index) {
+    auto &group = m_concealGroups[index];
+    if (!group.m_valid) {
+      continue;
+    }
+    bool dependencyChanged = false;
+    bool composing = group.m_composing;
+    for (int i = group.m_firstDependency; i < group.m_firstDependency + group.m_dependencyCount;
+         ++i) {
+      const auto &dependency = m_concealDependencies.at(i);
+      dependencyChanged |=
+          !dependency.m_block.isValid() || dependency.m_block.revision() != dependency.m_revision;
+      composing |=
+          dependency.m_block.isValid() && !dependency.m_block.layout()->preeditAreaText().isEmpty();
+    }
+    // IME preedit/cancellation reports the whole block as replaced and can
+    // advance the document revision without changing its source revision.
+    if (delta == 0 && !dependencyChanged && composing) {
+      continue;
+    }
+    auto &spec = group.m_spec;
+    const int first = qMin(spec.m_start, spec.m_revealStart);
+    const int last = qMax(spec.m_end, spec.m_revealEnd);
+    const bool intersects = p_removed > 0 ? p_position < last && removedEnd > first
+                                          : p_position > first && p_position < last;
+    if (intersects) {
+      group.m_valid = group.m_active = false;
+      queueConcealGroup(group);
+      continue;
+    }
+
+    // These are pre-edit absolutes, unlike QTextBlock::position(), which Qt
+    // has already moved. Edge insertions stay outside the retained element.
+    const int shift = removedEnd <= first ? delta : 0;
+    spec.m_start += shift;
+    spec.m_end += shift;
+    spec.m_revealStart += shift;
+    spec.m_revealEnd += shift;
+    for (int i = spec.m_firstRun; i < spec.m_firstRun + spec.m_runCount; ++i) {
+      m_concealRuns[i].m_sourceStart += shift;
+      m_concealRuns[i].m_sourceEnd += shift;
+    }
+    // Undo/redo may reuse a block revision. Coordinates and ownership still
+    // need rebinding when an edit moved source within (or out of) that block.
+    const bool rebind = dependencyChanged || group.m_start.position() != spec.m_start ||
+                        group.m_end.position() != spec.m_end ||
+                        group.m_revealStart.position() != spec.m_revealStart ||
+                        group.m_revealEnd.position() != spec.m_revealEnd ||
+                        group.m_start.m_block != doc->findBlock(spec.m_start);
+    if (!rebind) {
+      continue;
+    }
+    queueConcealGroup(group);
+    auto block = doc->findBlock(first + shift);
+    const auto endBlock =
+        doc->findBlock(qMax(spec.m_end - 1, spec.m_revealEnd - (spec.m_revealAtEnd ? 0 : 1)));
+    if (!block.isValid() || !endBlock.isValid() ||
+        endBlock.blockNumber() - block.blockNumber() + 1 != group.m_dependencyCount) {
+      group.m_valid = group.m_active = false;
+      continue;
+    }
+    for (int i = spec.m_firstRun; i < spec.m_firstRun + spec.m_runCount; ++i) {
+      auto &run = m_concealRuns[i];
+      run.m_block = doc->findBlock(run.m_sourceStart);
+      if (!run.m_block.isValid() ||
+          run.m_sourceEnd > run.m_block.position() + run.m_block.length() - 1 ||
+          (run.m_sourceStart == p_position + p_added &&
+           !graphemeBoundary(run.m_block, run.m_sourceStart)) ||
+          (run.m_sourceEnd == p_position && !graphemeBoundary(run.m_block, run.m_sourceEnd))) {
+        group.m_valid = group.m_active = false;
+        break;
+      }
+      run.m_range.m_hiddenStart = run.m_sourceStart - run.m_block.position();
+      run.m_range.m_hiddenEnd = run.m_sourceEnd - run.m_block.position();
+    }
+    if (!group.m_valid) {
+      continue;
+    }
+    const auto anchor = [doc](int p_position, bool p_end) {
+      const auto block = doc->findBlock(p_end && p_position > 0 ? p_position - 1 : p_position);
+      return ConcealPosition{block, p_position - block.position()};
+    };
+    group.m_start = anchor(spec.m_start, false);
+    group.m_end = anchor(spec.m_end, true);
+    group.m_revealStart = anchor(spec.m_revealStart, false);
+    group.m_revealEnd = anchor(spec.m_revealEnd, true);
+    for (int i = group.m_firstDependency; i < group.m_firstDependency + group.m_dependencyCount;
+         ++i, block = block.next()) {
+      auto &dependency = m_concealDependencies[i];
+      if (dependency.m_block != block) {
+        if (dependency.m_block.isValid()) {
+          BlockLayoutData::get(dependency.m_block)->m_concealGroups.removeOne(index);
+        }
+        BlockLayoutData::get(block)->m_concealGroups.append(index);
+        if (!m_concealBlocks.contains(block)) {
+          m_concealBlocks.append(block);
+        }
+      }
+      dependency = {block, block.revision()};
+      queueConcealRelayout(block);
+    }
   }
 }
 

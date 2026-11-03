@@ -97,6 +97,10 @@ private slots:
 
   // Source editing and canonical Qt geometry through inline concealment.
   void testConcealEditingAndGeometry();
+  void testConcealPendingParseEdits_data();
+  void testConcealPendingParseEdits();
+  void testConcealPendingParseInvalidation_data();
+  void testConcealPendingParseInvalidation();
 
   // Image previews and the `=WxH` size extension.
   void testImageLinksArePublished();

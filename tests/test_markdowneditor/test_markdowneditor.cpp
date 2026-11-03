@@ -750,6 +750,10 @@ void TestMarkdownEditor::testShiftWheelScroll() {
 }
 
 namespace {
+const QString c_concealTypingSource =
+    QStringLiteral("**Bold text** *Italic text* ***Bold and italic text*** "
+                   "~~Strikethrough text~~ `Inline code` $f(x)=y$ ");
+
 static QSharedPointer<MarkdownEditorConfig> makeConcealConfig(bool p_vi = false) {
   auto textConfig = QSharedPointer<TextEditorConfig>::create();
   textConfig->m_theme = QSharedPointer<Theme>::create(*TextEditorConfig::defaultTheme());
@@ -6168,13 +6172,12 @@ void TestMarkdownEditor::testConcealEditingAndGeometry() {
 
   // Prepare both references before the edit. The first geometry assertion is
   // synchronous: no event processing or fresh full parse can repair stale spans.
-  for (int editPosition : {0, start + 7}) {
+  {
+    const int editPosition = start + 7;
     QString edited = source;
     edited.insert(editPosition, QStringLiteral("Z"));
     QString editedUrl = url;
-    if (editPosition >= start) {
-      editedUrl.insert(editPosition - start, QStringLiteral("Z"));
-    }
+    editedUrl.insert(editPosition - start, QStringLiteral("Z"));
     QString editedCompact = edited;
     editedCompact.replace(edited.indexOf(editedUrl), editedUrl.size(), compactUrl);
     Fixture fullReference(edited, -1, -1, concealEditConfig(false));
@@ -6417,6 +6420,147 @@ void TestMarkdownEditor::testConcealEditingAndGeometry() {
     QCOMPARE(fixture.text(), committed);
     QVERIFY(!doc->isRedoAvailable());
   }
+}
+
+void TestMarkdownEditor::testConcealPendingParseEdits_data() {
+  QTest::addColumn<QString>("prefix");
+  QTest::addColumn<int>("position");
+  QTest::addColumn<int>("removed");
+  QTest::addColumn<QString>("inserted");
+  QTest::newRow("type-at-line-end")
+      << QString() << int(c_concealTypingSource.size()) << 0 << QStringLiteral("xyz");
+  QTest::newRow("delete-at-line-end")
+      << QString() << int(c_concealTypingSource.size() - 1) << 1 << QString();
+  QTest::newRow("insert-before-markers") << QString() << 0 << 0 << QStringLiteral("prefix ");
+  QTest::newRow("split-before-markers") << QString() << 0 << 0 << QStringLiteral("prefix\n");
+  QTest::newRow("edit-preceding-block")
+      << QStringLiteral("prefix\n") << 0 << 0 << QStringLiteral("more ");
+  QTest::newRow("merge-before-markers") << QStringLiteral("prefix\n") << 6 << 1 << QString();
+  QTest::newRow("remove-prefix") << QStringLiteral("prefix ") << 0 << 7 << QString();
+  QTest::newRow("replace-prefix") << QStringLiteral("prefix ") << 0 << 6 << QStringLiteral("new");
+}
+
+void TestMarkdownEditor::testConcealPendingParseEdits() {
+  QFETCH(QString, prefix);
+  QFETCH(int, position);
+  QFETCH(int, removed);
+  QFETCH(QString, inserted);
+  auto config = makeConcealConfig();
+  for (auto kind :
+       {MarkdownConcealElement::StrongMarkers, MarkdownConcealElement::EmphasisMarkers,
+        MarkdownConcealElement::StrikethroughMarkers, MarkdownConcealElement::InlineCodeMarkers,
+        MarkdownConcealElement::InlineFormulaMarkers}) {
+    config->m_concealRules.set(kind, MarkdownConcealHideSyntax{});
+  }
+  const QString source = prefix + c_concealTypingSource;
+  Fixture fixture(source, -1, -1, config);
+  QVERIFY(!renderConcealEditor(fixture).isNull());
+  waitForConcealPublication(fixture);
+  const QVector<QPair<QString, int>> elements{{QStringLiteral("**Bold text**"), 2},
+                                              {QStringLiteral("*Italic text*"), 1},
+                                              {QStringLiteral("***Bold and italic text***"), 3},
+                                              {QStringLiteral("~~Strikethrough text~~"), 2},
+                                              {QStringLiteral("`Inline code`"), 1},
+                                              {QStringLiteral("$f(x)=y$"), 1}};
+  const auto verifyMarkers = [&]() {
+    const auto text = fixture.text();
+    const int caret = fixture.edit()->textCursor().position();
+    for (const auto &element : elements) {
+      const int start = text.indexOf(element.first);
+      QVERIFY(start >= 0);
+      const int end = start + element.first.size();
+      const bool revealed = caret >= start && caret <= end;
+      for (int marker : {start, end - element.second}) {
+        const qreal width = concealConfigRangeWidth(fixture, marker, marker + element.second);
+        QVERIFY2(revealed ? width > 1 : qAbs(width) < 0.1,
+                 qPrintable(QStringLiteral("%1 at %2: width %3, caret %4, revealed %5")
+                                .arg(element.first)
+                                .arg(marker)
+                                .arg(width)
+                                .arg(caret)
+                                .arg(revealed)));
+      }
+    }
+  };
+  verifyMarkers();
+  auto *doc = fixture.editor()->document();
+  doc->clearUndoRedoStacks();
+  QSignalSpy publications(fixture.editor()->getHighlighter(),
+                          &MarkdownHighlighter::concealRangesUpdated);
+  setConcealCursor(fixture, position);
+  if (position == source.size() && removed == 0) {
+    QTest::keyClicks(fixture.edit(), inserted, Qt::NoModifier, 0);
+  } else {
+    auto cursor = fixture.edit()->textCursor();
+    cursor.setPosition(position + removed, QTextCursor::KeepAnchor);
+    cursor.insertText(inserted);
+  }
+  QString expected = source;
+  expected.replace(position, removed, inserted);
+  QCOMPARE(fixture.text(), expected);
+  setConcealCursor(fixture, expected.size());
+  // No event pumping: the accepted parse cannot rescue a transient reveal.
+  QCOMPARE(publications.count(), 0);
+  verifyMarkers();
+  fixture.editor()->getHighlighter()->rehighlight();
+  verifyMarkers();
+  fixture.edit()->undo();
+  QCOMPARE(fixture.text(), source);
+  setConcealCursor(fixture, source.size());
+  verifyMarkers();
+  fixture.edit()->redo();
+  QCOMPARE(fixture.text(), expected);
+  setConcealCursor(fixture, expected.size());
+  verifyMarkers();
+  QCOMPARE(publications.count(), 0);
+  waitForConcealPublication(fixture);
+  verifyMarkers();
+  const int bold = expected.indexOf(QStringLiteral("Bold text"));
+  setConcealCursor(fixture, bold + 1);
+  verifyMarkers();
+}
+
+void TestMarkdownEditor::testConcealPendingParseInvalidation_data() {
+  QTest::addColumn<QString>("replacement");
+  QTest::newRow("delete-delimiters") << QString();
+  QTest::newRow("replace-delimiters-same-length") << QStringLiteral("  ");
+}
+
+void TestMarkdownEditor::testConcealPendingParseInvalidation() {
+  QFETCH(QString, replacement);
+  auto config = makeConcealConfig();
+  config->m_concealRules.set(MarkdownConcealElement::StrongMarkers, MarkdownConcealHideSyntax{});
+  config->m_concealRules.set(MarkdownConcealElement::EmphasisMarkers, MarkdownConcealHideSyntax{});
+  const QString source = QStringLiteral("**bold** and *italic* tail");
+  Fixture fixture(source, -1, -1, config);
+  QVERIFY(!renderConcealEditor(fixture).isNull());
+  waitForConcealPublication(fixture);
+  QTextCursor cursor(fixture.editor()->document());
+  cursor.setPosition(6);
+  cursor.setPosition(8, QTextCursor::KeepAnchor);
+  cursor.insertText(replacement);
+  // Broken bold syntax must reveal immediately, without revealing the neighboring italic.
+  QVERIFY(concealConfigRangeWidth(fixture, 0, 2) > 1);
+  const int italic = fixture.text().indexOf(QLatin1Char('*'), 2);
+  QVERIFY(qAbs(concealConfigRangeWidth(fixture, italic, italic + 1)) < 0.1);
+  waitForConcealPublication(fixture);
+  QVERIFY(concealConfigRangeWidth(fixture, 0, 2) > 1);
+  QVERIFY(qAbs(concealConfigRangeWidth(fixture, italic, italic + 1)) < 0.1);
+  const QString broken = fixture.text();
+  fixture.edit()->undo();
+  QCOMPARE(fixture.text(), source);
+  setConcealCursor(fixture, source.size());
+  waitForConcealPublication(fixture);
+  QVERIFY(qAbs(concealConfigRangeWidth(fixture, 0, 2)) < 0.1);
+  // Redo can retain the old block revision even for a real source replacement.
+  fixture.edit()->redo();
+  QCOMPARE(fixture.text(), broken);
+  setConcealCursor(fixture, broken.size());
+  QVERIFY(concealConfigRangeWidth(fixture, 0, 2) > 1);
+  QVERIFY(qAbs(concealConfigRangeWidth(fixture, italic, italic + 1)) < 0.1);
+  fixture.editor()->setText(QStringLiteral("plain * text"));
+  waitForConcealPublication(fixture);
+  QVERIFY(concealConfigRangeWidth(fixture, 6, 7) > 1);
 }
 
 namespace {
