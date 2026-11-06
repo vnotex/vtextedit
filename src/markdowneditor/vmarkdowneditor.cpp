@@ -1905,6 +1905,7 @@ VMarkdownEditor::VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_c
 
   // Setup folding provider.
   m_foldingProvider.reset(new MarkdownFoldingProvider(getTextFolding(), document()));
+  documentLayout()->setFoldingProvider(m_foldingProvider.data());
   connect(getHighlighter(), &MarkdownHighlighter::foldingRegionsUpdated, this,
           [this](const QVector<md::FoldingRegion> &p_regions) {
             m_foldingProvider->updateFoldingRegions(p_regions);
@@ -1959,6 +1960,7 @@ VMarkdownEditor::~VMarkdownEditor() {
   // document, the anchors and the widgets to still exist. So destroy it here,
   // while they do.
   delete interactivePreviewHost();
+  documentLayout()->setFoldingProvider(nullptr);
 }
 
 void VMarkdownEditor::setSyntax(const QString &p_syntax) {
@@ -2533,7 +2535,7 @@ void VMarkdownEditor::applyPreviewFolding() {
   }
 
   // The anchor may have been folded away. TextFolding::setRangeFolded() keeps a
-  // region's FIRST and last block visible, so the hidden content collapsed
+  // region's first block visible, so the hidden content collapsed
   // upwards into a block above; walking backwards lands on it and keeps the
   // anchor at or above where the user was looking. Walking forward is only the
   // fallback for a document whose head is entirely hidden, which

@@ -40,6 +40,12 @@ private slots:
 
   void testGroupedBoundaryInsertionsUndoRedo();
 
+  void testNestedSharedLastBlock();
+
+  void testFoldingPublication();
+
+  void testReentrantRangeRemoval();
+
   void cleanupTestCase();
 
   // Will be executed before any test function.

@@ -1981,10 +1981,14 @@ void TestInteractivePreview::testInlineDisplayMathPlacement() {
              i == 2 ? PreviewPlacement::BlockAfterSource : PreviewPlacement::InlineAboveLine);
     QVERIFY(widget->isVisible());
     QTextCursor cursor(editor.document());
-    cursor.setPosition(i == 2 ? math->endPos() - 1 : math->startPos());
+    cursor.setPosition(math->startPos());
     // Exercise the host's actual placement, not just the snapshot enum: an
     // inline display belongs above its text, not in a band below the paragraph.
     if (i == 2) {
+      // A folded block display sits below its visible opening delimiter, not
+      // the hidden closing delimiter that still owns the full source extent.
+      QTRY_VERIFY(!editor.document()->findBlock(math->endPos() - 1).isVisible());
+      QVERIFY(cursor.block().isVisible());
       QTRY_VERIFY(widget->geometry().top() >= editor.getTextEdit()->cursorRect(cursor).bottom());
     } else {
       QTRY_VERIFY(widget->geometry().bottom() <= editor.getTextEdit()->cursorRect(cursor).top());
@@ -4348,15 +4352,17 @@ void TestInteractivePreview::testArrowOutMovesTheEditorCaretToTheLiveAnchor() {
       text.indexOf(QStringLiteral("| a | b |")) + QStringLiteral("| a | b |").size();
   QVERIFY(sourceEnd > sourceStart);
 
-  // Up out of the first row. The source is rendered above the sheet, so "up"
-  // is the end of the source.
+  // Up out of the first row returns to the folded source's visible header.
+  const auto sourceHeader = editor.document()->findBlock(sourceStart);
+  const int visibleSourceEnd = sourceHeader.position() + sourceHeader.length() - 1;
   putCaretIn(sheet, 0, 1);
   sheet->setFocus();
   QTest::keyClick(sheet, Qt::Key_Up);
   QCoreApplication::processEvents();
 
   QVERIFY2(editor.getTextEdit()->hasFocus(), "the editor did not take the focus back");
-  QCOMPARE(editor.getTextEdit()->textCursor().position(), sourceEnd);
+  QCOMPARE(editor.getTextEdit()->textCursor().position(), visibleSourceEnd);
+  QVERIFY(editor.getTextEdit()->textCursor().block().isVisible());
 
   // Down out of the last row lands just past the source's own line.
   sheet->setFocus();
@@ -4996,8 +5002,7 @@ private:
 };
 } // namespace
 
-// A previewed table comes up folded: the header row and the last row stay
-// visible, and only the interior is hidden.
+// A previewed table comes up folded: only its header row stays visible.
 void TestInteractivePreview::testPreviewedTableIsFoldedOnce() {
   VMarkdownEditor editor(makeAutoFoldConfig(true), QSharedPointer<TextEditorParameters>::create());
   setTextAndSettle(editor, QLatin1String(c_table) + QStringLiteral("\ntail\n"));
@@ -5006,7 +5011,7 @@ void TestInteractivePreview::testPreviewedTableIsFoldedOnce() {
   settleFolding();
   QVERIFY(blockVisible(editor, 0));
   QVERIFY2(!blockVisible(editor, 1), "the previewed table did not fold");
-  QVERIFY(blockVisible(editor, 2));
+  QVERIFY(!blockVisible(editor, 2));
 
   // The decision is taken once: a later parse must not re-run it, and the
   // widget is still there to render what the fold hides.
@@ -5014,6 +5019,320 @@ void TestInteractivePreview::testPreviewedTableIsFoldedOnce() {
   settleFolding();
   QVERIFY(!blockVisible(editor, 1));
   QVERIFY(singlePreviewWidget(editor));
+}
+
+void TestInteractivePreview::testTablePreviewFollowsItsOwnFold_data() {
+  QTest::addColumn<QString>("tableSource");
+  QTest::newRow("pipe") << QString::fromLatin1(c_table);
+  QTest::newRow("html") << QStringLiteral("<table>\n<tr><th>h1</th><th>h2</th></tr>\n"
+                                          "<tr><td>a</td><td>b</td></tr>\n</table>\n");
+}
+
+void TestInteractivePreview::testTablePreviewFollowsItsOwnFold() {
+  QFETCH(QString, tableSource);
+  auto config = makeAutoFoldConfig(false);
+  config->m_autoFormatTableSourceEnabled = false;
+  VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QStringLiteral("lead\n\n") + tableSource + QStringLiteral("\ntail\n"));
+  QPointer<PreviewWidget> widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  QVERIFY(sheetView(widget));
+  QTRY_VERIFY(widget->isVisible());
+  auto context = widget->previewContext();
+  const auto identity = context->identity();
+  const int start = context->preview()->startPos();
+  const int end = context->preview()->endPos();
+  const auto first = editor.document()->findBlock(start);
+  const auto last = editor.document()->findBlock(end - 1);
+  QVERIFY(last.blockNumber() > first.blockNumber());
+  QVERIFY(last.isVisible());
+  const QString source = editor.document()->toPlainText();
+  editor.document()->setModified(false);
+  const bool undoAvailable = editor.document()->isUndoAvailable();
+  const QRectF expandedBand = context->assignedPreviewRect();
+  QVERIFY(!expandedBand.isEmpty());
+  const qreal expandedHeight = editor.document()->documentLayout()->documentSize().height();
+  QTextCursor lastCursor(last);
+  lastCursor.movePosition(QTextCursor::EndOfBlock);
+  const int sourceGap = widget->y() - editor.getTextEdit()->cursorRect(lastCursor).bottom();
+  QVERIFY(sourceGap >= 0);
+
+  putEditorCaretInBlock(editor, first.blockNumber());
+  QVERIFY(editor.foldAtCursor());
+  QTRY_VERIFY(!last.isVisible());
+  QTRY_VERIFY(widget && widget->isVisible());
+  QTRY_VERIFY(context->assignedPreviewRect().top() < expandedBand.top());
+  const QRectF foldedBand = context->assignedPreviewRect();
+  QCOMPARE(singlePreviewWidget(editor), widget.data());
+  QCOMPARE(context->identity(), identity);
+  QCOMPARE(context->preview()->startPos(), start);
+  QCOMPARE(context->preview()->endPos(), end);
+  QCOMPARE(foldedBand.size(), expandedBand.size());
+  QTextCursor firstCursor(first);
+  firstCursor.movePosition(QTextCursor::EndOfBlock);
+  QVERIFY(qAbs(widget->y() - editor.getTextEdit()->cursorRect(firstCursor).bottom() - sourceGap) <=
+          1);
+  const qreal foldedHeight = editor.document()->documentLayout()->documentSize().height();
+  QVERIFY(qAbs((expandedHeight - foldedHeight) - (expandedBand.top() - foldedBand.top())) <= 1);
+  QTextCursor following(last.next());
+  QVERIFY(widget->geometry().bottom() <= editor.getTextEdit()->cursorRect(following).top());
+
+  QVERIFY(editor.unfoldAtCursor());
+  QTRY_VERIFY(last.isVisible());
+  QTRY_COMPARE(context->assignedPreviewRect(), expandedBand);
+  QCOMPARE(singlePreviewWidget(editor), widget.data());
+  QCOMPARE(editor.document()->documentLayout()->documentSize().height(), expandedHeight);
+  QCOMPARE(editor.document()->toPlainText(), source);
+  QVERIFY(!editor.document()->isModified());
+  QCOMPARE(editor.document()->isUndoAvailable(), undoAvailable);
+}
+
+void TestInteractivePreview::testWrapperFoldHidesTheTablePreview() {
+  VMarkdownEditor editor(makeAutoFoldConfig(true), QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QStringLiteral("## Wrapper\n\n") + QLatin1String(c_table) +
+                               QStringLiteral("\ninside\n\n## After\n\nafter\n"));
+  QPointer<PreviewWidget> widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  QTRY_VERIFY(!blockVisible(editor, 4));
+  QTRY_VERIFY(widget->isVisible());
+  const auto identity = widget->previewContext()->identity();
+  const QRectF tableBand = widget->previewContext()->assignedPreviewRect();
+  QVERIFY(!tableBand.isEmpty());
+
+  putEditorCaretInBlock(editor, 0);
+  QVERIFY(editor.foldAtCursor());
+  QTRY_VERIFY(!blockVisible(editor, 2));
+  QTRY_VERIFY(widget && !widget->isVisible());
+  QVERIFY(widget->previewContext()->assignedPreviewRect().isEmpty());
+  QVERIFY(editor.getVisiblePreviewWidgetLocations().isEmpty());
+  QVERIFY(blockVisible(editor, 0));
+  QVERIFY(blockVisible(editor, 8));
+
+  QVERIFY(editor.unfoldAtCursor());
+  QTRY_VERIFY(blockVisible(editor, 2));
+  QVERIFY(!blockVisible(editor, 4));
+  QTRY_VERIFY(widget && widget->isVisible());
+  QCOMPARE(widget->previewContext()->identity(), identity);
+  QTRY_COMPARE(widget->previewContext()->assignedPreviewRect(), tableBand);
+}
+
+void TestInteractivePreview::testFocusedSheetKeepsPendingEditsAcrossFolds() {
+  VMarkdownEditor editor(makeAutoFoldConfig(false), QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QStringLiteral("lead\n\n") + QLatin1String(c_table) +
+                               QStringLiteral("\ntail\n"));
+  QPointer<PreviewWidget> widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  QPointer<QTextEdit> sheet = sheetView(widget);
+  QVERIFY(sheet);
+  putEditorCaretInBlock(editor, 2);
+  sheet->setFocus();
+  QTRY_VERIFY(sheet->hasFocus());
+  editCell(sheet, 1, 0, QStringLiteral("pending"));
+  const QString source = editor.document()->toPlainText();
+  QVERIFY(!source.contains(QStringLiteral("pending")));
+  const auto identity = widget->previewContext()->identity();
+  const QRectF expandedBand = widget->previewContext()->assignedPreviewRect();
+
+  QVERIFY(editor.foldAtCursor());
+  QTRY_VERIFY(!blockVisible(editor, 4));
+  QTRY_VERIFY(widget && widget->isVisible());
+  QTRY_VERIFY(widget->previewContext()->assignedPreviewRect().top() < expandedBand.top());
+  QVERIFY(sheet && sheet->hasFocus());
+  QCOMPARE(singlePreviewWidget(editor), widget.data());
+  QCOMPARE(widget->previewContext()->identity(), identity);
+  QCOMPARE(sheetCell(sheet, 1, 0), QStringLiteral("pending"));
+  QCOMPARE(editor.document()->toPlainText(), source);
+
+  QVERIFY(editor.unfoldAtCursor());
+  QTRY_VERIFY(blockVisible(editor, 4));
+  QTRY_COMPARE(widget->previewContext()->assignedPreviewRect(), expandedBand);
+  QVERIFY(sheet && sheet->hasFocus());
+  QCOMPARE(widget->previewContext()->identity(), identity);
+  QCOMPARE(sheetCell(sheet, 1, 0), QStringLiteral("pending"));
+  QCOMPARE(editor.document()->toPlainText(), source);
+
+  flushSheet(sheet);
+  QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("pending")));
+}
+
+void TestInteractivePreview::testFoldedTableRewriteAndUndo_data() {
+  testTablePreviewFollowsItsOwnFold_data();
+}
+
+void TestInteractivePreview::testFoldedTableRewriteAndUndo() {
+  QFETCH(QString, tableSource);
+  auto config = makeAutoFoldConfig(true);
+  config->m_autoFormatTableSourceEnabled = false;
+  VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+  const QString source = QStringLiteral("lead\n\n") + tableSource + QStringLiteral("\ntail\n");
+  setTextAndSettle(editor, source);
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+  QTRY_VERIFY(!blockVisible(editor, 3));
+  const QRectF foldedBand = widget->previewContext()->assignedPreviewRect();
+  editCell(sheet, 1, 0, QStringLiteral("rewritten"));
+  flushSheet(sheet);
+  QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("rewritten")));
+  QVERIFY(!blockVisible(editor, 3));
+  QVERIFY(widget->isVisible());
+  QCOMPARE(widget->previewContext()->assignedPreviewRect().top(), foldedBand.top());
+  settle(editor);
+  settleFolding();
+  widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto terminal = editor.document()->findBlock(widget->previewContext()->preview()->endPos() - 1);
+  QVERIFY(!terminal.isVisible());
+  QCOMPARE(sheetCell(sheetView(widget), 1, 0), QStringLiteral("rewritten"));
+
+  // Undo is a new source generation: leave its caret outside the element so
+  // its normal one-time auto-fold decision can restore the folded preview.
+  editor.document()->undo();
+  putEditorCaretInBlock(editor, editor.document()->blockCount() - 1);
+  settle(editor);
+  settleFolding();
+  QCOMPARE(editor.document()->toPlainText(), source);
+  widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  terminal = editor.document()->findBlock(widget->previewContext()->preview()->endPos() - 1);
+  QVERIFY(!terminal.isVisible());
+  QVERIFY(widget->isVisible());
+  QCOMPARE(sheetCell(sheetView(widget), 1, 0), QStringLiteral("a"));
+  QCOMPARE(widget->previewContext()->assignedPreviewRect().top(), foldedBand.top());
+}
+
+void TestInteractivePreview::testTerminalCaretMovesToVisibleFoldHeader_data() {
+  QTest::addColumn<bool>("gutter");
+  QTest::addColumn<int>("column");
+  QTest::newRow("direct-preserve") << false << 3;
+  QTest::newRow("direct-clamp") << false << 20;
+  QTest::newRow("gutter-preserve") << true << 3;
+  QTest::newRow("gutter-clamp") << true << 20;
+}
+
+void TestInteractivePreview::testTerminalCaretMovesToVisibleFoldHeader() {
+  QFETCH(bool, gutter);
+  QFETCH(int, column);
+  auto config = makeAutoFoldConfig(false);
+  config->m_autoFormatTableSourceEnabled = false;
+  VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QStringLiteral("lead\n\n| h |\n| --- |\n"
+                                          "| a much longer body |\n\ntail\n"));
+  const auto first = editor.document()->findBlockByNumber(2);
+  const auto last = editor.document()->findBlockByNumber(4);
+  QVERIFY(first.isVisible());
+  QVERIFY(last.isVisible());
+  QTextCursor cursor(last);
+  cursor.setPosition(last.position() + column);
+  editor.getTextEdit()->setTextCursor(cursor);
+
+  if (gutter) {
+    QVERIFY2(toggleFoldFromGutter(editor, 2, 4), "could not reach the gutter folding marker");
+  } else {
+    QVERIFY(editor.foldAtCursor());
+  }
+  QVERIFY(!last.isVisible());
+  cursor = editor.getTextEdit()->textCursor();
+  QVERIFY(cursor.block().isVisible());
+  QCOMPARE(cursor.blockNumber(), first.blockNumber());
+  QCOMPARE(cursor.positionInBlock(), qMin(column, first.length() - 1));
+}
+
+void TestInteractivePreview::testGutterDragAcrossIndicators_data() {
+  QTest::addColumn<bool>("startOnMarker");
+  QTest::newRow("number-to-marker") << false;
+  QTest::newRow("marker-to-number") << true;
+}
+
+void TestInteractivePreview::testGutterDragAcrossIndicators() {
+  QFETCH(bool, startOnMarker);
+  auto config = makeAutoFoldConfig(false);
+  config->m_autoFormatTableSourceEnabled = false;
+  VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QStringLiteral("lead\n\n| h |\n| --- |\n| body |\n\ntail\n"));
+  auto border = indicatorsBorder(editor);
+  QVERIFY(border);
+  const auto first = editor.document()->findBlockByNumber(2);
+  const auto last = editor.document()->findBlockByNumber(4);
+  QTextCursor cursor(last);
+  cursor.setPosition(last.position() + 3);
+  editor.getTextEdit()->setTextCursor(cursor);
+  const int y = editor.getTextEdit()->cursorRect(QTextCursor(first)).center().y();
+  const QPoint marker(border->width() - 3, y);
+  const QPoint number(4, y);
+  auto send = [border](QEvent::Type p_type, const QPoint &p_pos, Qt::MouseButton p_button,
+                       Qt::MouseButtons p_buttons) {
+    QMouseEvent event(p_type, p_pos, border->mapToGlobal(p_pos), p_button, p_buttons,
+                      Qt::NoModifier);
+    QCoreApplication::sendEvent(border, &event);
+  };
+  const auto press = startOnMarker ? marker : number;
+  const auto release = startOnMarker ? number : marker;
+  send(QEvent::MouseMove, press, Qt::NoButton, Qt::NoButton);
+  QTest::qWait(350);
+  send(QEvent::MouseButtonPress, press, Qt::LeftButton, Qt::LeftButton);
+  send(QEvent::MouseMove, release, Qt::NoButton, Qt::LeftButton);
+  QTest::qWait(350);
+  send(QEvent::MouseButtonRelease, release, Qt::LeftButton, Qt::NoButton);
+  QVERIFY(last.isVisible());
+  if (startOnMarker) {
+    QCOMPARE(editor.getTextEdit()->textCursor().position(), cursor.position());
+  } else {
+    QCOMPARE(editor.getTextEdit()->textCursor().blockNumber(), first.blockNumber());
+  }
+
+  // The completed gesture must not leave the editor selecting on a later move.
+  const auto settled = editor.getTextEdit()->textCursor();
+  QTest::mouseMove(editor.getTextEdit()->viewport(),
+                   editor.getTextEdit()->cursorRect(QTextCursor(last)).center());
+  QCOMPARE(editor.getTextEdit()->textCursor().position(), settled.position());
+  QCOMPARE(editor.getTextEdit()->textCursor().anchor(), settled.anchor());
+  QVERIFY(toggleFoldFromGutter(editor, 2, 4));
+  QVERIFY(!last.isVisible());
+}
+
+void TestInteractivePreview::testSheetEscapeUsesVisibleSource_data() {
+  QTest::addColumn<bool>("folded");
+  QTest::addColumn<bool>("atEnd");
+  QTest::newRow("expanded-following") << false << false;
+  QTest::newRow("folded-following") << true << false;
+  QTest::newRow("expanded-eof") << false << true;
+  QTest::newRow("folded-eof") << true << true;
+}
+
+void TestInteractivePreview::testSheetEscapeUsesVisibleSource() {
+  QFETCH(bool, folded);
+  QFETCH(bool, atEnd);
+  auto config = makeAutoFoldConfig(folded);
+  config->m_autoFormatTableSourceEnabled = false;
+  VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QStringLiteral("lead\n\n") + QString::fromLatin1(c_table).trimmed() +
+                               (atEnd ? QString() : QStringLiteral("\n\ntail\n")));
+  auto widget = singlePreviewWidget(editor);
+  QVERIFY(widget);
+  auto sheet = sheetView(widget);
+  QVERIFY(sheet);
+  const auto first = editor.document()->findBlockByNumber(2);
+  const auto last = editor.document()->findBlockByNumber(4);
+  QTRY_COMPARE(last.isVisible(), !folded);
+  const auto anchor = folded ? first : last;
+  const int anchorEnd = anchor.position() + anchor.length() - 1;
+
+  sheet->setFocus();
+  putCaretIn(sheet, 0, 1);
+  QTest::keyClick(sheet, Qt::Key_Up);
+  QTRY_VERIFY(editor.getTextEdit()->hasFocus());
+  QCOMPARE(editor.getTextEdit()->textCursor().position(), anchorEnd);
+  QVERIFY(editor.getTextEdit()->textCursor().block().isVisible());
+
+  sheet->setFocus();
+  putCaretIn(sheet, 1, 1);
+  QTest::keyClick(sheet, Qt::Key_Down);
+  QTRY_VERIFY(editor.getTextEdit()->hasFocus());
+  QCOMPARE(editor.getTextEdit()->textCursor().position(),
+           atEnd ? anchorEnd : last.next().position());
+  QVERIFY(editor.getTextEdit()->textCursor().block().isVisible());
 }
 
 void TestInteractivePreview::testAutoFoldIsOptional() {
@@ -5029,9 +5348,15 @@ void TestInteractivePreview::testAutoFoldIsOptional() {
   QVERIFY(blockVisible(editor, 1));
 }
 
-// Folding keeps the first and last block visible, so only a caret in the
-// interior would be hidden - and such a region is left open for good.
+// Any source caret after the header, including the terminal row, vetoes folding.
+void TestInteractivePreview::testCaretInsideKeepsTheSourceOpen_data() {
+  QTest::addColumn<int>("caretBlock");
+  QTest::newRow("interior") << 1;
+  QTest::newRow("terminal") << 2;
+}
+
 void TestInteractivePreview::testCaretInsideKeepsTheSourceOpen() {
+  QFETCH(int, caretBlock);
   VMarkdownEditor editor(makeAutoFoldConfig(true), QSharedPointer<TextEditorParameters>::create());
 
   // Shown before the text, so the first parse generation already has a
@@ -5045,12 +5370,13 @@ void TestInteractivePreview::testCaretInsideKeepsTheSourceOpen() {
   // The caret is placed before the parse generation lands, so the very first
   // decision sees it inside the table.
   editor.setText(QLatin1String(c_table) + QStringLiteral("\ntail\n"));
-  putEditorCaretInBlock(editor, 1);
+  putEditorCaretInBlock(editor, caretBlock);
   settle(editor);
   settleFolding();
 
   QVERIFY(singlePreviewWidget(editor));
-  QVERIFY2(blockVisible(editor, 1), "the caret's own line was folded away");
+  QVERIFY2(blockVisible(editor, caretBlock), "the caret's own line was folded away");
+  QCOMPARE(editor.getTextEdit()->textCursor().blockNumber(), caretBlock);
 
   // Moving the caret away does not re-decide it.
   putEditorCaretInBlock(editor, editor.document()->blockCount() - 1);
@@ -5155,10 +5481,10 @@ void TestInteractivePreview::testFoldSurvivesARewriteWithTrailingBlankLines() {
   QVERIFY2(widget->m_lastResult.isAccepted(), qPrintable(widget->m_lastResult.diagnostic()));
   QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("| z | b |")));
   QVERIFY2(!blockVisible(editor, 1), "the restored range missed the trimmed extent");
-  // Block 2 is the discriminator: the trimmed element ends there, the anchor
-  // spans the two trailing blank lines as well. An untrimmed restore would fold
-  // [0, 3] and hide the table's last row.
-  QVERIFY2(blockVisible(editor, 2), "the restore used the anchor's untrimmed extent");
+  // The terminal row is hidden, but the following blank line is outside the
+  // trimmed element. An untrimmed restore would hide that blank line as well.
+  QVERIFY(!blockVisible(editor, 2));
+  QVERIFY2(blockVisible(editor, 3), "the restore used the anchor's untrimmed extent");
 
   // A second rewrite before the next parse still finds the restored range.
   widget->previewContext()->requestSourceReplacement(
@@ -5166,13 +5492,15 @@ void TestInteractivePreview::testFoldSurvivesARewriteWithTrailingBlankLines() {
   QVERIFY2(widget->m_lastResult.isAccepted(), qPrintable(widget->m_lastResult.diagnostic()));
   QVERIFY(editor.document()->toPlainText().contains(QStringLiteral("| y | b |")));
   QVERIFY(!blockVisible(editor, 1));
-  QVERIFY(blockVisible(editor, 2));
+  QVERIFY(!blockVisible(editor, 2));
+  QVERIFY(blockVisible(editor, 3));
 
   // And the next parse agrees with the extent the restore used.
   settle(editor);
   settleFolding();
   QVERIFY(!blockVisible(editor, 1));
-  QVERIFY(blockVisible(editor, 2));
+  QVERIFY(!blockVisible(editor, 2));
+  QVERIFY(blockVisible(editor, 3));
 }
 
 // The property the user actually reports: not "is it folded afterwards", but
@@ -6516,7 +6844,7 @@ void TestInteractivePreview::testFocusingASheetDoesNotScrollTheViewport() {
 // A caret the user deliberately parked inside the source is left alone, which
 // is what keeps FocusEscapeDirection::Keep and a focus return stable.
 void TestInteractivePreview::testFocusingASheetKeepsACaretAlreadyInTheSource() {
-  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+  VMarkdownEditor editor(makeAutoFoldConfig(false), QSharedPointer<TextEditorParameters>::create());
   editor.resize(600, 300);
   editor.show();
   QVERIFY(QTest::qWaitForWindowExposed(&editor));
@@ -6528,9 +6856,9 @@ void TestInteractivePreview::testFocusingASheetKeepsACaretAlreadyInTheSource() {
   QVERIFY(sheet);
 
   auto textEdit = editor.getTextEdit();
-  // The last row of the table's source, i.e. inside the range but not its
-  // first block. An interior block may be folded away, and a folded block is
-  // not a place a caret can be parked.
+  // Keep the source expanded so a deliberate caret can occupy its last row,
+  // inside the range but away from the first block used by the focus sync.
+  QVERIFY(blockVisible(editor, 2));
   putEditorCaretInBlock(editor, 2);
   QCOMPARE(textEdit->textCursor().blockNumber(), 2);
   const int position = textEdit->textCursor().position();
@@ -6723,8 +7051,8 @@ void TestInteractivePreview::testFocusEscapeClearsTheSelectionAndKeepsTheCaret()
   QVERIFY(sheet);
 
   const QString text = editor.document()->toPlainText();
-  const QString lastRow = QStringLiteral("| a | b |");
-  const int sourceEnd = text.indexOf(lastRow) + lastRow.size();
+  const QString firstRow = QStringLiteral("| h1 | h2 |");
+  const int sourceEnd = text.indexOf(firstRow) + firstRow.size();
   QVERIFY(sourceEnd > 0);
 
   sheet->setFocus();
@@ -7394,7 +7722,7 @@ void TestInteractivePreview::testHtmlTableSourceIsFoldedToItsOwnExtent() {
   //   which runs to the end of the document.
   //
   // The region now comes from the scanner's exact span, so it stops at
-  // `</table>` and the sheet's source folds onto it.
+  // `</table>` and the sheet stays below the visible opening tag.
   VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
 
   auto factory = new RecordingPreviewFactory({PreviewElementType::Table});
@@ -7418,16 +7746,13 @@ void TestInteractivePreview::testHtmlTableSourceIsFoldedToItsOwnExtent() {
     return editor.document()->findBlockByNumber(p_block).isVisible();
   };
 
-  // TextFolding::setRangeFolded() keeps BOTH boundary lines visible - the first
-  // carries the fold marker, and the last is what shows where the range ends,
-  // exactly as a folded fenced code block keeps both fences. Everything between
-  // them is hidden.
+  // Only the opening tag carries visible source; the closing tag is folded
+  // away with the body, while the sheet remains below the opening tag.
   QVERIFY2(visible(2), "the table's opening tag must stay visible");
-  for (int block = 3; block <= 5; ++block) {
+  for (int block = 3; block <= 6; ++block) {
     QVERIFY2(!visible(block),
              qPrintable(QStringLiteral("block %1 must be folded away").arg(block)));
   }
-  QVERIFY2(visible(6), "the table's closing tag must stay visible");
 
   // And the fold stops at `</table>`: everything after it is untouched. This is
   // the whole point - a fold derived from the HTML block node would reach the

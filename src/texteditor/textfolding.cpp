@@ -4,6 +4,7 @@
 #include <limits>
 
 #include <QDebug>
+#include <QPointer>
 #include <QTextDocument>
 
 #include "extraselectionmgr.h"
@@ -136,6 +137,8 @@ bool TextFolding::foldRange(qint64 p_id) {
 
 bool TextFolding::isEnabled() const { return m_enabled; }
 
+quint64 TextFolding::revision() const { return m_revision; }
+
 void TextFolding::hardClear() {
   if (m_foldingRanges.isEmpty()) {
     return;
@@ -145,6 +148,7 @@ void TextFolding::hardClear() {
   m_foldedFoldingRanges.clear();
   qDeleteAll(m_foldingRanges);
   m_foldingRanges.clear();
+  noteFoldingRangesChanged(0, m_document->blockCount() - 1);
   notifyFoldingRangesChanged();
 }
 
@@ -189,18 +193,58 @@ void TextFolding::replaceFoldingRanges(QVector<RangeSpec> &p_ranges) {
   m_foldedFoldingRanges.swap(folded);
   m_idToFoldingRange.swap(ids);
   qDeleteAll(roots);
+  noteFoldingRangesChanged(0, m_document->blockCount() - 1);
+}
+
+void TextFolding::noteFoldingRangesChanged(int p_firstBlock, int p_lastBlock) {
+  m_pendingFirstBlock =
+      m_pendingFirstBlock < 0 ? p_firstBlock : qMin(m_pendingFirstBlock, p_firstBlock);
+  m_pendingLastBlock = qMax(m_pendingLastBlock, p_lastBlock);
 }
 
 void TextFolding::notifyFoldingRangesChanged() {
-  // Only freshly resolved document blocks are ever traversed. All three
-  // indexes (and the provider's index) are committed before any callback.
+  if (m_pendingFirstBlock < 0) {
+    return;
+  }
+
+  // Commit indexes, visibility and revision before layout or signal callbacks.
+  // Reset pending bounds first so reentrant mutations publish their own state.
+  const int lastBlock = m_document->blockCount() - 1;
+  const int first = qMin(m_pendingFirstBlock, lastBlock);
+  const int last = qMin(m_pendingLastBlock, lastBlock);
+  m_pendingFirstBlock = m_pendingLastBlock = -1;
   unfoldRangeWithNestedFoldedRanges(
-      TextBlockRange(m_document->firstBlock(), m_document->lastBlock()), m_foldedFoldingRanges);
+      TextBlockRange(m_document->findBlockByNumber(first), m_document->findBlockByNumber(last)),
+      m_foldedFoldingRanges);
+  ++m_revision;
+
+  // A rewrite observer may restore its fold synchronously. Let it install the
+  // complete ownership state before layout can publish expanded source geometry.
+  QPointer<TextFolding> guard(this);
   emit foldingRangesChanged();
-  markDocumentContentsDirty();
+  if (!guard) {
+    return;
+  }
+
+  // Observers may also replace the document. Resolve fresh blocks instead of
+  // retaining source handles or range pointers across their callbacks.
+  const int currentLastBlock = m_document->blockCount() - 1;
+  const auto firstAffected = m_document->findBlockByNumber(qMin(first, currentLastBlock));
+  const auto lastAffected = m_document->findBlockByNumber(qMin(last, currentLastBlock));
+  const int position = firstAffected.position();
+  const int length = lastAffected.position() + lastAffected.length() - position;
+  markDocumentContentsDirty(position, length);
 }
 
 qint64 TextFolding::newFoldingRange(const TextBlockRange &p_range, FoldingRangeFlags p_flags) {
+  const auto id = insertFoldingRange(p_range, p_flags);
+  if (id != InvalidRangeId) {
+    notifyFoldingRangesChanged();
+  }
+  return id;
+}
+
+qint64 TextFolding::insertFoldingRange(const TextBlockRange &p_range, FoldingRangeFlags p_flags) {
 #if TFDebug
   qDebug() << "newFoldingRange" << p_range.toString() << p_flags;
 #endif
@@ -230,10 +274,8 @@ qint64 TextFolding::newFoldingRange(const TextBlockRange &p_range, FoldingRangeF
 
   if (newRange->isFolded()) {
     updateFoldedRangesForNewRange(newRange);
-    markDocumentContentsDirty(newRange->toBlockRange(m_document));
   }
-
-  emit foldingRangesChanged();
+  noteFoldingRangesChanged(newRange->first(), newRange->last());
 
   return id;
 }
@@ -380,8 +422,6 @@ void TextFolding::updateFoldedRangesForNewRange(TextFolding::FoldingRange *p_new
   }
 
   m_foldedFoldingRanges = foldedFoldingRanges;
-
-  setRangeFolded(p_newRange->toBlockRange(m_document), true);
 }
 
 void TextFolding::updateFoldedRangesForRemovedRange(TextFolding::FoldingRange *p_oldRange) {
@@ -404,8 +444,6 @@ void TextFolding::updateFoldedRangesForRemovedRange(TextFolding::FoldingRange *p
       // Get folded child ranges.
       auto foldedRanges = retrieveFoldedRanges(p_oldRange->m_nestedRanges);
       foldedFoldingRanges.append(foldedRanges);
-      // Unfold the old range while keep its folded child ranges folded.
-      unfoldRangeWithNestedFoldedRanges(p_oldRange->toBlockRange(m_document), foldedRanges);
     } else {
       foldedFoldingRanges.push_back(range);
     }
@@ -449,31 +487,6 @@ void TextFolding::foldingRangesStartingOnBlock(
     }
 
     foldingRangesStartingOnBlock((*it)->m_nestedRanges, p_blockNumber, p_results);
-  }
-}
-
-void TextFolding::setRangeFolded(const TextBlockRange &p_range, bool p_folded) const {
-  if (!p_range.isValid()) {
-    return;
-  }
-
-  auto blockIt = p_range.first();
-  blockIt.setVisible(true);
-
-  int lastBlockNumber = p_range.last().blockNumber();
-  if (blockIt.blockNumber() == lastBlockNumber) {
-    return;
-  }
-
-  blockIt = blockIt.next();
-  while (blockIt.isValid()) {
-    if (blockIt.blockNumber() == lastBlockNumber) {
-      blockIt.setVisible(true);
-      break;
-    }
-
-    blockIt.setVisible(!p_folded);
-    blockIt = blockIt.next();
   }
 }
 
@@ -611,8 +624,8 @@ void TextFolding::foldRange(FoldingRange *p_range) {
 
   p_range->m_flags |= TextFolding::FoldingRangeFlag::Folded;
   updateFoldedRangesForNewRange(p_range);
-  markDocumentContentsDirty(p_range->toBlockRange(m_document));
-  emit foldingRangesChanged();
+  noteFoldingRangesChanged(p_range->first(), p_range->last());
+  notifyFoldingRangesChanged();
 }
 
 bool TextFolding::unfoldRange(FoldingRange *p_range, bool p_remove) {
@@ -623,6 +636,7 @@ bool TextFolding::unfoldRange(FoldingRange *p_range, bool p_remove) {
 
   const bool needToRemove =
       p_remove || !(p_range->m_flags & TextFolding::FoldingRangeFlag::Persistent);
+  noteFoldingRangesChanged(p_range->first(), p_range->last());
 
   if (needToRemove) {
     // Remove it from folding vector.
@@ -657,24 +671,12 @@ bool TextFolding::unfoldRange(FoldingRange *p_range, bool p_remove) {
     delete p_range;
   }
 
-  emit foldingRangesChanged();
-  markDocumentContentsDirty();
+  notifyFoldingRangesChanged();
   return needToRemove;
 }
 
 void TextFolding::markDocumentContentsDirty(int p_position, int p_length) const {
   m_document->markContentsDirty(p_position, p_length);
-}
-
-void TextFolding::markDocumentContentsDirty(const TextBlockRange &p_range) {
-  if (!p_range.isValid()) {
-    markDocumentContentsDirty();
-    return;
-  }
-
-  int pos = p_range.first().position();
-  int len = p_range.last().position() + p_range.last().length() - pos + 1;
-  markDocumentContentsDirty(pos, len);
 }
 
 TextFolding::FoldingRange::Vector
@@ -701,31 +703,17 @@ void TextFolding::unfoldRangeWithNestedFoldedRanges(
 
   auto blockIt = p_range.first();
   auto lastBlockNumber = p_range.last().blockNumber();
-  int idx = 0;
+  auto folded = std::lower_bound(
+      p_foldedChildren.begin(), p_foldedChildren.end(), blockIt.blockNumber(),
+      [](const FoldingRange *p_folded, int p_block) { return p_folded->last() < p_block; });
   while (blockIt.isValid()) {
-    int blockNumber = blockIt.blockNumber();
-    bool isHit = false;
-    if (idx < p_foldedChildren.size()) {
-      const auto &range = p_foldedChildren[idx];
-      if (range->first() <= blockNumber && range->last() >= blockNumber) {
-        isHit = true;
-        if (range->first() == blockNumber) {
-          blockIt.setVisible(true);
-          if (range->last() == blockNumber) {
-            ++idx;
-          }
-        } else if (range->last() == blockNumber) {
-          blockIt.setVisible(true);
-          ++idx;
-        } else {
-          blockIt.setVisible(false);
-        }
-      }
+    const int blockNumber = blockIt.blockNumber();
+    while (folded != p_foldedChildren.end() && (*folded)->last() < blockNumber) {
+      ++folded;
     }
-
-    if (!isHit) {
-      blockIt.setVisible(true);
-    }
+    // Inclusive source ranges keep only their first block visible. An affected
+    // range may itself be inside a folded ancestor, including its first block.
+    blockIt.setVisible(folded == p_foldedChildren.end() || blockNumber <= (*folded)->first());
 
     if (blockNumber == lastBlockNumber) {
       break;
@@ -787,6 +775,7 @@ void TextFolding::checkAndUpdateFoldings() {
     }
   }
   m_foldedFoldingRanges = retrieveFoldedRanges(m_foldingRanges);
+  noteFoldingRangesChanged(0, m_document->blockCount() - 1);
   notifyFoldingRangesChanged();
 }
 
@@ -861,12 +850,12 @@ int TextFolding::lineToVisibleLine(int p_line) const {
     Q_ASSERT(range->isValid());
     if (p_line <= range->first()) {
       return p_line + delta;
-    } else if (p_line < range->last()) {
+    } else if (p_line <= range->last()) {
       // Locate within the folded range.
       delta += (range->first() - p_line);
       return p_line + delta;
     } else {
-      delta -= qMax(range->last() - range->first() - 1, 0);
+      delta -= range->last() - range->first();
     }
   }
 
@@ -891,7 +880,7 @@ int TextFolding::visibleLineToLine(int p_line) const {
     if (visualLine >= p_line) {
       return p_line + delta;
     } else {
-      delta += qMax(range->last() - range->first() - 1, 0);
+      delta += range->last() - range->first();
     }
   }
 

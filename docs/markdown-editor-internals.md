@@ -343,9 +343,11 @@ and preceding offsets are established as needed. `BlockLayoutData::m_rect` is bl
 `m_offset` is its document Y position. Document height is the last block's bottom, while width is
 the maximum cached block width.
 
-Folding marks interior `QTextBlock`s invisible. An invisible block receives an empty text layout,
-line count zero, and a non-null rectangle with zero height. The non-null width preserves
-`BlockLayoutData` sentinel semantics while letting following blocks share its Y position.
+Folding keeps only the first `QTextBlock` visible: inclusive source range `[first, last]`
+hides `(first, last]`, including the closing fence or final table row. Visible-line conversion
+uses the same interval. An invisible block receives an empty text layout, line count zero,
+and a non-null rectangle with zero height. The non-null width preserves `BlockLayoutData`
+sentinel semantics while letting following blocks share its Y position.
 
 ### Source-preserving inline concealment
 
@@ -626,12 +628,46 @@ the old extent. A `RangeSpec` snapshot replaces all three core indexes without c
 then the provider installs its accepted-entry index before one change notification.
 Unmatched and orphan ranges are retired together, with no intermediate removal signals.
 Ids are never recycled, and parsing while folding is disabled does not create ranges.
+Single-range restoration uses the same boundary: `insertFoldingRange()` is silent, the
+provider installs its typed entry, then `notifyFoldingRangesChanged()` commits visibility
+and advances the folding revision before callbacks. Rewrite observers can restore a fold
+synchronously from that notification before geometry is invalidated. No range pointers or
+block handles survive those callbacks.
 
 Two regions covering exactly the same blocks - a blockquote wrapping nothing but a table,
 for instance - are de-duplicated before matching, in favour of the preview-bearing type
 (`FencedCode`, `Math`, `Table`) over the wrapper types (`Heading`, `Blockquote`,
 `FrontMatter`). Only one of them can become a range, and which one owns it decides which
 element owns the fold state.
+
+### Preview display anchors
+
+Source ownership and display placement are separate. A widget retains its full live source
+anchor; a painted code/math preview retains its `PreviewData` on the terminal source block.
+Neither folding nor unfolding reparents a widget, moves preview metadata, copies a pixmap,
+changes source, or adds an undo step.
+
+`MarkdownFoldingProvider` indexes eligible parser-owned elements by their live endpoints.
+A widget matches the exact element extent; a non-inline painted `CodeBlock` or `MathBlock`
+preview matches its unique typed terminal owner. Wrappers and ambiguous matches never
+become preview owners. This uses the existing host contract; VNote need not supply new
+metadata. Changed raster contents still require a new `PreviewItem::m_name`.
+
+`TextDocumentLayout::previewAnchorBlock()` chooses the element's first block while folded
+and its last block while unfolded. The layout reads the committed provider directly; its
+widget index also keys on the folding revision, since folding need not change document
+revision. With no provider, the ordinary last-block placement remains unchanged. An outer
+fold hiding the chosen block hides the preview too, rather than hoisting it onto a heading.
+
+Painted claim checks continue using the original source block's offsets. Resource refresh,
+removal and claim invalidation include the visible display anchor even when the terminal
+source block is hidden. Inline images/math inside table cells are not relocated as table
+previews. Table sheets keep their identity, focus and pending edits across placement changes.
+
+Keyboard, gutter and programmatic folds share caret recovery: a hidden caret moves to the
+visible fold header with its column clamped to that line. A fold-marker click does not send
+a synthetic column-zero source click. Leaving a sheet upwards targets its visible source
+anchor; leaving downwards skips the complete source, or returns to the anchor at EOF.
 
 ### The initial fold state
 
@@ -645,11 +681,11 @@ set.
 
 A region is settled the first time a pass sees it together with a valid preview - a widget
 whose block extent and type match the region exactly, or a painted, non-inline `PreviewData`
-of the mapped source on the region's first or last block, which are the two blocks folding
-keeps visible. Once settled, the option is never re-read for that range: unfolding by hand
-is never undone, and a region whose interior holds the caret when the preview appears is
-left open for good. Changing the option at runtime therefore only affects regions which
-have not been settled yet.
+of the mapped source on the region's first block or uniquely owned last block. The latter
+is displayed at the first block after folding. Once settled, the option is never re-read
+for that range: unfolding by hand is never undone, and a region whose hidden interval
+`(first, last]` holds the caret when the preview appears is left open for good. Changing the
+option at runtime therefore only affects regions which have not been settled yet.
 
 ### Keeping the state across a rewrite
 
@@ -707,7 +743,11 @@ fixtures. `test_markdownfolding` covers folding-provider behavior and one custom
 case confirming zero-height folded blocks and restoration after unfolding. Preview driven
 folding is covered at three levels: `test_textfolding` for the range accessors,
 `test_markdownfolding` for reconciliation, the auto-fold decision and the restore, and
-`test_interactivepreview` end to end on a real `VMarkdownEditor`.
+`test_interactivepreview` end to end on a real `VMarkdownEditor`. Folded preview regressions
+cover first/last geometry, nested wrapper suppression, source-owned claims, focused sheet
+rewrites and navigation, and terminal-caret recovery. `test_previewscrollstability` also
+exercises late graph arrival, rerendering and removal while its source is already folded,
+checking both native viewport pixels and scroll anchors.
 
 `test_interactivepreview` also exercises image/math resource publications, table-cell mapping,
 image-insertion tokens, source flags, geometry, resource retirement and reader-policy revocation.

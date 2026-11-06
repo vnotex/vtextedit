@@ -277,7 +277,67 @@ void MarkdownFoldingProvider::clear() {
   m_textFolding->notifyFoldingRangesChanged();
 }
 
-void MarkdownFoldingProvider::resetState() { m_entries.clear(); }
+void MarkdownFoldingProvider::resetState() {
+  m_entries.clear();
+  m_previewRanges.clear();
+  m_previewStartsByEnd.clear();
+  m_previewIndexDocumentRevision = -1;
+}
+
+quint64 MarkdownFoldingProvider::foldingRevision() const { return m_textFolding->revision(); }
+
+void MarkdownFoldingProvider::ensurePreviewIndex() const {
+  const auto revision = foldingRevision();
+  const int documentRevision = m_document->revision();
+  if (m_previewIndexRevision == revision && m_previewIndexDocumentRevision == documentRevision) {
+    return;
+  }
+  m_previewIndexRevision = revision;
+  m_previewIndexDocumentRevision = documentRevision;
+  m_previewRanges.clear();
+  m_previewStartsByEnd.clear();
+  if (!m_textFolding->isEnabled()) {
+    return;
+  }
+  for (const auto &entry : m_entries) {
+    PreviewRange range;
+    if (!previewTypeForRegion(entry.m_type, &range.m_type) ||
+        !m_textFolding->foldingRangeBlocks(entry.m_id, &range.m_firstBlock, &range.m_lastBlock)) {
+      continue;
+    }
+    range.m_id = entry.m_id;
+    m_previewRanges.insert(range.m_firstBlock, range);
+    // A terminal block shared by different elements must never guess an owner.
+    auto end = m_previewStartsByEnd.find(range.m_lastBlock);
+    if (end == m_previewStartsByEnd.end()) {
+      m_previewStartsByEnd.insert(range.m_lastBlock, range.m_firstBlock);
+    } else {
+      end.value() = -1;
+    }
+  }
+}
+
+bool MarkdownFoldingProvider::previewRangeStartingAt(int p_firstBlock,
+                                                     PreviewRange &p_range) const {
+  ensurePreviewIndex();
+  const auto it = m_previewRanges.constFind(p_firstBlock);
+  if (it == m_previewRanges.cend()) {
+    return false;
+  }
+  p_range = it.value();
+  return true;
+}
+
+bool MarkdownFoldingProvider::previewRangeEndingAt(int p_lastBlock, PreviewRange &p_range) const {
+  ensurePreviewIndex();
+  const auto it = m_previewStartsByEnd.constFind(p_lastBlock);
+  return it != m_previewStartsByEnd.cend() && it.value() >= 0 &&
+         previewRangeStartingAt(it.value(), p_range);
+}
+
+bool MarkdownFoldingProvider::isPreviewFolded(const PreviewRange &p_range) const {
+  return m_textFolding->isRangeFolded(p_range.m_id);
+}
 
 void MarkdownFoldingProvider::setAutoFoldPreviewsEnabled(bool p_enabled) {
   // Deliberately does not re-evaluate settled regions: the option only ever
@@ -349,8 +409,12 @@ MarkdownFoldingProvider::applyPreviewAutoFold(const QVector<PreviewedRange> &p_w
       continue;
     }
 
-    // Exact extent equality is correct rather than approximate: the folding
-    // region and the preview element are computed from the same cmark node.
+    // Use the same live element ownership as the layout, not a containing wrapper.
+    PreviewRange owner;
+    if (!previewRangeStartingAt(first, owner) || owner.m_id != entry.m_id ||
+        owner.m_lastBlock != last) {
+      continue;
+    }
     const PreviewedRange *widget = nullptr;
     const auto bucket = widgetIndex.constFind(qMakePair(first, last));
     if (bucket != widgetIndex.constEnd()) {
@@ -371,16 +435,14 @@ MarkdownFoldingProvider::applyPreviewAutoFold(const QVector<PreviewedRange> &p_w
 
     bool hasPreview = widget != nullptr;
     if (!hasPreview) {
-      // A painted preview carries no source range of its own, only the block
-      // it is drawn on. Only the region's first and last block are inspected,
-      // because those are the only two setRangeFolded() keeps visible - which
-      // is what guarantees folding can never hide the very preview it folded
-      // for. A host which attaches its preview to an interior block simply
-      // never auto-folds, which is a safe failure.
+      // Terminal previews retain their source owner; layout displays them at
+      // the first block while folded. An ambiguous terminal owner cannot move.
       PreviewData::Source source = PreviewData::ImageLink;
+      PreviewRange terminal;
       if (paintedSourceForPreview(type, &source)) {
         hasPreview = blockHasPaintedPreview(m_document->findBlockByNumber(first), source) ||
-                     blockHasPaintedPreview(m_document->findBlockByNumber(last), source);
+                     (previewRangeEndingAt(last, terminal) && terminal.m_id == owner.m_id &&
+                      blockHasPaintedPreview(m_document->findBlockByNumber(last), source));
       }
     }
 
@@ -405,9 +467,8 @@ MarkdownFoldingProvider::applyPreviewAutoFold(const QVector<PreviewedRange> &p_w
         // a rewrite does not depend on auto-folding being enabled.
         decision.m_fold = widget->m_foldState == PreviewFoldState::Folded &&
                           !m_textFolding->isRangeFolded(entry.m_id);
-      } else if (m_autoFoldEnabled && !(p_caretBlock > first && p_caretBlock < last)) {
-        // The caret rule: folding keeps the first and last block visible, so
-        // only a caret in the interior would be hidden by the fold.
+      } else if (m_autoFoldEnabled && !(p_caretBlock > first && p_caretBlock <= last)) {
+        // Only the first block survives; the closing line also holds editable source.
         decision.m_fold = true;
       }
 
@@ -470,35 +531,15 @@ bool MarkdownFoldingProvider::tryRegionFolded(PreviewElementType p_type, int p_s
     return false;
   }
 
-  md::FoldingRegionType regionType = md::Heading;
-  if (!regionTypeForPreview(p_type, &regionType)) {
+  PreviewRange range;
+  if (!previewRangeStartingAt(p_startBlock, range) || range.m_lastBlock != p_endBlock ||
+      range.m_type != p_type) {
     return false;
   }
-
-  // Walk the entries and resolve each id, so the answer does not depend on the
-  // keys still being current.
-  for (auto it = m_entries.cbegin(); it != m_entries.cend(); ++it) {
-    if (it.value().m_type != regionType) {
-      continue;
-    }
-
-    int first = 0;
-    int last = 0;
-    if (!m_textFolding->foldingRangeBlocks(it.value().m_id, &first, &last)) {
-      continue;
-    }
-
-    if (first != p_startBlock || last != p_endBlock) {
-      continue;
-    }
-
-    if (p_folded) {
-      *p_folded = m_textFolding->isRangeFolded(it.value().m_id);
-    }
-    return true;
+  if (p_folded) {
+    *p_folded = isPreviewFolded(range);
   }
-
-  return false;
+  return true;
 }
 
 void MarkdownFoldingProvider::rekeyEntriesByLiveExtent() {
@@ -542,7 +583,8 @@ bool MarkdownFoldingProvider::restoreFoldedRange(PreviewElementType p_type, int 
     return false;
   }
 
-  qint64 id = m_textFolding->newFoldingRange(range, TextFolding::Persistent | TextFolding::Folded);
+  qint64 id =
+      m_textFolding->insertFoldingRange(range, TextFolding::Persistent | TextFolding::Folded);
   if (id == TextFolding::InvalidRangeId) {
     // The next parse recreates the range and the restore branch of
     // applyPreviewAutoFold() folds it, with a visible flash in between.
@@ -565,6 +607,8 @@ bool MarkdownFoldingProvider::restoreFoldedRange(PreviewElementType p_type, int 
   // extent, which newFoldingRange() would have refused.
   rekeyEntriesByLiveExtent();
   m_entries.insert(qMakePair(p_startBlock, p_endBlock), entry);
+  // The layout may query this owner synchronously during publication.
+  m_textFolding->notifyFoldingRangesChanged();
   return true;
 }
 

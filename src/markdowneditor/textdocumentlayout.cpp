@@ -25,6 +25,7 @@
 #include <vtextedit/textblockdata.h>
 
 #include "documentresourcemgr.h"
+#include "markdownfoldingprovider.h"
 #include "markdownhighlightblockdata.h"
 
 using namespace vte;
@@ -2750,6 +2751,17 @@ void TextDocumentLayout::relayout(const OrderedIntSet &p_blocks) {
   PassGuard pass(this);
 
   auto affected = p_blocks;
+  if (m_foldingProvider) {
+    // Resource refresh/removal still names the canonical source block, even
+    // when it is hidden. Invalidate the visible band in the same layout pass.
+    for (auto block = p_blocks.keyBegin(); block != p_blocks.keyEnd(); ++block) {
+      MarkdownFoldingProvider::PreviewRange range;
+      if (m_foldingProvider->previewRangeEndingAt(*block, range) &&
+          m_foldingProvider->isPreviewFolded(range)) {
+        affected.insert(range.m_firstBlock, QMapDummyValue());
+      }
+    }
+  }
   const bool grouped = !m_concealGroups.isEmpty() || !m_pendingConcealBlocks.isEmpty();
   if (grouped) {
     layoutConcealBlocks(affected);
@@ -2964,12 +2976,15 @@ void TextDocumentLayout::setLeadingSpaceOfLine(qreal p_leading) {
 
 void TextDocumentLayout::ensureWidgetPreviewMap() {
   const int revision = document()->revision();
-  if (!m_widgetPreviewMapDirty && revision == m_widgetPreviewMapRevision) {
+  const auto foldRevision = m_foldingProvider ? m_foldingProvider->foldingRevision() : 0;
+  if (!m_widgetPreviewMapDirty && revision == m_widgetPreviewMapRevision &&
+      foldRevision == m_widgetPreviewFoldRevision) {
     return;
   }
 
   m_widgetPreviewMapDirty = false;
   m_widgetPreviewMapRevision = revision;
+  m_widgetPreviewFoldRevision = foldRevision;
   m_widgetPreviewsByBlock.clear();
   if (m_widgetPreviews.isEmpty()) {
     return;
@@ -3047,24 +3062,47 @@ bool TextDocumentLayout::isPreviewClaimed(int p_start, int p_end, PreviewElement
 
 QVector<PreviewData *> TextDocumentLayout::unclaimedPreviewData(const QTextBlock &p_block) const {
   const auto &data = BlockPreviewData::get(p_block)->getPreviewData();
-  if (m_claimedPreviews.isEmpty()) {
-    return data;
-  }
-
-  const int blockPos = p_block.position();
-  QVector<PreviewData *> result;
-  result.reserve(data.size());
-  for (auto item : data) {
-    auto image = item ? item->getImageData() : nullptr;
+  const auto claimed = [this](const PreviewData *p_data, const QTextBlock &p_sourceBlock) {
+    const auto image = p_data ? p_data->getImageData() : nullptr;
     PreviewElementType type = PreviewElementType::Image;
-    if (image && previewSourceToElementType(item->source(), &type) &&
-        isPreviewClaimed(blockPos + image->m_startPos, blockPos + image->m_endPos, type)) {
-      continue;
+    return image && !m_claimedPreviews.isEmpty() &&
+           previewSourceToElementType(p_data->source(), &type) &&
+           isPreviewClaimed(p_sourceBlock.position() + image->m_startPos,
+                            p_sourceBlock.position() + image->m_endPos, type);
+  };
+  QVector<PreviewData *> result;
+  if (m_claimedPreviews.isEmpty()) {
+    result = data;
+  } else {
+    result.reserve(data.size());
+    for (auto item : data) {
+      if (!claimed(item, p_block)) {
+        result.append(item);
+      }
     }
-
-    result.append(item);
   }
 
+  MarkdownFoldingProvider::PreviewRange owner;
+  MarkdownFoldingProvider::PreviewRange terminal;
+  PreviewData::Source source = PreviewData::ImageLink;
+  if (!m_foldingProvider ||
+      !m_foldingProvider->previewRangeStartingAt(p_block.blockNumber(), owner) ||
+      !m_foldingProvider->isPreviewFolded(owner) ||
+      !previewElementTypeToSource(owner.m_type, &source) ||
+      !m_foldingProvider->previewRangeEndingAt(owner.m_lastBlock, terminal) ||
+      terminal.m_id != owner.m_id) {
+    return result;
+  }
+  const auto sourceBlock = document()->findBlockByNumber(owner.m_lastBlock);
+  const auto blockData = static_cast<TextBlockData *>(sourceBlock.userData());
+  if (blockData && blockData->getBlockPreviewData()) {
+    for (auto item : blockData->getBlockPreviewData()->getPreviewData()) {
+      const auto image = item ? item->getImageData() : nullptr;
+      if (image && !image->m_inline && item->source() == source && !claimed(item, sourceBlock)) {
+        result.append(item);
+      }
+    }
+  }
   return result;
 }
 
@@ -3119,21 +3157,34 @@ void TextDocumentLayout::collectSpecDeltaBlocks(const QVector<WidgetPreviewSpec>
   }
 }
 
+void TextDocumentLayout::setFoldingProvider(MarkdownFoldingProvider *p_provider) {
+  m_foldingProvider = p_provider;
+  m_widgetPreviewMapDirty = true;
+}
+
+QTextBlock TextDocumentLayout::previewAnchorBlock(int p_startPos, int p_endPos) const {
+  const auto doc = document();
+  if (!doc || p_startPos < 0 || p_endPos <= p_startPos || p_endPos > doc->characterCount() - 1) {
+    return QTextBlock();
+  }
+  const auto first = doc->findBlock(p_startPos);
+  const auto last = doc->findBlock(p_endPos - 1);
+  MarkdownFoldingProvider::PreviewRange owner;
+  if (m_foldingProvider && m_foldingProvider->previewRangeStartingAt(first.blockNumber(), owner) &&
+      owner.m_lastBlock == last.blockNumber() && m_foldingProvider->isPreviewFolded(owner)) {
+    return first;
+  }
+  return last;
+}
+
 QTextBlock TextDocumentLayout::blockForSpec(const WidgetPreviewSpec &p_spec) const {
-  QTextDocument *doc = document();
-  if (!doc) {
-    return QTextBlock();
+  if (p_spec.m_placement == PreviewPlacement::BlockAfterSource) {
+    return previewAnchorBlock(p_spec.m_startPos, p_spec.m_endPos);
   }
-
-  // BlockAfterSource anchors after the block containing endPos - 1.
-  const int anchorPos = p_spec.m_placement == PreviewPlacement::BlockAfterSource
-                            ? qMax(p_spec.m_startPos, p_spec.m_endPos - 1)
-                            : p_spec.m_startPos;
-  if (anchorPos < 0 || anchorPos > doc->characterCount() - 1) {
-    return QTextBlock();
-  }
-
-  return doc->findBlock(anchorPos);
+  const auto doc = document();
+  return doc && p_spec.m_startPos >= 0 && p_spec.m_startPos < doc->characterCount()
+             ? doc->findBlock(p_spec.m_startPos)
+             : QTextBlock();
 }
 
 void TextDocumentLayout::collectBlocksForSpec(const WidgetPreviewSpec &p_spec,

@@ -312,6 +312,10 @@ void IndicatorsBorder::paintFoldingMarker(QPainter &p_painter, int p_xOffset, in
 
 void IndicatorsBorder::mousePressEvent(QMouseEvent *p_event) {
   auto block = yToBlock(p_event->y());
+  if (p_event->button() == Qt::LeftButton) {
+    m_foldMarkerPressed =
+        block.isValid() && positionToIndicator(p_event->pos()) == Indicators::FoldingMarker;
+  }
   if (block.isValid()) {
     m_lastClickedBlockNumber = block.blockNumber();
     auto indicator = positionToIndicator(p_event->pos());
@@ -320,9 +324,13 @@ void IndicatorsBorder::mousePressEvent(QMouseEvent *p_event) {
       // TODO: Let view begin to select lines.
     }
 
-    QMouseEvent forwardEvent(QEvent::MouseButtonPress, QPoint(0, p_event->y()), p_event->button(),
-                             p_event->buttons(), p_event->modifiers());
-    m_interface->forwardMouseEvent(&forwardEvent);
+    // A fold click changes visibility, not the source caret. The shared fold
+    // handler relocates a hidden caret while preserving its source column.
+    if (p_event->button() != Qt::LeftButton || !m_foldMarkerPressed) {
+      QMouseEvent forwardEvent(QEvent::MouseButtonPress, QPoint(0, p_event->y()), p_event->button(),
+                               p_event->buttons(), p_event->modifiers());
+      m_interface->forwardMouseEvent(&forwardEvent);
+    }
     p_event->accept();
   } else {
     QWidget::mousePressEvent(p_event);
@@ -370,8 +378,12 @@ int IndicatorsBorder::borderWidth() const {
 
 void IndicatorsBorder::mouseReleaseEvent(QMouseEvent *p_event) {
   auto button = p_event->button();
+  const bool foldClick = button == Qt::LeftButton && m_foldMarkerPressed;
+  if (button == Qt::LeftButton) {
+    m_foldMarkerPressed = false;
+  }
   auto block = yToBlock(p_event->y());
-  if (block.blockNumber() == m_lastClickedBlockNumber) {
+  if (foldClick && block.blockNumber() == m_lastClickedBlockNumber) {
     auto indicator = positionToIndicator(p_event->pos());
     if (indicator == Indicators::FoldingMarker) {
       if (button == Qt::LeftButton) {
@@ -399,6 +411,10 @@ void IndicatorsBorder::mouseReleaseEvent(QMouseEvent *p_event) {
     }
   }
 
+  if (foldClick) {
+    p_event->accept();
+    return;
+  }
   QMouseEvent forwardEvent(QEvent::MouseButtonRelease, QPoint(0, p_event->y()), button,
                            p_event->buttons(), p_event->modifiers());
   m_interface->forwardMouseEvent(&forwardEvent);

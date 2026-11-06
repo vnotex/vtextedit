@@ -19,6 +19,7 @@
 
 namespace vte {
 class DocumentResourceMgr;
+class MarkdownFoldingProvider;
 struct PreviewImageData;
 class PreviewData;
 
@@ -215,6 +216,13 @@ public:
   // for. Layout data only ever stores identities and rectangles, never widget
   // pointers.
   void setWidgetPreviews(const QVector<WidgetPreviewSpec> &p_specs);
+
+  // Borrowed, optional Markdown element ownership. Set/clear while both live;
+  // association itself does not invoke layout or callbacks.
+  void setFoldingProvider(MarkdownFoldingProvider *p_provider);
+
+  // Display block of a blockwise preview; its source range is never changed.
+  QTextBlock previewAnchorBlock(int p_startPos, int p_endPos) const;
 
   const QVector<WidgetPreviewSpec> &widgetPreviews() const;
 
@@ -561,6 +569,8 @@ private:
 
   // Document revision the block map was built for.
   int m_widgetPreviewMapRevision = -1;
+  quint64 m_widgetPreviewFoldRevision = 0;
+  MarkdownFoldingProvider *m_foldingProvider = nullptr;
 
   bool m_widgetPreviewMapDirty = true;
 

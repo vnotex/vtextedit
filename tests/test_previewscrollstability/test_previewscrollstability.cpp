@@ -2,6 +2,7 @@
 
 #include <QAbstractTextDocumentLayout>
 #include <QApplication>
+#include <QImage>
 #include <QPixmap>
 #include <QScrollBar>
 #include <QSharedPointer>
@@ -51,8 +52,8 @@ QString paragraphs(int p_count) {
 }
 
 // Fenced code blocks separated by prose. Each body is several lines long, so
-// auto-folding one really removes height: TextFolding keeps a region's first
-// and last block visible and hides only the interior.
+// auto-folding one really removes height: TextFolding keeps only the first
+// block visible and hides the body and closing fence.
 QString codeBlocks(int p_count, int p_bodyLines) {
   QString text;
   for (int i = 0; i < p_count; ++i) {
@@ -96,6 +97,18 @@ QSharedPointer<PreviewItem> makeItem(QTextDocument *p_doc, int p_blockNumber, in
   item->m_name = QStringLiteral("test_preview_%1").arg(p_blockNumber);
   item->m_image = image;
   return item;
+}
+
+QRect paintedColorBounds(const QImage &p_image, QRgb p_color) {
+  QRect bounds;
+  for (int y = 0; y < p_image.height(); ++y) {
+    for (int x = 0; x < p_image.width(); ++x) {
+      if ((p_image.pixel(x, y) & 0x00ffffff) == (p_color & 0x00ffffff)) {
+        bounds |= QRect(x, y, 1, 1);
+      }
+    }
+  }
+  return bounds;
 }
 
 qreal blockDocY(VMarkdownEditor &p_editor, int p_blockNumber) {
@@ -307,6 +320,123 @@ void TestPreviewScrollStability::testAutoFoldAboveViewportDoesNotMoveContent() {
            qPrintable(QStringLiteral("anchor moved from %1 to %2 across the auto-fold")
                           .arg(anchorViewportY)
                           .arg(y)));
+}
+
+void TestPreviewScrollStability::testFoldedGraphLateResourcePaint() {
+  auto config = makeConfig();
+  config->m_autoFoldPreviewedBlocksEnabled = false;
+  VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+  editor.resize(900, 600);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  editor.setText(codeBlocks(1, 3) + QStringLiteral("after\n"));
+  settle(editor);
+  editor.getPreviewMgr()->setPreviewEnabled(PreviewData::Source::CodeBlock, true);
+  auto doc = editor.document();
+  const auto first = doc->findBlockByNumber(2);
+  const auto last = doc->findBlockByNumber(6);
+  QCOMPARE(first.text(), QStringLiteral("```dot"));
+  QCOMPARE(last.text(), QStringLiteral("```"));
+  editor.getTextEdit()->setTextCursor(QTextCursor(first));
+  QVERIFY(editor.foldAtCursor());
+  QVERIFY(!last.isVisible());
+  const qreal emptyHeight = doc->documentLayout()->documentSize().height();
+  const qreal emptyAnchorHeight = doc->documentLayout()->blockBoundingRect(first).height();
+  const QString source = doc->toPlainText();
+  doc->setModified(false);
+  const bool undoAvailable = doc->isUndoAvailable();
+
+  // The application renderer finishes only after the source has been folded.
+  auto item = makeItem(doc, last.blockNumber(), c_previewHeight);
+  editor.getPreviewMgr()->updateCodeBlocks({item});
+  QTRY_VERIFY(doc->documentLayout()->blockBoundingRect(first).height() >=
+              emptyAnchorHeight + c_previewHeight);
+  const auto previews = BlockPreviewData::get(last)->getPreviewData();
+  QCOMPARE(previews.size(), 1);
+  QVERIFY(!last.isVisible());
+  auto viewport = editor.getTextEdit()->viewport();
+  const QImage redImage = viewport->grab().toImage();
+  const QRect red = paintedColorBounds(redImage, qRgb(255, 0, 0));
+  QVERIFY(!red.isEmpty());
+  const qreal ratio = redImage.devicePixelRatio();
+  QTextCursor header(first);
+  header.movePosition(QTextCursor::EndOfBlock);
+  QVERIFY(red.top() / ratio >= editor.getTextEdit()->cursorRect(header).bottom());
+  QVERIFY(red.bottom() / ratio < editor.getTextEdit()->cursorRect(QTextCursor(last.next())).top());
+  QVERIFY(qAbs(red.height() / ratio - c_previewHeight) <= 1);
+
+  // A rerender has a new resource identity. The hidden source still
+  // invalidates its visible display anchor without a parser generation.
+  auto replacement = makeItem(doc, last.blockNumber(), c_previewHeight + 40);
+  replacement->m_name += QStringLiteral("-rerendered");
+  replacement->m_image.fill(Qt::blue);
+  editor.getPreviewMgr()->updateCodeBlocks({replacement});
+  QTRY_VERIFY(doc->documentLayout()->blockBoundingRect(first).height() >=
+              emptyAnchorHeight + c_previewHeight + 40);
+  const QImage blueImage = viewport->grab().toImage();
+  QVERIFY(paintedColorBounds(blueImage, qRgb(255, 0, 0)).isEmpty());
+  const QRect blue = paintedColorBounds(blueImage, qRgb(0, 0, 255));
+  QVERIFY(!blue.isEmpty());
+  QCOMPARE(blue.top(), red.top());
+  QVERIFY(qAbs(blue.height() / ratio - c_previewHeight - 40) <= 1);
+
+  editor.getPreviewMgr()->updateCodeBlocks({});
+  QTRY_COMPARE(doc->documentLayout()->documentSize().height(), emptyHeight);
+  QCOMPARE(doc->documentLayout()->blockBoundingRect(first).height(), emptyAnchorHeight);
+  QVERIFY(paintedColorBounds(viewport->grab().toImage(), qRgb(0, 0, 255)).isEmpty());
+  QVERIFY(!last.isVisible());
+  QCOMPARE(doc->toPlainText(), source);
+  QVERIFY(!doc->isModified());
+  QCOMPARE(doc->isUndoAvailable(), undoAvailable);
+}
+
+void TestPreviewScrollStability::testFoldedGraphResourceChangesAboveViewport() {
+  auto config = makeConfig();
+  config->m_autoFoldPreviewedBlocksEnabled = false;
+  VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+  editor.resize(900, 600);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  editor.setText(codeBlocks(1, 3) + paragraphs(120));
+  settle(editor);
+  editor.getPreviewMgr()->setPreviewEnabled(PreviewData::Source::CodeBlock, true);
+  auto doc = editor.document();
+  const auto first = doc->findBlockByNumber(2);
+  const auto last = doc->findBlockByNumber(6);
+  auto textEdit = editor.getTextEdit();
+  textEdit->setTextCursor(QTextCursor(first));
+  QVERIFY(editor.foldAtCursor());
+  QVERIFY(!last.isVisible());
+  const qreal emptyHeight = doc->documentLayout()->documentSize().height();
+  auto vbar = textEdit->verticalScrollBar();
+  vbar->setValue((vbar->minimum() + vbar->maximum()) / 2);
+  QCoreApplication::processEvents();
+  const int anchorBlock = TextEditUtils::firstVisibleBlock(textEdit).blockNumber();
+  QVERIFY(anchorBlock > last.blockNumber() + 8);
+  const qreal anchorViewportY = blockDocY(editor, anchorBlock) - vbar->value();
+
+  auto item = makeItem(doc, last.blockNumber(), c_previewHeight);
+  editor.getPreviewMgr()->updateCodeBlocks({item});
+  QTRY_VERIFY(doc->documentLayout()->documentSize().height() >= emptyHeight + c_previewHeight);
+  QCoreApplication::processEvents();
+  QCOMPARE(TextEditUtils::firstVisibleBlock(textEdit).blockNumber(), anchorBlock);
+  QVERIFY(qAbs(blockDocY(editor, anchorBlock) - vbar->value() - anchorViewportY) <= 1);
+
+  auto replacement = makeItem(doc, last.blockNumber(), c_previewHeight + 40);
+  replacement->m_name += QStringLiteral("-rerendered");
+  replacement->m_image.fill(Qt::blue);
+  editor.getPreviewMgr()->updateCodeBlocks({replacement});
+  QTRY_VERIFY(doc->documentLayout()->documentSize().height() >= emptyHeight + c_previewHeight + 40);
+  QCoreApplication::processEvents();
+  QCOMPARE(TextEditUtils::firstVisibleBlock(textEdit).blockNumber(), anchorBlock);
+  QVERIFY(qAbs(blockDocY(editor, anchorBlock) - vbar->value() - anchorViewportY) <= 1);
+
+  editor.getPreviewMgr()->updateCodeBlocks({});
+  QTRY_COMPARE(doc->documentLayout()->documentSize().height(), emptyHeight);
+  QCoreApplication::processEvents();
+  QCOMPARE(TextEditUtils::firstVisibleBlock(textEdit).blockNumber(), anchorBlock);
+  QVERIFY(qAbs(blockDocY(editor, anchorBlock) - vbar->value() - anchorViewportY) <= 1);
+  QVERIFY(!last.isVisible());
 }
 
 void TestPreviewScrollStability::testAutoFoldOfTheAnchorBlockItself() {

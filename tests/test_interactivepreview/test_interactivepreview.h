@@ -355,7 +355,20 @@ private slots:
   // Auto-folding a previewed element, and keeping its fold state across a
   // preview driven rewrite.
   void testPreviewedTableIsFoldedOnce();
+  void testTablePreviewFollowsItsOwnFold_data();
+  void testTablePreviewFollowsItsOwnFold();
+  void testWrapperFoldHidesTheTablePreview();
+  void testFocusedSheetKeepsPendingEditsAcrossFolds();
+  void testFoldedTableRewriteAndUndo_data();
+  void testFoldedTableRewriteAndUndo();
+  void testTerminalCaretMovesToVisibleFoldHeader_data();
+  void testTerminalCaretMovesToVisibleFoldHeader();
+  void testGutterDragAcrossIndicators_data();
+  void testGutterDragAcrossIndicators();
+  void testSheetEscapeUsesVisibleSource_data();
+  void testSheetEscapeUsesVisibleSource();
   void testAutoFoldIsOptional();
+  void testCaretInsideKeepsTheSourceOpen_data();
   void testCaretInsideKeepsTheSourceOpen();
   void testFoldSurvivesASheetCellEdit();
   void testNoPaintObservesTheOpenSourceDuringACellEdit();

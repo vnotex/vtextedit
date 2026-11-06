@@ -53,6 +53,19 @@ public:
 
   void setAutoFoldPreviewsEnabled(bool p_enabled);
 
+  // Parser-owned element, resolved against the live fold tree. Never a wrapper.
+  struct PreviewRange {
+    qint64 m_id = -1;
+    int m_firstBlock = -1;
+    int m_lastBlock = -1;
+    PreviewElementType m_type = PreviewElementType::Image;
+  };
+
+  quint64 foldingRevision() const;
+  bool previewRangeStartingAt(int p_firstBlock, PreviewRange &p_range) const;
+  bool previewRangeEndingAt(int p_lastBlock, PreviewRange &p_range) const;
+  bool isPreviewFolded(const PreviewRange &p_range) const;
+
   // Decide, enforce and report the fold state of every previewed region.
   // @p_caretBlock is the block holding the caret, or -1. Returns the identities
   // whose PreviewFoldState the caller must write back onto its items.
@@ -96,6 +109,8 @@ private:
   // whose range is gone.
   void rekeyEntriesByLiveExtent();
 
+  void ensurePreviewIndex() const;
+
   TextFolding *m_textFolding = nullptr;
 
   QTextDocument *m_document = nullptr;
@@ -105,6 +120,12 @@ private:
   // lookup which has to be exact resolves the range's *live* extent through
   // TextFolding instead.
   QHash<QPair<int, int>, Entry> m_entries;
+
+  // Derived ownership index only; fold state is always read from TextFolding.
+  mutable QHash<int, PreviewRange> m_previewRanges;
+  mutable QHash<int, int> m_previewStartsByEnd;
+  mutable quint64 m_previewIndexRevision = 0;
+  mutable int m_previewIndexDocumentRevision = -1;
 
   bool m_autoFoldEnabled = true;
 };

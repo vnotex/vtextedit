@@ -2417,21 +2417,33 @@ void InteractivePreviewHost::handleFocusEscape(TablePreviewWidget *p_widget,
     // unrelated edit before the table has already moved.
     const int start = it.value().m_anchor.selectionStart();
     const int end = it.value().m_anchor.selectionEnd();
-    if (start >= 0 && end > start) {
-      // The source is rendered above the sheet
-      // (PreviewPlacement::BlockAfterSource), so leaving upwards lands at the
-      // end of the source and leaving downwards just past its line.
-      const int limit = m_doc ? m_doc->characterCount() - 1 : end;
-      const int target =
-          p_direction == FocusEscapeDirection::Up ? end : qMin(end + 1, qMax(end, limit));
+    if (start >= 0 && end > start && m_doc && m_layout) {
+      // Up returns to the visible source immediately above the sheet. Down
+      // skips the complete source, including hidden blocks, or uses that same
+      // visible anchor when the source reaches the end of the document.
+      auto targetBlock = m_layout->previewAnchorBlock(start, end);
+      bool followingSource = false;
+      if (p_direction == FocusEscapeDirection::Down) {
+        auto followingBlock = m_doc->findBlock(end - 1).next();
+        while (followingBlock.isValid() && !followingBlock.isVisible()) {
+          followingBlock = followingBlock.next();
+        }
+        if (followingBlock.isValid()) {
+          targetBlock = followingBlock;
+          followingSource = true;
+        }
+      }
 
-      QTextCursor cursor = m_textEdit->textCursor();
-      cursor.setPosition(qBound(0, target, qMax(0, limit)));
-      m_textEdit->setTextCursor(cursor);
-      movedCaret = true;
+      if (targetBlock.isValid() && targetBlock.isVisible()) {
+        QTextCursor cursor = m_textEdit->textCursor();
+        cursor.setPosition(targetBlock.position() +
+                           (followingSource ? 0 : targetBlock.length() - 1));
+        m_textEdit->setTextCursor(cursor);
+        movedCaret = true;
 
-      qCDebug(previewHostLog) << "item" << id << "handed the caret back to the editor at"
-                              << cursor.position();
+        qCDebug(previewHostLog) << "item" << id << "handed the caret back to the editor at"
+                                << cursor.position();
+      }
     }
   }
 

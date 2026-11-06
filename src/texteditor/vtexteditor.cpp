@@ -231,6 +231,25 @@ VTextEdit *VTextEditor::getTextEdit() const { return m_textEdit; }
 void VTextEditor::setupTextFolding() {
   Q_ASSERT(m_textEdit && m_indicatorsBorder);
   m_folding = new TextFolding(m_textEdit->document());
+  connect(m_folding, &TextFolding::foldingRangesChanged, this, [this]() {
+    auto cursor = m_textEdit->textCursor();
+    if (cursor.block().isVisible()) {
+      return;
+    }
+
+    const auto foldedId = m_folding->outermostFoldedRangeOnBlock(cursor.blockNumber());
+    int firstBlockNum = -1;
+    if (!m_folding->foldingRangeBlocks(foldedId, &firstBlockNum, nullptr)) {
+      return;
+    }
+
+    const auto firstBlock = document()->findBlockByNumber(firstBlockNum);
+    if (firstBlock.isValid() && firstBlock.isVisible()) {
+      const int column = qMin(cursor.positionInBlock(), firstBlock.length() - 1);
+      cursor.setPosition(firstBlock.position() + column);
+      m_textEdit->setTextCursor(cursor);
+    }
+  });
   connect(m_folding, &TextFolding::foldingRangesChanged, m_indicatorsBorder,
           &IndicatorsBorder::updateBorder);
 }
@@ -720,21 +739,6 @@ bool VTextEditor::foldAtCursor() {
     if (foldedId == TextFolding::InvalidRangeId) {
       qWarning() << "failed to create a folding range based on syntax" << syntaxRange->toString();
       return true;
-    }
-  }
-
-  // Relocate the cursor if its block became invisible. Folding hides only the
-  // strict interior, so the range's first block is still visible.
-  auto cursor = m_textEdit->textCursor();
-  if (!cursor.block().isVisible()) {
-    int firstBlockNum = -1;
-    if (m_folding->foldingRangeBlocks(foldedId, &firstBlockNum, nullptr)) {
-      auto firstBlock = document()->findBlockByNumber(firstBlockNum);
-      if (firstBlock.isValid()) {
-        const int column = qMin(cursor.positionInBlock(), firstBlock.length() - 1);
-        cursor.setPosition(firstBlock.position() + column);
-        m_textEdit->setTextCursor(cursor);
-      }
     }
   }
 

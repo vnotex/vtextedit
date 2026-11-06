@@ -52,6 +52,8 @@ private slots:
   // geometry change driven from the preview host's owed-work drain. The
   // viewport must survive that too.
   void testAutoFoldAboveViewportDoesNotMoveContent();
+  void testFoldedGraphLateResourcePaint();
+  void testFoldedGraphResourceChangesAboveViewport();
 
   // The first visible block is INSIDE the range that gets folded, so the anchor
   // itself disappears. The recovery must land on the fold's surviving first

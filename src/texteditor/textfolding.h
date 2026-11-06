@@ -62,6 +62,13 @@ public:
 
   bool isEnabled() const;
 
+  // Advances when folding changes are committed, before layout or signal callbacks.
+  quint64 revision() const;
+
+  // Insert without changing visibility, invalidating layout or emitting signals.
+  // Install any owner index before notifyFoldingRangesChanged().
+  qint64 insertFoldingRange(const TextBlockRange &p_range, FoldingRangeFlags p_flags);
+
   qint64 newFoldingRange(const TextBlockRange &p_range, FoldingRangeFlags p_flags);
 
   struct RangeSpec {
@@ -76,6 +83,7 @@ public:
   // install its index before calling notifyFoldingRangesChanged().
   void replaceFoldingRanges(QVector<RangeSpec> &p_ranges);
 
+  // Commit visibility and revision, notify observers, then invalidate layout.
   void notifyFoldingRangesChanged();
 
   QVector<QPair<qint64, TextFolding::FoldingRangeFlags>>
@@ -176,8 +184,6 @@ private:
                                     int p_blockNumber,
                                     QVector<QPair<qint64, FoldingRangeFlags>> &p_results) const;
 
-  void setRangeFolded(const TextBlockRange &p_range, bool p_folded) const;
-
   void foldRange(FoldingRange *p_range);
 
   // Return true if @p_range is removed.
@@ -195,7 +201,7 @@ private:
 
   void markDocumentContentsDirty(int p_position = 0, int p_length = INT_MAX) const;
 
-  void markDocumentContentsDirty(const TextBlockRange &p_range);
+  void noteFoldingRangesChanged(int p_firstBlock, int p_lastBlock);
 
   FoldingRange::Vector
   retrieveFoldedRanges(const TextFolding::FoldingRange::Vector &p_ranges) const;
@@ -225,6 +231,10 @@ private:
   QTextDocument *m_document = nullptr;
 
   bool m_enabled = true;
+
+  quint64 m_revision = 0;
+  int m_pendingFirstBlock = -1;
+  int m_pendingLastBlock = -1;
 
   int m_documentRevision = 0;
   bool m_contentsChangePending = false;

@@ -436,18 +436,14 @@ void TestMarkdownFolding::testFoldingBlockHeights() {
   // Fold it.
   folding.toggleRange(id);
 
-  // Hidden interior blocks (3-9) should have zero-height rects.
-  for (int i = 3; i <= 9; ++i) {
+  // Every block after the header, including the last, is hidden.
+  for (int i = 3; i <= 10; ++i) {
     auto block = doc.findBlockByNumber(i);
     auto info = BlockLayoutData::get(block);
     QCOMPARE(info->m_rect.height(), 0.0);
   }
 
-  // Both fold endpoints should still have positive height.
-  for (int i : {2, 10}) {
-    auto info = BlockLayoutData::get(doc.findBlockByNumber(i));
-    QVERIFY(info->m_rect.height() > 0);
-  }
+  QVERIFY(BlockLayoutData::get(startBlock)->m_rect.height() > 0);
 
   // Document height should have decreased.
   qreal foldedHeight = layout->documentSize().height();
@@ -1176,6 +1172,128 @@ void TestMarkdownFolding::testWidgetPreviewFolding() {
 
   folding.toggleRange(id);
   QVERIFY(!layout->widgetPreviewRect(3).isNull());
+}
+
+void TestMarkdownFolding::testElementPreviewFolding() {
+  QTextDocument doc(generateLines(12));
+  DocumentResourceMgr resources;
+  auto layout = new TextDocumentLayout(&doc, &resources);
+  doc.setDocumentLayout(layout);
+  layout->setPreviewEnabled(true);
+  TextFolding folding(&doc);
+  MarkdownFoldingProvider provider(&folding, &doc);
+  layout->setFoldingProvider(&provider);
+  provider.updateFoldingRegions({{0, 9, md::Heading, 1}, {2, 6, md::Table, 0}});
+  const auto id = folding.foldingRangesStartingOnBlock(2).first().first;
+  const auto wrapper = folding.foldingRangesStartingOnBlock(0).first().first;
+  const auto first = doc.findBlockByNumber(2);
+  const auto last = doc.findBlockByNumber(6);
+  const int end = last.position() + last.length() - 1;
+  layout->setWidgetPreviews(
+      {makeSpec(1, first.position(), end, 100, 50, PreviewPlacement::BlockAfterSource)});
+  const auto expanded = layout->widgetPreviewRect(1);
+  QCOMPARE(layout->previewAnchorBlock(first.position(), end), last);
+  QCOMPARE(expanded.height(), 50.0);
+
+  QVERIFY(folding.foldRange(id));
+  QCOMPARE(layout->previewAnchorBlock(first.position(), end), first);
+  QVERIFY(!last.isVisible());
+  const auto folded = layout->widgetPreviewRect(1);
+  QCOMPARE(folded.height(), 50.0);
+  QVERIFY(folded.top() < expanded.top());
+  const auto firstRect = layout->blockBoundingRect(first);
+  QVERIFY(firstRect.contains(folded));
+  QCOMPARE(layout->blockBoundingRect(last).height(), 0.0);
+  QVERIFY(BlockLayoutData::get(last)->m_widgets.isEmpty());
+  QVERIFY(layout->blockBoundingRect(last.next()).top() >= folded.bottom());
+
+  // A containing heading owns no table preview. It hides, rather than hoists, it.
+  QVERIFY(folding.foldRange(wrapper));
+  QVERIFY(layout->widgetPreviewRect(1).isNull());
+  QVERIFY(BlockLayoutData::get(doc.firstBlock())->m_widgets.isEmpty());
+  QVERIFY(folding.toggleRange(wrapper));
+  QCOMPARE(layout->widgetPreviewRect(1), folded);
+  QVERIFY(folding.toggleRange(id));
+  QCOMPARE(layout->widgetPreviewRect(1), expanded);
+  layout->setFoldingProvider(nullptr);
+}
+
+void TestMarkdownFolding::testFoldedPaintedPreview_data() {
+  QTest::addColumn<int>("source");
+  QTest::addColumn<int>("regionType");
+  QTest::newRow("graph") << int(PreviewData::CodeBlock) << int(md::FencedCode);
+  QTest::newRow("math") << int(PreviewData::MathBlock) << int(md::Math);
+}
+
+void TestMarkdownFolding::testFoldedPaintedPreview() {
+  QFETCH(int, source);
+  QFETCH(int, regionType);
+  QTextDocument doc(generateLines(12));
+  DocumentResourceMgr resources;
+  auto layout = new TextDocumentLayout(&doc, &resources);
+  doc.setDocumentLayout(layout);
+  layout->setPreviewEnabled(true);
+  TextFolding folding(&doc);
+  MarkdownFoldingProvider provider(&folding, &doc);
+  layout->setFoldingProvider(&provider);
+  provider.updateFoldingRegions({{0, 10, md::Heading, 1},
+                                 {2, 5, static_cast<md::FoldingRegionType>(regionType), 0},
+                                 {7, 9, static_cast<md::FoldingRegionType>(regionType), 0}});
+  const auto first = doc.findBlockByNumber(2);
+  const auto last = doc.findBlockByNumber(5);
+  const auto id = folding.foldingRangesStartingOnBlock(2).first().first;
+  const auto data = BlockPreviewData::get(last);
+  const auto previewSource = static_cast<PreviewData::Source>(source);
+  auto publish = [&](int p_height) {
+    data->insert(new PreviewData(previewSource, 1, 0, last.length() - 1, 0, false,
+                                 QStringLiteral("painted"), QSize(80, p_height), 0));
+    OrderedIntSet changed;
+    changed.insert(last.blockNumber(), QMapDummyValue());
+    layout->relayout(changed);
+  };
+  auto images = [](const QTextBlock &p_block) { return BlockLayoutData::get(p_block)->m_images; };
+  publish(40);
+  QCOMPARE(images(last).size(), 1);
+  const auto expandedHeight = layout->documentSize().height();
+  QVERIFY(folding.foldRange(id));
+  QCOMPARE(images(first).size(), 1);
+  QCOMPARE(images(first).first().m_rect.height(), 40.0);
+  QVERIFY(images(last).isEmpty());
+  QVERIFY(images(doc.firstBlock()).isEmpty());
+  QVERIFY(images(doc.findBlockByNumber(7)).isEmpty());
+  // Ownership and block-local source coordinates did not move with the pixels.
+  QVERIFY(BlockPreviewData::get(first)->getPreviewData().isEmpty());
+  QCOMPARE(data->getPreviewData().first()->getImageData()->m_startPos, 0);
+
+  const auto beforeResize = layout->blockBoundingRect(last.next()).top();
+  publish(70);
+  QCOMPARE(images(first).first().m_rect.height(), 70.0);
+  QCOMPARE(layout->blockBoundingRect(last.next()).top(), beforeResize + 30.0);
+
+  // Claims still resolve against the terminal source block, not the header.
+  TextDocumentLayout::PreviewClaim claim;
+  claim.m_startPos = last.position();
+  claim.m_endPos = last.position() + last.length() - 1;
+  claim.m_type =
+      previewSource == PreviewData::CodeBlock ? PreviewElementType::Code : PreviewElementType::Math;
+  layout->setPreviewClaims({claim});
+  QVERIFY(images(first).isEmpty());
+  layout->setPreviewClaims({});
+  QCOMPARE(images(first).first().m_rect.height(), 70.0);
+
+  QVERIFY(data->clearObsoletePreview(2, previewSource));
+  OrderedIntSet changed;
+  changed.insert(last.blockNumber(), QMapDummyValue());
+  layout->relayout(changed);
+  QVERIFY(images(first).isEmpty());
+  // A result arriving after the fold must also paint at the header.
+  publish(40);
+  QCOMPARE(images(first).first().m_rect.height(), 40.0);
+  QVERIFY(folding.toggleRange(id));
+  QVERIFY(images(first).isEmpty());
+  QCOMPARE(images(last).first().m_rect.height(), 40.0);
+  QCOMPARE(layout->documentSize().height(), expandedHeight);
+  layout->setFoldingProvider(nullptr);
 }
 
 void TestMarkdownFolding::testWidgetPreviewWidthClamped() {
@@ -2937,7 +3055,7 @@ void TestMarkdownFolding::testBulkDeletionReconcilesAtomically() {
           rangeAtBlock = &range;
         }
         if (range.m_folded && block > range.m_region.m_startBlock &&
-            block < range.m_region.m_endBlock) {
+            block <= range.m_region.m_endBlock) {
           visible = false;
         }
       }
@@ -3047,7 +3165,7 @@ void TestMarkdownFolding::testEndpointReplacementDoesNotInheritFoldState() {
         QVERIFY(starting.first().first != replacedId);
         QCOMPARE(folding.isRangeFolded(starting.first().first), phase == 2);
       }
-      const bool hidden = (block > 10 && block < 15) || (phase == 2 && block > 3 && block < 7);
+      const bool hidden = (block > 10 && block <= 15) || (phase == 2 && block > 3 && block <= 7);
       QCOMPARE(doc.findBlockByNumber(block).isVisible(), !hidden);
     }
     bool folded = false;
@@ -3380,10 +3498,15 @@ void TestMarkdownFolding::testAutoFoldWidgetPreview() {
   QVERIFY(!folding.isRangeFolded(otherId));
 }
 
-// Folding keeps the first and last block visible, so only a caret in the
-// interior would be hidden by the fold - and a region which was left open for
-// the caret is left open for good.
+void TestMarkdownFolding::testAutoFoldCaretRule_data() {
+  QTest::addColumn<int>("caretBlock");
+  QTest::newRow("interior") << 7;
+  QTest::newRow("closing-line") << 10;
+}
+
+// A region left open for its caret, including on the last block, stays open.
 void TestMarkdownFolding::testAutoFoldCaretRule() {
+  QFETCH(int, caretBlock);
   QTextDocument doc(generateLines(30));
   TextFolding folding(&doc);
   MarkdownFoldingProvider provider(&folding, &doc);
@@ -3400,9 +3523,8 @@ void TestMarkdownFolding::testAutoFoldCaretRule() {
   ranges.append(makeWidgetRange(1, 5, 10, PreviewElementType::Code));
   ranges.append(makeWidgetRange(2, 15, 20, PreviewElementType::Code));
 
-  // The caret sits inside the first region, and on the first block of the
-  // second one - which stays visible when it folds.
-  auto states = provider.applyPreviewAutoFold(ranges, 7);
+  // Only the first region contains the caret; the second can auto-fold.
+  auto states = provider.applyPreviewAutoFold(ranges, caretBlock);
   QVERIFY(!folding.isRangeFolded(caretId));
   QVERIFY(folding.isRangeFolded(boundaryId));
 
@@ -3426,8 +3548,7 @@ void TestMarkdownFolding::testAutoFoldPaintedPreview() {
   MarkdownFoldingProvider provider(&folding, &doc);
   provider.setAutoFoldPreviewsEnabled(true);
 
-  // A painted code preview drawn on the region's last block, which folding
-  // keeps visible.
+  // A terminal code preview can be displayed at the first block while folded.
   auto lastBlock = doc.findBlockByNumber(10);
   BlockPreviewData::get(lastBlock)->insert(
       new PreviewData(PreviewData::CodeBlock, 1, 0, lastBlock.length() - 1, 0, false,

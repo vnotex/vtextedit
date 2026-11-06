@@ -159,6 +159,9 @@ private:
 
   int m_lastClickedBlockNumber = -1;
 
+  // Pair a consumed left press with its release, even across indicator columns.
+  bool m_foldMarkerPressed = false;
+
   int m_currentFoldingHighlightBlockNumber = -1;
 
   // <id, range>.

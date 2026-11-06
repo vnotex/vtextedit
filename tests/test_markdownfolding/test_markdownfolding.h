@@ -88,6 +88,11 @@ private slots:
 
   void testWidgetPreviewFolding();
 
+  void testElementPreviewFolding();
+
+  void testFoldedPaintedPreview_data();
+  void testFoldedPaintedPreview();
+
   void testWidgetPreviewWidthClamped();
 
   void testWidgetPreviewInlineBand();
@@ -148,6 +153,7 @@ private slots:
   // Preview driven auto-folding.
   void testAutoFoldWidgetPreview();
 
+  void testAutoFoldCaretRule_data();
   void testAutoFoldCaretRule();
 
   void testAutoFoldPaintedPreview();
