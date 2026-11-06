@@ -671,6 +671,8 @@ Painted claim checks continue using the original source block's offsets. Resourc
 removal and claim invalidation include the visible display anchor even when the terminal
 source block is hidden. Inline images/math inside table cells are not relocated as table
 previews. Table sheets keep their identity, focus and pending edits across placement changes.
+Per-scroll placement summaries are not logged, even with preview layout debug logging enabled;
+placement counters and the other layout diagnostics remain available.
 
 Keyboard, gutter and programmatic folds share caret recovery: a hidden caret moves to the
 visible fold header with its column clamped to that line. A fold-marker click does not send

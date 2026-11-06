@@ -3685,9 +3685,6 @@ void InteractivePreviewHost::applyScrollOffsetImpl() {
 
   m_placedIds = placed;
 
-  qCDebug(previewLayoutLog) << "placed" << placed.size() << "of" << m_geometryOrder.size()
-                            << "realized item(s) at scroll" << hScroll << vScroll;
-
   // Only when this pass actually placed something. This is the per-scroll-tick
   // path, and nine QVariant allocations plus nine synchronous property-change
   // dispatches on a tick that moved nothing would be diagnostics paying
