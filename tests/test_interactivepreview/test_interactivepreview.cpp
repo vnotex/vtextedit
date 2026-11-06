@@ -34,6 +34,8 @@
 #include <QVBoxLayout>
 
 #include <inputmode/abstractinputmode.h>
+// Only the inline busy-state observer is used; no private layout symbol is linked.
+#include <markdowneditor/textdocumentlayout.h>
 #include <texteditor/inputmodestatuswidget.h>
 #include <vtextedit/htmltablescanner.h>
 #include <vtextedit/markdowneditorconfig.h>
@@ -5242,20 +5244,49 @@ void TestInteractivePreview::testTerminalCaretMovesToVisibleFoldHeader() {
 void TestInteractivePreview::testUnfoldDoesNotScrollToCaret_data() {
   QTest::addColumn<bool>("gutter");
   QTest::addColumn<bool>("offscreen");
-  QTest::newRow("command-visible") << false << false;
-  QTest::newRow("command-offscreen") << false << true;
-  QTest::newRow("gutter-visible") << true << false;
-  QTest::newRow("gutter-offscreen") << true << true;
+  QTest::addColumn<int>("profile");
+  QTest::newRow("command-visible") << false << false << 0;
+  QTest::newRow("command-offscreen") << false << true << 0;
+  QTest::newRow("gutter-visible") << true << false << 0;
+  QTest::newRow("gutter-offscreen") << true << true << 0;
+  QTest::newRow("concealed-command-offscreen") << false << true << 1;
+  QTest::newRow("concealed-gutter-offscreen") << true << true << 1;
+  QTest::newRow("demo-command-offscreen") << false << true << 2;
+  QTest::newRow("demo-gutter-caret-above") << true << true << 2;
+  QTest::newRow("demo-gutter-visible") << true << false << 2;
 }
 
 void TestInteractivePreview::testUnfoldDoesNotScrollToCaret() {
   QFETCH(bool, gutter);
   QFETCH(bool, offscreen);
+  QFETCH(int, profile);
   auto config = makeAutoFoldConfig(false);
-  config->m_autoFormatTableSourceEnabled = false;
+  config->m_autoFormatTableSourceEnabled = profile == 2;
+  if (profile != 0) {
+    for (const auto kind :
+         {MarkdownConcealElement::EmphasisMarkers, MarkdownConcealElement::StrongMarkers,
+          MarkdownConcealElement::StrikethroughMarkers, MarkdownConcealElement::MarkMarkers,
+          MarkdownConcealElement::InlineCodeMarkers, MarkdownConcealElement::LinkSyntax,
+          MarkdownConcealElement::HeadingMarkers, MarkdownConcealElement::InlineFormulaMarkers}) {
+      config->m_concealRules.set(kind, MarkdownConcealHideSyntax{});
+    }
+  }
+  if (profile == 2) {
+    config->m_textEditorConfig->m_inputMode = InputMode::ViMode;
+    config->m_textEditorConfig->m_lineSpacing = 1.25;
+    config->m_autoNumberOrderedListsEnabled = true;
+  }
+  const QString table = profile == 0
+                            ? QLatin1String(c_table)
+                            : QStringLiteral("| h1 | h2 |\n| --- | --- |\n| `a` | **b** |\n");
   VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
-  setTextAndSettle(editor, QStringLiteral("before\n").repeated(20) + QLatin1String(c_table) +
+  setTextAndSettle(editor, QStringLiteral("before\n").repeated(20) + table +
                                QStringLiteral("\nafter\n").repeated(150));
+  if (profile == 2) {
+    // Let the demo's source formatter finish before measuring a visibility-only action.
+    QTest::qWait(600);
+    settle(editor);
+  }
   editor.activateWindow();
   QApplication::setActiveWindow(&editor);
   auto textEdit = editor.getTextEdit();
@@ -5275,7 +5306,8 @@ void TestInteractivePreview::testUnfoldDoesNotScrollToCaret() {
 
   // A gutter click can unfold a visible table without moving a distant caret.
   // The command instead operates on its own off-screen fold header.
-  const auto caretBlock = gutter && offscreen ? doc->findBlockByNumber(200) : first;
+  const auto caretBlock =
+      gutter && offscreen ? doc->findBlockByNumber(profile == 2 ? 0 : 200) : first;
   QTextCursor cursor(caretBlock);
   cursor.setPosition(caretBlock.position() + 1);
   cursor.setPosition(caretBlock.position() + 3, QTextCursor::KeepAnchor);
@@ -5301,13 +5333,107 @@ void TestInteractivePreview::testUnfoldDoesNotScrollToCaret() {
   QCOMPARE(textEdit->textCursor().position(), cursor.position());
   QCOMPARE(textEdit->textCursor().anchor(), cursor.anchor());
   QCOMPARE(vbar->value(), scroll);
-  settleFolding();
+  // The demo can publish another highlight after visible source changes. That
+  // passive completion must not undo the unfold's viewport guarantee either.
+  settle(editor);
   QCOMPARE(vbar->value(), scroll);
   QCOMPARE(textEdit->textCursor().position(), cursor.position());
   QCOMPARE(textEdit->textCursor().anchor(), cursor.anchor());
   QCOMPARE(doc->toPlainText(), source);
   QCOMPARE(doc->isModified(), modified);
   QCOMPARE(doc->isUndoAvailable(), undoAvailable);
+}
+
+void TestInteractivePreview::testConcealNavigationKeepsCaretVisible_data() {
+  QTest::addColumn<bool>("vi");
+  QTest::addColumn<bool>("deferred");
+  QTest::addColumn<bool>("supersede");
+  QTest::newRow("normal") << false << false << false;
+  QTest::newRow("vi") << true << false << false;
+  QTest::newRow("normal-deferred") << false << true << false;
+  QTest::newRow("vi-deferred") << true << true << false;
+  QTest::newRow("latest-deferred-caret") << false << true << true;
+}
+
+void TestInteractivePreview::testConcealNavigationKeepsCaretVisible() {
+  QFETCH(bool, vi);
+  QFETCH(bool, deferred);
+  QFETCH(bool, supersede);
+  auto config = makeConfig();
+  config->m_textEditorConfig->m_inputMode = vi ? InputMode::ViMode : InputMode::NormalMode;
+  const QString url = QStringLiteral("https://example.test/") + QString(800, QLatin1Char('a'));
+  const QString source = QStringLiteral("before\n").repeated(20) + QStringLiteral("[link](") + url +
+                         QStringLiteral(") tail\n") + QStringLiteral("after\n").repeated(100);
+  VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+  editor.resize(450, 260);
+  editor.show();
+  QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  editor.activateWindow();
+  QApplication::setActiveWindow(&editor);
+  setTextAndSettle(editor, source);
+  auto edit = editor.getTextEdit();
+  edit->setFocus();
+  QTRY_VERIFY(edit->hasFocus());
+  const auto block = editor.document()->findBlockByNumber(20);
+  const int end = source.indexOf(url) + url.size();
+  QTextCursor cursor(editor.document());
+  cursor.setPosition(end);
+  edit->setTextCursor(cursor);
+  settleFolding();
+  QCOMPARE(block.layout()->lineCount(), 1);
+  auto bar = edit->verticalScrollBar();
+  bar->setValue(bar->value() + edit->cursorRect().bottom() - edit->viewport()->height() + 4);
+  QCoreApplication::processEvents();
+  QVERIFY(edit->viewport()->rect().intersects(edit->cursorRect()));
+  QVERIFY(edit->cursorRect().bottom() > edit->viewport()->height() * 3 / 4);
+  const bool modified = editor.document()->isModified();
+  const bool undoAvailable = editor.document()->isUndoAvailable();
+  auto enterUrl = [&]() {
+    if (vi) {
+      QTest::keyClicks(edit, QStringLiteral("h"));
+    } else {
+      QTest::keyClick(edit, Qt::Key_Left);
+    }
+  };
+  bool entered = false;
+  bool superseded = false;
+  bool deferredAtRequest = false;
+  QMetaObject::Connection connection;
+  if (deferred) {
+    connection = connect(editor.document()->documentLayout(), &QAbstractTextDocumentLayout::update,
+                         &editor, [&](const QRectF &) {
+                           if (!editor.documentLayout()->isBusy()) {
+                             return;
+                           }
+                           if (!entered) {
+                             entered = true;
+                             enterUrl();
+                             deferredAtRequest = block.layout()->lineCount() == 1;
+                           } else if (supersede && !superseded && block.layout()->lineCount() > 1) {
+                             superseded = true;
+                             auto latest = edit->textCursor();
+                             latest.setPosition(end - 2);
+                             edit->setTextCursor(latest);
+                           }
+                         });
+    editor.resize(editor.width() + 20, editor.height());
+    QTRY_VERIFY(entered);
+    QVERIFY(deferredAtRequest);
+  } else {
+    enterUrl();
+  }
+  QTRY_VERIFY(block.layout()->lineCount() > 1);
+  if (supersede) {
+    QTRY_VERIFY(superseded);
+  }
+  QTRY_COMPARE(edit->textCursor().position(), end - (supersede ? 2 : 1));
+  QTRY_VERIFY(edit->viewport()->rect().intersects(edit->cursorRect()));
+  settleFolding();
+  QVERIFY(edit->viewport()->rect().intersects(edit->cursorRect()));
+  QCOMPARE(editor.document()->toPlainText(), source);
+  QCOMPARE(editor.document()->isModified(), modified);
+  QCOMPARE(editor.document()->isUndoAvailable(), undoAvailable);
+  disconnect(connection);
 }
 
 void TestInteractivePreview::testGutterDragAcrossIndicators_data() {
@@ -6432,37 +6558,33 @@ void TestInteractivePreview::testCenterCursorIsSkippedWhileASheetHasTheFocus() {
            "the editor did not center on its own caret once it had the focus");
 }
 
-// The guard must not suppress the ordinary case: with the focus in the editor,
-// a completed parse still scrolls to the editor's caret.
-void TestInteractivePreview::testDocumentEditStillScrollsWhenTheEditorHasFocus() {
-  VMarkdownEditor editor(makeConfig(), QSharedPointer<TextEditorParameters>::create());
+// Source input is navigation intent; a background parse by itself is not.
+void TestInteractivePreview::testTypingRevealsOffscreenEditorCaret() {
+  auto config = makeConfig();
+  config->m_textEditorConfig->m_inputMode = InputMode::NormalMode;
+  VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
   editor.resize(600, 300);
   editor.show();
   QVERIFY(QTest::qWaitForWindowExposed(&editor));
+  editor.activateWindow();
+  QApplication::setActiveWindow(&editor);
   setTextAndSettle(editor, tableAboveFiller());
   QVERIFY(singlePreviewWidget(editor));
 
   auto textEdit = editor.getTextEdit();
   textEdit->setFocus();
   QVERIFY2(textEdit->hasFocus(), "the editor did not take the focus");
-
-  auto vbar = textEdit->verticalScrollBar();
-  QVERIFY(vbar->maximum() > vbar->minimum());
   parkCaretOffScreenAtTop(editor);
-  QCOMPARE(vbar->value(), vbar->minimum());
+  QVERIFY(!textEdit->viewport()->rect().intersects(textEdit->cursorRect()));
+  QVERIFY(!textEdit->textCursor().hasSelection());
+  QString expected = editor.document()->toPlainText();
+  expected.insert(textEdit->textCursor().position(), QStringLiteral("typed"));
 
-  // A detached cursor, not a synthetic key press: QTextEdit makes the caret
-  // visible itself while handling a key, so a key press would pass even if the
-  // guard suppressed every case.
-  QTextCursor cursor(editor.document());
-  cursor.setPosition(editor.document()->findBlockByNumber(5).position());
-  cursor.insertText(QStringLiteral("prefix "));
-  QCoreApplication::processEvents();
-
+  QTest::keyClicks(textEdit, QStringLiteral("typed"));
+  QCOMPARE(editor.document()->toPlainText(), expected);
+  QVERIFY(textEdit->viewport()->rect().intersects(textEdit->cursorRect()));
   settle(editor);
-
-  QVERIFY2(vbar->value() > vbar->minimum(),
-           "the editor no longer scrolls to its caret when it has the focus");
+  QVERIFY(textEdit->viewport()->rect().intersects(textEdit->cursorRect()));
 }
 
 // An arrow key at a table edge hands the focus back to the editor and puts the

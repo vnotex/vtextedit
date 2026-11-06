@@ -425,6 +425,14 @@ The canonical document-attached `QTextLayout` remains the sole geometry source. 
 adapter changes cached glyph advances/clusters, never source text or document formats; temporary
 line-breaking attributes are restored after line creation. Busy transitions defer until safe,
 and `concealmentChanged()` fires after complete geometry at the outermost idle boundary.
+That passive notification refreshes cursor width, never scrolls or recenters the editor.
+`concealCursorSettled()` separately completes caret-driven reveal/rehide after geometry is
+ready, including the existing deferred cursor path. Only that navigation completion requests
+cursor visibility and configured centering. A superseding deferred cursor owns completion;
+no obsolete request may scroll after a newer caret arrives during layout.
+Highlight completion is passive too: it refreshes cursor width and honors an owned heading
+numbering viewport restoration, but never requests caret visibility or centering. A late
+parse/highlight publication after scrolling or unfolding must not navigate back to the caret.
 
 `Theme::ConcealedText` styles compact destinations, including retained ends. Syntax hiding keeps
 ordinary syntax formats. Markdown source painting treats the tagged cursor-line background as
@@ -670,7 +678,10 @@ a synthetic column-zero source click. Leaving a sheet upwards targets its visibl
 anchor; leaving downwards skips the complete source, or returns to the anchor at EOF.
 Unfolding does not request cursor visibility or centering: keyboard and gutter paths leave
 the caret and selection unchanged and do not scroll to an off-screen caret. Normal layout
-changes and scrollbar range clamping still apply.
+changes and scrollbar range clamping still apply. This includes syntax-concealed source:
+unfolding a table with inline code or emphasis may publish new conceal geometry, but is not
+caret navigation. Regression coverage includes the demo's syntax rules, Vi mode and a caret
+parked above the table, as well as long-URL navigation that reveals text past the viewport.
 
 ### The initial fold state
 

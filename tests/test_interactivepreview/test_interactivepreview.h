@@ -365,6 +365,8 @@ private slots:
   void testTerminalCaretMovesToVisibleFoldHeader();
   void testUnfoldDoesNotScrollToCaret_data();
   void testUnfoldDoesNotScrollToCaret();
+  void testConcealNavigationKeepsCaretVisible_data();
+  void testConcealNavigationKeepsCaretVisible();
   void testGutterDragAcrossIndicators_data();
   void testGutterDragAcrossIndicators();
   void testSheetEscapeUsesVisibleSource_data();
@@ -394,7 +396,7 @@ private slots:
   // Scrolling while a preview widget has the focus.
   void testSheetEditDoesNotScrollToTheEditorCaret();
   void testCenterCursorIsSkippedWhileASheetHasTheFocus();
-  void testDocumentEditStillScrollsWhenTheEditorHasFocus();
+  void testTypingRevealsOffscreenEditorCaret();
   void testAnEdgeArrowFromASheetHandsTheFocusBack();
   void testASheetFollowsTheEditorsInputMode();
   void testAFocusedSheetTakesTheEditorsStatusSlot();

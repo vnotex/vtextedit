@@ -268,6 +268,10 @@ signals:
   // Conceal geometry is complete and the outermost layout pass is idle.
   void concealmentChanged();
 
+  // Caret-driven concealment work has settled; navigation may reveal the caret.
+  // Passive geometry changes (including folding) never emit this signal.
+  void concealCursorSettled();
+
   // Emitted whenever the geometry assigned to any interactive preview widget
   // changed, even when the overall document size did not.
   void widgetPreviewGeometryChanged();

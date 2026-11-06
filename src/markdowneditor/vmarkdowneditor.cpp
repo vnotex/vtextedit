@@ -2029,19 +2029,11 @@ void VMarkdownEditor::setupSyntaxHighlighter() {
     m_textEdit->updateCursorWidth();
     auto numberer = findChild<HeadingSourceNumberer *>(
         QStringLiteral("vte_heading_source_numberer"), Qt::FindDirectChildrenOnly);
-    if (numberer && numberer->restoreViewportAfterHighlight()) {
-      return;
+    if (numberer) {
+      numberer->restoreViewportAfterHighlight();
     }
-    if (m_textEdit->isViewportWidgetFocused()) {
-      // An in-place preview widget holds the focus. This re-parse is most
-      // likely the one its own write-back caused, and the editor's caret is
-      // elsewhere - scrolling to it would yank the viewport away from the
-      // widget the user is typing in.
-      return;
-    }
-
-    m_textEdit->ensureCursorVisible();
-    m_textEdit->checkCenterCursor();
+    // Parsing is passive. Only cursor navigation may request caret visibility;
+    // a late result must not chase an off-screen caret after scrolling/unfolding.
   });
 }
 
@@ -2065,8 +2057,9 @@ void VMarkdownEditor::setupDocumentLayout() {
     documentLayout()->setConcealCursorPosition(m_textEdit->textCursor().position());
   };
   connect(m_textEdit, &VTextEdit::cursorPositionChanged, this, refreshConcealCursor);
-  connect(docLayout, &TextDocumentLayout::concealmentChanged, this, [this]() {
-    m_textEdit->updateCursorWidth();
+  connect(docLayout, &TextDocumentLayout::concealmentChanged, m_textEdit,
+          &VTextEdit::updateCursorWidth);
+  connect(docLayout, &TextDocumentLayout::concealCursorSettled, this, [this]() {
     if (!m_textEdit->isViewportWidgetFocused()) {
       m_textEdit->ensureCursorVisible();
       m_textEdit->checkCenterCursor();

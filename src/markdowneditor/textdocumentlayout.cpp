@@ -6,6 +6,7 @@
 #include <QLoggingCategory>
 #include <QPainter>
 #include <QPointF>
+#include <QPointer>
 #include <QTextBlock>
 #include <QTextBoundaryFinder>
 #include <QTextDocument>
@@ -732,11 +733,13 @@ void TextDocumentLayout::setConcealCursorPosition(int p_position) {
     requestIdleNotification();
     return;
   }
+  const bool wasDeferred = m_hasDeferredConcealCursor;
   m_hasDeferredConcealCursor = false;
   const int oldPosition = concealCursorPosition();
-  if (oldPosition == p_position) {
+  if (oldPosition == p_position && !wasDeferred) {
     return;
   }
+  bool changedGroup = false;
   const auto oldBlock = m_concealCursorAnchor.m_block;
   const auto newBlock = p_position < 0 ? QTextBlock() : document()->findBlock(p_position);
   m_concealCursorAnchor = {newBlock, newBlock.isValid() ? p_position - newBlock.position() : 0};
@@ -752,6 +755,7 @@ void TextDocumentLayout::setConcealCursorPosition(int p_position) {
           if (active != group.m_active) {
             group.m_active = active;
             queueConcealGroup(group);
+            changedGroup = true;
           }
         }
       }
@@ -760,7 +764,15 @@ void TextDocumentLayout::setConcealCursorPosition(int p_position) {
       break;
     }
   }
+  QPointer<TextDocumentLayout> guard(this);
   flushConcealRelayout();
+  // A geometry callback may destroy the editor or queue a newer caret. The
+  // existing idle flush will complete that latest request, even if it stays
+  // in the same reveal state. Never turn a passive relayout into navigation.
+  if (guard && (changedGroup || wasDeferred) && !m_hasDeferredConcealCursor &&
+      concealCursorPosition() == p_position) {
+    emit concealCursorSettled();
+  }
 }
 
 QVector<ConcealedRange>
@@ -909,8 +921,11 @@ void TextDocumentLayout::flushConcealRelayout() {
     return;
   }
   if (m_hasDeferredConcealCursor) {
-    m_hasDeferredConcealCursor = false;
+    QPointer<TextDocumentLayout> guard(this);
     setConcealCursorPosition(m_deferredConcealCursor);
+    if (!guard) {
+      return;
+    }
   }
   if (m_hasDeferredConcealment) {
     m_hasDeferredConcealment = false;
