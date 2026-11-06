@@ -115,6 +115,13 @@ public:
 
   void removeSelectedText();
 
+  // Optional synchronous source-coordinate projection. False leaves native handling in charge.
+  bool moveCursorInProjection(QTextCursor &p_cursor, QTextCursor::MoveOperation p_operation,
+                              QTextCursor::MoveMode p_mode = QTextCursor::MoveAnchor,
+                              int p_count = 1);
+  bool replaceTextInProjection(QTextCursor &p_cursor, const QString &p_text);
+  void normalizeCursorInProjection();
+
   // Insert a block above or below the cursor block, preserving its text and
   // ignoring any selection. Split is not accepted. Returns false if read-only.
   // @p_autoIndent enables synchronous completion and fallback indentation.
@@ -204,6 +211,12 @@ signals:
   // the complete insertion and cursor placement, suppressing the fallback.
   void openLineRequested(BlockInsertion p_placement, bool *p_handled);
 
+  // Request handlers must run synchronously. Unhandled requests must leave the cursor unchanged.
+  void cursorMoveRequested(QTextCursor *p_cursor, QTextCursor::MoveOperation p_operation,
+                           QTextCursor::MoveMode p_mode, int p_count, bool *p_handled);
+  void textReplacementRequested(QTextCursor *p_cursor, const QString &p_text, bool *p_handled);
+  void cursorNormalizationRequested(QTextCursor *p_cursor, bool p_onCharacter);
+
   void preKeyReturn(int p_modifiers, bool *p_changed, bool *p_handled);
 
   void postKeyReturn(int p_modifiers);
@@ -265,6 +278,8 @@ private:
 
   bool handleBracketRemoval();
 
+  bool handleKeyInProjection(QKeyEvent *p_event);
+
   bool handleKeyReturn(QKeyEvent *p_event);
 
   bool isInputMethodEnabled() const;
@@ -317,6 +332,8 @@ private:
   bool m_autoBracketsEnabled = true;
 
   bool m_selectionChangedByOverride = false;
+
+  bool m_normalizingCursor = false;
 
   // Leader key to skip input method.
   // Like key sequence `Ctrl+G, E`, `Ctrl+G` will trigger ShortcutOverride event

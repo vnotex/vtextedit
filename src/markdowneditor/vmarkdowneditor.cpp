@@ -33,6 +33,7 @@
 #include <QDebug>
 #include <QFontMetricsF>
 #include <QHelpEvent>
+#include <QPointer>
 #include <QScopedValueRollback>
 #include <QScrollBar>
 #include <QStringList>
@@ -1891,6 +1892,280 @@ bool MarkdownSourceFormatter::handleListInsertion(VTextEdit::BlockInsertion p_op
   return true;
 }
 
+// Owns editing policy; the layout remains a source-indexed, read-only projection.
+class MarkdownConcealController final : public QObject {
+  Q_OBJECT
+public:
+  explicit MarkdownConcealController(VMarkdownEditor *p_editor)
+      : QObject(p_editor), m_edit(p_editor->getTextEdit()), m_doc(p_editor->document()),
+        m_layout(p_editor->documentLayout()) {
+    setObjectName(QStringLiteral("vte_markdown_conceal_controller"));
+    connect(m_edit, &VTextEdit::cursorMoveRequested, this,
+            [this](QTextCursor *p_cursor, QTextCursor::MoveOperation p_operation,
+                   QTextCursor::MoveMode p_mode, int p_count, bool *p_handled) {
+              if (!*p_handled && !m_applying) {
+                *p_handled =
+                    m_layout->movePersistentConcealCursor(*p_cursor, p_operation, p_mode, p_count);
+              }
+            });
+    connect(
+        m_edit, &VTextEdit::cursorNormalizationRequested, this,
+        [this](QTextCursor *p_cursor, bool p_onCharacter) {
+          if (!m_applying) {
+            const int position =
+                m_layout->normalizePersistentConcealPosition(p_cursor->position(), p_onCharacter);
+            if (position != p_cursor->position()) {
+              p_cursor->setPosition(position, p_cursor->hasSelection() ? QTextCursor::KeepAnchor
+                                                                       : QTextCursor::MoveAnchor);
+            }
+          }
+        });
+    connect(m_edit, &VTextEdit::textReplacementRequested, this,
+            [this](QTextCursor *p_cursor, const QString &p_text, bool *p_handled) {
+              if (!*p_handled) {
+                *p_handled = replace(*p_cursor, p_text);
+              }
+            });
+    connect(m_layout, &TextDocumentLayout::persistentConcealSourceChanged, this,
+            [this](int p_position, int p_removed, int p_added,
+                   const QVector<TextDocumentLayout::ConcealCleanup> &p_empty) {
+              sourceChanged(p_position, p_removed, p_added, p_empty);
+            });
+    connect(m_doc, &QTextDocument::undoCommandAdded, this, [this]() { m_newUndoCommand = true; });
+    const auto historyCleared = [this]() {
+      if (!m_sourceChanged && !m_doc->isUndoAvailable() && !m_doc->isRedoAvailable()) {
+        // No owned QTextCursors: it is safe to observe Qt's detached reset registry.
+        m_undoSteps = m_redoSteps = 0;
+        m_redoAvailable = false;
+        m_joinRevision = -1;
+      }
+    };
+    connect(m_doc, &QTextDocument::undoAvailable, this, historyCleared);
+    connect(m_doc, &QTextDocument::redoAvailable, this, historyCleared);
+    connect(m_doc, &QTextDocument::contentsChanged, this, [this]() { contentsChanged(); });
+    connect(m_layout, &TextDocumentLayout::becameIdle, this, [this]() { queueCleanup(); });
+    m_edit->installEventFilter(this);
+    observeDocument();
+  }
+
+protected:
+  bool eventFilter(QObject *, QEvent *p_event) Q_DECL_OVERRIDE {
+    if (p_event->type() == QEvent::InputMethod) {
+      queueCleanup();
+    }
+    return false;
+  }
+
+private:
+  bool replace(QTextCursor &p_cursor, const QString &p_text) {
+    if (m_applying || m_edit->isReadOnly() || !p_cursor.hasSelection()) {
+      return false;
+    }
+    QVector<md::ElementRegion> ranges;
+    if (!m_layout->persistentConcealRemovalRanges(
+            p_cursor.selectionStart(), p_cursor.selectionEnd(), ranges,
+            p_text.isEmpty() ? -1 : p_cursor.selectionStart())) {
+      return false;
+    }
+    if (ranges.isEmpty() && p_text.isEmpty()) {
+      p_cursor.clearSelection();
+      return true;
+    }
+    QTextCursor caret(p_cursor);
+    caret.setPosition(p_cursor.selectionStart());
+    QPointer<MarkdownConcealController> guard(this);
+    m_applying = true;
+    m_layout->preparePersistentConcealRemoval(
+        ranges, p_text.isEmpty() ? -1 : p_cursor.selectionStart(), p_text);
+    QTextCursor edit(m_doc);
+    edit.beginEditBlock();
+    for (auto it = ranges.crbegin(); it != ranges.crend(); ++it) {
+      edit.setPosition(it->m_startPos);
+      edit.setPosition(it->m_endPos, QTextCursor::KeepAnchor);
+      edit.removeSelectedText();
+    }
+    if (!p_text.isEmpty()) {
+      caret.insertText(p_text);
+    }
+    edit.endEditBlock();
+    if (guard) {
+      m_applying = false;
+      p_cursor = caret;
+      observeDocument();
+      queueCleanup();
+    }
+    return true;
+  }
+
+  void sourceChanged(int p_position, int p_removed, int p_added,
+                     const QVector<TextDocumentLayout::ConcealCleanup> &p_empty) {
+    m_sourceChanged = true;
+    const bool hadPending = !m_pending.isEmpty();
+    if (hadPending) {
+      m_joinRevision = -1;
+    }
+    const int end = p_position + p_removed;
+    const int delta = p_added - p_removed;
+    int count = 0;
+    for (auto pending : m_pending) {
+      // A restored body (including at the end of an ATX opener) revokes cleanup.
+      if ((p_removed > 0 && p_position < pending.m_end && end > pending.m_start) ||
+          (p_added > 0 && (p_position == pending.m_bodyPosition ||
+                           (p_position > pending.m_start && p_position < pending.m_end)))) {
+        continue;
+      }
+      if (end <= pending.m_start) {
+        pending.m_start += delta;
+        pending.m_end += delta;
+        pending.m_bodyPosition += delta;
+      }
+      m_pending[count++] = std::move(pending);
+    }
+    m_pending.resize(count);
+    for (const auto &empty : p_empty) {
+      if (empty.m_end > empty.m_start && empty.m_end - empty.m_start == empty.m_text.size()) {
+        m_pending.append(empty);
+      }
+    }
+    m_joinFromChange = !hadPending && !p_empty.isEmpty();
+  }
+
+  void observeDocument() {
+    m_revision = m_doc->revision();
+    m_undoSteps = m_doc->availableUndoSteps();
+    m_redoSteps = m_doc->availableRedoSteps();
+    m_redoAvailable = m_doc->isRedoAvailable();
+    m_sourceChanged = false;
+    m_newUndoCommand = false;
+  }
+
+  void contentsChanged() {
+    if (!m_sourceChanged || m_doc->revision() == m_revision) {
+      return;
+    }
+    const int undo = m_doc->availableUndoSteps();
+    const int redo = m_doc->availableRedoSteps();
+    const bool replay =
+        m_doc->isUndoRedoEnabled() &&
+        (undo < m_undoSteps ||
+         (undo > m_undoSteps && (redo < m_redoSteps || m_redoAvailable) && !m_newUndoCommand));
+    if (replay || m_edit->isReadOnly()) {
+      m_pending.clear();
+      m_joinRevision = -1;
+    } else if (m_joinFromChange) {
+      m_joinRevision = m_doc->revision();
+      m_joinUndoSteps = undo;
+    }
+    m_joinFromChange = false;
+    observeDocument();
+    if (!m_applying) {
+      queueCleanup();
+    }
+  }
+
+  void queueCleanup() {
+    if (m_pending.isEmpty() || m_queued || m_applying) {
+      return;
+    }
+    m_queued = true;
+    QTimer::singleShot(0, this, [this]() {
+      m_queued = false;
+      cleanup();
+    });
+  }
+
+  void cleanup() {
+    if (m_pending.isEmpty() || m_applying || m_edit->isReadOnly()) {
+      return;
+    }
+    if (m_layout->isBusy()) {
+      m_layout->requestIdleNotification();
+      return;
+    }
+    // Defer during composition without a repeating timer or a document-wide scan.
+    for (const auto &pending : m_pending) {
+      const auto block = m_doc->findBlock(pending.m_start);
+      if (block.isValid() && !block.layout()->preeditAreaText().isEmpty()) {
+        return;
+      }
+    }
+    QVector<md::ElementRegion> ranges;
+    for (const auto &pending : m_pending) {
+      if (pending.m_start < 0 || pending.m_end >= m_doc->characterCount() ||
+          pending.m_end - pending.m_start != pending.m_text.size()) {
+        continue;
+      }
+      QTextCursor source(m_doc);
+      source.setPosition(pending.m_start);
+      source.setPosition(pending.m_end, QTextCursor::KeepAnchor);
+      if (source.selectedText() == pending.m_text) {
+        ranges.append(md::ElementRegion(pending.m_start, pending.m_end));
+      }
+    }
+    m_pending.clear();
+    if (ranges.isEmpty()) {
+      return;
+    }
+    std::sort(ranges.begin(), ranges.end(),
+              [](const auto &p_a, const auto &p_b) { return p_a.m_startPos < p_b.m_startPos; });
+    int count = 0;
+    for (const auto &range : ranges) {
+      if (count && range.m_startPos <= ranges[count - 1].m_endPos) {
+        ranges[count - 1].m_endPos = qMax(ranges[count - 1].m_endPos, range.m_endPos);
+      } else {
+        ranges[count++] = range;
+      }
+    }
+    ranges.resize(count);
+    const bool join = m_doc->isUndoRedoEnabled() && m_joinRevision == m_doc->revision() &&
+                      m_joinUndoSteps > 0 && m_joinUndoSteps == m_doc->availableUndoSteps() &&
+                      m_doc->availableRedoSteps() == 0;
+    m_joinRevision = -1;
+    QPointer<MarkdownConcealController> guard(this);
+    m_applying = true;
+    m_layout->preparePersistentConcealRemoval(ranges);
+    QTextCursor edit(m_doc);
+    if (join) {
+      edit.joinPreviousEditBlock();
+    } else {
+      edit.beginEditBlock();
+    }
+    for (auto it = ranges.crbegin(); it != ranges.crend(); ++it) {
+      edit.setPosition(it->m_startPos);
+      edit.setPosition(it->m_endPos, QTextCursor::KeepAnchor);
+      edit.removeSelectedText();
+    }
+    edit.endEditBlock();
+    if (!guard) {
+      return;
+    }
+    m_applying = false;
+    observeDocument();
+    // Removing an inner empty wrapper can empty a still-owned outer one.
+    m_joinRevision = m_doc->revision();
+    m_joinUndoSteps = m_doc->availableUndoSteps();
+    m_edit->normalizeCursorInProjection();
+    queueCleanup();
+  }
+
+  VTextEdit *m_edit;
+  QTextDocument *m_doc;
+  TextDocumentLayout *m_layout;
+  QVector<TextDocumentLayout::ConcealCleanup> m_pending;
+  int m_revision = -1;
+  int m_undoSteps = 0;
+  int m_redoSteps = 0;
+  int m_joinRevision = -1;
+  int m_joinUndoSteps = 0;
+  // Qt can report zero availableRedoSteps() while its last command is redoable.
+  bool m_redoAvailable = false;
+  bool m_sourceChanged = false;
+  bool m_newUndoCommand = false;
+  bool m_joinFromChange = false;
+  bool m_applying = false;
+  bool m_queued = false;
+};
+
 } // namespace vte
 
 VMarkdownEditor::VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_config,
@@ -1898,6 +2173,7 @@ VMarkdownEditor::VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_c
                                  QWidget *p_parent)
     : VTextEditor(p_config->m_textEditorConfig, p_paras, p_parent), m_config(p_config) {
   setupDocumentLayout();
+  new MarkdownConcealController(this);
 
   setupSyntaxHighlighter();
 
@@ -1949,6 +2225,8 @@ VMarkdownEditor::VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_c
 }
 
 VMarkdownEditor::~VMarkdownEditor() {
+  delete findChild<MarkdownConcealController *>(QStringLiteral("vte_markdown_conceal_controller"),
+                                                Qt::FindDirectChildrenOnly);
   delete findChild<HeadingSourceNumberer *>(QStringLiteral("vte_heading_source_numberer"),
                                             Qt::FindDirectChildrenOnly);
   delete findChild<MarkdownSourceFormatter *>(QStringLiteral("vte_markdown_source_formatter"),
@@ -2444,11 +2722,13 @@ void VMarkdownEditor::applyConcealRanges(const md::ConcealRanges &p_ranges) {
         continue;
       }
       group.m_revealAtEnd = true;
+      group.m_keepHidden = std::get<MarkdownConcealHideSyntax>(*rule).m_keepHidden;
     }
     group.m_runCount = snapshot.m_runs.size() - group.m_firstRun;
     snapshot.m_groups.append(std::move(group));
   }
   layout->setConcealment(snapshot);
+  m_textEdit->normalizeCursorInProjection();
 }
 
 void VMarkdownEditor::applyPreviewFolding() {

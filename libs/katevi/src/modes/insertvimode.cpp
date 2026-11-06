@@ -147,9 +147,10 @@ bool InsertViMode::commandDeleteLine() {
 bool InsertViMode::commandDeleteCharBackward() {
   KateViI::Cursor c(m_interface->cursorPosition());
 
-  Range r(c.line(), c.column() - getCount(), c.line(), c.column(), ExclusiveMotion);
+  const auto start = m_interface->moveCharacters(c, -static_cast<int>(getCount()));
+  Range r(start.line(), start.column(), c.line(), c.column(), ExclusiveMotion);
 
-  if (c.column() == 0) {
+  if (start.column() == c.column()) {
     if (c.line() == 0) {
       return true;
     } else {
@@ -271,7 +272,7 @@ bool InsertViMode::commandSwitchToNormalModeForJustOneCommand() {
   const KateViI::Cursor cursorPos = m_interface->cursorPosition();
   // If we're at end of the line, move the cursor back one step, as in Vim.
   if (m_interface->line(cursorPos.line()).length() == cursorPos.column()) {
-    m_interface->setCursorPosition(KateViI::Cursor(cursorPos.line(), cursorPos.column() - 1));
+    m_interface->setCursorPosition(m_interface->moveCharacters(cursorPos, -1));
   }
   m_viInputModeManager->inputAdapter()->setCaretStyle(KateViI::CaretStyle::Block);
   m_viInputModeManager->inputAdapter()->setCursorBlinkingEnabled(false);

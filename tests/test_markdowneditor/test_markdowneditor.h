@@ -36,6 +36,21 @@ private slots:
   void testConcealNestedAndMultilineSyntax();
   void testConcealCustomDestinationRule();
   void testConcealHeadingAndFormulaBoundaries();
+  void testPersistentConcealKinds_data();
+  void testPersistentConcealKinds();
+  void testPersistentConcealNavigation();
+  void testPersistentConcealNested_data();
+  void testPersistentConcealNested();
+  void testPersistentConcealEmptyHeading();
+  void testPersistentConcealPendingEdits_data();
+  void testPersistentConcealPendingEdits();
+  void testPersistentConcealVi_data();
+  void testPersistentConcealVi();
+  void testPersistentConcealDirectCleanup_data();
+  void testPersistentConcealDirectCleanup();
+  void testPersistentConcealIme_data();
+  void testPersistentConcealIme();
+  void testPersistentConcealRevealPolicies();
   void testMarkBackgroundOnCursorLine_data();
   void testMarkBackgroundOnCursorLine();
 

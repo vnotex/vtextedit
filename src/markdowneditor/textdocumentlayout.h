@@ -8,6 +8,7 @@
 #include <QSize>
 #include <QTextBlock>
 #include <QTextCharFormat>
+#include <QTextCursor>
 #include <QVector>
 
 #include <vtextedit/markdownhighlighterdata.h>
@@ -156,6 +157,7 @@ public:
     int m_runCount = 0;
     QTextCharFormat m_format;
     bool m_tooltip = false;
+    bool m_keepHidden = false;
   };
 
   struct ConcealSnapshot {
@@ -167,6 +169,22 @@ public:
 
   void setConcealment(const ConcealSnapshot &p_snapshot);
   void setConcealCursorPosition(int p_position);
+  int normalizePersistentConcealPosition(int p_position, bool p_onCharacter) const;
+  bool movePersistentConcealCursor(QTextCursor &p_cursor, QTextCursor::MoveOperation p_operation,
+                                   QTextCursor::MoveMode p_mode, int p_count) const;
+  bool persistentConcealRemovalRanges(int p_start, int p_end, QVector<md::ElementRegion> &p_ranges,
+                                      int p_insertionPosition = -1) const;
+  void preparePersistentConcealRemoval(const QVector<md::ElementRegion> &p_ranges,
+                                       int p_insertionPosition = -1,
+                                       const QString &p_insertedText = QString());
+
+  // Exact marker-only source made empty by an edit, independent of snapshots.
+  struct ConcealCleanup {
+    int m_start = 0;
+    int m_end = 0;
+    int m_bodyPosition = 0;
+    QString m_text;
+  };
   bool concealedSourceAt(const QPointF &p_point, int &p_start, int &p_end, QRectF &p_rect) const;
 
   void draw(QPainter *p_painter, const PaintContext &p_context) Q_DECL_OVERRIDE;
@@ -265,6 +283,10 @@ public:
   void requestIdleNotification() { m_idleNotificationOwed = true; }
 
 signals:
+  // Effective source changes, after live mapping. Observers must defer source writes.
+  void persistentConcealSourceChanged(int p_position, int p_removed, int p_added,
+                                      const QVector<ConcealCleanup> &p_empty);
+
   // Conceal geometry is complete and the outermost layout pass is idle.
   void concealmentChanged();
 
@@ -485,6 +507,7 @@ private:
     ConcealedRange m_range;
     int m_sourceStart = 0;
     int m_sourceEnd = 0;
+    QString m_sourceText;
   };
   struct LiveConcealGroup {
     ConcealGroup m_spec;
@@ -497,6 +520,8 @@ private:
     bool m_preeditRevealed = false;
   };
 
+  bool hasPersistentConceal(const QTextBlock &p_block) const;
+  bool persistentConcealSpanAt(int p_position, int &p_start, int &p_end) const;
   int concealCursorPosition() const;
   void updateConcealSource(int p_position, int p_removed, int p_added);
   bool concealGroupRevealed(const LiveConcealGroup &p_group, int p_cursor) const;
@@ -523,6 +548,19 @@ private:
     int m_added = 0;
   };
   ConcealImeEdit m_concealImeEdit;
+  // One bounded owned transaction. Only the retained gaps in its changed extent
+  // are copied; Qt may report those disjoint removals as one replacement.
+  struct ConcealRemovalHint {
+    QVector<md::ElementRegion> m_ranges;
+    QString m_expected;
+    int m_revision = -1;
+    int m_characterCount = 0;
+    int m_start = 0;
+    int m_end = 0;
+    int m_insertionPosition = -1;
+    int m_inserted = 0;
+  };
+  ConcealRemovalHint m_concealRemovalHint;
   int m_concealSourceRevision = -1;
   QVector<LiveConcealGroup> m_concealGroups;
   QVector<LiveConcealRun> m_concealRuns;

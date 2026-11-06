@@ -83,7 +83,7 @@ static VMarkdownEditor *setupMarkdownEditor(QWidget *p_parent) {
         MarkdownConcealElement::StrikethroughMarkers, MarkdownConcealElement::MarkMarkers,
         MarkdownConcealElement::InlineCodeMarkers, MarkdownConcealElement::LinkSyntax,
         MarkdownConcealElement::HeadingMarkers, MarkdownConcealElement::InlineFormulaMarkers}) {
-    markdownEditorConfig->m_concealRules.set(kind, MarkdownConcealHideSyntax{});
+    markdownEditorConfig->m_concealRules.set(kind);
   }
   auto editorParas = QSharedPointer<TextEditorParameters>::create();
   editorParas->m_spellCheckEnabled = false;

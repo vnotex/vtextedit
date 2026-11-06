@@ -208,6 +208,36 @@ KateViI::Cursor TextEditInputMode::cursorPosition() const {
   return KateViI::Cursor(cursor.block().blockNumber(), cursor.positionInBlock());
 }
 
+KateViI::Cursor TextEditInputMode::moveCharacters(const KateViI::Cursor &p_cursor,
+                                                  int p_count) const {
+  const auto block = document()->findBlockByNumber(p_cursor.line());
+  if (!p_cursor.isValid() || !block.isValid()) {
+    return p_cursor;
+  }
+  const int length = block.length() - 1;
+  QTextCursor cursor(block);
+  cursor.setPosition(block.position() + qBound(0, p_cursor.column(), length));
+  const int count = qAbs(qBound(-length, p_count, length));
+  const auto operation = p_count < 0 ? QTextCursor::PreviousCharacter : QTextCursor::NextCharacter;
+  for (int step = 0; step < qMax(1, count); ++step) {
+    const int previousPosition = cursor.position();
+    if (!m_textEdit->moveCursorInProjection(cursor, operation, QTextCursor::MoveAnchor,
+                                            count == 0 ? 0 : 1)) {
+      return KateViI::KateViEditorInterface::moveCharacters(p_cursor, p_count);
+    }
+    const int position = qBound(block.position(), cursor.position(), block.position() + length);
+    if (position != cursor.position()) {
+      cursor.setPosition(position);
+      m_textEdit->moveCursorInProjection(cursor, operation, QTextCursor::MoveAnchor, 0);
+      break;
+    }
+    if (cursor.position() == previousPosition) {
+      break;
+    }
+  }
+  return toKateViCursor(cursor);
+}
+
 int TextEditInputMode::lines() const { return document()->blockCount(); }
 
 void TextEditInputMode::removeSelection() { clearSelection(); }
@@ -284,6 +314,7 @@ bool TextEditInputMode::isUndoMergeAllEditsEnabled() const { return m_mergeAllEd
 
 void TextEditInputMode::notifyViewModeChanged(KateViI::ViewMode p_mode) {
   notifyEditorModeChanged(static_cast<EditorMode>(p_mode));
+  m_textEdit->normalizeCursorInProjection();
 }
 
 KateViI::ViewMode TextEditInputMode::viewMode() const {
@@ -297,9 +328,18 @@ KateViI::ViewMode TextEditInputMode::viewMode() const {
 
 void TextEditInputMode::cursorPrevChar(bool p_selection) {
   auto cursor = textCursor();
-  cursor.movePosition(QTextCursor::PreviousCharacter,
-                      p_selection ? QTextCursor::KeepAnchor : QTextCursor::MoveAnchor);
+  const auto block = cursor.block();
+  const auto mode = p_selection ? QTextCursor::KeepAnchor : QTextCursor::MoveAnchor;
+  if (!m_textEdit->moveCursorInProjection(cursor, QTextCursor::PreviousCharacter, mode)) {
+    cursor.movePosition(QTextCursor::PreviousCharacter, mode);
+  } else if (cursor.position() < block.position()) {
+    // Insert exit must not cross a line merely because its first visible character
+    // follows hidden source characters.
+    cursor.setPosition(block.position(), mode);
+    m_textEdit->moveCursorInProjection(cursor, QTextCursor::NextCharacter, mode, 0);
+  }
   m_textEdit->setTextCursor(cursor);
+  m_textEdit->normalizeCursorInProjection();
 }
 
 void TextEditInputMode::update() { m_textEdit->update(); }
@@ -326,6 +366,8 @@ void TextEditInputMode::updateCursor(int p_line, int p_column) {
     auto cursor = m_textEdit->textCursor();
     cursor.setPosition(block.position() + p_column);
     m_textEdit->setTextCursor(cursor);
+    // KateVi may just have clamped EOL to a raw source column inside hidden markers.
+    m_textEdit->normalizeCursorInProjection();
   }
 }
 
@@ -450,7 +492,9 @@ bool TextEditInputMode::removeText(const KateViI::Range &p_range, bool p_blockWi
   if (!p_blockWise) {
     auto cursor = kateViRangeToTextCursor(p_range);
     if (cursor.hasSelection()) {
-      cursor.removeSelectedText();
+      if (!m_textEdit->replaceTextInProjection(cursor, {})) {
+        cursor.removeSelectedText();
+      }
       m_textEdit->setTextCursor(cursor);
     }
   } else {
@@ -627,12 +671,17 @@ int TextEditInputMode::lastLine() const { return lines() - 1; }
 
 bool TextEditInputMode::replaceText(const KateViI::Range &p_range, const QString &p_text,
                                     bool p_blockWise) {
+  if (isReadOnly()) {
+    return false;
+  }
   if (p_blockWise) {
     EDITOR_NIY;
   } else {
     auto cursor = kateViRangeToTextCursor(p_range);
     if (cursor.hasSelection()) {
-      cursor.insertText(p_text);
+      if (!m_textEdit->replaceTextInProjection(cursor, p_text)) {
+        cursor.insertText(p_text);
+      }
       m_textEdit->setTextCursor(cursor);
       return true;
     }

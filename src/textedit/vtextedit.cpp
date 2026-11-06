@@ -10,6 +10,7 @@
 #include <QMimeData>
 #include <QRegularExpression>
 #include <QResizeEvent>
+#include <QScopedValueRollback>
 #include <QScrollBar>
 #include <QTextBlock>
 #include <QTextDocumentFragment>
@@ -97,6 +98,8 @@ VTextEdit::VTextEdit(QWidget *p_parent) : QTextEdit(p_parent) {
 }
 
 void VTextEdit::handleCursorPositionChange() {
+  normalizeCursorInProjection();
+
   // Qt BUG: In the case of exist of invislbe blocks, when a user click at the
   // top of the document, the hit test of underlying document layout may treat
   // the cursor at wrong blocks (such as those invisible blocks or the next
@@ -332,7 +335,13 @@ void VTextEdit::handleDefaultKeyPress(QKeyEvent *p_event) {
     break;
 
   case Qt::Key_Backspace:
-    isHandled = handleBracketRemoval();
+    isHandled = handleBracketRemoval() || handleKeyInProjection(p_event);
+    break;
+
+  case Qt::Key_Delete:
+  case Qt::Key_Left:
+  case Qt::Key_Right:
+    isHandled = handleKeyInProjection(p_event);
     break;
 
   default:
@@ -351,6 +360,17 @@ void VTextEdit::handleDefaultKeyPress(QKeyEvent *p_event) {
   }
 #endif
 
+  if (!isHandled && !isReadOnly() && !p_event->text().isEmpty() &&
+      p_event->text().at(0).isPrint() &&
+      (!(modifiers & (Qt::ControlModifier | Qt::MetaModifier)) ||
+       ((modifiers & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier)) ==
+        (Qt::ControlModifier | Qt::AltModifier)))) {
+    auto cursor = textCursor();
+    if (cursor.hasSelection() && replaceTextInProjection(cursor, p_event->text())) {
+      setTextCursor(cursor);
+      isHandled = true;
+    }
+  }
   if (!isHandled) {
     QTextEdit::keyPressEvent(p_event);
   }
@@ -481,16 +501,134 @@ QString VTextEdit::selectedText() const {
   return getSelectedText(selection);
 }
 
+bool VTextEdit::moveCursorInProjection(QTextCursor &p_cursor,
+                                       QTextCursor::MoveOperation p_operation,
+                                       QTextCursor::MoveMode p_mode, int p_count) {
+  bool handled = false;
+  emit cursorMoveRequested(&p_cursor, p_operation, p_mode, p_count, &handled);
+  return handled;
+}
+
+bool VTextEdit::replaceTextInProjection(QTextCursor &p_cursor, const QString &p_text) {
+  if (isReadOnly()) {
+    return false;
+  }
+  bool handled = false;
+  emit textReplacementRequested(&p_cursor, p_text, &handled);
+  return handled;
+}
+
+void VTextEdit::normalizeCursorInProjection() {
+  if (m_normalizingCursor) {
+    return;
+  }
+  QScopedValueRollback<bool> guard(m_normalizingCursor, true);
+  auto cursor = textCursor();
+  const int position = cursor.position();
+  const int anchor = cursor.anchor();
+  bool onCharacter = false;
+  if (m_inputMode) {
+    switch (m_inputMode->editorMode()) {
+    case EditorMode::ViModeNormal:
+    case EditorMode::ViModeVisual:
+    case EditorMode::ViModeVisualLine:
+    case EditorMode::ViModeVisualBlock:
+    case EditorMode::ViModeReplace:
+      onCharacter = true;
+      break;
+    default:
+      break;
+    }
+  }
+  emit cursorNormalizationRequested(&cursor, onCharacter);
+  if (position != anchor) {
+    const int normalizedPosition = cursor.position();
+    cursor.setPosition(anchor);
+    cursor.setPosition(normalizedPosition, QTextCursor::KeepAnchor);
+  }
+  if (cursor.position() != position || cursor.anchor() != anchor) {
+    setTextCursor(cursor);
+  }
+}
+
+bool VTextEdit::handleKeyInProjection(QKeyEvent *p_event) {
+  auto cursor = textCursor();
+  QTextCursor::MoveOperation operation = QTextCursor::NoMove;
+  QTextCursor::MoveMode mode = QTextCursor::MoveAnchor;
+  if (p_event == QKeySequence::MoveToPreviousChar || p_event == QKeySequence::SelectPreviousChar) {
+    operation = QTextCursor::Left;
+    if (p_event == QKeySequence::SelectPreviousChar) {
+      mode = QTextCursor::KeepAnchor;
+    }
+  } else if (p_event == QKeySequence::MoveToNextChar || p_event == QKeySequence::SelectNextChar) {
+    operation = QTextCursor::Right;
+    if (p_event == QKeySequence::SelectNextChar) {
+      mode = QTextCursor::KeepAnchor;
+    }
+  }
+  if (operation != QTextCursor::NoMove) {
+    int count = 1;
+    if (mode == QTextCursor::MoveAnchor && cursor.hasSelection()) {
+      cursor.setPosition(operation == QTextCursor::Left ? cursor.selectionStart()
+                                                        : cursor.selectionEnd());
+      count = 0;
+    }
+    if (!moveCursorInProjection(cursor, operation, mode, count)) {
+      return false;
+    }
+    setTextCursor(cursor);
+    return true;
+  }
+
+  if (isReadOnly()) {
+    return false;
+  }
+  if (p_event == QKeySequence::DeleteStartOfWord) {
+    operation = QTextCursor::PreviousWord;
+  } else if (p_event == QKeySequence::DeleteEndOfWord) {
+    operation = QTextCursor::NextWord;
+  } else if (p_event == QKeySequence::DeleteEndOfLine) {
+    operation = QTextCursor::EndOfBlock;
+  } else if (p_event == QKeySequence::Delete) {
+    operation = QTextCursor::NextCharacter;
+  } else if (p_event->key() == Qt::Key_Backspace && !(p_event->modifiers() & ~Qt::ShiftModifier)) {
+    operation = QTextCursor::PreviousCharacter;
+  } else {
+    return false;
+  }
+  if (!cursor.hasSelection()) {
+    const bool character =
+        operation == QTextCursor::NextCharacter || operation == QTextCursor::PreviousCharacter;
+    if (!character || !moveCursorInProjection(cursor, operation, QTextCursor::KeepAnchor)) {
+      cursor.movePosition(operation, QTextCursor::KeepAnchor);
+    } else if (!cursor.hasSelection()) {
+      // A projected boundary has no visible character to delete. Native fallback
+      // would instead delete the hidden source immediately behind the caret.
+      return true;
+    }
+  }
+  if (!replaceTextInProjection(cursor, {})) {
+    // The temporary selection was never installed; Qt still sees the original caret.
+    return false;
+  }
+  setTextCursor(cursor);
+  return true;
+}
+
 void VTextEdit::removeSelectedText() {
   const auto &selection = m_selections.getSelection();
-  if (!selection.isValid()) {
+  if (isReadOnly() || !selection.isValid()) {
     return;
   }
 
   auto cursor = textCursor();
-  cursor.setPosition(selection.start());
-  cursor.setPosition(selection.end(), QTextCursor::KeepAnchor);
-  cursor.removeSelectedText();
+  if (cursor.selectionStart() != selection.start() || cursor.selectionEnd() != selection.end()) {
+    cursor.setPosition(selection.start());
+    cursor.setPosition(selection.end(), QTextCursor::KeepAnchor);
+  }
+  if (!replaceTextInProjection(cursor, {})) {
+    cursor.removeSelectedText();
+  }
   setTextCursor(cursor);
 }
 
@@ -731,11 +869,17 @@ void VTextEdit::insertFromMimeData(const QMimeData *p_source) {
   emit insertFromMimeDataRequested(p_source, &handled);
 
   if (!handled) {
-    QTextEdit::insertFromMimeData(p_source);
+    insertFromMimeDataOfBase(p_source);
   }
 }
 
 void VTextEdit::insertFromMimeDataOfBase(const QMimeData *p_source) {
+  auto cursor = textCursor();
+  if (cursor.hasSelection() && p_source->hasText() && (!acceptRichText() || !p_source->hasHtml()) &&
+      replaceTextInProjection(cursor, p_source->text())) {
+    setTextCursor(cursor);
+    return;
+  }
   QTextEdit::insertFromMimeData(p_source);
 }
 
@@ -916,6 +1060,14 @@ bool VTextEdit::handleBracketRemoval() {
         }
     }
 #endif
+
+  auto removal = cursor;
+  removal.movePosition(QTextCursor::PreviousCharacter);
+  removal.movePosition(QTextCursor::NextCharacter, QTextCursor::KeepAnchor, 2);
+  if (replaceTextInProjection(removal, {})) {
+    setTextCursor(removal);
+    return true;
+  }
 
   cursor.beginEditBlock();
   cursor.deletePreviousChar();

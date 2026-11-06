@@ -15,6 +15,7 @@
 #include <QTextFrame>
 #include <QTextLayout>
 #include <QTimer>
+#include <QVarLengthArray>
 
 #include <private/qfontengine_p.h>
 #include <private/qtextengine_p.h>
@@ -80,6 +81,45 @@ int concealLayoutPosition(const QTextLayout *p_layout, int p_position, bool p_en
                            ? p_layout->preeditAreaText().size()
                            : 0);
 }
+
+QString sourceText(QTextDocument *p_document, int p_start, int p_end) {
+  QTextCursor cursor(p_document);
+  cursor.setPosition(p_start);
+  cursor.setPosition(p_end, QTextCursor::KeepAnchor);
+  return cursor.selectedText();
+}
+
+bool sourceTextMatches(const QTextDocument *p_document, int p_start, const QString &p_text) {
+  if (p_start < 0 || p_text.size() > p_document->characterCount() - 1 - p_start) {
+    return false;
+  }
+  for (int i = 0; i < p_text.size(); ++i) {
+    if (p_document->characterAt(p_start + i) != p_text.at(i)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void mergeSourceRanges(QVector<md::ElementRegion> &p_ranges) {
+  std::sort(p_ranges.begin(), p_ranges.end(),
+            [](const auto &p_a, const auto &p_b) { return p_a.m_startPos < p_b.m_startPos; });
+  int count = 0;
+  for (const auto &range : p_ranges) {
+    if (count && range.m_startPos <= p_ranges.at(count - 1).m_endPos) {
+      p_ranges[count - 1].m_endPos = qMax(p_ranges.at(count - 1).m_endPos, range.m_endPos);
+    } else {
+      p_ranges[count++] = range;
+    }
+  }
+  p_ranges.resize(count);
+}
+
+struct ConcealSourceChange {
+  int m_position;
+  int m_removed;
+  int m_added;
+};
 
 void setConcealCachePolicy(QTextLayout *p_layout, BlockLayoutData &p_data, bool p_enabled) {
   if (p_enabled) {
@@ -517,17 +557,20 @@ void TextDocumentLayout::setConcealment(const ConcealSnapshot &p_snapshot) {
         }
         return true;
       };
-      if (run.m_replacement.size() > INT_MAX ||
+      if ((spec.m_keepHidden && !run.m_replacement.isEmpty()) ||
+          run.m_replacement.size() > INT_MAX ||
           !singleLine(run.m_replacement, 0, int(run.m_replacement.size())) ||
           !singleLine(block.text(), run.m_start - block.position(), run.m_end - block.position())) {
         valid = false;
         break;
       }
-      m_concealRuns.append({block,
-                            {run.m_start - block.position(), run.m_end - block.position(),
-                             run.m_replacement, groupIndex},
-                            run.m_start,
-                            run.m_end});
+      m_concealRuns.append(
+          {block,
+           {run.m_start - block.position(), run.m_end - block.position(), run.m_replacement,
+            groupIndex},
+           run.m_start,
+           run.m_end,
+           spec.m_keepHidden ? sourceText(document(), run.m_start, run.m_end) : QString()});
     }
     if (!valid) {
       m_concealRuns.resize(firstRun);
@@ -565,12 +608,293 @@ void TextDocumentLayout::setConcealment(const ConcealSnapshot &p_snapshot) {
   flushConcealRelayout();
 }
 
+bool TextDocumentLayout::hasPersistentConceal(const QTextBlock &p_block) const {
+  if (p_block.isValid()) {
+    for (int index : BlockLayoutData::get(p_block)->m_concealGroups) {
+      const auto &group = m_concealGroups.at(index);
+      if (group.m_active && group.m_spec.m_keepHidden) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool TextDocumentLayout::persistentConcealSpanAt(int p_position, int &p_start, int &p_end) const {
+  const auto block = document()->findBlock(p_position);
+  if (!block.isValid()) {
+    return false;
+  }
+  p_start = p_end = p_position;
+  bool changed;
+  do {
+    changed = false;
+    for (int index : BlockLayoutData::get(block)->m_concealGroups) {
+      const auto &group = m_concealGroups.at(index);
+      if (!group.m_active || !group.m_spec.m_keepHidden) {
+        continue;
+      }
+      for (int i = group.m_spec.m_firstRun; i < group.m_spec.m_firstRun + group.m_spec.m_runCount;
+           ++i) {
+        const auto &run = m_concealRuns.at(i);
+        if (run.m_block == block && run.m_sourceStart <= p_end && run.m_sourceEnd > p_start) {
+          const int start = qMin(p_start, run.m_sourceStart);
+          const int end = qMax(p_end, run.m_sourceEnd);
+          changed |= start != p_start || end != p_end;
+          p_start = start;
+          p_end = end;
+        }
+      }
+    }
+  } while (changed);
+  return p_end > p_position;
+}
+
+int TextDocumentLayout::normalizePersistentConcealPosition(int p_position,
+                                                           bool p_onCharacter) const {
+  const auto block = document()->findBlock(p_position);
+  if (!hasPersistentConceal(block)) {
+    return p_position;
+  }
+  const int end = block.position() + block.length() - 1;
+  int hiddenStart, hiddenEnd;
+  if (persistentConcealSpanAt(p_position, hiddenStart, hiddenEnd)) {
+    p_position = hiddenEnd;
+  }
+  // QTextLayout's boundaries include preedit; the cursor and all returned
+  // positions remain in the document's UTF-16 source coordinates.
+  const auto *layout = block.layout();
+  if (p_position < end && !layout->isValidCursorPosition(
+                              concealLayoutPosition(layout, p_position - block.position()))) {
+    QTextCursor cursor(document());
+    cursor.setPosition(p_position);
+    cursor.movePosition(QTextCursor::NextCharacter);
+    p_position = qMin(cursor.position(), end);
+    if (persistentConcealSpanAt(p_position, hiddenStart, hiddenEnd)) {
+      p_position = hiddenEnd;
+    }
+  }
+  if (!p_onCharacter || p_position < end) {
+    return p_position;
+  }
+  QTextCursor cursor(document());
+  cursor.setPosition(end);
+  while (cursor.position() > block.position() &&
+         cursor.movePosition(QTextCursor::PreviousCharacter)) {
+    if (!persistentConcealSpanAt(cursor.position(), hiddenStart, hiddenEnd)) {
+      return cursor.position();
+    }
+    cursor.setPosition(hiddenStart);
+  }
+  // A marker-only line has an insertion caret but no block-character caret.
+  return end;
+}
+
+bool TextDocumentLayout::movePersistentConcealCursor(QTextCursor &p_cursor,
+                                                     QTextCursor::MoveOperation p_operation,
+                                                     QTextCursor::MoveMode p_mode,
+                                                     int p_count) const {
+  if (p_cursor.document() != document() || p_count < 0 ||
+      (p_operation != QTextCursor::NextCharacter && p_operation != QTextCursor::PreviousCharacter &&
+       p_operation != QTextCursor::Left && p_operation != QTextCursor::Right)) {
+    return false;
+  }
+  auto cursor = p_cursor;
+  bool handled = hasPersistentConceal(cursor.block());
+  const int normalized = normalizePersistentConcealPosition(cursor.position(), false);
+  if (normalized != cursor.position() ||
+      (p_mode == QTextCursor::MoveAnchor && cursor.hasSelection())) {
+    cursor.setPosition(normalized, p_mode);
+  }
+  auto probe = cursor;
+  probe.clearSelection();
+  for (int step = 0; step < p_count; ++step) {
+    const int origin = cursor.position();
+    if (probe.position() != origin) {
+      probe.setPosition(origin);
+    }
+    bool moved = false;
+    while (probe.movePosition(p_operation, QTextCursor::MoveAnchor)) {
+      handled |= hasPersistentConceal(probe.block());
+      const int position = normalizePersistentConcealPosition(probe.position(), false);
+      if (position != origin) {
+        cursor.setPosition(position, p_mode);
+        moved = true;
+        break;
+      }
+      // A logical backward step can jump the whole hidden interval. Visual
+      // Left/Right continue native stepping to preserve bidi boundary order.
+      int hiddenStart, hiddenEnd;
+      if (p_operation == QTextCursor::PreviousCharacter &&
+          persistentConcealSpanAt(probe.position(), hiddenStart, hiddenEnd)) {
+        probe.setPosition(hiddenStart);
+      }
+    }
+    if (!moved) {
+      break;
+    }
+  }
+  if (handled) {
+    p_cursor = cursor;
+  }
+  return handled;
+}
+
+bool TextDocumentLayout::persistentConcealRemovalRanges(int p_start, int p_end,
+                                                        QVector<md::ElementRegion> &p_ranges,
+                                                        int p_insertionPosition) const {
+  p_ranges.clear();
+  if (p_start < 0 || p_end <= p_start || p_end >= document()->characterCount()) {
+    return false;
+  }
+  QVarLengthArray<int, 16> groups;
+  const auto last = document()->findBlock(p_end - 1);
+  for (auto block = document()->findBlock(p_start); block.isValid(); block = block.next()) {
+    for (int index : BlockLayoutData::get(block)->m_concealGroups) {
+      const auto &group = m_concealGroups.at(index);
+      if (group.m_active && group.m_spec.m_keepHidden && group.m_spec.m_start < p_end &&
+          group.m_spec.m_end > p_start &&
+          std::find(groups.cbegin(), groups.cend(), index) == groups.cend()) {
+        groups.append(index);
+      }
+    }
+    if (block == last) {
+      break;
+    }
+  }
+  if (groups.isEmpty()) {
+    return false;
+  }
+  QVector<md::ElementRegion> hidden;
+  for (int index : groups) {
+    const auto &spec = m_concealGroups.at(index).m_spec;
+    for (int i = spec.m_firstRun; i < spec.m_firstRun + spec.m_runCount; ++i) {
+      const auto &run = m_concealRuns.at(i);
+      hidden.append({run.m_sourceStart, run.m_sourceEnd});
+    }
+  }
+  mergeSourceRanges(hidden);
+  int position = p_start;
+  for (const auto &run : hidden) {
+    if (run.m_endPos <= position) {
+      continue;
+    }
+    if (run.m_startPos >= p_end) {
+      break;
+    }
+    if (run.m_startPos > position) {
+      p_ranges.append({position, run.m_startPos});
+    }
+    position = qMax(position, run.m_endPos);
+  }
+  if (position < p_end) {
+    p_ranges.append({position, p_end});
+  }
+
+  // The merged coverage includes nested and adjacent owners. A group is empty
+  // only if every formerly visible gap is selected, and at least one existed.
+  for (int index : groups) {
+    const auto &spec = m_concealGroups.at(index).m_spec;
+    bool removedBody = false;
+    bool empty = true;
+    int firstVisible = spec.m_end;
+    int lastVisible = spec.m_start;
+    position = spec.m_start;
+    const auto gapRemoved = [&](int p_from, int p_to) {
+      if (p_from >= p_to) {
+        return true;
+      }
+      removedBody = true;
+      firstVisible = qMin(firstVisible, p_from);
+      lastVisible = qMax(lastVisible, p_to);
+      return p_start <= p_from && p_end >= p_to;
+    };
+    for (const auto &run : hidden) {
+      if (run.m_endPos <= position) {
+        continue;
+      }
+      if (run.m_startPos >= spec.m_end) {
+        break;
+      }
+      if (!gapRemoved(position, qMin(run.m_startPos, spec.m_end))) {
+        empty = false;
+        break;
+      }
+      position = qMax(position, run.m_endPos);
+    }
+    empty &= gapRemoved(position, spec.m_end);
+    const bool replacingBody =
+        p_insertionPosition >= firstVisible && p_insertionPosition <= lastVisible;
+    if (empty && removedBody && !replacingBody) {
+      for (int i = spec.m_firstRun; i < spec.m_firstRun + spec.m_runCount; ++i) {
+        const auto &run = m_concealRuns.at(i);
+        p_ranges.append({run.m_sourceStart, run.m_sourceEnd});
+      }
+    }
+  }
+  mergeSourceRanges(p_ranges);
+  return true;
+}
+
+void TextDocumentLayout::preparePersistentConcealRemoval(const QVector<md::ElementRegion> &p_ranges,
+                                                         int p_insertionPosition,
+                                                         const QString &p_insertedText) {
+  m_concealRemovalHint = {};
+  if (p_ranges.isEmpty() && p_insertedText.isEmpty()) {
+    return;
+  }
+  const int end = document()->characterCount() - 1;
+  if (!p_insertedText.isEmpty() && (p_insertionPosition < 0 || p_insertionPosition > end ||
+                                    p_insertedText.contains(QLatin1Char('\r')))) {
+    return;
+  }
+  int previousEnd = 0;
+  int removed = 0;
+  for (const auto &range : p_ranges) {
+    if (range.m_startPos < previousEnd || range.m_endPos <= range.m_startPos ||
+        range.m_endPos > end) {
+      return;
+    }
+    removed += range.m_endPos - range.m_startPos;
+    previousEnd = range.m_endPos;
+  }
+  auto &hint = m_concealRemovalHint;
+  hint.m_ranges = p_ranges;
+  hint.m_revision = m_concealSourceRevision;
+  hint.m_inserted = int(p_insertedText.size());
+  hint.m_characterCount = document()->characterCount() - removed + hint.m_inserted;
+  hint.m_start = p_ranges.isEmpty() ? p_insertionPosition : p_ranges.first().m_startPos;
+  hint.m_end = p_ranges.isEmpty() ? p_insertionPosition : p_ranges.last().m_endPos;
+  if (hint.m_inserted) {
+    hint.m_start = qMin(hint.m_start, p_insertionPosition);
+    hint.m_end = qMax(hint.m_end, p_insertionPosition);
+    hint.m_insertionPosition = p_insertionPosition;
+    for (auto it = p_ranges.crbegin(); it != p_ranges.crend(); ++it) {
+      if (hint.m_insertionPosition > it->m_startPos) {
+        hint.m_insertionPosition -= qMin(hint.m_insertionPosition, it->m_endPos) - it->m_startPos;
+      }
+    }
+  }
+  hint.m_expected.reserve(hint.m_end - hint.m_start - removed + hint.m_inserted);
+  previousEnd = hint.m_start;
+  for (const auto &range : p_ranges) {
+    hint.m_expected += sourceText(document(), previousEnd, range.m_startPos);
+    previousEnd = range.m_endPos;
+  }
+  hint.m_expected += sourceText(document(), previousEnd, hint.m_end);
+  if (hint.m_inserted) {
+    auto inserted = p_insertedText;
+    inserted.replace(QLatin1Char('\n'), QChar::ParagraphSeparator);
+    hint.m_expected.insert(hint.m_insertionPosition - hint.m_start, inserted);
+  }
+}
+
 int TextDocumentLayout::concealCursorPosition() const {
   return m_concealCursorAnchor.m_block.isValid() ? m_concealCursorAnchor.position() : -1;
 }
 
 bool TextDocumentLayout::concealGroupRevealed(const LiveConcealGroup &p_group, int p_cursor) const {
-  if (p_cursor < 0) {
+  if (p_group.m_spec.m_keepHidden || p_cursor < 0) {
     return false;
   }
   const int start = p_group.m_revealStart.position();
@@ -602,7 +926,7 @@ bool TextDocumentLayout::eventFilter(QObject *p_object, QEvent *p_event) {
   }
   m_concealImeEdit = {};
   const auto *edit = qobject_cast<QTextEdit *>(p_object);
-  if (!edit || edit->document() != document() || edit->isReadOnly() || m_concealGroups.isEmpty()) {
+  if (!edit || edit->document() != document() || edit->isReadOnly()) {
     return false;
   }
   const auto *event = static_cast<QInputMethodEvent *>(p_event);
@@ -611,8 +935,7 @@ bool TextDocumentLayout::eventFilter(QObject *p_object, QEvent *p_event) {
   const auto &commit = event->commitString();
   const bool gettingInput = !commit.isEmpty() || event->replacementLength() > 0 ||
                             event->preeditString() != block.layout()->preeditAreaText();
-  if (!gettingInput ||
-      (commit.isEmpty() && event->replacementLength() == 0 && !cursor.hasSelection())) {
+  if (!gettingInput) {
     return false;
   }
   // Qt merges source edits with a whole-paragraph preedit notification. Retain
@@ -665,12 +988,69 @@ void TextDocumentLayout::updateConcealSource(int p_position, int p_removed, int 
     p_removed = ime.m_removed;
     p_added = ime.m_added;
   }
+  const int oldRevision = m_concealSourceRevision;
   m_concealSourceRevision = doc->revision();
   if (p_removed == 0 && p_added == 0) {
     return;
   }
-  const int removedEnd = p_position + p_removed;
-  const int delta = p_added - p_removed;
+
+  QVarLengthArray<ConcealSourceChange, 4> changes;
+  const auto hint = std::move(m_concealRemovalHint);
+  m_concealRemovalHint = {};
+  if (hint.m_revision == oldRevision && hint.m_characterCount == doc->characterCount() &&
+      p_position == hint.m_start && p_removed == hint.m_end - hint.m_start &&
+      p_added == hint.m_expected.size() && sourceTextMatches(doc, p_position, hint.m_expected)) {
+    for (auto it = hint.m_ranges.crbegin(); it != hint.m_ranges.crend(); ++it) {
+      changes.append({it->m_startPos, it->m_endPos - it->m_startPos, 0});
+    }
+    if (hint.m_inserted) {
+      changes.append({hint.m_insertionPosition, 0, hint.m_inserted});
+    }
+  }
+  if (changes.isEmpty()) {
+    changes.append({p_position, p_removed, p_added});
+  }
+  const auto mapPosition = [](int p_pos, const ConcealSourceChange &p_change, bool p_right) {
+    const int end = p_change.m_position + p_change.m_removed;
+    if (p_pos < p_change.m_position) {
+      return p_pos;
+    }
+    if (p_pos > end || (p_change.m_removed > 0 && p_pos == end)) {
+      return p_pos + p_change.m_added - p_change.m_removed;
+    }
+    return p_change.m_position + (p_right ? p_change.m_added : 0);
+  };
+  // Intermediate coordinates of an owned edit block do not address the final
+  // QTextDocument. Map first, then check its exact markers and grapheme edges.
+  QVarLengthArray<int, 8> changedEdges;
+  for (int i = 0; i < changes.size(); ++i) {
+    int start = changes.at(i).m_position;
+    int end = start + changes.at(i).m_added;
+    for (int j = i + 1; j < changes.size(); ++j) {
+      start = mapPosition(start, changes.at(j), false);
+      end = mapPosition(end, changes.at(j), true);
+    }
+    changedEdges.append(start);
+    changedEdges.append(end);
+  }
+  const auto ownRunsCoverExtent = [this](const ConcealGroup &p_spec) {
+    int position = p_spec.m_start;
+    while (position < p_spec.m_end) {
+      int next = position;
+      for (int i = p_spec.m_firstRun; i < p_spec.m_firstRun + p_spec.m_runCount; ++i) {
+        const auto &run = m_concealRuns.at(i);
+        if (run.m_sourceStart <= position) {
+          next = qMax(next, run.m_sourceEnd);
+        }
+      }
+      if (next == position) {
+        return false;
+      }
+      position = next;
+    }
+    return position == p_spec.m_end;
+  };
+  QVector<ConcealCleanup> empty;
   for (int index = 0; index < m_concealGroups.size(); ++index) {
     auto &group = m_concealGroups[index];
     if (!group.m_valid) {
@@ -686,36 +1066,96 @@ void TextDocumentLayout::updateConcealSource(int p_position, int p_removed, int 
       composing |=
           dependency.m_block.isValid() && !dependency.m_block.layout()->preeditAreaText().isEmpty();
     }
-    // IME preedit/cancellation reports the whole block as replaced and can
-    // advance the document revision without changing its source revision.
-    if (delta == 0 && !dependencyChanged && composing) {
+    // Preedit/cancellation can advance the document revision without changing
+    // its source. The event-reduced source triple above handles ordinary IME.
+    if (p_added == p_removed && !dependencyChanged && composing && changes.size() == 1) {
       continue;
     }
     auto &spec = group.m_spec;
-    const int first = qMin(spec.m_start, spec.m_revealStart);
-    const int last = qMax(spec.m_end, spec.m_revealEnd);
-    const bool intersects = p_removed > 0 ? p_position < last && removedEnd > first
-                                          : p_position > first && p_position < last;
-    if (intersects) {
-      group.m_valid = group.m_active = false;
+    bool changedBody = false;
+    bool cleanupCandidate = false;
+    int bodyPosition = 0;
+    for (const auto &change : changes) {
+      const int removedEnd = change.m_position + change.m_removed;
+      const int delta = change.m_added - change.m_removed;
+      const int first = qMin(spec.m_start, spec.m_revealStart);
+      const int last = qMax(spec.m_end, spec.m_revealEnd);
+      bool extendsBody =
+          spec.m_keepHidden && change.m_removed == 0 && change.m_position == spec.m_end;
+      if (extendsBody) {
+        const bool leadingOnly =
+            spec.m_runCount == 1 && m_concealRuns.at(spec.m_firstRun).m_sourceStart == spec.m_start;
+        for (int i = spec.m_firstRun; !leadingOnly && i < spec.m_firstRun + spec.m_runCount; ++i) {
+          extendsBody &= m_concealRuns.at(i).m_sourceEnd != spec.m_end;
+        }
+      }
+      const bool intersects =
+          extendsBody ||
+          (change.m_removed > 0 ? change.m_position < last && removedEnd > first
+                                : change.m_position > first && change.m_position < last);
+      if (cleanupCandidate) {
+        bodyPosition = mapPosition(bodyPosition, change, true);
+      }
+      if (intersects && !spec.m_keepHidden) {
+        group.m_valid = group.m_active = false;
+        break;
+      }
+      if (spec.m_keepHidden) {
+        // A body edit may resize the group, but never changes ownership of a
+        // marker byte. Even identical marker replacements lose that lineage.
+        for (int i = spec.m_firstRun; i < spec.m_firstRun + spec.m_runCount; ++i) {
+          const auto &run = m_concealRuns.at(i);
+          const bool touches =
+              change.m_removed > 0
+                  ? change.m_position < run.m_sourceEnd && removedEnd > run.m_sourceStart
+                  : change.m_position > run.m_sourceStart && change.m_position < run.m_sourceEnd;
+          if (touches) {
+            group.m_valid = group.m_active = false;
+            break;
+          }
+        }
+        if (!group.m_valid) {
+          break;
+        }
+        if (intersects && change.m_removed > 0 && change.m_added == 0 &&
+            !ownRunsCoverExtent(spec)) {
+          cleanupCandidate = true;
+          bodyPosition = change.m_position;
+        }
+        changedBody |= intersects;
+        const int oldEnd = spec.m_end;
+        spec.m_start = mapPosition(spec.m_start, change, true);
+        spec.m_end = mapPosition(spec.m_end, change, extendsBody);
+        spec.m_revealStart = mapPosition(spec.m_revealStart, change, true);
+        spec.m_revealEnd =
+            mapPosition(spec.m_revealEnd, change, extendsBody && spec.m_revealEnd == oldEnd);
+        for (int i = spec.m_firstRun; i < spec.m_firstRun + spec.m_runCount; ++i) {
+          auto &run = m_concealRuns[i];
+          const int shift = removedEnd <= run.m_sourceStart ? delta : 0;
+          run.m_sourceStart += shift;
+          run.m_sourceEnd += shift;
+        }
+      } else {
+        // Edge insertions stay outside ordinary retained elements.
+        const int shift = removedEnd <= first ? delta : 0;
+        spec.m_start += shift;
+        spec.m_end += shift;
+        spec.m_revealStart += shift;
+        spec.m_revealEnd += shift;
+        for (int i = spec.m_firstRun; i < spec.m_firstRun + spec.m_runCount; ++i) {
+          m_concealRuns[i].m_sourceStart += shift;
+          m_concealRuns[i].m_sourceEnd += shift;
+        }
+      }
+    }
+    if (!group.m_valid) {
       queueConcealGroup(group);
       continue;
     }
-
-    // These are pre-edit absolutes, unlike QTextBlock::position(), which Qt
-    // has already moved. Edge insertions stay outside the retained element.
-    const int shift = removedEnd <= first ? delta : 0;
-    spec.m_start += shift;
-    spec.m_end += shift;
-    spec.m_revealStart += shift;
-    spec.m_revealEnd += shift;
-    for (int i = spec.m_firstRun; i < spec.m_firstRun + spec.m_runCount; ++i) {
-      m_concealRuns[i].m_sourceStart += shift;
-      m_concealRuns[i].m_sourceEnd += shift;
-    }
     // Undo/redo may reuse a block revision. Coordinates and ownership still
     // need rebinding when an edit moved source within (or out of) that block.
-    const bool rebind = dependencyChanged || group.m_start.position() != spec.m_start ||
+    const bool rebind = dependencyChanged || changedBody ||
+                        group.m_start.position() != spec.m_start ||
                         group.m_end.position() != spec.m_end ||
                         group.m_revealStart.position() != spec.m_revealStart ||
                         group.m_revealEnd.position() != spec.m_revealEnd ||
@@ -724,22 +1164,27 @@ void TextDocumentLayout::updateConcealSource(int p_position, int p_removed, int 
       continue;
     }
     queueConcealGroup(group);
-    auto block = doc->findBlock(first + shift);
+    auto block = doc->findBlock(qMin(spec.m_start, spec.m_revealStart));
     const auto endBlock =
         doc->findBlock(qMax(spec.m_end - 1, spec.m_revealEnd - (spec.m_revealAtEnd ? 0 : 1)));
-    if (!block.isValid() || !endBlock.isValid() ||
-        endBlock.blockNumber() - block.blockNumber() + 1 != group.m_dependencyCount) {
+    const int dependencyCount = endBlock.blockNumber() - block.blockNumber() + 1;
+    if (!block.isValid() || !endBlock.isValid() || spec.m_end <= spec.m_start ||
+        (!spec.m_keepHidden && dependencyCount != group.m_dependencyCount)) {
       group.m_valid = group.m_active = false;
       continue;
     }
     for (int i = spec.m_firstRun; i < spec.m_firstRun + spec.m_runCount; ++i) {
       auto &run = m_concealRuns[i];
       run.m_block = doc->findBlock(run.m_sourceStart);
+      const bool checkStart = std::find(changedEdges.cbegin(), changedEdges.cend(),
+                                        run.m_sourceStart) != changedEdges.cend();
+      const bool checkEnd = std::find(changedEdges.cbegin(), changedEdges.cend(),
+                                      run.m_sourceEnd) != changedEdges.cend();
       if (!run.m_block.isValid() ||
           run.m_sourceEnd > run.m_block.position() + run.m_block.length() - 1 ||
-          (run.m_sourceStart == p_position + p_added &&
-           !graphemeBoundary(run.m_block, run.m_sourceStart)) ||
-          (run.m_sourceEnd == p_position && !graphemeBoundary(run.m_block, run.m_sourceEnd))) {
+          (checkStart && !graphemeBoundary(run.m_block, run.m_sourceStart)) ||
+          (checkEnd && !graphemeBoundary(run.m_block, run.m_sourceEnd)) ||
+          (spec.m_keepHidden && !sourceTextMatches(doc, run.m_sourceStart, run.m_sourceText))) {
         group.m_valid = group.m_active = false;
         break;
       }
@@ -749,19 +1194,34 @@ void TextDocumentLayout::updateConcealSource(int p_position, int p_removed, int 
     if (!group.m_valid) {
       continue;
     }
-    const auto anchor = [doc](int p_position, bool p_end) {
-      const auto block = doc->findBlock(p_end && p_position > 0 ? p_position - 1 : p_position);
-      return ConcealPosition{block, p_position - block.position()};
+    const auto anchor = [doc](int p_pos, bool p_end) {
+      const auto owner = doc->findBlock(p_end && p_pos > 0 ? p_pos - 1 : p_pos);
+      return ConcealPosition{owner, p_pos - owner.position()};
     };
     group.m_start = anchor(spec.m_start, false);
     group.m_end = anchor(spec.m_end, true);
     group.m_revealStart = anchor(spec.m_revealStart, false);
     group.m_revealEnd = anchor(spec.m_revealEnd, true);
+    const bool newDependencies = dependencyCount != group.m_dependencyCount;
+    if (newDependencies) {
+      for (int i = group.m_firstDependency; i < group.m_firstDependency + group.m_dependencyCount;
+           ++i) {
+        const auto &dependency = m_concealDependencies.at(i);
+        if (dependency.m_block.isValid()) {
+          BlockLayoutData::get(dependency.m_block)->m_concealGroups.removeOne(index);
+        }
+      }
+      if (dependencyCount > group.m_dependencyCount) {
+        group.m_firstDependency = m_concealDependencies.size();
+        m_concealDependencies.resize(group.m_firstDependency + dependencyCount);
+      }
+      group.m_dependencyCount = dependencyCount;
+    }
     for (int i = group.m_firstDependency; i < group.m_firstDependency + group.m_dependencyCount;
          ++i, block = block.next()) {
       auto &dependency = m_concealDependencies[i];
-      if (dependency.m_block != block) {
-        if (dependency.m_block.isValid()) {
+      if (newDependencies || dependency.m_block != block) {
+        if (!newDependencies && dependency.m_block.isValid()) {
           BlockLayoutData::get(dependency.m_block)->m_concealGroups.removeOne(index);
         }
         BlockLayoutData::get(block)->m_concealGroups.append(index);
@@ -771,6 +1231,20 @@ void TextDocumentLayout::updateConcealSource(int p_position, int p_removed, int 
       }
       dependency = {block, block.revision()};
       queueConcealRelayout(block);
+    }
+    if (cleanupCandidate && ownRunsCoverExtent(spec)) {
+      empty.append({spec.m_start, spec.m_end, qBound(spec.m_start, bodyPosition, spec.m_end),
+                    sourceText(doc, spec.m_start, spec.m_end)});
+    }
+  }
+  QPointer<TextDocumentLayout> guard(this);
+  const QVector<ConcealCleanup> noCleanup;
+  for (int i = 0; i < changes.size(); ++i) {
+    const auto &change = changes.at(i);
+    emit persistentConcealSourceChanged(change.m_position, change.m_removed, change.m_added,
+                                        i + 1 == changes.size() ? empty : noCleanup);
+    if (!guard) {
+      return;
     }
   }
 }
@@ -3462,7 +3936,8 @@ bool TextDocumentLayout::lineClaimsRange(const QTextLine &p_line, int p_start, i
   return true;
 }
 
-qreal TextDocumentLayout::inlinePlacementWidth(int p_startPos, int p_endPos, qreal *p_startX) const {
+qreal TextDocumentLayout::inlinePlacementWidth(int p_startPos, int p_endPos,
+                                               qreal *p_startX) const {
   if (p_startX) {
     *p_startX = m_margin;
   }

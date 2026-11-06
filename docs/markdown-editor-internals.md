@@ -359,7 +359,11 @@ end, and three U+00B7 middle dots. A destination must exceed both the threshold 
 compact spelling's grapheme count. Negative thresholds act as zero; invalid lengths or
 multiline replacements leave the source visible.
 
-Syntax kinds use `MarkdownConcealHideSyntax{}` and are opt-in:
+Syntax kinds are opt-in. `set(kind)` installs the kind's default rule: the marker
+kinds below use `MarkdownConcealHideSyntax{true}` (`m_keepHidden`), while `LinkSyntax`
+keeps reveal-on-entry. The two-argument `set(kind, rule)` selects an explicit policy;
+`MarkdownConcealHideSyntax{false}` (also the default-constructed value) retains the
+revealable behavior for any syntax kind:
 
 | Kind | Concealed source | Visible content |
 |------|------------------|-----------------|
@@ -373,10 +377,8 @@ Syntax kinds use `MarkdownConcealHideSyntax{}` and are opt-in:
 For example, opt into heading and formula markers without changing the URL defaults:
 
 ```cpp
-config->m_concealRules.set(MarkdownConcealElement::HeadingMarkers,
-                           MarkdownConcealHideSyntax{});
-config->m_concealRules.set(MarkdownConcealElement::InlineFormulaMarkers,
-                           MarkdownConcealHideSyntax{});
+config->m_concealRules.set(MarkdownConcealElement::HeadingMarkers);
+config->m_concealRules.set(MarkdownConcealElement::InlineFormulaMarkers);
 ```
 
 `MarkdownHighlighter::concealRangesUpdated()` publishes timestamp-matched full-parse
@@ -404,8 +406,8 @@ single-line text, including an empty string or text longer than its source. Grou
 blocks; neither source nor replacement may consume or introduce a paragraph separator.
 Shortening thresholds and delimiter recognition never enter the layout engine.
 
-The caret reveals an entire group when it enters its reveal region or any run. Syntax groups
-also reveal at their exclusive end, keeping closing delimiters and empty headings editable at
+For revealable rules, the caret reveals an entire group on entering its reveal region or any
+run. These syntax groups also reveal at their exclusive end, keeping empty headings editable at
 EOF; URL groups retain their half-open boundary behavior. Selection alone does not reveal a
 group. IME preedit uses its source anchor and the same reveal boundaries: composing inside a
 multiblock group reveals all its runs, but unrelated groups on that line stay concealed.
@@ -413,16 +415,42 @@ Conceal overlays and glyph patches account for Qt's temporary UTF-16 preedit ins
 source ownership remains unchanged. A nonempty replacement hit maps to its source start
 (including preedit in Qt's native hit-test coordinates); zero-width boundaries use visible
 neighbor affinity and an exclusive-end fallback. Completely hidden paragraphs retain an
-editable line height. Copy, cut, search, undo and counted Vi motions always use original source.
+editable line height. Copy and search remain source-based.
+
+Persistent groups (`m_keepHidden`) stay hidden during caret entry and IME composition.
+Insertion carets use one source position per visible gap: immediately before the next visible
+grapheme, or at line end after trailing markers. In `**bold**a`, positions 6/7/8 therefore
+canonicalize to 8; Left from 9 visits 8 then 5. Vi block carets instead rest on visible
+characters, including after line-end clamping and leaving Insert mode. Arrows, selection
+extension and counted Vi character motions reuse block-local memberships, without allocating
+another text projection or scanning unrelated blocks.
+
+A movement's landing range is not its deletion range. The shared removal planner subtracts
+persistent marker spans, includes wrappers whose last visible content is removed, and applies
+reverse-order source edits in one undo block. Typed/pasted replacement preserves the wrapper
+containing the insertion point. Empty heading cleanup also covers a single opening marker;
+initially empty headings are not automatically deleted. Known disjoint edits are registered
+before mutation and checked against Qt's coalesced notification and retained source bytes.
+
+`MarkdownConcealController` owns source mutation; layout owns only coordinates and geometry.
+Direct Qt/IME deletions queue exact marker-only source and its body gap independently of parse
+snapshots. Cleanup waits for idle/composition completion, rechecks its source, and cancels on
+restored content, changed marker bytes, reset or undo/redo replay. It joins the original undo
+command only with matching history/revision evidence; otherwise a still-valid cleanup is a
+separate undo step. Qt can report zero redo steps while its final command is redoable, so the
+replay guard also tracks redo availability. Coverage: `testPersistentConceal*` in
+`tests/test_markdowneditor`.
 
 Nested empty hides combine without losing ownership; a containing hide suppresses an inner
 replacement. Revealing the outer group allows independent inner rules to apply. Incompatible
 partial replacements leave the implicated groups visible, not unrelated groups. Submission
 always replaces the previous snapshot, and validation/shaping succeeds for every run of a
 group or reveals the whole group. Source edits map untouched groups, including edits elsewhere
-in the same block; edits intersecting a group's source extent invalidate all its runs. Unhandled
-dependency revisions also invalidate the group. Unrelated edits and edits in already revealed
-groups retain the same-height single-block layout fast path.
+in the same block. Intersecting edits invalidate revealable groups. Persistent groups retain
+unchanged marker bytes through visible-body edits and rebind their source/block coordinates;
+unknown edits touching a marker invalidate its ownership instead. Unhandled dependency revisions
+also invalidate the group. Unrelated edits and edits in already revealed groups retain the
+same-height single-block layout fast path.
 
 Qt coalesces IME commits and preedit formatting into a whole-paragraph replacement notification.
 Before a source-changing IME event, the layout retains the exact event-derived edit and expected

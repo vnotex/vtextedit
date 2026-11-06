@@ -1,5 +1,25 @@
 # Changelog
 
+## 12.0.0 (unreleased)
+
+### Breaking changes
+
+- Add persistent hiding to syntax rules and source-projection input hooks, including the
+  KateVi character-movement interface. Rebuild consumers; VTextEdit SOVERSION is 12.
+
+### Features
+
+- `MarkdownConcealRules::set(kind)` selects default policies: heading, emphasis, strong,
+  inline code/math, mark and strikethrough markers stay hidden while editing. Link syntax
+  and destination shortening retain reveal-on-entry. Explicit `MarkdownConcealHideSyntax`
+  rules select the behavior through `m_keepHidden`; syntax rules remain opt-in.
+- Arrow/Shift and counted Vi character movements skip persistent markers. Deletion removes
+  visible text without damaging crossed markers; deleting the last content removes its
+  wrappers in the same owned edit. Typed/pasted replacement preserves surrounding formatting.
+- Keep marker ownership through body edits before reparsing. Direct Qt/IME cleanup validates
+  exact source lineage and cancels on undo/redo, restored content, changed markers or reset.
+  Deferred cleanup joins undo only when proven safe; otherwise it is a separate undo step.
+
 ## 11.0.0 (unreleased)
 
 ### Breaking changes

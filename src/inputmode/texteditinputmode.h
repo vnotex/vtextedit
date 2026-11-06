@@ -80,6 +80,9 @@ public:
 
   KateViI::Cursor cursorPosition() const Q_DECL_OVERRIDE;
 
+  KateViI::Cursor moveCharacters(const KateViI::Cursor &p_cursor,
+                                 int p_count) const Q_DECL_OVERRIDE;
+
   int lines() const Q_DECL_OVERRIDE;
 
   void removeSelection() Q_DECL_OVERRIDE;

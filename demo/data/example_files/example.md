@@ -5,8 +5,9 @@
 
 The demo hides heading hashes and the markers of **bold**, *italic*, ~~strike~~ and ==mark==.
 Inline code can use ``two ` backticks``; formulas include $x + y$ and $$a^2 + b^2$$.
-Move the caret into an element to reveal all its syntax; leave it to hide the syntax again.
-Links keep their label visible. Copy, search and Vi motions always use the original source.
+These markers stay hidden while editing; arrows and counted Vi character motions skip them.
+Deleting an element's last content removes its markers too. Links still reveal on caret entry.
+Copy and search continue to use the original Markdown source.
 
 [Alphabet](abcdefghijklmnopqrstuvwxyz) followed by ordinary text.
 In Vi normal mode, place the caret on the opening parenthesis and type `5l` to reach `e`.

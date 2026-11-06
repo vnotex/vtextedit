@@ -18,7 +18,10 @@ struct MarkdownConcealShortenDestination {
   QString m_replacement = QString(3, QChar(0x00b7));
 };
 
-struct MarkdownConcealHideSyntax {};
+struct MarkdownConcealHideSyntax {
+  // Skip these markers while editing instead of revealing them on caret entry.
+  bool m_keepHidden = false;
+};
 
 using MarkdownConcealRule =
     std::variant<MarkdownConcealShortenDestination, MarkdownConcealHideSyntax>;
@@ -38,6 +41,14 @@ public:
     return p_kind == MarkdownConcealElement::ImageUrl ||
            p_kind == MarkdownConcealElement::LinkUrl ||
            p_kind == MarkdownConcealElement::ReferenceUrl;
+  }
+
+  // Enable the kind's default policy. Explicit rules below can override it.
+  bool set(MarkdownConcealElement p_kind) {
+    if (isDestination(p_kind)) {
+      return set(p_kind, MarkdownConcealShortenDestination{});
+    }
+    return set(p_kind, MarkdownConcealHideSyntax{p_kind != MarkdownConcealElement::LinkSyntax});
   }
 
   // Invalid kind/operation combinations are rejected, never reinterpreted.

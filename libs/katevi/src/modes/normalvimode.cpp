@@ -378,24 +378,14 @@ bool NormalViMode::commandEnterInsertMode() {
  * enter insert mode after the current character
  */
 bool NormalViMode::commandEnterInsertModeAppend() {
-  KateViI::Cursor c(m_interface->cursorPosition());
-  c.setColumn(c.column() + 1);
-
-  // if empty line, the cursor should start at column 0
-  if (m_interface->lineLength(c.line()) == 0) {
-    c.setColumn(0);
-  }
-
-  // cursor should never be in a column > number of columns
-  if (c.column() > m_interface->lineLength(c.line())) {
-    c.setColumn(m_interface->lineLength(c.line()));
-  }
-
-  updateCursor(c);
-
+  const auto c = m_interface->moveCharacters(m_interface->cursorPosition(), 1);
   m_stickyColumn = -1;
   m_viInputModeManager->getViInsertMode()->setCount(getCount());
-  return startInsertMode();
+  startInsertMode();
+  // Place an insertion destination only after leaving on-character Normal mode.
+  updateCursor(c);
+  m_viInputModeManager->marks()->setInsertStopped(m_interface->cursorPosition());
+  return true;
 }
 
 /**
@@ -404,11 +394,13 @@ bool NormalViMode::commandEnterInsertModeAppend() {
 bool NormalViMode::commandEnterInsertModeAppendEOL() {
   KateViI::Cursor c(m_interface->cursorPosition());
   c.setColumn(m_interface->lineLength(c.line()));
-  updateCursor(c);
 
   m_stickyColumn = -1;
   m_viInputModeManager->getViInsertMode()->setCount(getCount());
-  return startInsertMode();
+  startInsertMode();
+  updateCursor(c);
+  m_viInputModeManager->marks()->setInsertStopped(m_interface->cursorPosition());
+  return true;
 }
 
 bool NormalViMode::commandEnterInsertModeBeforeFirstNonBlankInLine() {
@@ -428,12 +420,13 @@ bool NormalViMode::commandEnterInsertModeBeforeFirstNonBlankInLine() {
  */
 bool NormalViMode::commandEnterInsertModeLast() {
   KateViI::Cursor c = m_viInputModeManager->marks()->getInsertStopped();
+  m_stickyColumn = -1;
+  startInsertMode();
   if (c.isValid()) {
     updateCursor(c);
+    m_viInputModeManager->marks()->setInsertStopped(m_interface->cursorPosition());
   }
-
-  m_stickyColumn = -1;
-  return startInsertMode();
+  return true;
 }
 
 bool NormalViMode::commandEnterVisualLineMode() {
@@ -885,6 +878,8 @@ bool NormalViMode::commandJoinLines() {
 
 bool NormalViMode::commandChange() {
   KateViI::Cursor c(m_interface->cursorPosition());
+  auto insertion = m_interface->textCursor();
+  insertion.clearSelection();
 
   OperationMode m = getOperationMode();
 
@@ -904,15 +899,14 @@ bool NormalViMode::commandChange() {
     // (done above) and then starting block prepend.
     return commandPrependToBlock();
   } else {
-    if (m_commandRange.startLine < m_commandRange.endLine) {
-      c.setLine(m_commandRange.startLine);
-    }
-    c.setColumn(m_commandRange.startColumn);
+    // Removal may also clean up hidden wrappers before the requested source range.
+    c = KateViI::Cursor(insertion.blockNumber(), insertion.positionInBlock());
   }
 
-  updateCursor(c);
   setCount(0); // The count was for the motion, not the insertion.
   commandEnterInsertMode();
+  updateCursor(c);
+  m_viInputModeManager->marks()->setInsertStopped(m_interface->cursorPosition());
 
   // correct indentation level
   if (m == LineWise) {
@@ -965,11 +959,16 @@ bool NormalViMode::commandChangeLine() {
 }
 
 bool NormalViMode::commandSubstituteChar() {
+  auto insertion = m_interface->textCursor();
+  insertion.clearSelection();
   if (commandDeleteChar()) {
     // The count is only used for deletion of chars; the inserted text is not
     // repeated
     setCount(0);
-    return commandEnterInsertMode();
+    commandEnterInsertMode();
+    updateCursor(KateViI::Cursor(insertion.blockNumber(), insertion.positionInBlock()));
+    m_viInputModeManager->marks()->setInsertStopped(m_interface->cursorPosition());
+    return true;
   }
 
   m_deleteCommand = true;
@@ -1087,14 +1086,11 @@ bool NormalViMode::commandIndentedPasteBefore() { return paste(AtCurrentPosition
 
 bool NormalViMode::commandDeleteChar() {
   KateViI::Cursor c(m_interface->cursorPosition());
-  Range r(c.line(), c.column(), c.line(), c.column() + getCount(), ExclusiveMotion);
+  const auto end = m_interface->moveCharacters(c, getCount());
+  Range r(c.line(), c.column(), end.line(), end.column(), ExclusiveMotion);
 
   if (m_commandRange.startLine != -1 && m_commandRange.startColumn != -1) {
     r = m_commandRange;
-  } else {
-    if (r.endColumn > m_interface->lineLength(r.startLine)) {
-      r.endColumn = m_interface->lineLength(r.startLine);
-    }
   }
 
   // should delete entire lines if in visual line mode and selection in visual
@@ -1113,14 +1109,11 @@ bool NormalViMode::commandDeleteChar() {
 bool NormalViMode::commandDeleteCharBackward() {
   KateViI::Cursor c(m_interface->cursorPosition());
 
-  Range r(c.line(), c.column() - getCount(), c.line(), c.column(), ExclusiveMotion);
+  const auto start = m_interface->moveCharacters(c, -static_cast<int>(getCount()));
+  Range r(start.line(), start.column(), c.line(), c.column(), ExclusiveMotion);
 
   if (m_commandRange.startLine != -1 && m_commandRange.startColumn != -1) {
     r = m_commandRange;
-  } else {
-    if (r.startColumn < 0) {
-      r.startColumn = 0;
-    }
   }
 
   // should delete entire lines if in visual line mode and selection in visual
@@ -1695,11 +1688,7 @@ Range NormalViMode::motionLeft() {
   KateViI::Cursor cursor(m_interface->cursorPosition());
   m_stickyColumn = -1;
   Range r(cursor, ExclusiveMotion);
-  r.endColumn -= getCount();
-
-  if (r.endColumn < 0) {
-    r.endColumn = 0;
-  }
+  r.endColumn = m_interface->moveCharacters(cursor, -static_cast<int>(getCount())).column();
 
   return r;
 }
@@ -1710,12 +1699,7 @@ Range NormalViMode::motionRight() {
   KateViI::Cursor cursor(m_interface->cursorPosition());
   m_stickyColumn = -1;
   Range r(cursor, ExclusiveMotion);
-  r.endColumn += getCount();
-
-  // make sure end position isn't > line length
-  if (r.endColumn > m_interface->lineLength(r.endLine)) {
-    r.endColumn = m_interface->lineLength(r.endLine);
-  }
+  r.endColumn = m_interface->moveCharacters(cursor, getCount()).column();
 
   return r;
 }

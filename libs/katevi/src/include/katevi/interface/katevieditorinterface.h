@@ -97,6 +97,17 @@ public:
 
   virtual KateViI::Cursor cursorPosition() const = 0;
 
+  // Return a source-coordinate destination, bounded to the same line.
+  // Editors with hidden source spans may count visible characters instead.
+  virtual KateViI::Cursor moveCharacters(const KateViI::Cursor &p_cursor, int p_count) const {
+    if (!p_cursor.isValid()) {
+      return p_cursor;
+    }
+    const int length = lineLength(p_cursor.line());
+    const int column = qBound(0, p_cursor.column(), length);
+    return KateViI::Cursor(p_cursor.line(), column + qBound(-column, p_count, length - column));
+  }
+
   // Return number of lines in document.
   virtual int lines() const = 0;
 
