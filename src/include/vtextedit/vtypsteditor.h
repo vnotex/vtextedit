@@ -35,6 +35,17 @@ struct TypstHeadingInfo {
   QString m_file;
 };
 
+// A unique evaluated top-level '=' heading in the active file, including outlined:false.
+// A nonempty list proves that ALL evaluated headings match this complete source list.
+// Unsupported/generated/imported/nested/reordered or level-transformed headings make it empty.
+struct TypstSourceHeadingInfo {
+  int m_startPos = -1;
+  int m_endPos = -1;
+  int m_level = -1;
+  // Index in getHeadings(), or -1 for an outlined:false section boundary.
+  int m_headingIndex = -1;
+};
+
 // Snapshot identities are opaque. Actions resolve the original compiler record, not copied fields.
 struct TypstResourceContext {
   enum class Surface { Source, InPlace, Preview };
@@ -113,6 +124,9 @@ public:
   // Empty until a successful compile and immediately on input/compiler invalidation.
   // Borrowed until the next update; copy the QVector to retain a snapshot.
   const QVector<TypstHeadingInfo> &getHeadings() const;
+  // AST-proven half-open LF/UTF-16 ranges, accepted/invalidated with getHeadings().
+  // Empty means no safe source mapping; navigation may still be available.
+  const QVector<TypstSourceHeadingInfo> &getSourceHeadings() const;
   void retryCompilation();
   void showOutputAtCursor();
 
@@ -144,7 +158,7 @@ signals:
   void livePreviewEnabledChanged(bool p_enabled);
   void compileStatusChanged(vte::VTypstEditor::CompileStatus p_status, const QString &p_message);
   void diagnosticsChanged(const QStringList &p_diagnostics);
-  // Complete accepted outline, or empty when a nonempty outline is invalidated.
+  // Both heading getters are updated atomically before this notification, including invalidation.
   void headingsUpdated(const QVector<vte::TypstHeadingInfo> &p_headings);
   // Actual preview camera state, including fit-mode changes at the same scale.
   void pdfZoomChanged(qreal p_zoom, vte::VTypstEditor::PdfZoomMode p_mode);

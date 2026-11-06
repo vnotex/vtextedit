@@ -12,6 +12,9 @@
 
 ### Features
 
+- Expose AST-proven Typst source-heading ranges alongside the evaluated navigation outline,
+  including hidden headings and depths above six. Invalidate both with the accepted snapshot
+  and reject ambiguous generated, nested, imported, repeated or transformed source mappings.
 - Generalize source-preserving concealment to grouped, variable-length display replacements,
   including zero-width hiding of both ends. Existing URL shortening remains the default.
 - Add opt-in emphasis, strong, strikethrough, mark, inline-code and link-syntax rules. Links

@@ -92,6 +92,7 @@ struct TypstCompiledSnapshot {
   QVector<TypstImageResource> m_images;
   QVector<TypstSourceLink> m_sourceLinks;
   QVector<TypstHeadingInfo> m_headings;
+  QVector<TypstSourceHeadingInfo> m_sourceHeadings;
   QVector<TypstDiagnostic> m_diagnostics;
   QVector<TypstHighlight> m_highlights;
   QStringList m_dependencies;

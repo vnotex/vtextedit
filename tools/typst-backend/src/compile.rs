@@ -9,7 +9,7 @@ use typst::foundations::{Bytes, NativeElement, StyleChain};
 use typst::introspection::{Introspector, PagedPosition};
 use typst::layout::{Abs, Frame, FrameItem, Point, Sides, Transform};
 use typst::model::{Document, HeadingElem};
-use typst::syntax::{LinkedNode, Source};
+use typst::syntax::{FileId, LinkedNode, Source, ast};
 use typst::utils::Scalar;
 use typst::{World, WorldExt};
 use typst_layout::PagedDocument;
@@ -177,6 +177,8 @@ impl Session {
             reply["previews"] = json!([]);
             reply["links"] = json!([]);
             reply["headings"] = json!([]);
+            reply["sourceHeadings"] = json!([]);
+            reply["sourceLength"] = json!(0);
         }
         if let Some(error) = world.resource_error() { return Err(error); }
         if let Err(error) = world.check_dependencies() {
@@ -198,12 +200,13 @@ impl Session {
                 }
                 pages.push(json!([width, height]));
             }
-            let (previews, mut resources, links, headings, source_links) = if preview_metadata {
+            let (previews, mut resources, links, headings, source_headings, source_length, source_links) = if preview_metadata {
                 let (previews, resources) = crate::preview::extract_with_resources(world, &document)?;
-                (previews, resources, extract_links(&document)?, extract_headings(world, &document)?,
+                let (headings, source_headings, source_length) = extract_headings(world, &document, active)?;
+                (previews, resources, extract_links(&document)?, headings, source_headings, source_length,
                     crate::resources::source_links(world, &document)?)
             } else {
-                (json!([]), crate::resources::Resources::default(), json!([]), json!([]), json!([]))
+                (json!([]), crate::resources::Resources::default(), json!([]), json!([]), json!([]), 0, json!([]))
             };
             // Semantic extraction may need additional source files. Validate the
             // complete frozen read set at the actual publication boundary.
@@ -222,6 +225,8 @@ impl Session {
             reply["previews"] = previews;
             reply["links"] = links;
             reply["headings"] = headings;
+            reply["sourceHeadings"] = source_headings;
+            reply["sourceLength"] = json!(source_length);
             reply["dependencies"] = world.dependencies();
             reply["images"] = resources.take_metadata();
             reply["sourceLinks"] = source_links;
@@ -562,14 +567,48 @@ fn unmapped_diagnostic(message: &str) -> Value {
     json!({"file":"", "start":-1, "end":-1, "severity":"error", "message":message})
 }
 
-fn extract_headings(world: &dyn World, document: &PagedDocument) -> Result<Value, String> {
+fn extract_headings(world: &dyn World, document: &PagedDocument, active: FileId) -> Result<(Value, Value, i32), String> {
+    let source = world.source(active).map_err(|error| error.to_string())?;
+    let source_length = source.lines().byte_to_utf16(source.text().len())
+        .and_then(|length| i32::try_from(length).ok())
+        .ok_or("active source exceeds signed 32-bit protocol limit")?;
+    let root = LinkedNode::new(source.root());
+    let mut candidates = Vec::new();
+    for node in root.children() {
+        let Some(heading) = node.cast::<ast::Heading>() else { continue };
+        metadata_room(candidates.len())?;
+        let level = i32::try_from(heading.depth().get())
+            .map_err(|_| "source heading level exceeds signed 32-bit protocol limit")?;
+        candidates.push((node.span(), level, node.range()));
+    }
     let mut headings = Vec::new();
-    for elem in document.introspector().query(&HeadingElem::ELEM.select()).iter() {
+    let mut source_headings = Vec::new();
+    let mut complete = true;
+    let evaluated = document.introspector().query(&HeadingElem::ELEM.select());
+    // Inspect EVERY evaluated heading, even outlined:false. A definition-site span
+    // cannot identify a function/loop/import realization. Only an exact one-to-one
+    // top-level AST match in source order authorizes any source rewriting.
+    for (index, elem) in evaluated.iter().enumerate() {
+        metadata_room(index)?;
         let heading = elem.to_packed::<HeadingElem>().unwrap();
-        if !heading.outlined.get(StyleChain::default()) { continue; }
-        metadata_room(headings.len())?;
         let level = i32::try_from(heading.resolve_level(StyleChain::default()).get())
             .map_err(|_| "compiled heading level exceeds signed 32-bit protocol limit")?;
+        let outlined = heading.outlined.get(StyleChain::default());
+        if complete {
+            if let Some((_, syntax_level, range)) = candidates.get(index)
+                .filter(|(span, syntax_level, _)| *span == elem.span() && *syntax_level == level)
+            {
+                let mut value = wire_range(world, active, range.clone())
+                    .ok_or("invalid top-level heading source range")?;
+                value["level"] = json!(syntax_level);
+                value["headingIndex"] = if outlined { json!(headings.len()) } else { json!(-1) };
+                source_headings.push(value);
+            } else {
+                complete = false;
+            }
+        }
+        if !outlined { continue; }
+        metadata_room(headings.len())?;
         let mut value = elem.span().id().and_then(|id| {
             world.range(elem.span()).and_then(|bytes| wire_range(world, id, bytes))
         }).unwrap_or_else(|| json!({"file":"", "start":-1, "end":-1}));
@@ -582,7 +621,10 @@ fn extract_headings(world: &dyn World, document: &PagedDocument) -> Result<Value
         value["level"] = json!(level);
         headings.push(value);
     }
-    Ok(Value::Array(headings))
+    if !complete || evaluated.len() != candidates.len() {
+        source_headings.clear();
+    }
+    Ok((Value::Array(headings), Value::Array(source_headings), source_length))
 }
 
 fn extract_links(document: &PagedDocument) -> Result<Value, String> {

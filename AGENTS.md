@@ -455,6 +455,22 @@ CJK output requires an installed font covering the characters. Coverage: the con
 `system_fonts_shape_chinese_when_available` glyph test and the deterministic
 `explicit_font_precedence_and_frozen_fallback_survive_reset` regression.
 
+## Typst Source Heading Mapping
+
+`getHeadings()` remains the evaluated navigation outline. `getSourceHeadings()` borrows the same
+accepted immutable snapshot and exposes active-file top-level `=` AST ranges, raw levels and an
+outline index (-1 for `outlined:false`). Both lists publish and invalidate together. Hosts must
+retain the accepted snapshot identity and revalidate live edit permissions before rewriting.
+
+Only an exact source-ordered one-to-one match between top-level AST headings and **all** evaluated
+heading elements authorizes source mapping. Inspect hidden headings before outline filtering.
+Nested, functional, generated, imported, repeated or level-transformed headings clear the entire
+source list, not the navigation outline: definition-site spans do not prove realization boundaries.
+Never infer missing section ends from the next visible heading. The host checks complete source
+parents/subtrees against its confirmed move and includes hidden headings in source edits.
+Wire decoding validates bounded UTF-16 ranges, positive depths and visible-index correspondence.
+Coverage: native `sourceHeadings*` and VNote's `outlineMove*` / `outlineHiddenBoundaries` cases.
+
 ## Typst Document Exports
 
 `TypstCompiler` exports native SVG pages, bitmaps, PDF or semantic HTML without widgets.

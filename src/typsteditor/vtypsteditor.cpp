@@ -177,31 +177,33 @@ public:
       // text edit. Rehighlighting also bumps Qt's revision, but leaves that input intact.
       inputRevision = source->document()->revision();
     });
-    QObject::connect(
-        bridge, &TypstCompilerBridge::generationChanged, q,
-        [this](quint64 p_epoch, quint64 p_generation) {
-          const bool hadHeadings = outlineSnapshot && !outlineSnapshot->m_headings.isEmpty();
-          outlineSnapshot.clear();
-          invalidateCursorHighlight();
-          host->setCurrentGeneration(p_epoch, p_generation);
-          source->typstHighlighter()->setGeneration(p_generation);
-          pane->setCurrentGeneration(p_epoch, p_generation);
-          pdfDelivered = 0;
-          pendingNavigationSnapshot = 0;
-          const QPointer<VTypstEditor> alive(q);
-          if (hadHeadings) {
-            emit q->headingsUpdated({});
-            if (!alive || p_epoch != bridge->epoch() || p_generation != bridge->generation()) {
-              return;
-            }
-          }
-          if (!documentReset) {
-            setStatus(CompileStatus::Compiling,
-                      VTypstEditor::tr("Preview is stale; compiling changes…"));
-          }
-          if (alive)
-            emit alive->resourceContextsInvalidated();
-        });
+    QObject::connect(bridge, &TypstCompilerBridge::generationChanged, q,
+                     [this](quint64 p_epoch, quint64 p_generation) {
+                       const bool hadHeadings =
+                           outlineSnapshot && (!outlineSnapshot->m_headings.isEmpty() ||
+                                               !outlineSnapshot->m_sourceHeadings.isEmpty());
+                       outlineSnapshot.clear();
+                       invalidateCursorHighlight();
+                       host->setCurrentGeneration(p_epoch, p_generation);
+                       source->typstHighlighter()->setGeneration(p_generation);
+                       pane->setCurrentGeneration(p_epoch, p_generation);
+                       pdfDelivered = 0;
+                       pendingNavigationSnapshot = 0;
+                       const QPointer<VTypstEditor> alive(q);
+                       if (hadHeadings) {
+                         emit q->headingsUpdated({});
+                         if (!alive || p_epoch != bridge->epoch() ||
+                             p_generation != bridge->generation()) {
+                           return;
+                         }
+                       }
+                       if (!documentReset) {
+                         setStatus(CompileStatus::Compiling,
+                                   VTypstEditor::tr("Preview is stale; compiling changes…"));
+                       }
+                       if (alive)
+                         emit alive->resourceContextsInvalidated();
+                     });
     QObject::connect(bridge, &TypstCompilerBridge::stateChanged, q,
                      [this](TypstCompilerBridge::State p_state, const QString &p_message) {
                        CompileStatus state = CompileStatus::Idle;
@@ -853,6 +855,10 @@ QStringList VTypstEditor::diagnostics() const { return d->diagnosticMessages; }
 const QVector<TypstHeadingInfo> &VTypstEditor::getHeadings() const {
   static const QVector<TypstHeadingInfo> empty;
   return d->outlineSnapshot ? d->outlineSnapshot->m_headings : empty;
+}
+const QVector<TypstSourceHeadingInfo> &VTypstEditor::getSourceHeadings() const {
+  static const QVector<TypstSourceHeadingInfo> empty;
+  return d->outlineSnapshot ? d->outlineSnapshot->m_sourceHeadings : empty;
 }
 void VTypstEditor::retryCompilation() { d->bridge->retry(); }
 void VTypstEditor::showOutputAtCursor() {

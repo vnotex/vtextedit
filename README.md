@@ -195,6 +195,20 @@ for publication, rather than assuming `compileStatusChanged(Ready)` runs afterwa
 Mode changes alone preserve the outline, and a PDF selection delaying preview publication
 does not delay the current outline. Retrieval never edits source or undo history.
 
+For source-editing commands, `getSourceHeadings()` returns a borrowed
+`const QVector<TypstSourceHeadingInfo> &` from the same accepted snapshot. Each record contains
+`m_startPos`, `m_endPos`, the syntactic `m_level`, and `m_headingIndex` into `getHeadings()`
+(or -1 for a hidden `outlined: false` heading). Ranges use the active file's LF/UTF-16 offsets.
+
+The source list is available only when **every** evaluated heading, including hidden ones,
+matches one top-level `=` AST heading in active-file source order with the same level. Nested,
+functional, generated, imported, repeated and transformed headings disable source mapping;
+the navigation outline is unchanged. An empty source list is not permission to infer boundaries
+from visible headings or text patterns. Source edits must preserve hidden section boundaries,
+revalidate the accepted snapshot and permissions, and maintain their own undo transaction.
+Listen to `headingsUpdated` for both lists; invalidation clears them together, including documents
+whose source headings are all hidden.
+
 Deploy the matching native Typst shared library with VTextEdit; its ABI and required
 capabilities are checked before using compiled output.
 

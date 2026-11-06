@@ -3808,6 +3808,105 @@ void TestTypstEditor::repeatedAndSplitOutputRecords() {
         splitPdf.text(page).normalized(QString::NormalizationForm_KC).contains(QLatin1Char('x')));
 }
 
+void TestTypstEditor::sourceHeadingsIncludeHiddenDeepAndUnicode() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto source = QString::fromUtf8(
+      "// \xc3\xa9\xf0\x9f\x98\x80\n"
+      "#show heading.where(level: 2): set heading(outlined: false)\n"
+      "= Alpha\nbody\n== Hidden\nhidden body\n======== Deep\ndeep body\n= Omega\n");
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, false);
+  QSignalSpy updates(&fixture.editor, &VTypstEditor::headingsUpdated);
+  QVERIFY2(waitUntil([&] { return !updates.isEmpty(); }),
+           qPrintable(fixture.editor.compileMessage()));
+  const auto retained = fixture.editor.getSourceHeadings();
+  QCOMPARE(retained.size(), 4);
+  QCOMPARE(fixture.editor.getHeadings().size(), 3);
+  const QStringList markers{QStringLiteral("= Alpha"), QStringLiteral("== Hidden"),
+                            QStringLiteral("======== Deep"), QStringLiteral("= Omega")};
+  const QVector<int> levels{1, 2, 8, 1};
+  const QVector<int> indices{0, -1, 1, 2};
+  for (int i = 0; i < retained.size(); ++i) {
+    QCOMPARE(retained.at(i).m_startPos, source.indexOf(markers.at(i)));
+    QCOMPARE(retained.at(i).m_endPos, source.indexOf(markers.at(i)) + markers.at(i).size());
+    QCOMPARE(retained.at(i).m_level, levels.at(i));
+    QCOMPARE(retained.at(i).m_headingIndex, indices.at(i));
+  }
+  fixture.editor.setReadOnly(true);
+  QCOMPARE(fixture.editor.getSourceHeadings().constData(), retained.constData());
+  fixture.editor.setMode(VTypstEditor::Mode::Read);
+  QCOMPARE(fixture.editor.getSourceHeadings().constData(), retained.constData());
+  fixture.editor.setMode(VTypstEditor::Mode::Edit);
+  fixture.editor.setReadOnly(false);
+  fixture.editor.document()->clearUndoRedoStacks();
+  QTextCursor cursor(fixture.editor.document());
+  cursor.movePosition(QTextCursor::End);
+  cursor.insertText(QStringLiteral("changed"));
+  QVERIFY(fixture.editor.getHeadings().isEmpty());
+  QVERIFY(fixture.editor.getSourceHeadings().isEmpty());
+  fixture.edit()->undo();
+  QCOMPARE(fixture.editor.document()->toPlainText(), source);
+  QVERIFY2(waitUntil([&] { return fixture.editor.getSourceHeadings().size() == 4; }),
+           qPrintable(fixture.editor.compileMessage()));
+  fixture.editor.setActiveFile(QStringLiteral("other.typ"));
+  QVERIFY(fixture.editor.getHeadings().isEmpty());
+  QVERIFY(fixture.editor.getSourceHeadings().isEmpty());
+  fixture.editor.resetForNewDocument();
+  QVERIFY(fixture.editor.getSourceHeadings().isEmpty());
+}
+
+void TestTypstEditor::sourceHeadingsRejectUnsupported_data() {
+  QTest::addColumn<QString>("body");
+  QTest::newRow("nested") << QStringLiteral("#[\n== Nested\n]\n");
+  QTest::newRow("generated") << QStringLiteral("#heading(level: 2)[Generated]\n");
+  QTest::newRow("hidden-generated") << QStringLiteral("#heading(outlined: false)[Hidden]\n");
+  QTest::newRow("imported") << QStringLiteral("#include \"chapter.typ\"\n");
+  QTest::newRow("repeated") << QStringLiteral("#for i in range(2) [\n== Repeated\n]\n");
+  QTest::newRow("indirect-make") << QStringLiteral("#let make() = [\n== Defined\n]\n#make()\n");
+  QTest::newRow("indirect-hidden-make")
+      << QStringLiteral("#let make() = heading(outlined: false)[Hidden]\n#make()\n");
+  QTest::newRow("indirect-for") << QStringLiteral(
+      "#let make() = [\n== Defined\n]\n#for i in range(2) { make() }\n");
+  QTest::newRow("hidden-definition-before-section")
+      << QStringLiteral("#let make() = heading(outlined: false)[Hidden]\n= Middle\n#make()\n");
+  QTest::newRow("transformed-level") << QStringLiteral("#set heading(offset: 1)\n== Shifted\n");
+}
+
+void TestTypstEditor::sourceHeadingsRejectUnsupported() {
+  QFETCH(QString, body);
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto source =
+      QStringLiteral("= Before\nbefore\n") + body + QStringLiteral("= After\nafter\n");
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, false);
+  fixture.editor.setFileOverlay(QStringLiteral("chapter.typ"), QStringLiteral("== Imported\n"));
+  QSignalSpy updates(&fixture.editor, &VTypstEditor::headingsUpdated);
+  QVERIFY2(waitUntil([&] { return !updates.isEmpty(); }),
+           qPrintable(fixture.editor.compileMessage()));
+  QVERIFY(fixture.editor.getHeadings().size() >= 2);
+  QVERIFY(fixture.editor.getSourceHeadings().isEmpty());
+  QCOMPARE(fixture.editor.document()->toPlainText(), source);
+}
+
+void TestTypstEditor::sourceHeadingsHiddenOnlyInvalidation() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto source = QStringLiteral("#set heading(outlined: false)\n= Hidden\n");
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, false);
+  QSignalSpy updates(&fixture.editor, &VTypstEditor::headingsUpdated);
+  QVERIFY2(waitUntil([&] { return fixture.editor.getSourceHeadings().size() == 1; }),
+           qPrintable(fixture.editor.compileMessage()));
+  QVERIFY(fixture.editor.getHeadings().isEmpty());
+  QCOMPARE(fixture.editor.getSourceHeadings().first().m_headingIndex, -1);
+  const int count = updates.count();
+  QTextCursor cursor(fixture.editor.document());
+  cursor.movePosition(QTextCursor::End);
+  cursor.insertText(QStringLiteral("changed"));
+  QVERIFY(fixture.editor.getSourceHeadings().isEmpty());
+  QCOMPARE(updates.count(), count + 1);
+  QVERIFY(qvariant_cast<QVector<TypstHeadingInfo>>(updates.last().at(0)).isEmpty());
+}
+
 void TestTypstEditor::outlineIncludesEvaluatedHeadingsAndUnicodeRanges() {
   QTemporaryDir root;
   QVERIFY(root.isValid());
@@ -3842,6 +3941,7 @@ void TestTypstEditor::outlineIncludesEvaluatedHeadingsAndUnicodeRanges() {
                            QStringLiteral("First"), QStringLiteral("Second"), QString()};
   const QVector<int> levels{2, 3, 4, 4, 8};
   QCOMPARE(headings.size(), titles.size());
+  QVERIFY(fixture.editor.getSourceHeadings().isEmpty());
   QCOMPARE(payload.size(), headings.size());
   for (int index = 0; index < headings.size(); ++index) {
     const auto &heading = headings.at(index);
@@ -3885,6 +3985,7 @@ void TestTypstEditor::outlineInvalidationFailureAndRecovery() {
            }),
            qPrintable(fixture.editor.compileMessage()));
   const QVector<TypstHeadingInfo> retained = fixture.editor.getHeadings();
+  QCOMPARE(fixture.editor.getSourceHeadings().size(), 1);
   const auto retainedPayload = qvariant_cast<QVector<TypstHeadingInfo>>(updates.last().at(0));
   QCOMPARE(retained.first().m_title, QStringLiteral("Before"));
   QVERIFY(fixture.selectPage().contains(QStringLiteral("Before")));
@@ -3896,6 +3997,7 @@ void TestTypstEditor::outlineInvalidationFailureAndRecovery() {
   cursor.setPosition(cursor.position() + 6, QTextCursor::KeepAnchor);
   cursor.insertText(QStringLiteral("After"));
   QVERIFY(fixture.editor.getHeadings().isEmpty());
+  QVERIFY(fixture.editor.getSourceHeadings().isEmpty());
   QCOMPARE(updates.count(), beforeEdit + 1);
   QVERIFY(qvariant_cast<QVector<TypstHeadingInfo>>(updates.last().at(0)).isEmpty());
   QVERIFY2(waitUntil([&]() {
@@ -3919,6 +4021,7 @@ void TestTypstEditor::outlineInvalidationFailureAndRecovery() {
       [&]() { return fixture.editor.compileStatus() == VTypstEditor::CompileStatus::Error; }));
   QVERIFY(fixture.editor.getHeadings().isEmpty());
   QCOMPARE(updates.count(), beforeFailure + 1);
+  QVERIFY(fixture.editor.getSourceHeadings().isEmpty());
   QCOMPARE(fixture.selected(), selected);
 
   // Success must publish an empty list even when failure already cleared the getter.
@@ -4088,6 +4191,7 @@ void TestTypstEditor::supersededCompileCannotPublishOutline() {
     cursor.insertText(shortSource(QStringLiteral("= Obsolete %1").arg(round)));
     cursor.endEditBlock();
     QVERIFY(fixture.editor.getHeadings().isEmpty());
+    QVERIFY(fixture.editor.getSourceHeadings().isEmpty());
     QVERIFY2(waitUntil([&]() {
                const auto &headings = fixture.editor.getHeadings();
                return headings.size() == 1 && headings.first().m_title == title;
@@ -4095,6 +4199,11 @@ void TestTypstEditor::supersededCompileCannotPublishOutline() {
              qPrintable(fixture.editor.compileMessage()));
     QObject::disconnect(connection);
     QVERIFY(replaced);
+    QCOMPARE(fixture.editor.getSourceHeadings().size(), 1);
+    QCOMPARE(fixture.editor.getSourceHeadings().first().m_startPos,
+             newest.indexOf(QStringLiteral("= ") + title));
+    QCOMPARE(fixture.editor.getSourceHeadings().first().m_endPos,
+             newest.indexOf(QStringLiteral("= ") + title) + title.size() + 2);
     QCOMPARE(fixture.editor.document()->toPlainText(), newest);
     int nonemptyUpdates = 0;
     for (const auto &notification : updates) {
@@ -4111,14 +4220,17 @@ void TestTypstEditor::supersededCompileCannotPublishOutline() {
   // An earlier consumer may invalidate synchronously without changing the payload
   // still being delivered to later consumers of the accepted snapshot's signal.
   QVector<TypstHeadingInfo> retainedSignal;
+  QVector<TypstSourceHeadingInfo> retainedSource;
   QVector<TypstHeadingInfo> afterInvalidation;
   const auto connection = QObject::connect(
       &fixture.editor, &VTypstEditor::headingsUpdated, &fixture.editor,
       [&](const QVector<TypstHeadingInfo> &p_headings) {
         if (p_headings.size() == 1 && p_headings.first().m_title == QStringLiteral("Reentrant")) {
           retainedSignal = p_headings;
+          retainedSource = fixture.editor.getSourceHeadings();
           fixture.editor.setFileOverlay(QStringLiteral("main.typ"),
                                         shortSource(QStringLiteral("= Final")));
+          QVERIFY(fixture.editor.getSourceHeadings().isEmpty());
           afterInvalidation = p_headings;
         }
       });
@@ -4132,6 +4244,9 @@ void TestTypstEditor::supersededCompileCannotPublishOutline() {
            qPrintable(fixture.editor.compileMessage()));
   QObject::disconnect(connection);
   QCOMPARE(retainedSignal.size(), 1);
+  QCOMPARE(retainedSource.size(), 1);
+  QCOMPARE(retainedSource.first().m_startPos, retainedSignal.first().m_startPos);
+  QCOMPARE(retainedSource.first().m_endPos, retainedSignal.first().m_endPos);
   QCOMPARE(afterInvalidation.size(), 1);
   QCOMPARE(afterInvalidation.first().m_title, QStringLiteral("Reentrant"));
   QCOMPARE(afterInvalidation.first().m_file, retainedSignal.first().m_file);

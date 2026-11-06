@@ -264,6 +264,8 @@ TypstSnapshot snapshotFromJson(const QJsonObject &p_header, bool p_resourcesRequ
     return {};
   }
   const auto headings = headingsValue.toArray();
+  if (headings.size() > c_maxHeader / 128)
+    return {};
   result->m_headings.reserve(headings.size());
   for (const auto &value : headings) {
     const auto object = value.toObject();
@@ -286,6 +288,44 @@ TypstSnapshot snapshotFromJson(const QJsonObject &p_header, bool p_resourcesRequ
     heading.m_file = range.m_file;
     result->m_headings.append(std::move(heading));
   }
+  const auto sourceHeadingsValue = p_header.value(QStringLiteral("sourceHeadings"));
+  const int sourceLength = integer(p_header.value(QStringLiteral("sourceLength")));
+  if (!sourceHeadingsValue.isArray() || sourceLength < 0)
+    return {};
+  const auto sourceHeadings = sourceHeadingsValue.toArray();
+  if (sourceHeadings.size() > c_maxHeader / 128)
+    return {};
+  result->m_sourceHeadings.reserve(sourceHeadings.size());
+  int previousEnd = -1;
+  int nextHeading = 0;
+  for (const auto &value : sourceHeadings) {
+    if (!value.isObject())
+      return {};
+    const auto object = value.toObject();
+    TypstSourceRange range;
+    TypstSourceHeadingInfo heading;
+    heading.m_level = integer(object.value(QStringLiteral("level")));
+    heading.m_headingIndex = integer(object.value(QStringLiteral("headingIndex")), -2);
+    if (!resourceSource(object, range) || range.m_file != result->m_activeFile ||
+        !range.isValid() || range.m_start < previousEnd || range.m_end > sourceLength ||
+        heading.m_level < 1 || heading.m_level > range.m_end - range.m_start ||
+        heading.m_headingIndex < -1)
+      return {};
+    heading.m_startPos = range.m_start;
+    heading.m_endPos = range.m_end;
+    if (heading.m_headingIndex >= 0) {
+      if (heading.m_headingIndex != nextHeading || nextHeading >= result->m_headings.size())
+        return {};
+      const auto &outlined = result->m_headings.at(nextHeading++);
+      if (outlined.m_file != range.m_file || outlined.m_startPos != range.m_start ||
+          outlined.m_endPos != range.m_end || outlined.m_level != heading.m_level)
+        return {};
+    }
+    previousEnd = range.m_end;
+    result->m_sourceHeadings.append(heading);
+  }
+  if (!sourceHeadings.isEmpty() && nextHeading != result->m_headings.size())
+    return {};
   if (!resourcesFromJson(p_header, *result, p_resourcesRequired))
     return {};
   result->m_highlights = highlights(p_header.value(QStringLiteral("highlights")).toArray());

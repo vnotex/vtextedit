@@ -104,6 +104,10 @@ private slots:
   void previewClickNavigatesSource();
   void previewClickPreservesSelectionLinksAndStaleOutput();
   void repeatedAndSplitOutputRecords();
+  void sourceHeadingsIncludeHiddenDeepAndUnicode();
+  void sourceHeadingsRejectUnsupported_data();
+  void sourceHeadingsRejectUnsupported();
+  void sourceHeadingsHiddenOnlyInvalidation();
   void outlineIncludesEvaluatedHeadingsAndUnicodeRanges();
   void outlineInvalidationFailureAndRecovery();
   void outlineScopeAndModesPreserveSource();
