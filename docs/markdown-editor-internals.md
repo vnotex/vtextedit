@@ -668,6 +668,9 @@ Keyboard, gutter and programmatic folds share caret recovery: a hidden caret mov
 visible fold header with its column clamped to that line. A fold-marker click does not send
 a synthetic column-zero source click. Leaving a sheet upwards targets its visible source
 anchor; leaving downwards skips the complete source, or returns to the anchor at EOF.
+Unfolding does not request cursor visibility or centering: keyboard and gutter paths leave
+the caret and selection unchanged and do not scroll to an off-screen caret. Normal layout
+changes and scrollbar range clamping still apply.
 
 ### The initial fold state
 

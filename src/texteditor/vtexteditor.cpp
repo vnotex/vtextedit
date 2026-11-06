@@ -758,7 +758,6 @@ bool VTextEditor::unfoldAtCursor() {
   }
 
   m_folding->toggleRange(id);
-  m_textEdit->ensureCursorVisible();
   return true;
 }
 

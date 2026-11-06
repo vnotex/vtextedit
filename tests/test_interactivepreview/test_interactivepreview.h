@@ -363,6 +363,8 @@ private slots:
   void testFoldedTableRewriteAndUndo();
   void testTerminalCaretMovesToVisibleFoldHeader_data();
   void testTerminalCaretMovesToVisibleFoldHeader();
+  void testUnfoldDoesNotScrollToCaret_data();
+  void testUnfoldDoesNotScrollToCaret();
   void testGutterDragAcrossIndicators_data();
   void testGutterDragAcrossIndicators();
   void testSheetEscapeUsesVisibleSource_data();

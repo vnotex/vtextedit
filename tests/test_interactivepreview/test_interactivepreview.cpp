@@ -5239,6 +5239,77 @@ void TestInteractivePreview::testTerminalCaretMovesToVisibleFoldHeader() {
   QCOMPARE(cursor.positionInBlock(), qMin(column, first.length() - 1));
 }
 
+void TestInteractivePreview::testUnfoldDoesNotScrollToCaret_data() {
+  QTest::addColumn<bool>("gutter");
+  QTest::addColumn<bool>("offscreen");
+  QTest::newRow("command-visible") << false << false;
+  QTest::newRow("command-offscreen") << false << true;
+  QTest::newRow("gutter-visible") << true << false;
+  QTest::newRow("gutter-offscreen") << true << true;
+}
+
+void TestInteractivePreview::testUnfoldDoesNotScrollToCaret() {
+  QFETCH(bool, gutter);
+  QFETCH(bool, offscreen);
+  auto config = makeAutoFoldConfig(false);
+  config->m_autoFormatTableSourceEnabled = false;
+  VMarkdownEditor editor(config, QSharedPointer<TextEditorParameters>::create());
+  setTextAndSettle(editor, QStringLiteral("before\n").repeated(20) + QLatin1String(c_table) +
+                               QStringLiteral("\nafter\n").repeated(150));
+  editor.activateWindow();
+  QApplication::setActiveWindow(&editor);
+  auto textEdit = editor.getTextEdit();
+  textEdit->setFocus();
+  QTRY_VERIFY(textEdit->hasFocus());
+  auto doc = editor.document();
+  const auto first = doc->findBlockByNumber(20);
+  const auto last = doc->findBlockByNumber(22);
+  textEdit->setTextCursor(QTextCursor(first));
+  QVERIFY(editor.foldAtCursor());
+  QTRY_VERIFY(!last.isVisible());
+  auto vbar = textEdit->verticalScrollBar();
+  vbar->setValue(qRound(doc->documentLayout()->blockBoundingRect(first).top()) -
+                 textEdit->viewport()->height() / 3);
+  QTRY_VERIFY(singlePreviewWidget(editor) && singlePreviewWidget(editor)->isVisible());
+  settleFolding();
+
+  // A gutter click can unfold a visible table without moving a distant caret.
+  // The command instead operates on its own off-screen fold header.
+  const auto caretBlock = gutter && offscreen ? doc->findBlockByNumber(200) : first;
+  QTextCursor cursor(caretBlock);
+  cursor.setPosition(caretBlock.position() + 1);
+  cursor.setPosition(caretBlock.position() + 3, QTextCursor::KeepAnchor);
+  textEdit->setTextCursor(cursor);
+  QCoreApplication::processEvents();
+  const int headerY = qRound(doc->documentLayout()->blockBoundingRect(first).top());
+  vbar->setValue(!gutter && offscreen ? headerY + textEdit->viewport()->height()
+                                      : headerY - textEdit->viewport()->height() / 3);
+  settleFolding();
+  const int scroll = vbar->value();
+  QVERIFY(scroll > vbar->minimum() && scroll < vbar->maximum());
+  QCOMPARE(!textEdit->viewport()->rect().intersects(textEdit->cursorRect()), offscreen);
+  const QString source = doc->toPlainText();
+  const bool modified = doc->isModified();
+  const bool undoAvailable = doc->isUndoAvailable();
+
+  if (gutter) {
+    QVERIFY(toggleFoldFromGutter(editor, first.blockNumber(), last.blockNumber()));
+  } else {
+    QVERIFY(editor.unfoldAtCursor());
+  }
+  QVERIFY(last.isVisible());
+  QCOMPARE(textEdit->textCursor().position(), cursor.position());
+  QCOMPARE(textEdit->textCursor().anchor(), cursor.anchor());
+  QCOMPARE(vbar->value(), scroll);
+  settleFolding();
+  QCOMPARE(vbar->value(), scroll);
+  QCOMPARE(textEdit->textCursor().position(), cursor.position());
+  QCOMPARE(textEdit->textCursor().anchor(), cursor.anchor());
+  QCOMPARE(doc->toPlainText(), source);
+  QCOMPARE(doc->isModified(), modified);
+  QCOMPARE(doc->isUndoAvailable(), undoAvailable);
+}
+
 void TestInteractivePreview::testGutterDragAcrossIndicators_data() {
   QTest::addColumn<bool>("startOnMarker");
   QTest::newRow("number-to-marker") << false;
