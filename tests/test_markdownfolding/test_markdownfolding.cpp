@@ -2231,21 +2231,71 @@ void TestMarkdownFolding::testConcealWrappingAndSelection() {
                               layout->sourceTextRect(hiddenStart, hiddenStart + 7),
                               syntax[0].format.foreground().color()) > 0);
 
-    // Preedit offsets are not document offsets; suppress concealment for the
-    // entire composing block without throwing away its submitted ranges.
+    // Preedit before/after a compact destination must preserve its painted
+    // glyphs, style, selection and native hit positions, even across wrapping.
     layout->setConcealCursorPosition(-1);
-    block.layout()->setPreeditArea(end, QStringLiteral("IME"));
-    reference.firstBlock().layout()->setPreeditArea(end, QStringLiteral("IME"));
-    layout->relayout();
-    referenceLayout->relayout();
-    QCOMPARE(block.layout()->lineAt(0).naturalTextWidth(),
-             reference.firstBlock().layout()->lineAt(0).naturalTextWidth());
-    QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
-    QCOMPARE(doc.toPlainText(), source);
-    block.layout()->setPreeditArea(-1, QString());
-    layout->relayout();
     reference.setPlainText(compact);
+    const QString composition = QStringLiteral("\u4e2d\U0001f642e\u0301");
+    for (bool wrapped : {false, true}) {
+      for (int insertion : {1, end, end + 2}) {
+        doc.setTextWidth(1000);
+        reference.setTextWidth(1000);
+        const int shift = insertion < start ? composition.size() : 0;
+        block.layout()->setPreeditArea(insertion, composition);
+        auto preeditSyntax = syntax;
+        for (auto &format : preeditSyntax) {
+          format.start += shift;
+        }
+        block.layout()->setFormats(preeditSyntax);
+        reference.firstBlock().layout()->setPreeditArea(
+            insertion < start ? insertion : insertion - removed, composition);
+        reference.firstBlock().layout()->setFormats(
+            {{start + shift, compactEnd - start, concealedFormat}});
+        layout->relayout();
+        referenceLayout->relayout();
+        if (wrapped) {
+          // Leave room for the entire atomic replacement, not part of its dots.
+          const auto unwrapped = reference.firstBlock().layout()->lineAt(0);
+          const qreal width = outsideWidth +
+                              unwrapped.cursorToX(compactEnd + composition.size() + 2) -
+                              unwrapped.x();
+          doc.setTextWidth(width);
+          reference.setTextWidth(width);
+          QVERIFY(block.layout()->lineCount() > 1);
+        }
+        QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
+        const auto line = reference.firstBlock().layout()->lineForTextPosition(hiddenStart + shift);
+        const QPointF point((line.cursorToX(hiddenStart + shift) +
+                             line.cursorToX(hiddenStart + shift + dots.size())) /
+                                2,
+                            referenceLayout->blockBoundingRect(reference.firstBlock()).top() +
+                                line.y() + line.height() / 2);
+        QCOMPARE(layout->hitTest(point, Qt::ExactHit), hiddenStart + shift);
+        QCOMPARE(layout->hitTest(point, Qt::FuzzyHit), hiddenStart + shift);
+        QAbstractTextDocumentLayout::Selection selected;
+        selected.cursor = QTextCursor(&doc);
+        selected.cursor.setPosition(start);
+        selected.cursor.setPosition(end, QTextCursor::KeepAnchor);
+        selected.format.setBackground(Qt::yellow);
+        auto referenceSelected = selected;
+        referenceSelected.cursor = QTextCursor(&reference);
+        referenceSelected.cursor.setPosition(start);
+        referenceSelected.cursor.setPosition(compactEnd, QTextCursor::KeepAnchor);
+        QAbstractTextDocumentLayout::PaintContext context, referenceContext;
+        context.selections = {selected};
+        referenceContext.selections = {referenceSelected};
+        QCOMPARE(renderConcealLayout(layout, device, context),
+                 renderConcealLayout(referenceLayout, device, referenceContext));
+        QCOMPARE(doc.toPlainText(), source);
+        block.layout()->setPreeditArea(-1, QString());
+        block.layout()->setFormats(syntax);
+        reference.firstBlock().layout()->setPreeditArea(-1, QString());
+      }
+    }
+    doc.setTextWidth(1000);
+    reference.setTextWidth(1000);
     reference.firstBlock().layout()->setFormats({{start, compactEnd - start, concealedFormat}});
+    layout->relayout();
     referenceLayout->relayout();
     QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
     layout->setConcealment({});

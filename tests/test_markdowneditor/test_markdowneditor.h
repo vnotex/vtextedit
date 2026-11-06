@@ -97,6 +97,10 @@ private slots:
 
   // Source editing and canonical Qt geometry through inline concealment.
   void testConcealEditingAndGeometry();
+  void testConcealIme_data();
+  void testConcealIme();
+  void testConcealImeCommit_data();
+  void testConcealImeCommit();
   void testConcealPendingParseEdits_data();
   void testConcealPendingParseEdits();
   void testConcealPendingParseInvalidation_data();

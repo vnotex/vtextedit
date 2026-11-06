@@ -2053,6 +2053,7 @@ void VMarkdownEditor::setupDocumentLayout() {
   connect(qApp, &QApplication::focusChanged, this, refreshListItemCursor);
   refreshListItemCursor();
 
+  m_textEdit->installEventFilter(docLayout);
   const auto refreshConcealCursor = [this]() {
     documentLayout()->setConcealCursorPosition(m_textEdit->textCursor().position());
   };

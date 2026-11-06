@@ -281,6 +281,8 @@ signals:
   void becameIdle();
 
 protected:
+  bool eventFilter(QObject *p_object, QEvent *p_event) Q_DECL_OVERRIDE;
+
   void documentChanged(int p_from, int p_charsRemoved, int p_charsAdded) Q_DECL_OVERRIDE;
 
 private:
@@ -492,6 +494,7 @@ private:
     bool m_valid = true;
     bool m_active = false;
     bool m_composing = false;
+    bool m_preeditRevealed = false;
   };
 
   int concealCursorPosition() const;
@@ -509,6 +512,17 @@ private:
 
   // Retain the accepted projection until a new parse arrives. Source edits map
   // untouched groups; an unhandled dependency revision still invalidates them.
+  struct ConcealImeEdit {
+    QTextBlock m_block;
+    QString m_expected;
+    int m_revision = -1;
+    int m_blockPosition = 0;
+    int m_blockLength = 0;
+    int m_position = 0;
+    int m_removed = 0;
+    int m_added = 0;
+  };
+  ConcealImeEdit m_concealImeEdit;
   int m_concealSourceRevision = -1;
   QVector<LiveConcealGroup> m_concealGroups;
   QVector<LiveConcealRun> m_concealRuns;

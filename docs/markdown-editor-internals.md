@@ -407,8 +407,11 @@ Shortening thresholds and delimiter recognition never enter the layout engine.
 The caret reveals an entire group when it enters its reveal region or any run. Syntax groups
 also reveal at their exclusive end, keeping closing delimiters and empty headings editable at
 EOF; URL groups retain their half-open boundary behavior. Selection alone does not reveal a
-group. IME preedit reveals its block and affected groups across blocks. A nonempty replacement
-hit maps to its source start; zero-width boundaries use native source hit-testing with visible
+group. IME preedit uses its source anchor and the same reveal boundaries: composing inside a
+multiblock group reveals all its runs, but unrelated groups on that line stay concealed.
+Conceal overlays and glyph patches account for Qt's temporary UTF-16 preedit insertion;
+source ownership remains unchanged. A nonempty replacement hit maps to its source start
+(including preedit in Qt's native hit-test coordinates); zero-width boundaries use visible
 neighbor affinity and an exclusive-end fallback. Completely hidden paragraphs retain an
 editable line height. Copy, cut, search, undo and counted Vi motions always use original source.
 
@@ -416,10 +419,18 @@ Nested empty hides combine without losing ownership; a containing hide suppresse
 replacement. Revealing the outer group allows independent inner rules to apply. Incompatible
 partial replacements leave the implicated groups visible, not unrelated groups. Submission
 always replaces the previous snapshot, and validation/shaping succeeds for every run of a
-group or reveals the whole group. Any revision change in a block intersecting the group's
-source extent invalidates all its runs, including edits in a visible middle block. Live block
-handles preserve positions only across changes in other, unedited blocks. Unrelated edits and
-edits in already revealed groups retain the same-height single-block layout fast path.
+group or reveals the whole group. Source edits map untouched groups, including edits elsewhere
+in the same block; edits intersecting a group's source extent invalidate all its runs. Unhandled
+dependency revisions also invalidate the group. Unrelated edits and edits in already revealed
+groups retain the same-height single-block layout fast path.
+
+Qt coalesces IME commits and preedit formatting into a whole-paragraph replacement notification.
+Before a source-changing IME event, the layout retains the exact event-derived edit and expected
+paragraph text. It reduces that notification only when the source revision, block identity,
+position, lengths and resulting text match. Repeated delimiters therefore never require a guessed
+text diff. Preedit-only updates do not copy source; compound or multiblock replacements retain
+conservative invalidation. Coverage: `testConcealIme*` in `tests/test_markdowneditor`, plus raster,
+selection, hit-test and multiblock cases in `tests/test_markdownfolding`.
 
 The canonical document-attached `QTextLayout` remains the sole geometry source. The Qt-private
 adapter changes cached glyph advances/clusters, never source text or document formats; temporary

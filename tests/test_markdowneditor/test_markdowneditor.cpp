@@ -6365,7 +6365,10 @@ void TestMarkdownEditor::testConcealEditingAndGeometry() {
     waitForConcealPublication(compactReference);
     renderConcealEditor(compactReference);
     const auto committedEnd = concealEditCursorRect(compactReference, compactReference.blockEnd(0));
-    Fixture reference(source, 0, insertion, concealEditConfig(false));
+    QString compactSource = source;
+    compactSource.replace(url, compactUrl);
+    Fixture reference(compactSource, 0, insertion - (url.size() - compactUrl.size()),
+                      concealEditConfig(false));
     waitForConcealPublication(reference);
     renderConcealEditor(reference);
     Fixture fixture(source, 0, insertion, concealEditConfig());
@@ -6380,7 +6383,7 @@ void TestMarkdownEditor::testConcealEditingAndGeometry() {
       QInputMethodEvent preedit(composition, QList<QInputMethodEvent::Attribute>());
       QCoreApplication::sendEvent(item->edit(), &preedit);
     }
-    // Even with the source caret after the URL, preedit reveals its whole block.
+    // Composition after the URL keeps its compact geometry, including the IME caret.
     concealEditCompareRect(concealEditCursorRect(fixture, fixture.blockEnd(0)),
                            concealEditCursorRect(reference, reference.blockEnd(0)));
     concealEditCompareRect(fixture.edit()->cursorRect(), reference.edit()->cursorRect());
@@ -6420,6 +6423,195 @@ void TestMarkdownEditor::testConcealEditingAndGeometry() {
     QCOMPARE(fixture.text(), committed);
     QVERIFY(!doc->isRedoAvailable());
   }
+}
+
+void TestMarkdownEditor::testConcealIme_data() {
+  QTest::addColumn<QString>("location");
+  QTest::addColumn<bool>("wrapped");
+  QTest::newRow("before") << QStringLiteral("before") << false;
+  QTest::newRow("between") << QStringLiteral("between") << false;
+  QTest::newRow("after") << QStringLiteral("after") << false;
+  QTest::newRow("inside") << QStringLiteral("inside") << false;
+  QTest::newRow("wrapped-before") << QStringLiteral("before") << true;
+  QTest::newRow("wrapped-after") << QStringLiteral("after") << true;
+}
+
+void TestMarkdownEditor::testConcealIme() {
+  QFETCH(QString, location);
+  QFETCH(bool, wrapped);
+  auto config = makeConcealConfig();
+  for (auto kind :
+       {MarkdownConcealElement::StrongMarkers, MarkdownConcealElement::EmphasisMarkers,
+        MarkdownConcealElement::StrikethroughMarkers, MarkdownConcealElement::InlineCodeMarkers,
+        MarkdownConcealElement::InlineFormulaMarkers, MarkdownConcealElement::MarkMarkers}) {
+    config->m_concealRules.set(kind, MarkdownConcealHideSyntax{});
+  }
+  const QString source =
+      QStringLiteral("prefix ") + c_concealTypingSource + QStringLiteral("==mark== tail");
+  Fixture fixture(source, -1, -1, config);
+  QVERIFY(!renderConcealEditor(fixture).isNull());
+  if (wrapped) {
+    fixture.editor()->resize(320, 480);
+    QCoreApplication::processEvents();
+  }
+  waitForConcealPublication(fixture);
+  const int position =
+      location == QLatin1String("before")    ? 1
+      : location == QLatin1String("between") ? source.indexOf(QStringLiteral(" *Italic"))
+      : location == QLatin1String("inside")  ? source.indexOf(QStringLiteral("Bold")) + 2
+                                             : source.size();
+  setConcealCursor(fixture, position);
+  auto *doc = fixture.editor()->document();
+  doc->clearUndoRedoStacks();
+  doc->setModified(false);
+  const int blockRevision = doc->firstBlock().revision();
+  const QVector<QPair<QString, int>> elements{{QStringLiteral("**Bold text**"), 2},
+                                              {QStringLiteral("*Italic text*"), 1},
+                                              {QStringLiteral("***Bold and italic text***"), 3},
+                                              {QStringLiteral("~~Strikethrough text~~"), 2},
+                                              {QStringLiteral("`Inline code`"), 1},
+                                              {QStringLiteral("$f(x)=y$"), 1},
+                                              {QStringLiteral("==mark=="), 2}};
+  const auto verifyMarkers = [&]() {
+    auto *layout = doc->firstBlock().layout();
+    const int preedit = layout->preeditAreaPosition();
+    const int length = layout->preeditAreaText().size();
+    const int caret = fixture.edit()->textCursor().position();
+    const auto text = fixture.text();
+    for (const auto &element : elements) {
+      QString spelling = element.first;
+      if (location == QLatin1String("inside") && spelling == QLatin1String("**Bold text**") &&
+          text != source) {
+        spelling.insert(position - source.indexOf(element.first), QStringLiteral("\u5982\u679c"));
+      }
+      const int start = text.indexOf(spelling);
+      QVERIFY(start >= 0);
+      const int end = start + spelling.size();
+      const bool revealed = caret >= start && caret <= end;
+      for (int marker : {start, end - element.second}) {
+        const int from = marker + (length && marker >= preedit ? length : 0);
+        const int to =
+            marker + element.second + (length && marker + element.second > preedit ? length : 0);
+        const auto line = layout->lineForTextPosition(from);
+        QVERIFY(line.isValid());
+        const qreal width = line.cursorToX(to) - line.cursorToX(from);
+        QVERIFY2(revealed ? width > 1 : qAbs(width) < 0.1,
+                 qPrintable(QStringLiteral("%1 at %2: width %3, caret %4, preedit %5/%6")
+                                .arg(element.first)
+                                .arg(marker)
+                                .arg(width)
+                                .arg(caret)
+                                .arg(preedit)
+                                .arg(length)));
+      }
+    }
+  };
+  verifyMarkers();
+  QSignalSpy publications(fixture.editor()->getHighlighter(),
+                          &MarkdownHighlighter::concealRangesUpdated);
+  const auto compose = [&](const QString &p_text, const QString &p_commit = QString()) {
+    QTextCharFormat format;
+    format.setUnderlineStyle(QTextCharFormat::DashUnderline);
+    QInputMethodEvent event(p_text, {{QInputMethodEvent::TextFormat, 0, int(p_text.size()), format},
+                                     {QInputMethodEvent::Cursor, int(p_text.size()), 1, {}}});
+    event.setCommitString(p_commit);
+    QCoreApplication::sendEvent(fixture.edit(), &event);
+    QCOMPARE(doc->firstBlock().layout()->preeditAreaText(), p_text);
+    verifyMarkers();
+  };
+  compose(QStringLiteral("ru"));
+  compose(QStringLiteral("\u5982\u679c\U0001f642e\u0301"));
+  QCOMPARE(publications.count(), 0);
+  fixture.editor()->getHighlighter()->rehighlight();
+  verifyMarkers();
+  QCOMPARE(fixture.text(), source);
+  QCOMPARE(doc->firstBlock().revision(), blockRevision);
+  QVERIFY(!doc->isModified());
+  QVERIFY(!doc->isUndoAvailable());
+  compose(QString());
+  QCOMPARE(fixture.text(), source);
+  QVERIFY(!doc->isUndoAvailable());
+  const QString committed = QStringLiteral("\u5982\u679c");
+  compose(QStringLiteral("ru"));
+  compose(QStringLiteral("zhong"), committed);
+  QString expected = source;
+  expected.insert(position, committed);
+  QCOMPARE(fixture.text(), expected);
+  QCOMPARE(fixture.edit()->textCursor().position(), position + committed.size());
+  QCOMPARE(publications.count(), 0);
+  QTest::qWait(100);
+  verifyMarkers();
+  compose(QString());
+  waitForConcealPublication(fixture);
+  verifyMarkers();
+  fixture.edit()->undo();
+  QCOMPARE(fixture.text(), source);
+  verifyMarkers();
+  QVERIFY(!doc->isUndoAvailable());
+  fixture.edit()->redo();
+  QCOMPARE(fixture.text(), expected);
+  verifyMarkers();
+}
+
+void TestMarkdownEditor::testConcealImeCommit_data() {
+  QTest::addColumn<int>("position");
+  QTest::addColumn<int>("removed");
+  QTest::addColumn<QString>("inserted");
+  QTest::addColumn<bool>("selection");
+  QTest::newRow("direct-commit") << 1 << 0 << QStringLiteral("\u4e2d\u6587") << false;
+  QTest::newRow("replacement-offset") << 1 << 2 << QStringLiteral("\u4e2d\u6587") << false;
+  QTest::newRow("identical-replacement") << 1 << 2 << QStringLiteral("re") << false;
+  QTest::newRow("selected-replacement") << 1 << 2 << QStringLiteral("\u4e2d\u6587") << true;
+  QTest::newRow("selected-preedit") << 1 << 2 << QString() << true;
+  QTest::newRow("repeated-marker-boundary") << 7 << 0 << QStringLiteral("*") << false;
+  QTest::newRow("identical-inside-group") << 9 << 1 << QStringLiteral("b") << false;
+}
+
+void TestMarkdownEditor::testConcealImeCommit() {
+  QFETCH(int, position);
+  QFETCH(int, removed);
+  QFETCH(QString, inserted);
+  QFETCH(bool, selection);
+  auto config = makeConcealConfig();
+  config->m_concealRules.set(MarkdownConcealElement::StrongMarkers, MarkdownConcealHideSyntax{});
+  config->m_concealRules.set(MarkdownConcealElement::EmphasisMarkers, MarkdownConcealHideSyntax{});
+  const QString source = QStringLiteral("prefix **bold** and *italic* tail");
+  Fixture fixture(source, -1, -1, config);
+  QVERIFY(!renderConcealEditor(fixture).isNull());
+  waitForConcealPublication(fixture);
+  auto *doc = fixture.editor()->document();
+  doc->clearUndoRedoStacks();
+  QTextCursor cursor(doc);
+  cursor.setPosition(position);
+  cursor.setPosition(position + removed,
+                     selection ? QTextCursor::KeepAnchor : QTextCursor::MoveAnchor);
+  fixture.edit()->setTextCursor(cursor);
+  QSignalSpy publications(fixture.editor()->getHighlighter(),
+                          &MarkdownHighlighter::concealRangesUpdated);
+  QInputMethodEvent event(QStringLiteral("ru"), {});
+  event.setCommitString(inserted, selection ? 0 : -removed, selection ? 0 : removed);
+  QCoreApplication::sendEvent(fixture.edit(), &event);
+  QString expected = source;
+  expected.replace(position, removed, inserted);
+  QCOMPARE(fixture.text(), expected);
+  QInputMethodEvent cancel;
+  QCoreApplication::sendEvent(fixture.edit(), &cancel);
+  setConcealCursor(fixture, expected.size());
+  QCOMPARE(publications.count(), 0);
+  const int delta = inserted.size() - removed;
+  const int bold = 7 + (position <= 7 ? delta : 0);
+  const bool touched = position > 7 && position < 15;
+  const qreal width = concealConfigRangeWidth(fixture, bold, bold + 2);
+  QVERIFY(touched ? width > 1 : qAbs(width) < 0.1);
+  const int italic = expected.indexOf(QStringLiteral("*italic*"));
+  QVERIFY(qAbs(concealConfigRangeWidth(fixture, italic, italic + 1)) < 0.1);
+  if (position == 7) {
+    // The newly authored '*' is not part of the old hidden opening pair.
+    QVERIFY(concealConfigRangeWidth(fixture, 7, 8) > 1);
+  }
+  fixture.edit()->undo();
+  QCOMPARE(fixture.text(), source);
+  QVERIFY(!doc->isUndoAvailable());
 }
 
 void TestMarkdownEditor::testConcealPendingParseEdits_data() {

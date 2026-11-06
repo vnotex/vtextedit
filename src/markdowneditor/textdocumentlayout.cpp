@@ -3,6 +3,7 @@
 #include <QDebug>
 #include <QFont>
 #include <QFontMetrics>
+#include <QInputMethodEvent>
 #include <QLoggingCategory>
 #include <QPainter>
 #include <QPointF>
@@ -10,6 +11,7 @@
 #include <QTextBlock>
 #include <QTextBoundaryFinder>
 #include <QTextDocument>
+#include <QTextEdit>
 #include <QTextFrame>
 #include <QTextLayout>
 #include <QTimer>
@@ -70,6 +72,15 @@ QVector<QTextLayout::FormatRange> sourceFormats(QTextLayout *p_layout) {
   return formats;
 }
 
+// Additional formats and QTextLine positions include the temporary IME insertion;
+// conceal ownership and cached marker spans always remain source-indexed.
+int concealLayoutPosition(const QTextLayout *p_layout, int p_position, bool p_end = false) {
+  const int insertion = p_layout->preeditAreaPosition();
+  return p_position + (insertion >= 0 && (p_end ? p_position > insertion : p_position >= insertion)
+                           ? p_layout->preeditAreaText().size()
+                           : 0);
+}
+
 void setConcealCachePolicy(QTextLayout *p_layout, BlockLayoutData &p_data, bool p_enabled) {
   if (p_enabled) {
     if (!p_data.m_concealOwnsCache) {
@@ -90,14 +101,19 @@ public:
   ConcealGlyphAdapter(QTextLayout *p_layout, const QVector<ConcealedRange> &p_ranges,
                       const QVector<QTextLayout::FormatRange> &p_overlays, QPaintDevice *p_device,
                       BlockLayoutData &p_data, int p_sourceLength, bool p_preflight = false)
-      : m_engine(p_layout->engine()) {
+      : m_engine(p_layout->engine()), m_layout(p_layout) {
     auto combined = sourceFormats(p_layout);
-    combined += p_overlays;
+    for (auto overlay : p_overlays) {
+      const int end = concealLayoutPosition(p_layout, overlay.start + overlay.length, true);
+      overlay.start = concealLayoutPosition(p_layout, overlay.start);
+      overlay.length = end - overlay.start;
+      combined.append(overlay);
+    }
     int identity = 2;
     for (const auto &range : p_ranges) {
       QTextLayout::FormatRange overlay;
-      overlay.start = range.m_hiddenStart;
-      overlay.length = range.m_hiddenEnd - range.m_hiddenStart;
+      overlay.start = concealLayoutPosition(p_layout, range.m_hiddenStart);
+      overlay.length = concealLayoutPosition(p_layout, range.m_hiddenEnd, true) - overlay.start;
       // Unique properties force item boundaries even for adjacent runs with
       // identical source formatting. They never reach the document formats.
       overlay.format.setProperty(c_concealFormatProperty, identity++);
@@ -153,7 +169,7 @@ public:
       return;
     }
     // The block's source length excludes the synthetic paragraph separator.
-    emptyDisplay &= hiddenCharacters == p_sourceLength;
+    emptyDisplay &= hiddenCharacters == p_sourceLength && p_layout->preeditAreaText().isEmpty();
     p_data.m_concealPreflightMarkers.clear();
     setConcealCachePolicy(p_layout, p_data, true);
     for (auto &patch : m_patches) {
@@ -291,13 +307,16 @@ private:
   bool prepare(const ConcealedRange &p_range, QPaintDevice *p_device, Patch &p_patch,
                const ConcealPaintData *p_prepared) {
     p_patch.m_range = p_range;
-    p_patch.m_firstItem = m_engine->findItem(p_range.m_hiddenStart);
-    p_patch.m_lastItem = m_engine->findItem(p_range.m_hiddenEnd - 1, p_patch.m_firstItem);
+    auto &range = p_patch.m_range;
+    range.m_hiddenStart = concealLayoutPosition(m_layout, p_range.m_hiddenStart);
+    range.m_hiddenEnd = concealLayoutPosition(m_layout, p_range.m_hiddenEnd, true);
+    p_patch.m_firstItem = m_engine->findItem(range.m_hiddenStart);
+    p_patch.m_lastItem = m_engine->findItem(range.m_hiddenEnd - 1, p_patch.m_firstItem);
     if (p_patch.m_firstItem < 0 || p_patch.m_lastItem < p_patch.m_firstItem ||
-        m_engine->layoutData->items.at(p_patch.m_firstItem).position != p_range.m_hiddenStart ||
+        m_engine->layoutData->items.at(p_patch.m_firstItem).position != range.m_hiddenStart ||
         m_engine->layoutData->items.at(p_patch.m_lastItem).position +
                 m_engine->length(p_patch.m_lastItem) !=
-            p_range.m_hiddenEnd) {
+            range.m_hiddenEnd) {
       return false;
     }
     const auto &first = m_engine->layoutData->items.at(p_patch.m_firstItem);
@@ -378,6 +397,7 @@ private:
   }
 
   QTextEngine *m_engine = nullptr;
+  QTextLayout *m_layout = nullptr;
   QVector<Patch> m_patches;
   QVector<int> m_failedGroups;
   bool m_restored = false;
@@ -422,6 +442,7 @@ TextDocumentLayout::TextDocumentLayout(QTextDocument *p_doc, DocumentResourceMgr
   // Track source before the highlighter can trigger layout with a coalesced
   // formatting change. documentChanged() is too late to map source positions.
   connect(p_doc, &QTextDocument::contentsChange, this, &TextDocumentLayout::updateConcealSource);
+  connect(p_doc, &QTextDocument::contentsChanged, this, [this]() { m_concealImeEdit = {}; });
 
   connect(this, &TextDocumentLayout::becameIdle, this, [this]() {
     if ((m_pendingConcealBlocks.isEmpty() && !m_hasDeferredConcealment &&
@@ -575,11 +596,74 @@ void TextDocumentLayout::queueConcealGroup(const LiveConcealGroup &p_group) {
   }
 }
 
+bool TextDocumentLayout::eventFilter(QObject *p_object, QEvent *p_event) {
+  if (p_event->type() != QEvent::InputMethod) {
+    return false;
+  }
+  m_concealImeEdit = {};
+  const auto *edit = qobject_cast<QTextEdit *>(p_object);
+  if (!edit || edit->document() != document() || edit->isReadOnly() || m_concealGroups.isEmpty()) {
+    return false;
+  }
+  const auto *event = static_cast<QInputMethodEvent *>(p_event);
+  const auto cursor = edit->textCursor();
+  const auto block = cursor.block();
+  const auto &commit = event->commitString();
+  const bool gettingInput = !commit.isEmpty() || event->replacementLength() > 0 ||
+                            event->preeditString() != block.layout()->preeditAreaText();
+  if (!gettingInput ||
+      (commit.isEmpty() && event->replacementLength() == 0 && !cursor.hasSelection())) {
+    return false;
+  }
+  // Qt merges source edits with a whole-paragraph preedit notification. Retain
+  // the event's exact locus, not a text diff (repeated delimiters are ambiguous).
+  // Compound/multiblock operations retain conservative source invalidation.
+  if (commit.contains(QLatin1Char('\n')) || commit.contains(QLatin1Char('\r')) ||
+      commit.contains(QChar::ParagraphSeparator) ||
+      (cursor.hasSelection() &&
+       (event->replacementStart() != 0 || event->replacementLength() != 0 ||
+        !block.contains(cursor.selectionStart()) || !block.contains(cursor.selectionEnd())))) {
+    return false;
+  }
+  const qint64 position = cursor.hasSelection()
+                              ? cursor.selectionStart()
+                              : qint64(cursor.position()) + event->replacementStart();
+  const int removed = cursor.hasSelection() ? cursor.selectionEnd() - cursor.selectionStart()
+                                            : event->replacementLength();
+  if (position < block.position() || position >= block.position() + block.length() || removed < 0) {
+    return false;
+  }
+  const int offset = int(position - block.position());
+  if (removed > block.length() - 1 - offset) {
+    return false;
+  }
+  m_concealImeEdit.m_block = block;
+  m_concealImeEdit.m_expected = block.text();
+  m_concealImeEdit.m_expected.replace(offset, removed, commit);
+  m_concealImeEdit.m_revision = m_concealSourceRevision;
+  m_concealImeEdit.m_blockPosition = block.position();
+  m_concealImeEdit.m_blockLength = block.length();
+  m_concealImeEdit.m_position = int(position);
+  m_concealImeEdit.m_removed = removed;
+  m_concealImeEdit.m_added = commit.size();
+  return false;
+}
+
 void TextDocumentLayout::updateConcealSource(int p_position, int p_removed, int p_added) {
   auto *doc = document();
   // Rehighlighting emits replacement-shaped format notifications too.
   if (m_concealSourceRevision == doc->revision()) {
     return;
+  }
+  const auto ime = std::move(m_concealImeEdit);
+  m_concealImeEdit = {};
+  if (ime.m_revision == m_concealSourceRevision && ime.m_block.isValid() &&
+      ime.m_block.position() == ime.m_blockPosition && p_position == ime.m_blockPosition &&
+      p_removed == ime.m_blockLength && p_added == ime.m_block.length() &&
+      ime.m_block.text() == ime.m_expected) {
+    p_position = ime.m_position;
+    p_removed = ime.m_removed;
+    p_added = ime.m_added;
   }
   m_concealSourceRevision = doc->revision();
   if (p_removed == 0 && p_added == 0) {
@@ -694,6 +778,7 @@ void TextDocumentLayout::updateConcealSource(int p_position, int p_removed, int 
 void TextDocumentLayout::refreshConcealGroups() {
   for (auto &group : m_concealGroups) {
     bool composing = false;
+    bool preeditRevealed = false;
     if (group.m_valid) {
       for (int i = group.m_firstDependency; i < group.m_firstDependency + group.m_dependencyCount;
            ++i) {
@@ -703,12 +788,18 @@ void TextDocumentLayout::refreshConcealGroups() {
           group.m_valid = false;
           break;
         }
-        composing |= !dependency.m_block.layout()->preeditAreaText().isEmpty();
+        const auto *layout = dependency.m_block.layout();
+        if (!layout->preeditAreaText().isEmpty()) {
+          composing = true;
+          preeditRevealed |= concealGroupRevealed(group, dependency.m_block.position() +
+                                                             layout->preeditAreaPosition());
+        }
       }
     }
     group.m_composing = composing;
+    group.m_preeditRevealed = preeditRevealed;
     const bool active =
-        group.m_valid && !composing && !concealGroupRevealed(group, concealCursorPosition());
+        group.m_valid && !preeditRevealed && !concealGroupRevealed(group, concealCursorPosition());
     if (group.m_active != active) {
       group.m_active = active;
       queueConcealGroup(group);
@@ -751,7 +842,7 @@ void TextDocumentLayout::setConcealCursorPosition(int p_position) {
         auto &group = m_concealGroups[index];
         if (group.m_valid &&
             concealGroupRevealed(group, oldPosition) != concealGroupRevealed(group, p_position)) {
-          const bool active = !group.m_composing && !concealGroupRevealed(group, p_position);
+          const bool active = !group.m_preeditRevealed && !concealGroupRevealed(group, p_position);
           if (active != group.m_active) {
             group.m_active = active;
             queueConcealGroup(group);
@@ -779,9 +870,6 @@ QVector<ConcealedRange>
 TextDocumentLayout::concealRunsForBlock(const QTextBlock &p_block,
                                         QVector<int> &p_failedGroups) const {
   QVector<ConcealedRange> runs;
-  if (!p_block.layout()->preeditAreaText().isEmpty()) {
-    return runs;
-  }
   for (int index : BlockLayoutData::get(p_block)->m_concealGroups) {
     const auto &group = m_concealGroups.at(index);
     if (!group.m_active) {
@@ -1589,8 +1677,10 @@ void TextDocumentLayout::draw(QPainter *p_painter, const PaintContext &p_context
         // Any nonempty intersection selects the complete visual unit. Let
         // QTextLayout apply its ordinary background/foreground precedence in
         // the original selection order, including search/extra selections.
-        if (selection.length > 0 && selection.start < marker.m_hiddenEnd &&
-            qint64(selection.start) + selection.length > marker.m_hiddenStart) {
+        if (selection.length > 0 &&
+            selection.start < concealLayoutPosition(layout, marker.m_hiddenEnd, true) &&
+            qint64(selection.start) + selection.length >
+                concealLayoutPosition(layout, marker.m_hiddenStart)) {
           QTextCharFormat format;
           if (selection.format.boolProperty(c_cursorLineFormatProperty)) {
             // The source layout already painted the passive line fill. Forward
@@ -1683,8 +1773,8 @@ TextDocumentLayout::formatRangeFromSelection(const QTextBlock &p_block,
     const int selEnd = range.cursor.selectionEnd() - blpos;
     if (selStart < bllen && selEnd > 0 && selEnd > selStart) {
       QTextLayout::FormatRange o;
-      o.start = selStart;
-      o.length = selEnd - selStart;
+      o.start = concealLayoutPosition(p_block.layout(), selStart);
+      o.length = concealLayoutPosition(p_block.layout(), selEnd, true) - o.start;
       o.format = range.format;
       appendRange(o);
     } else if (!range.cursor.hasSelection() &&
@@ -1728,9 +1818,10 @@ int TextDocumentLayout::hitTest(const QPointF &p_point, Qt::HitTestAccuracy p_ac
   QPointF pos = p_point - QPointF(0, data->top());
   const auto markerHit = [&](int p_line) {
     for (const auto &marker : data->m_concealMarkers) {
+      const int start = concealLayoutPosition(layout, marker.m_hiddenStart);
       if (marker.m_rect.width() > 0 && marker.m_rect.contains(pos) &&
-          layout->lineForTextPosition(marker.m_hiddenStart).lineNumber() == p_line) {
-        return block.position() + marker.m_hiddenStart;
+          layout->lineForTextPosition(start).lineNumber() == p_line) {
+        return block.position() + start;
       }
     }
     return -1;
@@ -1738,15 +1829,17 @@ int TextDocumentLayout::hitTest(const QPointF &p_point, Qt::HitTestAccuracy p_ac
   const auto visibleBoundary = [&](const QTextLine &p_line, int p_position) {
     const auto hidden = [&](int p_column) {
       for (const auto &marker : data->m_concealMarkers) {
-        if (p_column >= marker.m_hiddenStart && p_column < marker.m_hiddenEnd) {
+        if (p_column >= concealLayoutPosition(layout, marker.m_hiddenStart) &&
+            p_column < concealLayoutPosition(layout, marker.m_hiddenEnd, true)) {
           return true;
         }
       }
       return false;
     };
     for (const auto &marker : data->m_concealMarkers) {
-      if (marker.m_rect.width() != 0 || p_position < marker.m_hiddenStart ||
-          p_position >= marker.m_hiddenEnd) {
+      const int start = concealLayoutPosition(layout, marker.m_hiddenStart);
+      const int end = concealLayoutPosition(layout, marker.m_hiddenEnd, true);
+      if (marker.m_rect.width() != 0 || p_position < start || p_position >= end) {
         continue;
       }
       // Probe the visual sides, not logical +/- 1: the neighbor of an empty
@@ -1767,7 +1860,7 @@ int TextDocumentLayout::hitTest(const QPointF &p_point, Qt::HitTestAccuracy p_ac
           return neighbor;
         }
       }
-      return marker.m_hiddenEnd;
+      return end;
     }
     return p_position;
   };
@@ -1979,7 +2072,7 @@ void TextDocumentLayout::documentChanged(int p_from, int p_charsRemoved, int p_c
   m_margin = doc->documentMargin();
 
   // Dependency invalidation precedes even lazy bounding-rect repairs. Edits
-  // in visible interiors and preedit changes must reveal all distant runs.
+  // or preedit inside a group must reveal its distant runs, not unrelated groups.
   if (!m_concealGroups.isEmpty()) {
     refreshConcealGroups();
     bool needsGroupLayout = !m_pendingConcealBlocks.isEmpty();
