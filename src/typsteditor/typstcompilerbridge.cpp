@@ -195,7 +195,14 @@ bool resourcesFromJson(const QJsonObject &p_header, TypstCompiledSnapshot &p_sna
   return true;
 }
 
-TypstSnapshot snapshotFromJson(const QJsonObject &p_header, bool p_resourcesRequired) {
+} // namespace
+
+namespace vte::detail {
+// Kept out of the public headers. Native protocol regressions call this exact
+// production decoder across the DLL boundary, without a substitute compiler.
+VTEXTEDIT_EXPORT TypstSnapshot snapshotFromJson(const QJsonObject &p_header,
+                                                bool p_resourcesRequired,
+                                                const QString &p_activeSource) {
   auto result = QSharedPointer<TypstCompiledSnapshot>::create();
   result->m_epoch = identifier(p_header.value(QStringLiteral("epoch")));
   result->m_generation = identifier(p_header.value(QStringLiteral("generation")));
@@ -293,8 +300,15 @@ TypstSnapshot snapshotFromJson(const QJsonObject &p_header, bool p_resourcesRequ
   if (!sourceHeadingsValue.isArray() || sourceLength < 0)
     return {};
   const auto sourceHeadings = sourceHeadingsValue.toArray();
-  if (sourceHeadings.size() > c_maxHeader / 128)
+  if (sourceHeadings.size() > c_maxHeader / 128 ||
+      ((p_resourcesRequired || !sourceHeadings.isEmpty()) && sourceLength != p_activeSource.size()))
     return {};
+  const auto isBoundary = [&p_activeSource](int p_position) {
+    return p_position >= 0 && p_position <= p_activeSource.size() &&
+           !(p_position > 0 && p_position < p_activeSource.size() &&
+             p_activeSource.at(p_position - 1).isHighSurrogate() &&
+             p_activeSource.at(p_position).isLowSurrogate());
+  };
   result->m_sourceHeadings.reserve(sourceHeadings.size());
   int previousEnd = -1;
   int nextHeading = 0;
@@ -306,13 +320,37 @@ TypstSnapshot snapshotFromJson(const QJsonObject &p_header, bool p_resourcesRequ
     TypstSourceHeadingInfo heading;
     heading.m_level = integer(object.value(QStringLiteral("level")));
     heading.m_headingIndex = integer(object.value(QStringLiteral("headingIndex")), -2);
+    heading.m_bodyStartPos = integer(object.value(QStringLiteral("bodyStart")));
+    heading.m_bodyEndPos = integer(object.value(QStringLiteral("bodyEnd")));
+    const auto preservedValue = object.value(QStringLiteral("preservedBodyRanges"));
     if (!resourceSource(object, range) || range.m_file != result->m_activeFile ||
         !range.isValid() || range.m_start < previousEnd || range.m_end > sourceLength ||
         heading.m_level < 1 || heading.m_level > range.m_end - range.m_start ||
-        heading.m_headingIndex < -1)
+        heading.m_headingIndex < -1 || !preservedValue.isArray() || !isBoundary(range.m_start) ||
+        !isBoundary(range.m_end) || !isBoundary(heading.m_bodyStartPos) ||
+        !isBoundary(heading.m_bodyEndPos) ||
+        heading.m_bodyStartPos - range.m_start < heading.m_level ||
+        heading.m_bodyEndPos < heading.m_bodyStartPos || heading.m_bodyEndPos > range.m_end)
       return {};
     heading.m_startPos = range.m_start;
     heading.m_endPos = range.m_end;
+    const auto preserved = preservedValue.toArray();
+    if (preserved.size() > c_maxHeader / 128)
+      return {};
+    heading.m_preservedBodyRanges.reserve(preserved.size());
+    int previousBodyEnd = heading.m_bodyStartPos;
+    for (const auto &part : preserved) {
+      if (!part.isObject())
+        return {};
+      const auto protectedRange = part.toObject();
+      const int start = integer(protectedRange.value(QStringLiteral("start")));
+      const int end = integer(protectedRange.value(QStringLiteral("end")));
+      if (start < previousBodyEnd || end <= start || end > heading.m_bodyEndPos ||
+          !isBoundary(start) || !isBoundary(end))
+        return {};
+      heading.m_preservedBodyRanges.append(qMakePair(start, end));
+      previousBodyEnd = end;
+    }
     if (heading.m_headingIndex >= 0) {
       if (heading.m_headingIndex != nextHeading || nextHeading >= result->m_headings.size())
         return {};
@@ -322,7 +360,7 @@ TypstSnapshot snapshotFromJson(const QJsonObject &p_header, bool p_resourcesRequ
         return {};
     }
     previousEnd = range.m_end;
-    result->m_sourceHeadings.append(heading);
+    result->m_sourceHeadings.append(std::move(heading));
   }
   if (!sourceHeadings.isEmpty() && nextHeading != result->m_headings.size())
     return {};
@@ -335,7 +373,7 @@ TypstSnapshot snapshotFromJson(const QJsonObject &p_header, bool p_resourcesRequ
   }
   return result;
 }
-} // namespace
+} // namespace vte::detail
 
 TypstCompilerBridge::TypstCompilerBridge(QObject *p_parent, Mode p_mode)
     : QObject(p_parent), m_mode(p_mode) {
@@ -1123,7 +1161,11 @@ void TypstCompilerBridge::handleReply(const QJsonObject &p_header,
         return;
       }
       if (p_header.contains(QStringLiteral("snapshot"))) {
-        m_latest = snapshotFromJson(p_header, m_mode == Mode::Preview);
+        const auto source = m_overlays.constFind(m_activeFile);
+        const QString emptySource;
+        m_latest =
+            detail::snapshotFromJson(p_header, m_mode == Mode::Preview,
+                                     source == m_overlays.cend() ? emptySource : source.value());
         if (!m_latest) {
           fail(tr("Typst backend returned invalid compiled geometry."));
           return;

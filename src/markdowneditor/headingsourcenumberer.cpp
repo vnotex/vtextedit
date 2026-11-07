@@ -9,6 +9,7 @@
 #include <QApplication>
 #include <QEvent>
 #include <QRegularExpression>
+#include <QScopeGuard>
 #include <QScopedValueRollback>
 #include <QScrollBar>
 #include <QTextBlock>
@@ -108,6 +109,29 @@ HeadingSourceNumberer::HeadingSourceNumberer(VMarkdownEditor *p_editor)
   observeDocument();
 }
 
+VMarkdownEditor::SourceEditState HeadingSourceNumberer::sourceEditState() const {
+  using State = VMarkdownEditor::SourceEditState;
+  if (m_applying) {
+    return m_applyingJoined ? State::ApplyingJoined : State::ApplyingSeparate;
+  }
+  if (m_sourceEditGeneration != m_publishedSourceEditGeneration || m_republish || m_publishing ||
+      m_preparing || m_queued || (m_active && m_provider && !m_replaySuppressed && m_pending)) {
+    return State::Pending;
+  }
+  return State::Settled;
+}
+
+void HeadingSourceNumberer::notifySourceEditStateChanged() {
+  if (m_stateChangeQueued) {
+    return;
+  }
+  m_stateChangeQueued = true;
+  QTimer::singleShot(0, this, [this]() {
+    m_stateChangeQueued = false;
+    emit m_editor->sourceEditStateChanged();
+  });
+}
+
 void HeadingSourceNumberer::setProvider(VMarkdownEditor::HeadingSectionNumberProvider p_provider) {
   ++m_providerGeneration;
   m_provider = std::move(p_provider);
@@ -126,6 +150,7 @@ void HeadingSourceNumberer::setActive(bool p_active) {
     return;
   }
   m_active = p_active;
+  notifySourceEditStateChanged();
   ++m_generation;
   m_timer.stop();
   // Suspension retains owed work and replay suppression. Activation only
@@ -170,6 +195,7 @@ void HeadingSourceNumberer::observeDocument() {
 }
 
 void HeadingSourceNumberer::cancel() {
+  notifySourceEditStateChanged();
   ++m_generation;
   m_pending = false;
   m_joinSourceEdit = false;
@@ -179,6 +205,7 @@ void HeadingSourceNumberer::cancel() {
 }
 
 void HeadingSourceNumberer::requestNormalization(bool p_sourceEdit) {
+  notifySourceEditStateChanged();
   if (p_sourceEdit) {
     m_restoreViewport = false;
   }
@@ -204,6 +231,20 @@ void HeadingSourceNumberer::contentsChange(int p_position, int p_removed, int p_
   // selecting all with a cursor does not. setPlainText then inserts it again.
   const bool reset = p_position == 0 && p_added == 0 && p_removed > m_characters - 1 &&
                      m_doc->characterCount() == 1;
+  // Formatting notifications can cover the terminal character, unlike a
+  // source replacement. Do not advance publication identity for those or for
+  // the synthetic terminal insertion above. Real reset deletion/insertion and
+  // writes made inside either normalizer do advance it.
+  const bool formatOnly = !reset && !m_reset && p_position == 0 && p_removed == p_added &&
+                          p_removed == m_characters && p_added == m_doc->characterCount();
+  if (formatOnly || (p_removed == 0 && p_added == 0)) {
+    return;
+  }
+  if (!reset || m_characters > 1) {
+    ++m_sourceEditGeneration;
+  }
+  m_republish = true;
+  notifySourceEditStateChanged();
   if (reset) {
     m_owned.clear();
     m_history.clear();
@@ -227,6 +268,7 @@ void HeadingSourceNumberer::contentsChange(int p_position, int p_removed, int p_
 }
 
 void HeadingSourceNumberer::contentsChanged() {
+  notifySourceEditStateChanged();
   if (m_reset) {
     // Consume the paired load now, not the first real edit after setPlainText.
     m_reset = false;
@@ -268,17 +310,20 @@ void HeadingSourceNumberer::contentsChanged() {
     requestNormalization(true);
   }
   observeDocument();
+  queueAttempt();
 }
 
 void HeadingSourceNumberer::queueAttempt() {
-  if (m_applying || m_preparing || m_queued ||
+  if (m_applying || m_preparing || m_publishing || m_queued ||
       (!m_republish && (!m_pending || !m_active || m_replaySuppressed || !m_provider))) {
     return;
   }
   m_queued = true;
+  notifySourceEditStateChanged();
   const auto generation = m_generation;
   QTimer::singleShot(0, this, [this, generation]() {
     m_queued = false;
+    notifySourceEditStateChanged();
     if (generation != m_generation) {
       queueAttempt();
       return;
@@ -413,6 +458,7 @@ bool HeadingSourceNumberer::prepare(const QSharedPointer<MarkdownHighlighterResu
     return false;
   }
   QScopedValueRollback<bool> preparing(m_preparing, true);
+  notifySourceEditStateChanged();
   Plan plan;
   plan.m_result = p_result;
   plan.m_generation = m_generation;
@@ -456,8 +502,7 @@ bool HeadingSourceNumberer::prepare(const QSharedPointer<MarkdownHighlighterResu
       // its trailing two-space hard break is syntax, not disposable spacing.
       if (source.m_continuation && prefixLength == firstLine.size()) {
         int spaces = 0;
-        while (spaces < prefixLength &&
-               firstLine[prefixLength - spaces - 1] == QLatin1Char(' ')) {
+        while (spaces < prefixLength && firstLine[prefixLength - spaces - 1] == QLatin1Char(' ')) {
           ++spaces;
         }
         if (spaces >= 2) {
@@ -503,7 +548,7 @@ bool HeadingSourceNumberer::prepare(const QSharedPointer<MarkdownHighlighterResu
 }
 
 void HeadingSourceNumberer::publishCurrent() {
-  if (m_preparing) {
+  if (m_preparing || m_applying || m_publishing) {
     return;
   }
   const auto result = m_editor->getHighlighter()->m_result;
@@ -514,10 +559,22 @@ void HeadingSourceNumberer::publishCurrent() {
     queueAttempt();
     return;
   }
-  m_republish = false;
+  QScopedValueRollback<bool> publishing(m_publishing, true);
+  const auto sourceGeneration = m_sourceEditGeneration;
+  const auto generation = m_generation;
+  const auto providerGeneration = m_providerGeneration;
+  // Keep the barrier pending throughout delivery: a receiver may change text
+  // (even body-only text with identical headings) or replace the provider.
   emit m_editor->headingsUpdated(result->m_headingElements, m_provider && m_plan.m_valid &&
                                                                 m_plan.m_eligible > 0 &&
                                                                 m_plan.m_replacements.isEmpty());
+  if (sourceGeneration == m_sourceEditGeneration && isCurrent(result)) {
+    m_publishedSourceEditGeneration = sourceGeneration;
+    m_republish = generation != m_generation || providerGeneration != m_providerGeneration;
+  } else {
+    m_republish = true;
+  }
+  notifySourceEditStateChanged();
 }
 
 void HeadingSourceNumberer::attempt() {
@@ -536,6 +593,7 @@ void HeadingSourceNumberer::attempt() {
   if (!m_plan.m_valid || m_plan.m_replacements.isEmpty()) {
     m_pending = false;
     m_timer.stop();
+    notifySourceEditStateChanged();
     return;
   }
   apply();
@@ -762,7 +820,13 @@ void HeadingSourceNumberer::writeReplacements(const QVector<Replacement> &p_repl
   m_verticalScroll = vertical;
   m_restoreViewport = true;
   const auto generation = m_generation;
+  const auto completed = qScopeGuard([this]() {
+    notifySourceEditStateChanged();
+    queueAttempt();
+  });
   QScopedValueRollback<bool> applying(m_applying, true);
+  QScopedValueRollback<bool> joining(m_applyingJoined, p_join);
+  notifySourceEditStateChanged();
   m_pending = false;
   m_timer.stop();
   if (p_removing) {

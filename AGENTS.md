@@ -468,8 +468,38 @@ Nested, functional, generated, imported, repeated or level-transformed headings 
 source list, not the navigation outline: definition-site spans do not prove realization boundaries.
 Never infer missing section ends from the next visible heading. The host checks complete source
 parents/subtrees against its confirmed move and includes hidden headings in source edits.
-Wire decoding validates bounded UTF-16 ranges, positive depths and visible-index correspondence.
-Coverage: native `sourceHeadings*` and VNote's `outlineMove*` / `outlineHiddenBoundaries` cases.
+`TypstSourceHeadingInfo::m_bodyStartPos/m_bodyEndPos` describe the matched `Heading::body()`
+AST range; `m_preservedBodyRanges` contains ordered, disjoint half-open LF/UTF-16 pairs for
+outermost comments and directly embedded `#label(...)` calls, including the introducing Hash.
+The concrete syntax tree, not text matching, discovers these ranges. A protected call owns its
+nested comments. String contents that resemble comments/labels are never protected syntax.
+The original `m_startPos/m_endPos` remain the exact evaluated heading span: ordinary trailing
+`<label>` and trailing comment/newline siblings stay outside it. Whole-section moves include
+those siblings through the next real section boundary, not by enlarging this AST span.
+
+Hosts replace only unprotected body syntax and preserve recorded slices byte-for-byte, in source
+order. They retain existing newline boundaries around line comments and any terminating newline
+inside the body; outside-body newlines remain untouched. Literal titles use `#"<escaped text>"`,
+including `#""` for an empty heading; escape quotes/backslashes and use `\u{HEX}` for allowed
+controls. Do not call a shadowable helper or treat topics as Typst markup.
+
+The native wire fields `bodyStart`, `bodyEnd`, and `preservedBodyRanges` (objects with `start` and
+`end`) are required, without a legacy missing-field fallback. Decoding validates ordered bounded
+ranges against the actual active LF/UTF-16 source, including surrogate boundaries, positive depths
+and exact visible-index correspondence. The production `vte::detail::snapshotFromJson` definition
+is exported solely so native-reply regression tests can exercise malformed metadata through the
+same DLL decoder; it is deliberately absent from public headers and is not an editor API.
+
+`compilationEpoch()` and `compilationGeneration()` expose the current bridge input identity,
+not the last accepted snapshot. Capture both after a source write. Empty heading invalidation may
+arrive synchronously before Compiling, while Ready arrives before the corresponding nonempty
+`headingsUpdated`; neither status alone acknowledges a source edit. Match that later publication
+against both current identities. These getters do not change signal ordering or compiler scheduling.
+
+Coverage: `sourceHeadings*`, `sourceHeadingBodyRanges`, `sourceHeadingLiteralTitles`,
+`sourceHeadingBodyReplacement`, `sourceHeadingMalformedBodyRanges`, and
+`compilationIdentityTracksPublication` in `test_typsteditor`; VNote's `outlineMove*` /
+`outlineHiddenBoundaries` cover the host boundaries.
 
 ## Typst Document Exports
 
@@ -719,6 +749,39 @@ and `resourceMenusSurviveDeletion` in `tests/test_typsteditor/`.
 before releasing. VNote packages the checked-in QM files, so regenerate them with Qt 5.15
 `lrelease` and commit both TS and QM changes (Qt 6 can load these files). The host installs
 the `vtextedit` translator with its chosen `QLocale` before constructing editors.
+
+## Markdown Source-Edit Settlement
+
+`VMarkdownEditor::sourceEditState()` is the synchronous provenance authority for
+source-outline hosts. Its `SourceEditState` is `Settled`, `Pending`, `ApplyingJoined`,
+or `ApplyingSeparate`; the applying states take precedence and are installed before
+QTextDocument writes, using the actual `joinPreviousEditBlock()` decision. A second
+user/programmatic command during `Pending` is not an automatic join. The coalesced
+`sourceEditStateChanged()` signal only wakes the host, which must read the getter.
+
+The getter combines `HeadingSourceNumberer` with the existing table/list
+`MarkdownSourceFormatter`, including list-worker, preparation and queued work. Disabled
+formatter modes, inactive numbering's dormant request, and replay-suppressed numbering
+do not block settlement. Existing inactivity deadlines, defaults and undo behavior are
+unchanged; no polling timer or host-side guessed delay is a completion signal.
+
+Normalizer idleness is insufficient. `HeadingSourceNumberer` owns independent source
+and acknowledged-publication generations. Every text-bearing `contentsChange`, including
+normalizer writes and body-only changes, advances the source generation and requests a
+publication even with inactive numbering, no provider, unchanged titles, or no headings.
+Highlight-only notifications and synthetic terminal-character reset notifications do not
+advance source provenance. `publishCurrent()` requires the current highlighter timestamp
+and block count, emits `headingsUpdated`, and acknowledges the captured source generation
+only after synchronous receivers return with that generation and parse still current.
+A receiver that edits source cannot acknowledge the newer generation with the older AST.
+
+Hosts must keep source edit receipts pending until this barrier and every enabled writer
+settle, and only then reconcile their accepted heading positions/titles. During the gap
+between a completed joined source write and its fresh heading publication the getter is
+still `Pending`, never a transient `Settled`. Regression coverage uses the real editor,
+highlighter and list worker in `testSourceEditSettlement` and
+`testSourceEditJoinedProvenance`, including undo/redo, separate writes, feature cancellation,
+empty headings and reentrant body-only publication changes.
 
 ## Testing
 

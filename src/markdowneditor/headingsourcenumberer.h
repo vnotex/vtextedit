@@ -25,6 +25,7 @@ public:
   void setProvider(VMarkdownEditor::HeadingSectionNumberProvider p_provider);
   void setActive(bool p_active);
   VMarkdownEditor::HeadingSectionNumberRemovalResult remove();
+  VMarkdownEditor::SourceEditState sourceEditState() const;
 
   // Preserve the source edit's viewport until explicit user interaction.
   bool restoreViewportAfterHighlight();
@@ -72,6 +73,7 @@ private:
     bool m_valid = false;
   };
 
+  void notifySourceEditStateChanged();
   void observeDocument();
   void cancel();
   void requestNormalization(bool p_sourceEdit);
@@ -109,6 +111,10 @@ private:
   QVector<PrefixSnapshot> m_snapshot;
   quint64 m_generation = 0;
   quint64 m_providerGeneration = 0;
+  // Source publication identity is independent of normalizer/provider activity
+  // and QTextDocument's formatting-only revisions.
+  quint64 m_sourceEditGeneration = 0;
+  quint64 m_publishedSourceEditGeneration = 0;
   int m_revision = 0;
   int m_characters = 1;
   int m_undoSteps = 0;
@@ -118,6 +124,9 @@ private:
   bool m_pending = false;
   bool m_queued = false;
   bool m_applying = false;
+  bool m_applyingJoined = false;
+  bool m_publishing = false;
+  bool m_stateChangeQueued = false;
   bool m_preparing = false;
   bool m_republish = false;
   bool m_reset = false;

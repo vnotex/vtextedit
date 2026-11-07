@@ -7290,6 +7290,320 @@ void editHeadingSource(VMarkdownEditor &p_editor, int p_start, int p_length, con
 }
 } // namespace
 
+void TestMarkdownEditor::testSourceEditSettlement() {
+  using State = VMarkdownEditor::SourceEditState;
+  {
+    Fixture fixture(QStringLiteral("# Heading\n\nbody\n"));
+    auto editor = fixture.editor();
+    auto doc = editor->document();
+    HeadingSnapshot snapshot(*editor);
+    QSignalSpy stateChanges(editor, &VMarkdownEditor::sourceEditStateChanged);
+    QTRY_VERIFY_WITH_TIMEOUT(snapshot.m_updates > 0 && editor->sourceEditState() == State::Settled,
+                             5000);
+
+    // Inactive numbering retains dormant work, but must not block publication
+    // or settlement. An unchanged heading roster still needs a fresh delivery.
+    editor->setHeadingSectionNumberProvider(headingPrefixes({QStringLiteral("1.")}));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->sourceEditState(), State::Settled, 5000);
+    const int before = snapshot.m_updates;
+    bool reentered = false;
+    bool settledBeforePublication = false;
+    const auto wake = connect(editor, &VMarkdownEditor::sourceEditStateChanged, editor, [&]() {
+      if (editor->sourceEditState() == State::Settled && snapshot.m_source != fixture.text()) {
+        settledBeforePublication = true;
+      }
+    });
+    const auto publication = connect(editor, &VMarkdownEditor::headingsUpdated, editor,
+                                     [&](const QVector<md::HeadingInfo> &, bool) {
+                                       QCOMPARE(editor->sourceEditState(), State::Pending);
+                                       if (!reentered) {
+                                         reentered = true;
+                                         editHeadingSource(*editor, doc->characterCount() - 1, 0,
+                                                           QStringLiteral("second body\n"));
+                                         QCOMPARE(editor->sourceEditState(), State::Pending);
+                                       }
+                                     });
+    editHeadingSource(*editor, fixture.text().indexOf(QStringLiteral("body")), 4,
+                      QStringLiteral("first body"));
+    QCOMPARE(editor->sourceEditState(), State::Pending);
+    QTRY_VERIFY_WITH_TIMEOUT(reentered && snapshot.m_updates >= before + 2 &&
+                                 editor->sourceEditState() == State::Settled,
+                             5000);
+    QCOMPARE(snapshot.m_source, fixture.text());
+    QCOMPARE(snapshot.titles(), QStringList{QStringLiteral("Heading")});
+    QVERIFY(!settledBeforePublication);
+    QVERIFY(!stateChanges.isEmpty());
+    disconnect(publication);
+    disconnect(wake);
+
+    // A provider with no requested prefixes is valid and consumes its no-op
+    // request. Disabling it must also settle without rewriting old source.
+    editor->setHeadingSectionNumberProvider(headingPrefixes({QString()}));
+    editor->setHeadingSectionNumberingActive(true);
+    QTRY_COMPARE_WITH_TIMEOUT(editor->sourceEditState(), State::Settled, 5000);
+    editor->setHeadingSectionNumberProvider({});
+    QTRY_COMPARE_WITH_TIMEOUT(editor->sourceEditState(), State::Settled, 5000);
+    const QString text = fixture.text();
+    editor->getHighlighter()->rehighlight();
+    QCOMPARE(fixture.text(), text);
+    QCOMPARE(editor->sourceEditState(), State::Settled);
+
+    // Reset and heading-free/body-only publications cannot leave the generation
+    // barrier stranded even with every source normalizer disabled.
+    editor->setText(QStringLiteral("plain body\n"));
+    QCOMPARE(editor->sourceEditState(), State::Pending);
+    QTRY_VERIFY_WITH_TIMEOUT(snapshot.m_headings.isEmpty() && snapshot.m_source == fixture.text() &&
+                                 editor->sourceEditState() == State::Settled,
+                             5000);
+    const int emptyBefore = snapshot.m_updates;
+    editHeadingSource(*editor, 0, 0, QStringLiteral("more "));
+    QCOMPARE(editor->sourceEditState(), State::Pending);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        snapshot.m_updates > emptyBefore && editor->sourceEditState() == State::Settled, 5000);
+    QCOMPARE(snapshot.m_source, fixture.text());
+    QVERIFY(snapshot.m_headings.isEmpty());
+    editor->setText(QString());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        snapshot.m_source.isEmpty() && editor->sourceEditState() == State::Settled, 5000);
+  }
+  {
+    auto config = makeListSourceConfig(true, true);
+    const QString source =
+        QStringLiteral("## Heading\n\n1. a\n8. b\n\nseparate\n\n") + c_tableSource;
+    Fixture fixture(source, 0, -1, config);
+    auto editor = fixture.editor();
+    HeadingSnapshot snapshot(*editor);
+    fixture.waitForFreshListAst();
+    QTRY_COMPARE_WITH_TIMEOUT(editor->sourceEditState(), State::Settled, 5000);
+    editor->setHeadingSectionNumberProvider(headingPrefixes({QStringLiteral("1.")}));
+    editor->setHeadingSectionNumberingActive(true);
+    // Schedule heading, table and list changes together, then cancel every
+    // writer before the idle deadline. The current parse is still mandatory.
+    QTextCursor cursor(editor->document());
+    cursor.beginEditBlock();
+    cursor.setPosition(source.indexOf(QStringLiteral("| a |")) + 2);
+    cursor.setPosition(cursor.position() + 1, QTextCursor::KeepAnchor);
+    cursor.insertText(QStringLiteral("z"));
+    cursor.setPosition(source.indexOf(QStringLiteral("8. b")));
+    cursor.setPosition(cursor.position() + 1, QTextCursor::KeepAnchor);
+    cursor.insertText(QStringLiteral("7"));
+    cursor.endEditBlock();
+    const QString authored = fixture.text();
+    QCOMPARE(editor->sourceEditState(), State::Pending);
+    editor->setHeadingSectionNumberingActive(false);
+    config->m_autoFormatTableSourceEnabled = false;
+    config->m_autoNumberOrderedListsEnabled = false;
+    editor->setConfig(config);
+    QTRY_COMPARE_WITH_TIMEOUT(editor->sourceEditState(), State::Settled, 5000);
+    QCOMPARE(fixture.text(), authored);
+    QCOMPARE(snapshot.m_source, authored);
+    QCOMPARE(snapshot.titles(), QStringList{QStringLiteral("Heading")});
+    editor->setHeadingSectionNumberProvider({});
+    editor->setHeadingSectionNumberingActive(true);
+    QTRY_COMPARE_WITH_TIMEOUT(editor->sourceEditState(), State::Settled, 5000);
+    QCOMPARE(fixture.text(), authored);
+  }
+}
+
+void TestMarkdownEditor::testSourceEditJoinedProvenance() {
+  using State = VMarkdownEditor::SourceEditState;
+  {
+    const QString source = QStringLiteral("# Title\n## 1. Alpha\n");
+    const QString normalized = QStringLiteral("# Title\n## 1. Renamed\n");
+    Fixture fixture(source);
+    auto editor = fixture.editor();
+    auto doc = editor->document();
+    HeadingSnapshot snapshot(*editor);
+    editor->setHeadingSectionNumberProvider(headingPrefixes({QString(), QStringLiteral("1.")}));
+    editor->setHeadingSectionNumberingActive(true);
+    QTRY_COMPARE_WITH_TIMEOUT(editor->sourceEditState(), State::Settled, 5000);
+    QVector<State> writes;
+    QString observed = source;
+    const auto changes = connect(doc, &QTextDocument::contentsChange, editor, [&](int, int, int) {
+      if (observed != fixture.text()) {
+        observed = fixture.text();
+        writes.append(editor->sourceEditState());
+      }
+    });
+    bool gap = false;
+    bool currentDeliveryPending = false;
+    bool prematureSettlement = false;
+    const auto wake = connect(editor, &VMarkdownEditor::sourceEditStateChanged, editor, [&]() {
+      // This queued wake runs after the complete prefix edit and its applying
+      // scope, while the post-write highlighter publication is still owed.
+      if (fixture.text() == normalized && snapshot.m_source != normalized) {
+        gap = true;
+        QCOMPARE(editor->sourceEditState(), State::Pending);
+      }
+      if (editor->sourceEditState() == State::Settled && snapshot.m_source != fixture.text()) {
+        prematureSettlement = true;
+      }
+    });
+    const auto publication = connect(editor, &VMarkdownEditor::headingsUpdated, editor,
+                                     [&](const QVector<md::HeadingInfo> &, bool) {
+                                       if (snapshot.m_source == normalized) {
+                                         currentDeliveryPending =
+                                             editor->sourceEditState() == State::Pending;
+                                       }
+                                     });
+    editHeadingSource(*editor, source.indexOf(QStringLiteral("1. Alpha")), 8,
+                      QStringLiteral("Renamed"));
+    QCOMPARE(editor->sourceEditState(), State::Pending);
+    QCOMPARE(writes, QVector<State>{State::Pending});
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fixture.text() == normalized && editor->sourceEditState() == State::Settled, 5000);
+    QVERIFY(writes.contains(State::ApplyingJoined));
+    QVERIFY(!writes.contains(State::ApplyingSeparate));
+    QVERIFY(gap);
+    QVERIFY(currentDeliveryPending);
+    QVERIFY(!prematureSettlement);
+    QCOMPARE(snapshot.titles(),
+             QStringList({QStringLiteral("Title"), QStringLiteral("1. Renamed")}));
+    doc->undo();
+    QCOMPARE(fixture.text(), source);
+    QTRY_COMPARE_WITH_TIMEOUT(editor->sourceEditState(), State::Settled, 5000);
+    doc->redo();
+    QCOMPARE(fixture.text(), normalized);
+    QTRY_COMPARE_WITH_TIMEOUT(editor->sourceEditState(), State::Settled, 5000);
+
+    // A second independent command during Pending is not an automatic join.
+    // Normalization can join that newest group, but undo must not consume the
+    // earlier rename too. Hosts distinguish it synchronously via this state.
+    writes.clear();
+    const int title = fixture.text().indexOf(QStringLiteral("1. Renamed"));
+    editHeadingSource(*editor, title, 10, QStringLiteral("Second"));
+    const QString firstCommand = fixture.text();
+    QCOMPARE(editor->sourceEditState(), State::Pending);
+    editHeadingSource(*editor, doc->characterCount() - 1, 0, QStringLiteral("body\n"));
+    QCOMPARE(writes, QVector<State>({State::Pending, State::Pending}));
+    QTRY_COMPARE_WITH_TIMEOUT(editor->sourceEditState(), State::Settled, 5000);
+    QCOMPARE(fixture.text(), QStringLiteral("# Title\n## 1. Second\nbody\n"));
+    doc->undo();
+    QCOMPARE(fixture.text(), firstCommand);
+    QTRY_COMPARE_WITH_TIMEOUT(editor->sourceEditState(), State::Settled, 5000);
+    doc->undo();
+    QCOMPARE(fixture.text(), normalized);
+    QTRY_COMPARE_WITH_TIMEOUT(editor->sourceEditState(), State::Settled, 5000);
+    disconnect(changes);
+    disconnect(wake);
+    disconnect(publication);
+  }
+  {
+    Fixture fixture(QStringLiteral("## Heading\n"));
+    auto editor = fixture.editor();
+    QTRY_COMPARE_WITH_TIMEOUT(editor->sourceEditState(), State::Settled, 5000);
+    bool separate = false;
+    const auto changes =
+        connect(editor->document(), &QTextDocument::contentsChange, editor, [&](int, int, int) {
+          separate = separate || editor->sourceEditState() == State::ApplyingSeparate;
+        });
+    editor->setHeadingSectionNumberProvider(headingPrefixes({QStringLiteral("1.")}));
+    editor->setHeadingSectionNumberingActive(true);
+    QTRY_VERIFY_WITH_TIMEOUT(separate && editor->sourceEditState() == State::Settled, 5000);
+    QCOMPARE(fixture.text(), QStringLiteral("## 1. Heading\n"));
+    editor->setHeadingSectionNumberProvider({});
+    QTRY_COMPARE_WITH_TIMEOUT(editor->sourceEditState(), State::Settled, 5000);
+    separate = false;
+    QCOMPARE(editor->removeHeadingSectionNumbers(), HeadingRemoval::Removed);
+    QVERIFY(separate);
+    QCOMPARE(editor->sourceEditState(), State::Pending);
+    QTRY_COMPARE_WITH_TIMEOUT(editor->sourceEditState(), State::Settled, 5000);
+    QCOMPARE(fixture.text(), QStringLiteral("## Heading\n"));
+    disconnect(changes);
+  }
+  // Table-only, list-only and combined real formatter/worker paths. Numbering
+  // is inactive: their post-write gap cannot rely on its own pending work.
+  for (int mode : {0, 1, 2}) {
+    const bool lists = mode != 0;
+    const bool tables = mode != 1;
+    const QString prefix = QStringLiteral("# Heading\n\n1. a\n8. b\n\nseparate\n\n");
+    const QString source = prefix + c_tableSource;
+    const QString expected = QStringLiteral("# Heading\n\n1. a\n") +
+                             (lists ? QStringLiteral("2. b") : QStringLiteral("8. b")) +
+                             QStringLiteral("\n\nseparate\n\n") +
+                             (tables ? c_tableSourceAligned : c_tableSource);
+    Fixture fixture(source, 0, -1, makeListSourceConfig(lists, tables));
+    auto editor = fixture.editor();
+    auto doc = editor->document();
+    HeadingSnapshot snapshot(*editor);
+    fixture.waitForFreshListAst();
+    QTRY_COMPARE_WITH_TIMEOUT(editor->sourceEditState(), State::Settled, 5000);
+    const int before = snapshot.m_updates;
+    QVector<State> writes;
+    QString observed = source;
+    const auto changes = connect(doc, &QTextDocument::contentsChange, editor, [&](int, int, int) {
+      if (observed != fixture.text()) {
+        observed = fixture.text();
+        writes.append(editor->sourceEditState());
+      }
+    });
+    bool gap = false;
+    bool pendingDelivery = false;
+    const auto wake = connect(editor, &VMarkdownEditor::sourceEditStateChanged, editor, [&]() {
+      if (fixture.text() == expected && snapshot.m_source != expected) {
+        gap = true;
+        QCOMPARE(editor->sourceEditState(), State::Pending);
+      }
+    });
+    const auto publication = connect(editor, &VMarkdownEditor::headingsUpdated, editor,
+                                     [&](const QVector<md::HeadingInfo> &, bool) {
+                                       if (fixture.text() == expected) {
+                                         pendingDelivery =
+                                             editor->sourceEditState() == State::Pending;
+                                       }
+                                     });
+    QTextCursor cursor(doc);
+    cursor.beginEditBlock();
+    if (tables) {
+      cursor.setPosition(source.indexOf(QStringLiteral("| a |")) + 2);
+      cursor.setPosition(cursor.position() + 1, QTextCursor::KeepAnchor);
+      cursor.insertText(QStringLiteral("z"));
+    }
+    if (lists) {
+      cursor.setPosition(source.indexOf(QStringLiteral("8. b")));
+      cursor.setPosition(cursor.position() + 1, QTextCursor::KeepAnchor);
+      cursor.insertText(QStringLiteral("7"));
+    }
+    cursor.endEditBlock();
+    QCOMPARE(editor->sourceEditState(), State::Pending);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fixture.text() == expected && editor->sourceEditState() == State::Settled, 5000);
+    QVERIFY(writes.contains(State::ApplyingJoined));
+    QVERIFY(!writes.contains(State::ApplyingSeparate));
+    QVERIFY(gap);
+    QVERIFY(pendingDelivery);
+    QVERIFY(snapshot.m_updates > before);
+    QCOMPARE(snapshot.m_source, expected);
+    QCOMPARE(snapshot.titles(), QStringList{QStringLiteral("Heading")});
+    doc->undo();
+    QCOMPARE(fixture.text(), source);
+    QTRY_COMPARE_WITH_TIMEOUT(editor->sourceEditState(), State::Settled, 5000);
+    doc->redo();
+    QCOMPARE(fixture.text(), expected);
+    QTRY_COMPARE_WITH_TIMEOUT(editor->sourceEditState(), State::Settled, 5000);
+    disconnect(changes);
+    disconnect(wake);
+    disconnect(publication);
+  }
+  {
+    Fixture fixture(c_tableSource, 0, -1, makeTableSourceConfig());
+    auto editor = fixture.editor();
+    QTRY_COMPARE_WITH_TIMEOUT(editor->sourceEditState(), State::Settled, 5000);
+    editor->document()->setUndoRedoEnabled(false);
+    bool separate = false;
+    const auto changes =
+        connect(editor->document(), &QTextDocument::contentsChange, editor, [&](int, int, int) {
+          separate = separate || editor->sourceEditState() == State::ApplyingSeparate;
+        });
+    replaceTableSource(*editor, 2, 2, 1, QStringLiteral("z"));
+    QTRY_VERIFY_WITH_TIMEOUT(fixture.text() == c_tableSourceAligned &&
+                                 editor->sourceEditState() == State::Settled,
+                             5000);
+    QVERIFY(separate);
+    disconnect(changes);
+  }
+}
+
 void TestMarkdownEditor::testHeadingSourceDefaultAndActivation() {
   Fixture fixture(c_headingSource);
   auto editor = fixture.editor();

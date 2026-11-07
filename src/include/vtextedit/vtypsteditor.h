@@ -5,6 +5,7 @@
 
 #include <QByteArray>
 #include <QMetaType>
+#include <QPair>
 #include <QPointF>
 #include <QScopedPointer>
 #include <QSharedPointer>
@@ -41,6 +42,12 @@ struct TypstHeadingInfo {
 struct TypstSourceHeadingInfo {
   int m_startPos = -1;
   int m_endPos = -1;
+  // AST body only; the heading span above must still match its evaluated element.
+  int m_bodyStartPos = -1;
+  int m_bodyEndPos = -1;
+  // Ordered, disjoint half-open LF/UTF-16 ranges inside the body. Preserve these
+  // comments/direct #label(...) expressions byte-for-byte when replacing a title.
+  QVector<QPair<int, int>> m_preservedBodyRanges;
   int m_level = -1;
   // Index in getHeadings(), or -1 for an outlined:false section boundary.
   int m_headingIndex = -1;
@@ -118,6 +125,10 @@ public:
   void removeFileOverlay(const QString &p_file);
 
   CompileStatus compileStatus() const;
+  // Current compiler input identity, including while its headings are invalidated.
+  // Ready precedes headingsUpdated; only the latter acknowledges this pair.
+  quint64 compilationEpoch() const;
+  quint64 compilationGeneration() const;
   QString compileMessage() const;
   QStringList diagnostics() const;
   // Whole compiled main document, in document order, excluding outlined:false.

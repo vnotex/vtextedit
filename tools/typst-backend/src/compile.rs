@@ -9,7 +9,8 @@ use typst::foundations::{Bytes, NativeElement, StyleChain};
 use typst::introspection::{Introspector, PagedPosition};
 use typst::layout::{Abs, Frame, FrameItem, Point, Sides, Transform};
 use typst::model::{Document, HeadingElem};
-use typst::syntax::{FileId, LinkedNode, Source, ast};
+use typst::syntax::{FileId, LinkedNode, Source, SyntaxKind, ast};
+use typst::syntax::ast::AstNode;
 use typst::utils::Scalar;
 use typst::{World, WorldExt};
 use typst_layout::PagedDocument;
@@ -567,6 +568,57 @@ fn unmapped_diagnostic(message: &str) -> Value {
     json!({"file":"", "start":-1, "end":-1, "severity":"error", "message":message})
 }
 
+// Only concrete syntax proves which invisible source fragments survive a title edit.
+// A trailing <label> is a sibling of Heading, never part of this body/span.
+fn heading_body_metadata(world: &dyn World, source: &Source, node: &LinkedNode<'_>, value: &mut Value) -> Result<(), String> {
+    let heading = node.cast::<ast::Heading>().ok_or("invalid source heading node")?;
+    let body = node.find(heading.body().span()).ok_or("invalid source heading body")?;
+    let body_range = body.range();
+    let wire = wire_range(world, source.id(), body_range.clone())
+        .ok_or("invalid source heading body range")?;
+    value["bodyStart"] = wire["start"].clone();
+    value["bodyEnd"] = wire["end"].clone();
+    let mut preserved = Vec::new();
+    let mut nodes = vec![body];
+    let mut previous_end = body_range.start;
+    while let Some(node) = nodes.pop() {
+        let protected = if matches!(node.kind(), SyntaxKind::LineComment | SyntaxKind::BlockComment) {
+            Some(node.range())
+        } else if node.cast::<ast::FuncCall>().is_some_and(|call|
+            matches!(call.callee(), ast::Expr::Ident(ident) if ident.as_str() == "label")) {
+            // Require a directly embedded call, not label(...) nested in other code.
+            node.prev_sibling_with_trivia()
+                .filter(|previous| previous.kind() == SyntaxKind::Hash)
+                .map(|hash| hash.offset()..node.range().end)
+        } else {
+            None
+        };
+        if let Some(range) = protected {
+            if range.start < previous_end || range.end > body_range.end {
+                return Err("overlapping source heading body ranges".into());
+            }
+            metadata_room(preserved.len())?;
+            let wire = wire_range(world, source.id(), range.clone())
+                .ok_or("invalid preserved source heading body range")?;
+            preserved.push(json!({"start":wire["start"], "end":wire["end"]}));
+            previous_end = range.end;
+            // Outermost ranges own any comments nested inside their syntax.
+        } else {
+            nodes.extend(node.children().rev());
+        }
+    }
+    // Usually the terminating LF is outside the Heading AST. Never enlarge that
+    // span; if it is inside the body, retain it rather than joining the next line.
+    if body_range.end > previous_end && source.text().as_bytes().get(body_range.end - 1) == Some(&b'\n') {
+        metadata_room(preserved.len())?;
+        let wire = wire_range(world, source.id(), body_range.end - 1..body_range.end)
+            .ok_or("invalid source heading terminating newline")?;
+        preserved.push(json!({"start":wire["start"], "end":wire["end"]}));
+    }
+    value["preservedBodyRanges"] = Value::Array(preserved);
+    Ok(())
+}
+
 fn extract_headings(world: &dyn World, document: &PagedDocument, active: FileId) -> Result<(Value, Value, i32), String> {
     let source = world.source(active).map_err(|error| error.to_string())?;
     let source_length = source.lines().byte_to_utf16(source.text().len())
@@ -579,7 +631,7 @@ fn extract_headings(world: &dyn World, document: &PagedDocument, active: FileId)
         metadata_room(candidates.len())?;
         let level = i32::try_from(heading.depth().get())
             .map_err(|_| "source heading level exceeds signed 32-bit protocol limit")?;
-        candidates.push((node.span(), level, node.range()));
+        candidates.push((node, level));
     }
     let mut headings = Vec::new();
     let mut source_headings = Vec::new();
@@ -595,11 +647,12 @@ fn extract_headings(world: &dyn World, document: &PagedDocument, active: FileId)
             .map_err(|_| "compiled heading level exceeds signed 32-bit protocol limit")?;
         let outlined = heading.outlined.get(StyleChain::default());
         if complete {
-            if let Some((_, syntax_level, range)) = candidates.get(index)
-                .filter(|(span, syntax_level, _)| *span == elem.span() && *syntax_level == level)
+            if let Some((node, syntax_level)) = candidates.get(index)
+                .filter(|(node, syntax_level)| node.span() == elem.span() && *syntax_level == level)
             {
-                let mut value = wire_range(world, active, range.clone())
+                let mut value = wire_range(world, active, node.range())
                     .ok_or("invalid top-level heading source range")?;
+                heading_body_metadata(world, &source, node, &mut value)?;
                 value["level"] = json!(syntax_level);
                 value["headingIndex"] = if outlined { json!(headings.len()) } else { json!(-1) };
                 source_headings.push(value);

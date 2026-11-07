@@ -63,6 +63,7 @@ public:
   using HeadingSectionNumberProvider =
       std::function<QVector<QString>(const QVector<md::HeadingInfo> &)>;
   enum class HeadingSectionNumberRemovalResult { Unchanged, Removed, Unavailable };
+  enum class SourceEditState { Settled, Pending, ApplyingJoined, ApplyingSeparate };
 
   VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_config,
                   const QSharedPointer<TextEditorParameters> &p_paras, QWidget *p_parent = nullptr);
@@ -93,6 +94,11 @@ public:
   // Clear the provider first. Works while inactive; Removed is one standalone
   // undo step, Unchanged does not edit, and Unavailable must be reported by hosts.
   HeadingSectionNumberRemovalResult removeHeadingSectionNumbers();
+
+  // Authoritative during contentsChange, including automatic source writes.
+  // Settled requires idle source normalizers AND acknowledgement of a current
+  // headingsUpdated publication after its synchronous receivers return.
+  SourceEditState sourceEditState() const;
 
   PreviewMgr *getPreviewMgr() const;
 
@@ -159,6 +165,9 @@ signals:
   // Original full-parse heading data. The guarantee is true only when there
   // is at least one eligible heading and every requested source prefix matches.
   void headingsUpdated(const QVector<md::HeadingInfo> &p_headings, bool p_hasSectionNumber);
+
+  // Coalesced wake-up; consult sourceEditState() rather than caching this signal.
+  void sourceEditStateChanged();
 
   // The application supplies image-reference source through completeImageInsertion(),
   // or cancels the token. A newer request invalidates the previous request.

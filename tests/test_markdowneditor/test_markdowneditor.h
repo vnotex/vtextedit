@@ -216,6 +216,8 @@ private slots:
   void testViListInsertReturn();
 
   // Opt-in, deferred section numbers written into actual Markdown source.
+  void testSourceEditSettlement();
+  void testSourceEditJoinedProvenance();
   void testHeadingSourceDefaultAndActivation();
   void testHeadingSourceReadOnly();
   void testHeadingSourceMaintenance();

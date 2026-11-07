@@ -165,6 +165,7 @@ public:
   }
 
   void setEnabled(bool p_tablesEnabled, bool p_listsEnabled);
+  VMarkdownEditor::SourceEditState sourceEditState() const;
   bool handleListInsertion(VTextEdit::BlockInsertion p_operation);
   bool takeListReturnSuppression();
 
@@ -264,6 +265,7 @@ private:
     bool m_overridden = false;
   };
 
+  void notifySourceEditStateChanged();
   void observeDocument();
   void resetBaselines();
   QHash<int, int> baselinePositions() const;
@@ -336,6 +338,8 @@ private:
   bool m_preserveListBaseline = false;
   bool m_queued = false;
   bool m_applying = false;
+  bool m_applyingJoined = false;
+  bool m_stateChangeQueued = false;
   bool m_reset = false;
   bool m_sourceChanged = false;
   bool m_newUndoCommand = false;
@@ -349,6 +353,7 @@ void MarkdownSourceFormatter::setEnabled(bool p_tablesEnabled, bool p_listsEnabl
   if (!profileChanged && m_enabled == p_tablesEnabled && m_listsEnabled == p_listsEnabled) {
     return;
   }
+  notifySourceEditStateChanged();
   if (profileChanged || m_enabled != p_tablesEnabled) {
     m_enabled = p_tablesEnabled;
     m_pending = false;
@@ -381,6 +386,7 @@ void MarkdownSourceFormatter::observeDocument() {
 }
 
 void MarkdownSourceFormatter::resetBaselines() {
+  notifySourceEditStateChanged();
   ++m_generation;
   m_pending = false;
   m_timer.stop();
@@ -472,6 +478,7 @@ void MarkdownSourceFormatter::contentsChange(int p_position, int p_removed, int 
 }
 
 void MarkdownSourceFormatter::contentsChanged() {
+  notifySourceEditStateChanged();
   if (m_reset) {
     m_reset = false;
     resetBaselines();
@@ -512,13 +519,40 @@ bool MarkdownSourceFormatter::hasPending() const {
   return m_pending || m_listsPending || m_seedRequired || m_numberingReady;
 }
 
+VMarkdownEditor::SourceEditState MarkdownSourceFormatter::sourceEditState() const {
+  using State = VMarkdownEditor::SourceEditState;
+  if (m_applying) {
+    return m_applyingJoined ? State::ApplyingJoined : State::ApplyingSeparate;
+  }
+  // An interrupted worker from a disabled list mode cannot write source. Its
+  // retained baseline must not hold an otherwise disabled editor pending.
+  if ((m_enabled || m_listsEnabled) &&
+      (hasPending() || m_queued || (m_listsEnabled && m_workerActive))) {
+    return State::Pending;
+  }
+  return State::Settled;
+}
+
+void MarkdownSourceFormatter::notifySourceEditStateChanged() {
+  if (m_stateChangeQueued) {
+    return;
+  }
+  m_stateChangeQueued = true;
+  QTimer::singleShot(0, this, [this]() {
+    m_stateChangeQueued = false;
+    emit m_editor->sourceEditStateChanged();
+  });
+}
+
 void MarkdownSourceFormatter::queueAttempt() {
   if (!hasPending() || m_applying || m_queued) {
     return;
   }
   m_queued = true;
+  notifySourceEditStateChanged();
   QTimer::singleShot(0, this, [this]() {
     m_queued = false;
+    notifySourceEditStateChanged();
     attempt();
   });
 }
@@ -554,6 +588,7 @@ bool MarkdownSourceFormatter::guarded() const {
 }
 
 void MarkdownSourceFormatter::beginListEpoch() {
+  notifySourceEditStateChanged();
   ++m_epoch;
   m_listsPending = false;
   m_seedRequired = false;
@@ -608,10 +643,12 @@ void MarkdownSourceFormatter::startSeed() {
   m_worker->prepare(m_jobWork, m_jobEpoch, m_jobGeneration, {}, m_seed, {}, m_parseOptions);
   m_seed.clear();
   m_workerActive = true;
+  notifySourceEditStateChanged();
   m_worker->start();
 }
 
 void MarkdownSourceFormatter::workerFinished() {
+  notifySourceEditStateChanged();
   m_workerActive = false;
   if (!m_listsEnabled || m_jobEpoch != m_epoch) {
     releaseWorkerResult();
@@ -1537,11 +1574,15 @@ bool MarkdownSourceFormatter::apply(const QVector<Row> &p_rows,
   const int horizontal = edit->horizontalScrollBar()->value();
   const int vertical = edit->verticalScrollBar()->value();
   {
+    const bool join = m_doc->isUndoRedoEnabled() && m_undoSteps > 0 &&
+                      m_undoSteps == m_doc->availableUndoSteps() &&
+                      m_doc->availableRedoSteps() == 0;
     QScopedValueRollback<bool> applying(m_applying, true);
+    QScopedValueRollback<bool> joining(m_applyingJoined, join);
+    notifySourceEditStateChanged();
     QTextCursor cursor(m_doc);
     // Qt can reopen an edit block but cannot promote a bare insert into one.
-    if (m_doc->isUndoRedoEnabled() && m_undoSteps > 0 &&
-        m_undoSteps == m_doc->availableUndoSteps() && m_doc->availableRedoSteps() == 0) {
+    if (join) {
       cursor.joinPreviousEditBlock();
     } else {
       cursor.beginEditBlock();
@@ -1587,10 +1628,12 @@ bool MarkdownSourceFormatter::apply(const QVector<Row> &p_rows,
   }
   ++m_generation;
   observeDocument();
+  notifySourceEditStateChanged();
   return true;
 }
 
 void MarkdownSourceFormatter::attempt() {
+  notifySourceEditStateChanged();
   if (m_applying || !hasPending()) {
     return;
   }
@@ -2268,6 +2311,28 @@ VMarkdownEditor::HeadingSectionNumberRemovalResult VMarkdownEditor::removeHeadin
     return numberer->remove();
   }
   return HeadingSectionNumberRemovalResult::Unchanged;
+}
+
+VMarkdownEditor::SourceEditState VMarkdownEditor::sourceEditState() const {
+  const auto numberer = findChild<HeadingSourceNumberer *>(
+      QStringLiteral("vte_heading_source_numberer"), Qt::FindDirectChildrenOnly);
+  const auto formatter = findChild<MarkdownSourceFormatter *>(
+      QStringLiteral("vte_markdown_source_formatter"), Qt::FindDirectChildrenOnly);
+  const auto numbering = numberer ? numberer->sourceEditState() : SourceEditState::Settled;
+  const auto formatting = formatter ? formatter->sourceEditState() : SourceEditState::Settled;
+  // Applying takes precedence over every queued/publication barrier. A separate
+  // write must never be mistaken for an authorized join by a source-edit host.
+  if (numbering == SourceEditState::ApplyingSeparate ||
+      formatting == SourceEditState::ApplyingSeparate) {
+    return SourceEditState::ApplyingSeparate;
+  }
+  if (numbering == SourceEditState::ApplyingJoined ||
+      formatting == SourceEditState::ApplyingJoined) {
+    return SourceEditState::ApplyingJoined;
+  }
+  return numbering == SourceEditState::Pending || formatting == SourceEditState::Pending
+             ? SourceEditState::Pending
+             : SourceEditState::Settled;
 }
 
 void VMarkdownEditor::setupSyntaxHighlighter() {

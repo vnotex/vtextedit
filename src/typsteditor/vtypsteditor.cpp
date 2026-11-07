@@ -850,6 +850,8 @@ void VTypstEditor::removeFileOverlay(const QString &p_file) {
 }
 
 VTypstEditor::CompileStatus VTypstEditor::compileStatus() const { return d->status; }
+quint64 VTypstEditor::compilationEpoch() const { return d->bridge->epoch(); }
+quint64 VTypstEditor::compilationGeneration() const { return d->bridge->generation(); }
 QString VTypstEditor::compileMessage() const { return d->message; }
 QStringList VTypstEditor::diagnostics() const { return d->diagnosticMessages; }
 const QVector<TypstHeadingInfo> &VTypstEditor::getHeadings() const {

@@ -57,6 +57,16 @@
 #include <vtextedit/vtypsteditor.h>
 #include <vtextedit_typst.h>
 
+#include "../../src/typsteditor/typstcompiledsnapshot.h"
+
+namespace vte::detail {
+// Exercise the real DLL decoder with native replies, then deliberately malformed
+// metadata. This is not a public editor API or a runtime injection hook.
+VTEXTEDIT_EXPORT TypstSnapshot snapshotFromJson(const QJsonObject &p_header,
+                                                bool p_resourcesRequired,
+                                                const QString &p_activeSource);
+} // namespace vte::detail
+
 using namespace tests;
 using namespace vte;
 
@@ -3831,6 +3841,9 @@ void TestTypstEditor::sourceHeadingsIncludeHiddenDeepAndUnicode() {
     QCOMPARE(retained.at(i).m_endPos, source.indexOf(markers.at(i)) + markers.at(i).size());
     QCOMPARE(retained.at(i).m_level, levels.at(i));
     QCOMPARE(retained.at(i).m_headingIndex, indices.at(i));
+    QCOMPARE(retained.at(i).m_bodyStartPos, retained.at(i).m_startPos + levels.at(i) + 1);
+    QCOMPARE(retained.at(i).m_bodyEndPos, retained.at(i).m_endPos);
+    QVERIFY(retained.at(i).m_preservedBodyRanges.isEmpty());
   }
   fixture.editor.setReadOnly(true);
   QCOMPARE(fixture.editor.getSourceHeadings().constData(), retained.constData());
@@ -3853,6 +3866,272 @@ void TestTypstEditor::sourceHeadingsIncludeHiddenDeepAndUnicode() {
   QVERIFY(fixture.editor.getSourceHeadings().isEmpty());
   fixture.editor.resetForNewDocument();
   QVERIFY(fixture.editor.getSourceHeadings().isEmpty());
+}
+
+void TestTypstEditor::sourceHeadingBodyRanges() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto unicode = QString::fromUtf8("\xf0\x9f\x98\x80");
+  const auto block = QStringLiteral("/* outer /* nested */ %1 */").arg(unicode);
+  const auto direct = QStringLiteral("#label(/* inside call */ \"direct\")");
+  const auto line = QStringLiteral("// internal line");
+  const auto middle = QStringLiteral("/* middle */");
+  const auto firstBody = QStringLiteral("*Bold* ") + block + QStringLiteral(" tail ") + direct;
+  const auto secondBody = QStringLiteral("_Italic_");
+  const auto thirdBody = QStringLiteral("*Wrapped ") + line + QStringLiteral("\ncontinued* ") +
+                         middle + QStringLiteral(" end");
+  const auto fakeBody =
+      QStringLiteral(R"topic(#"not // comment /* block */ #label(\"fake\")")topic");
+  const auto source = QStringLiteral("// %1 preamble\n= %2 // outside trailing\nBody\n"
+                                     "== %3 <ordinary> // untouched outside\nBody\n"
+                                     "=== %4\n= %5\n")
+                          .arg(unicode, firstBody, secondBody, thirdBody, fakeBody);
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, false);
+  QVERIFY2(waitUntil([&] { return fixture.editor.getSourceHeadings().size() == 4; }),
+           qPrintable(fixture.editor.compileMessage()));
+  const auto headings = fixture.editor.getSourceHeadings();
+  const QStringList bodies{firstBody, secondBody, thirdBody, fakeBody};
+  const QVector<int> levels{1, 2, 3, 1};
+  const QVector<QStringList> preserved{{block, direct}, {}, {line, middle}, {}};
+  for (int i = 0; i < headings.size(); ++i) {
+    const auto &heading = headings.at(i);
+    QCOMPARE(heading.m_bodyStartPos, source.indexOf(bodies.at(i)));
+    QCOMPARE(heading.m_bodyEndPos, heading.m_bodyStartPos + bodies.at(i).size());
+    QCOMPARE(heading.m_endPos, heading.m_bodyEndPos);
+    QCOMPARE(heading.m_startPos, heading.m_bodyStartPos - levels.at(i) - 1);
+    QCOMPARE(heading.m_preservedBodyRanges.size(), preserved.at(i).size());
+    for (int j = 0; j < preserved.at(i).size(); ++j) {
+      const auto range = heading.m_preservedBodyRanges.at(j);
+      QCOMPARE(range.first, source.indexOf(preserved.at(i).at(j)));
+      QCOMPARE(source.mid(range.first, range.second - range.first), preserved.at(i).at(j));
+    }
+  }
+  // Neither a trailing sibling label nor comment belongs to the replaceable body.
+  QVERIFY(headings.at(1).m_endPos < source.indexOf(QStringLiteral("<ordinary>")));
+  QVERIFY(headings.at(0).m_endPos < source.indexOf(QStringLiteral("// outside trailing")));
+  QCOMPARE(fixture.editor.getHeadings().at(3).m_title,
+           QStringLiteral("not // comment /* block */ #label(\"fake\")"));
+}
+
+void TestTypstEditor::sourceHeadingLiteralTitles_data() {
+  QTest::addColumn<QString>("expression");
+  QTest::addColumn<QString>("title");
+  QTest::newRow("empty") << QStringLiteral(R"(#"")") << QString();
+  QTest::newRow("markup-is-literal")
+      << QStringLiteral(R"(#"*bold* _em_ [x] #label(\"fake\") <tag> & @ref $x$")")
+      << QStringLiteral("*bold* _em_ [x] #label(\"fake\") <tag> & @ref $x$");
+  QTest::newRow("quotes-backslashes-controls")
+      << QStringLiteral(R"(#"quote \" slash \\ tab \u{9} delete \u{7f}")")
+      << QStringLiteral("quote \" slash \\ tab \t delete \x7f");
+  QTest::newRow("unicode-and-edge-space") << QStringLiteral(R"(#"  \u{3a9} \u{1f600}  ")")
+                                          << QString::fromUtf8("  \xce\xa9 \xf0\x9f\x98\x80  ");
+}
+
+void TestTypstEditor::sourceHeadingLiteralTitles() {
+  QFETCH(QString, expression);
+  QFETCH(QString, title);
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  // A string expression must not call a helper that the document can shadow.
+  const auto source = QStringLiteral("#let text(..args) = panic(\"shadowed\")\n"
+                                     "#let str(..args) = panic(\"shadowed\")\n"
+                                     "// unicode preamble\n= ") +
+                      expression + QStringLiteral("\n");
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, false);
+  QVERIFY2(waitUntil([&] { return fixture.editor.getSourceHeadings().size() == 1; }),
+           qPrintable(fixture.editor.compileMessage()));
+  QCOMPARE(fixture.editor.getHeadings().size(), 1);
+  QCOMPARE(fixture.editor.getHeadings().first().m_title, title);
+  const auto &heading = fixture.editor.getSourceHeadings().first();
+  QCOMPARE(heading.m_bodyStartPos, source.indexOf(expression));
+  QCOMPARE(heading.m_bodyEndPos, heading.m_bodyStartPos + expression.size());
+  QVERIFY(heading.m_bodyEndPos > heading.m_bodyStartPos);
+  QVERIFY(heading.m_preservedBodyRanges.isEmpty());
+}
+
+void TestTypstEditor::sourceHeadingBodyReplacement() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto source = QStringLiteral(
+      "// preamble\n"
+      "= *Formatted* /* first */ old /* second */ title #label(\"direct\")\nFirst body\n"
+      "== _Other_ <ordinary> // following comment\nSecond body\n"
+      "=== *Wrapped // internal line\ncontinued* /* middle */ end\nThird body\n");
+  EditorFixture fixture(m_runtime, root.path(), source, VTypstEditor::Mode::Edit, {}, false);
+  QVERIFY2(waitUntil([&] { return fixture.editor.getSourceHeadings().size() == 3; }),
+           qPrintable(fixture.editor.compileMessage()));
+  const auto headings = fixture.editor.getSourceHeadings();
+  QCOMPARE(headings.at(0).m_preservedBodyRanges.size(), 3);
+  QCOMPARE(headings.at(1).m_preservedBodyRanges.size(), 0);
+  QCOMPARE(headings.at(2).m_preservedBodyRanges.size(), 2);
+  fixture.editor.document()->clearUndoRedoStacks();
+  QTextCursor cursor(fixture.editor.document());
+  cursor.beginEditBlock();
+  for (int i = headings.size() - 1; i >= 0; --i) {
+    const auto &heading = headings.at(i);
+    QString replacement = QStringLiteral("#\"Literal %1\"").arg(i);
+    for (const auto &range : heading.m_preservedBodyRanges) {
+      replacement += source.mid(range.first, range.second - range.first);
+      // Explicitly terminate the known internal LineComment in the third body.
+      if (i == 2 && range == heading.m_preservedBodyRanges.first())
+        replacement += QLatin1Char('\n');
+    }
+    cursor.setPosition(heading.m_bodyStartPos);
+    cursor.setPosition(heading.m_bodyEndPos, QTextCursor::KeepAnchor);
+    cursor.insertText(replacement);
+  }
+  cursor.endEditBlock();
+  const auto expected =
+      QStringLiteral("// preamble\n"
+                     "= #\"Literal 0\"/* first *//* second */#label(\"direct\")\nFirst body\n"
+                     "== #\"Literal 1\" <ordinary> // following comment\nSecond body\n"
+                     "=== #\"Literal 2\"// internal line\n/* middle */\nThird body\n");
+  QCOMPARE(fixture.editor.document()->toPlainText(), expected);
+  QVERIFY2(waitUntil([&] { return fixture.editor.getSourceHeadings().size() == 3; }),
+           qPrintable(fixture.editor.compileMessage()));
+  for (int i = 0; i < 3; ++i)
+    QCOMPARE(fixture.editor.getHeadings().at(i).m_title, QStringLiteral("Literal %1").arg(i));
+  fixture.edit()->undo();
+  QCOMPARE(fixture.editor.document()->toPlainText(), source);
+  QVERIFY(!fixture.editor.document()->isUndoAvailable());
+  QVERIFY2(waitUntil([&] { return fixture.editor.getSourceHeadings().size() == 3; }),
+           qPrintable(fixture.editor.compileMessage()));
+  fixture.edit()->redo();
+  QCOMPARE(fixture.editor.document()->toPlainText(), expected);
+  QVERIFY2(waitUntil([&] { return fixture.editor.getSourceHeadings().size() == 3; }),
+           qPrintable(fixture.editor.compileMessage()));
+}
+
+void TestTypstEditor::sourceHeadingMalformedBodyRanges() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  const auto unicode = QString::fromUtf8("\xf0\x9f\x98\x80");
+  const auto source =
+      QStringLiteral("// %1\n= Title%1 /* comment %1 */ more #label(\"id\")\n").arg(unicode);
+  NativeSession native(root.path());
+  QVERIFY2(native.start(), qPrintable(native.details()));
+  QVERIFY2(native.compile(source), qPrintable(native.details()));
+  const auto original = native.reply.header;
+  const auto accepted = detail::snapshotFromJson(original, true, source);
+  QVERIFY2(accepted, qPrintable(native.details()));
+  QCOMPARE(accepted->m_sourceHeadings.size(), 1);
+  const auto heading =
+      original.value(QStringLiteral("sourceHeadings")).toArray().first().toObject();
+  const int bodyStart = heading.value(QStringLiteral("bodyStart")).toInt();
+  const int bodyEnd = heading.value(QStringLiteral("bodyEnd")).toInt();
+  const auto preserved = heading.value(QStringLiteral("preservedBodyRanges")).toArray();
+  QCOMPARE(preserved.size(), 2);
+  const int surrogate = source.indexOf(unicode, bodyStart) + 1;
+  const int commentSurrogate = source.indexOf(unicode, surrogate + 1) + 1;
+  const auto rejects = [&](const QJsonObject &p_heading) {
+    auto modified = original;
+    modified.insert(QStringLiteral("sourceHeadings"), QJsonArray{p_heading});
+    return !detail::snapshotFromJson(modified, true, source);
+  };
+  for (const auto *key : {"bodyStart", "bodyEnd", "preservedBodyRanges"}) {
+    auto changed = heading;
+    changed.remove(QLatin1String(key));
+    QVERIFY2(rejects(changed), key);
+  }
+  const auto rejectsField = [&](const char *p_key, const QJsonValue &p_value) {
+    auto changed = heading;
+    changed.insert(QLatin1String(p_key), p_value);
+    return rejects(changed);
+  };
+  QVERIFY(rejectsField("bodyStart", -1));
+  QVERIFY(rejectsField("bodyStart", heading.value(QStringLiteral("start"))));
+  QVERIFY(rejectsField("bodyStart", bodyEnd + 1));
+  QVERIFY(rejectsField("bodyStart", bodyStart + 0.5));
+  QVERIFY(rejectsField("bodyStart", QStringLiteral("2")));
+  QVERIFY(rejectsField("bodyStart", surrogate));
+  QVERIFY(rejectsField("bodyEnd", surrogate));
+  QVERIFY(rejectsField("bodyEnd", bodyStart - 1));
+  QVERIFY(rejectsField("bodyEnd", bodyEnd + 1));
+  QVERIFY(rejectsField("bodyEnd", double(std::numeric_limits<int>::max()) + 1));
+  QVERIFY(rejectsField("preservedBodyRanges", QJsonValue::Null));
+  QVERIFY(rejectsField("preservedBodyRanges", QJsonObject()));
+  QVERIFY(rejectsField("preservedBodyRanges", QJsonArray{1}));
+  const auto range = [](int p_start, int p_end) {
+    return QJsonObject{{QStringLiteral("start"), p_start}, {QStringLiteral("end"), p_end}};
+  };
+  QVERIFY(rejectsField("preservedBodyRanges", QJsonArray{range(bodyStart - 1, bodyStart)}));
+  QVERIFY(rejectsField("preservedBodyRanges", QJsonArray{range(bodyStart, bodyEnd + 1)}));
+  QVERIFY(rejectsField("preservedBodyRanges", QJsonArray{range(bodyStart, bodyStart)}));
+  QVERIFY(rejectsField("preservedBodyRanges", QJsonArray{range(bodyEnd, bodyStart)}));
+  QVERIFY(rejectsField("preservedBodyRanges", QJsonArray{range(commentSurrogate, bodyEnd)}));
+  QVERIFY(rejectsField("preservedBodyRanges", QJsonArray{range(bodyStart, commentSurrogate)}));
+  QVERIFY(rejectsField("preservedBodyRanges", QJsonArray{preserved.last(), preserved.first()}));
+  QVERIFY(rejectsField("preservedBodyRanges", QJsonArray{preserved.first(), preserved.first()}));
+  auto missingEnd = preserved.first().toObject();
+  missingEnd.remove(QStringLiteral("end"));
+  QVERIFY(rejectsField("preservedBodyRanges", QJsonArray{missingEnd}));
+  auto fractionalStart = preserved.first().toObject();
+  fractionalStart.insert(QStringLiteral("start"), bodyStart + 0.5);
+  QVERIFY(rejectsField("preservedBodyRanges", QJsonArray{fractionalStart}));
+  auto wrongLength = original;
+  wrongLength.insert(QStringLiteral("sourceLength"), int(source.size()) + 1);
+  QVERIFY(!detail::snapshotFromJson(wrongLength, true, source));
+  QVERIFY(!detail::snapshotFromJson(original, true, source + QLatin1Char('x')));
+}
+
+void TestTypstEditor::compilationIdentityTracksPublication() {
+  QTemporaryDir root;
+  QVERIFY(root.isValid());
+  EditorFixture fixture(m_runtime, root.path(), QStringLiteral("= Before\n"),
+                        VTypstEditor::Mode::Edit, {}, false);
+  QVERIFY2(waitUntil([&] { return fixture.editor.getSourceHeadings().size() == 1; }),
+           qPrintable(fixture.editor.compileMessage()));
+  auto &editor = fixture.editor;
+  const quint64 initialEpoch = editor.compilationEpoch();
+  const quint64 initialGeneration = editor.compilationGeneration();
+  QVERIFY(initialEpoch > 0);
+  QVERIFY(initialGeneration > 0);
+  quint64 invalidatedGeneration = 0;
+  quint64 publishedGeneration = 0;
+  bool invalidationBeforeCompiling = false;
+  bool readyBeforeHeadings = false;
+  const auto updates =
+      connect(&editor, &VTypstEditor::headingsUpdated, &editor,
+              [&](const QVector<TypstHeadingInfo> &p_headings) {
+                if (p_headings.isEmpty()) {
+                  invalidatedGeneration = editor.compilationGeneration();
+                  invalidationBeforeCompiling =
+                      editor.compileStatus() == VTypstEditor::CompileStatus::Ready;
+                } else {
+                  publishedGeneration = editor.compilationGeneration();
+                  QCOMPARE(editor.compilationEpoch(), initialEpoch);
+                  QCOMPARE(p_headings.first().m_title, QStringLiteral("After"));
+                  QCOMPARE(editor.compileStatus(), VTypstEditor::CompileStatus::Ready);
+                }
+              });
+  const auto status = connect(&editor, &VTypstEditor::compileStatusChanged, &editor,
+                              [&](VTypstEditor::CompileStatus p_status, const QString &) {
+                                if (p_status == VTypstEditor::CompileStatus::Ready) {
+                                  readyBeforeHeadings = editor.getHeadings().isEmpty();
+                                  QCOMPARE(editor.compilationGeneration(), invalidatedGeneration);
+                                }
+                              });
+  QTextCursor cursor(editor.document());
+  cursor.setPosition(2);
+  cursor.setPosition(8, QTextCursor::KeepAnchor);
+  cursor.insertText(QStringLiteral("After"));
+  QVERIFY(invalidationBeforeCompiling);
+  QVERIFY(invalidatedGeneration > initialGeneration);
+  QCOMPARE(editor.compilationGeneration(), invalidatedGeneration);
+  QCOMPARE(editor.compilationEpoch(), initialEpoch);
+  QVERIFY2(waitUntil([&] { return publishedGeneration == invalidatedGeneration; }),
+           qPrintable(editor.compileMessage()));
+  QVERIFY(readyBeforeHeadings);
+  disconnect(updates);
+  disconnect(status);
+  editor.retryCompilation();
+  QVERIFY(waitUntil([&] { return editor.compilationEpoch() > initialEpoch; }));
+  QVERIFY2(waitUntil([&] { return editor.getSourceHeadings().size() == 1; }),
+           qPrintable(editor.compileMessage()));
+  const auto generation = editor.compilationGeneration();
+  editor.resetForNewDocument();
+  QVERIFY(editor.getSourceHeadings().isEmpty());
+  QVERIFY(editor.compilationGeneration() > generation);
 }
 
 void TestTypstEditor::sourceHeadingsRejectUnsupported_data() {

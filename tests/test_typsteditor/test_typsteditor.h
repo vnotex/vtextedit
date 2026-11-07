@@ -105,6 +105,12 @@ private slots:
   void previewClickPreservesSelectionLinksAndStaleOutput();
   void repeatedAndSplitOutputRecords();
   void sourceHeadingsIncludeHiddenDeepAndUnicode();
+  void sourceHeadingBodyRanges();
+  void sourceHeadingLiteralTitles_data();
+  void sourceHeadingLiteralTitles();
+  void sourceHeadingBodyReplacement();
+  void sourceHeadingMalformedBodyRanges();
+  void compilationIdentityTracksPublication();
   void sourceHeadingsRejectUnsupported_data();
   void sourceHeadingsRejectUnsupported();
   void sourceHeadingsHiddenOnlyInvalidation();
