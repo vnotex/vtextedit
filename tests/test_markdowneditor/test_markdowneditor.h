@@ -218,6 +218,8 @@ private slots:
   // Opt-in, deferred section numbers written into actual Markdown source.
   void testSourceEditSettlement();
   void testSourceEditJoinedProvenance();
+  void testSourceEditConcealment_data();
+  void testSourceEditConcealment();
   void testHeadingSourceDefaultAndActivation();
   void testHeadingSourceReadOnly();
   void testHeadingSourceMaintenance();

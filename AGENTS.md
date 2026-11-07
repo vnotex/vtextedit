@@ -759,9 +759,11 @@ QTextDocument writes, using the actual `joinPreviousEditBlock()` decision. A sec
 user/programmatic command during `Pending` is not an automatic join. The coalesced
 `sourceEditStateChanged()` signal only wakes the host, which must read the getter.
 
-The getter combines `HeadingSourceNumberer` with the existing table/list
-`MarkdownSourceFormatter`, including list-worker, preparation and queued work. Disabled
-formatter modes, inactive numbering's dormant request, and replay-suppressed numbering
+The getter combines `HeadingSourceNumberer`, the table/list `MarkdownSourceFormatter`,
+and `MarkdownConcealController`, including list-worker, preparation and queued work.
+Concealment's deferred empty-wrapper cleanup remains pending while layout/IME delays it;
+owned replacements report separate writes, and cleanup reports its actual undo-join decision.
+Disabled formatter modes, inactive numbering's dormant request, and replay-suppressed numbering
 do not block settlement. Existing inactivity deadlines, defaults and undo behavior are
 unchanged; no polling timer or host-side guessed delay is a completion signal.
 
@@ -779,9 +781,9 @@ Hosts must keep source edit receipts pending until this barrier and every enable
 settle, and only then reconcile their accepted heading positions/titles. During the gap
 between a completed joined source write and its fresh heading publication the getter is
 still `Pending`, never a transient `Settled`. Regression coverage uses the real editor,
-highlighter and list worker in `testSourceEditSettlement` and
-`testSourceEditJoinedProvenance`, including undo/redo, separate writes, feature cancellation,
-empty headings and reentrant body-only publication changes.
+highlighter and list worker in `testSourceEditSettlement`, `testSourceEditJoinedProvenance`
+and `testSourceEditConcealment`, including undo/redo, separate writes, feature cancellation,
+empty headings, IME-delayed cleanup and reentrant body-only publication changes.
 
 ## Testing
 

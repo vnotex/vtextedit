@@ -1940,8 +1940,8 @@ class MarkdownConcealController final : public QObject {
   Q_OBJECT
 public:
   explicit MarkdownConcealController(VMarkdownEditor *p_editor)
-      : QObject(p_editor), m_edit(p_editor->getTextEdit()), m_doc(p_editor->document()),
-        m_layout(p_editor->documentLayout()) {
+      : QObject(p_editor), m_editor(p_editor), m_edit(p_editor->getTextEdit()),
+        m_doc(p_editor->document()), m_layout(p_editor->documentLayout()) {
     setObjectName(QStringLiteral("vte_markdown_conceal_controller"));
     connect(m_edit, &VTextEdit::cursorMoveRequested, this,
             [this](QTextCursor *p_cursor, QTextCursor::MoveOperation p_operation,
@@ -1991,6 +1991,13 @@ public:
     observeDocument();
   }
 
+  VMarkdownEditor::SourceEditState sourceEditState() const {
+    using State = VMarkdownEditor::SourceEditState;
+    if (m_applying)
+      return m_applyingJoined ? State::ApplyingJoined : State::ApplyingSeparate;
+    return m_queued || !m_pending.isEmpty() ? State::Pending : State::Settled;
+  }
+
 protected:
   bool eventFilter(QObject *, QEvent *p_event) Q_DECL_OVERRIDE {
     if (p_event->type() == QEvent::InputMethod) {
@@ -2000,6 +2007,16 @@ protected:
   }
 
 private:
+  void notifySourceEditStateChanged() {
+    if (m_stateChangeQueued)
+      return;
+    m_stateChangeQueued = true;
+    QTimer::singleShot(0, this, [this]() {
+      m_stateChangeQueued = false;
+      emit m_editor->sourceEditStateChanged();
+    });
+  }
+
   bool replace(QTextCursor &p_cursor, const QString &p_text) {
     if (m_applying || m_edit->isReadOnly() || !p_cursor.hasSelection()) {
       return false;
@@ -2018,6 +2035,8 @@ private:
     caret.setPosition(p_cursor.selectionStart());
     QPointer<MarkdownConcealController> guard(this);
     m_applying = true;
+    m_applyingJoined = false;
+    notifySourceEditStateChanged();
     m_layout->preparePersistentConcealRemoval(
         ranges, p_text.isEmpty() ? -1 : p_cursor.selectionStart(), p_text);
     QTextCursor edit(m_doc);
@@ -2033,6 +2052,7 @@ private:
     edit.endEditBlock();
     if (guard) {
       m_applying = false;
+      notifySourceEditStateChanged();
       p_cursor = caret;
       observeDocument();
       queueCleanup();
@@ -2071,6 +2091,8 @@ private:
       }
     }
     m_joinFromChange = !hadPending && !p_empty.isEmpty();
+    if (hadPending != !m_pending.isEmpty())
+      notifySourceEditStateChanged();
   }
 
   void observeDocument() {
@@ -2093,6 +2115,8 @@ private:
         (undo < m_undoSteps ||
          (undo > m_undoSteps && (redo < m_redoSteps || m_redoAvailable) && !m_newUndoCommand));
     if (replay || m_edit->isReadOnly()) {
+      if (!m_pending.isEmpty())
+        notifySourceEditStateChanged();
       m_pending.clear();
       m_joinRevision = -1;
     } else if (m_joinFromChange) {
@@ -2111,8 +2135,10 @@ private:
       return;
     }
     m_queued = true;
+    notifySourceEditStateChanged();
     QTimer::singleShot(0, this, [this]() {
       m_queued = false;
+      notifySourceEditStateChanged();
       cleanup();
     });
   }
@@ -2146,6 +2172,7 @@ private:
       }
     }
     m_pending.clear();
+    notifySourceEditStateChanged();
     if (ranges.isEmpty()) {
       return;
     }
@@ -2166,6 +2193,8 @@ private:
     m_joinRevision = -1;
     QPointer<MarkdownConcealController> guard(this);
     m_applying = true;
+    m_applyingJoined = join;
+    notifySourceEditStateChanged();
     m_layout->preparePersistentConcealRemoval(ranges);
     QTextCursor edit(m_doc);
     if (join) {
@@ -2183,6 +2212,7 @@ private:
       return;
     }
     m_applying = false;
+    notifySourceEditStateChanged();
     observeDocument();
     // Removing an inner empty wrapper can empty a still-owned outer one.
     m_joinRevision = m_doc->revision();
@@ -2191,6 +2221,7 @@ private:
     queueCleanup();
   }
 
+  VMarkdownEditor *m_editor;
   VTextEdit *m_edit;
   QTextDocument *m_doc;
   TextDocumentLayout *m_layout;
@@ -2206,7 +2237,9 @@ private:
   bool m_newUndoCommand = false;
   bool m_joinFromChange = false;
   bool m_applying = false;
+  bool m_applyingJoined = false;
   bool m_queued = false;
+  bool m_stateChangeQueued = false;
 };
 
 } // namespace vte
@@ -2318,19 +2351,25 @@ VMarkdownEditor::SourceEditState VMarkdownEditor::sourceEditState() const {
       QStringLiteral("vte_heading_source_numberer"), Qt::FindDirectChildrenOnly);
   const auto formatter = findChild<MarkdownSourceFormatter *>(
       QStringLiteral("vte_markdown_source_formatter"), Qt::FindDirectChildrenOnly);
+  const auto conceal = findChild<MarkdownConcealController *>(
+      QStringLiteral("vte_markdown_conceal_controller"), Qt::FindDirectChildrenOnly);
   const auto numbering = numberer ? numberer->sourceEditState() : SourceEditState::Settled;
   const auto formatting = formatter ? formatter->sourceEditState() : SourceEditState::Settled;
+  const auto concealment = conceal ? conceal->sourceEditState() : SourceEditState::Settled;
   // Applying takes precedence over every queued/publication barrier. A separate
   // write must never be mistaken for an authorized join by a source-edit host.
   if (numbering == SourceEditState::ApplyingSeparate ||
-      formatting == SourceEditState::ApplyingSeparate) {
+      formatting == SourceEditState::ApplyingSeparate ||
+      concealment == SourceEditState::ApplyingSeparate) {
     return SourceEditState::ApplyingSeparate;
   }
   if (numbering == SourceEditState::ApplyingJoined ||
-      formatting == SourceEditState::ApplyingJoined) {
+      formatting == SourceEditState::ApplyingJoined ||
+      concealment == SourceEditState::ApplyingJoined) {
     return SourceEditState::ApplyingJoined;
   }
-  return numbering == SourceEditState::Pending || formatting == SourceEditState::Pending
+  return numbering == SourceEditState::Pending || formatting == SourceEditState::Pending ||
+                 concealment == SourceEditState::Pending
              ? SourceEditState::Pending
              : SourceEditState::Settled;
 }

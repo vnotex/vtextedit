@@ -7405,6 +7405,108 @@ void TestMarkdownEditor::testSourceEditSettlement() {
   }
 }
 
+void TestMarkdownEditor::testSourceEditConcealment_data() {
+  QTest::addColumn<QString>("operation");
+  QTest::newRow("cleanup-undo-provenance") << QStringLiteral("cleanup");
+  QTest::newRow("separate-cleanup") << QStringLiteral("separate");
+  QTest::newRow("preedit-delayed-cleanup") << QStringLiteral("preedit");
+  QTest::newRow("owned-replacement") << QStringLiteral("owned");
+}
+
+void TestMarkdownEditor::testSourceEditConcealment() {
+  QFETCH(QString, operation);
+  using State = VMarkdownEditor::SourceEditState;
+  auto config = makeConcealConfig();
+  config->m_concealRules.set(MarkdownConcealElement::StrongMarkers);
+  const QString source = QStringLiteral("# Heading\n\n**bold**a\n");
+  Fixture fixture(source, -1, -1, config);
+  auto *editor = fixture.editor();
+  auto *doc = editor->document();
+  HeadingSnapshot snapshot(*editor);
+  QVERIFY(!renderConcealEditor(fixture).isNull());
+  waitForConcealPublication(fixture);
+  QTRY_COMPARE_WITH_TIMEOUT(editor->sourceEditState(), State::Settled, 5000);
+  doc->clearUndoRedoStacks();
+  QVector<State> writes;
+  QString observed = source;
+  const auto changes = connect(doc, &QTextDocument::contentsChange, editor, [&](int, int, int) {
+    if (observed != fixture.text()) {
+      observed = fixture.text();
+      writes.append(editor->sourceEditState());
+    }
+  });
+  bool prematureSettlement = false;
+  const auto wake = connect(editor, &VMarkdownEditor::sourceEditStateChanged, editor, [&] {
+    if (editor->sourceEditState() == State::Settled && snapshot.m_source != fixture.text())
+      prematureSettlement = true;
+  });
+  const auto disconnectObservers = qScopeGuard([&] {
+    disconnect(changes);
+    disconnect(wake);
+  });
+  const int begin = source.indexOf(QStringLiteral("bold"));
+  QTextCursor cursor(doc);
+  cursor.setPosition(begin);
+  cursor.setPosition(begin + 4, QTextCursor::KeepAnchor);
+  if (operation == QLatin1String("owned")) {
+    fixture.edit()->setTextCursor(cursor);
+    QTest::keyClick(fixture.edit(), Qt::Key_Delete, Qt::NoModifier, 0);
+  } else {
+    cursor.beginEditBlock();
+    cursor.removeSelectedText();
+    cursor.endEditBlock();
+    QCOMPARE(fixture.text(), QStringLiteral("# Heading\n\n****a\n"));
+    QCOMPARE(editor->sourceEditState(), State::Pending);
+    if (operation == QLatin1String("separate")) {
+      cursor.movePosition(QTextCursor::End);
+      cursor.beginEditBlock();
+      cursor.insertText(QStringLiteral("extra"));
+      cursor.endEditBlock();
+    } else if (operation == QLatin1String("preedit")) {
+      setConcealCursor(fixture, begin);
+      QInputMethodEvent composing(QStringLiteral("x"), {});
+      QCoreApplication::sendEvent(fixture.edit(), &composing);
+      QVERIFY(!doc->findBlock(begin).layout()->preeditAreaText().isEmpty());
+      QTRY_COMPARE_WITH_TIMEOUT(snapshot.m_source, fixture.text(), 5000);
+      QCOMPARE(fixture.text(), QStringLiteral("# Heading\n\n****a\n"));
+      QCOMPARE(editor->sourceEditState(), State::Pending);
+      QInputMethodEvent finished;
+      QCoreApplication::sendEvent(fixture.edit(), &finished);
+    }
+  }
+  const QString suffix =
+      operation == QLatin1String("separate") ? QStringLiteral("extra") : QString();
+  const QString cleaned = QStringLiteral("# Heading\n\na\n") + suffix;
+  QTRY_COMPARE_WITH_TIMEOUT(fixture.text(), cleaned, 5000);
+  QTRY_COMPARE_WITH_TIMEOUT(editor->sourceEditState(), State::Settled, 5000);
+  QCOMPARE(snapshot.m_source, cleaned);
+  QVERIFY(!prematureSettlement);
+  QVERIFY(!writes.isEmpty());
+  const auto cleanupState = writes.last();
+  QVERIFY(cleanupState == State::ApplyingJoined || cleanupState == State::ApplyingSeparate);
+  if (operation == QLatin1String("owned") || operation == QLatin1String("separate"))
+    QCOMPARE(cleanupState, State::ApplyingSeparate);
+  doc->undo();
+  if (operation == QLatin1String("cleanup") || operation == QLatin1String("preedit")) {
+    // Highlight formatting can advance revision without changing undo depth.
+    // Report the actual join decision, rather than assuming idle cleanup joins.
+    if (fixture.text() == source) {
+      QCOMPARE(cleanupState, State::ApplyingJoined);
+    } else {
+      QCOMPARE(cleanupState, State::ApplyingSeparate);
+      QCOMPARE(fixture.text(), QStringLiteral("# Heading\n\n****a\n"));
+      doc->undo();
+    }
+  }
+  if (operation == QLatin1String("separate")) {
+    QCOMPARE(fixture.text(), QStringLiteral("# Heading\n\n****a\nextra"));
+    doc->undo();
+    QCOMPARE(fixture.text(), QStringLiteral("# Heading\n\n****a\n"));
+    doc->undo();
+  }
+  QCOMPARE(fixture.text(), source);
+}
+
 void TestMarkdownEditor::testSourceEditJoinedProvenance() {
   using State = VMarkdownEditor::SourceEditState;
   {
