@@ -20,9 +20,10 @@ Autolink: <https://example.com/abcdefghijklmnopqrstuvwxyz>
 
 [conceal-example]: https://example.com/abcdefghijklmnopqrstuvwxyz "Reference title"
 
-Destination shortening is disabled by default, including in this demo. When enabled, it keeps
-the first 5 graphemes, three middle dots and the last 12 graphemes: 20 in total. Only destinations
-over 20 graphemes shorten. Hover over a compact destination to see its complete raw source.
+The demo shortens only reference-definition URLs, keeping the first 5 graphemes, three middle
+dots and the last 12 graphemes: 20 in total. Only destinations over 20 graphemes shorten.
+Inline link and image URLs stay unshortened; link syntax still reveals on caret entry.
+Hover over a compact reference destination to see its complete raw source.
 
 [20-graphemes]: abcdefghijklmnopqrst
 [21-graphemes]: abcdefghijklmnopqrstu
