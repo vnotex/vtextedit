@@ -1335,6 +1335,135 @@ void TestMarkdownEditor::testConcealMarkdownConfig() {
   QCOMPARE(fixture.text(), source);
 }
 
+void TestMarkdownEditor::testConcealPresets() {
+  const QString url = QStringLiteral("abcdefghijklmnopqrstuvwxyz");
+  const QString compact = QStringLiteral("abcde\u00b7\u00b7\u00b7opqrstuvwxyz");
+  struct Marker {
+    QString opening;
+    QString body;
+    QString closing;
+    int start = 0;
+  };
+  QVector<Marker> markers{
+      {QStringLiteral("### "), QStringLiteral("Heading"), QStringLiteral(" ###")},
+      {QStringLiteral("*"), QStringLiteral("italic"), QStringLiteral("*")},
+      {QStringLiteral("**"), QStringLiteral("bold"), QStringLiteral("**")},
+      {QStringLiteral("~~"), QStringLiteral("strike"), QStringLiteral("~~")},
+      {QStringLiteral("=="), QStringLiteral("mark"), QStringLiteral("==")},
+      {QStringLiteral("`"), QStringLiteral("code"), QStringLiteral("`")},
+      {QStringLiteral("$"), QStringLiteral("x + y"), QStringLiteral("$")}};
+  QString source;
+  for (auto &marker : markers) {
+    marker.start = source.size();
+    source += marker.opening + marker.body + marker.closing + QStringLiteral("\n\n");
+  }
+  const int link = source.size();
+  source += QStringLiteral("[label](%1)\n\n![image](%1)\n\n<img src=\"%1\">\n\n[ref]: %1\n\noutside")
+                .arg(url);
+  const int linkUrl = source.indexOf(url, link);
+  const int imageUrl = source.indexOf(url, linkUrl + url.size());
+  const int htmlUrl = source.indexOf(url, imageUrl + url.size());
+  const int referenceUrl = source.indexOf(url, htmlUrl + url.size());
+  auto config = makeConcealConfig();
+  config->m_concealRules.set(MarkdownConcealElement::StrongMarkers, MarkdownConcealHideSyntax{});
+  config->m_concealRules.set(MarkdownConcealElement::ImageUrl,
+                           MarkdownConcealShortenDestination{0, 1, 2, QStringLiteral("<>")});
+  Fixture f(source, -1, -1, config);
+  QVERIFY(!renderConcealEditor(f).isNull());
+  waitForConcealPublication(f);
+  concealConfigVerifyWidth(f, imageUrl, imageUrl + url.size(), QStringLiteral("a<>yz"));
+  auto *doc = f.editor()->document();
+  auto cursor = f.edit()->textCursor();
+  cursor.beginEditBlock();
+  cursor.insertText(QStringLiteral(" retained"));
+  cursor.endEditBlock();
+  cursor.beginEditBlock();
+  cursor.insertText(QStringLiteral(" undone"));
+  cursor.endEditBlock();
+  f.edit()->undo();
+  cursor = f.edit()->textCursor();
+  cursor.movePosition(QTextCursor::End);
+  cursor.movePosition(QTextCursor::PreviousWord, QTextCursor::KeepAnchor);
+  f.edit()->setTextCursor(cursor);
+  const auto savedSelection = f.edit()->textCursor();
+  const QString savedSource = f.text();
+  const int undoSteps = doc->availableUndoSteps(), redoSteps = doc->availableRedoSteps();
+  const bool modified = doc->isModified();
+  QVERIFY(doc->isUndoAvailable());
+  QVERIFY(doc->isRedoAvailable());
+  const auto verifySource = [&]() {
+    QCOMPARE(f.text(), savedSource);
+    QCOMPARE(doc->isModified(), modified);
+    QCOMPARE(doc->availableUndoSteps(), undoSteps);
+    QCOMPARE(doc->availableRedoSteps(), redoSteps);
+  };
+  for (auto preset : {MarkdownConcealPreset::Aggressive, MarkdownConcealPreset::Passive,
+                      MarkdownConcealPreset::Aggressive}) {
+    config->m_concealRules.setPreset(preset);
+    f.editor()->setConfig(config);
+    waitForConcealPublication(f);
+    QCOMPARE(f.edit()->textCursor().position(), savedSelection.position());
+    QCOMPARE(f.edit()->textCursor().anchor(), savedSelection.anchor());
+    const bool aggressive = preset == MarkdownConcealPreset::Aggressive;
+    for (const auto &marker : markers) {
+      const int body = marker.start + marker.opening.size();
+      const int closing = body + marker.body.size();
+      // Aggressive's marker policy stays hidden even while the caret edits the body.
+      setConcealCursor(f, body + 1);
+      if (aggressive) {
+        QVERIFY(qAbs(concealConfigRangeWidth(f, marker.start, body)) < 0.1);
+        QVERIFY(qAbs(concealConfigRangeWidth(f, closing, closing + marker.closing.size())) < 0.1);
+      } else {
+        QVERIFY(concealConfigRangeWidth(f, marker.start, body) > 1);
+        QVERIFY(concealConfigRangeWidth(f, closing, closing + marker.closing.size()) > 1);
+      }
+    }
+    f.edit()->setTextCursor(savedSelection);
+    if (aggressive) {
+      QVERIFY(qAbs(concealConfigRangeWidth(f, link, link + 1)) < 0.1);
+      QVERIFY(qAbs(concealConfigRangeWidth(f, linkUrl, linkUrl + url.size())) < 0.1);
+    } else {
+      QVERIFY(concealConfigRangeWidth(f, link, link + 1) > 1);
+      concealConfigVerifyWidth(f, linkUrl, linkUrl + url.size(), compact);
+    }
+    setConcealCursor(f, link + 2);
+    QVERIFY(concealConfigRangeWidth(f, link, link + 1) > 1);
+    concealConfigVerifyWidth(f, linkUrl, linkUrl + url.size(), aggressive ? url : compact);
+    for (int start : {linkUrl, imageUrl, htmlUrl, referenceUrl}) {
+      setConcealCursor(f, start + 1);
+      concealConfigVerifyWidth(f, start, start + url.size(), url);
+    }
+    f.edit()->setTextCursor(savedSelection);
+    for (int start : {imageUrl, htmlUrl, referenceUrl}) {
+      concealConfigVerifyWidth(f, start, start + url.size(), compact);
+    }
+    verifySource();
+    // Per-kind overrides remain supported, but the next preset must reset their options.
+    config->m_concealRules.set(MarkdownConcealElement::ReferenceUrl,
+                             MarkdownConcealShortenDestination{0, 1, 2, QStringLiteral("<>")});
+    f.editor()->setConfig(config);
+    waitForConcealPublication(f);
+    concealConfigVerifyWidth(f, referenceUrl, referenceUrl + url.size(), QStringLiteral("a<>yz"));
+    verifySource();
+  }
+  config->m_concealRules.clear();
+  f.editor()->setConfig(config);
+  waitForConcealPublication(f);
+  for (const auto &marker : markers) {
+    QVERIFY(concealConfigRangeWidth(f, marker.start, marker.start + marker.opening.size()) > 1);
+  }
+  for (int start : {linkUrl, imageUrl, htmlUrl, referenceUrl}) {
+    concealConfigVerifyWidth(f, start, start + url.size(), url);
+  }
+  QCOMPARE(f.edit()->textCursor().position(), savedSelection.position());
+  QCOMPARE(f.edit()->textCursor().anchor(), savedSelection.anchor());
+  verifySource();
+  f.edit()->redo();
+  QCOMPARE(f.text(), savedSource + QStringLiteral(" undone"));
+  f.edit()->undo();
+  QCOMPARE(f.text(), savedSource);
+}
+
 void TestMarkdownEditor::testConcealSyntaxRules_data() {
   QTest::addColumn<int>("kind");
   QTest::addColumn<QString>("opening");

@@ -12,6 +12,9 @@
 
 ### Features
 
+- Add `MarkdownConcealPreset::{Aggressive, Passive}` and `MarkdownConcealRules::setPreset()`.
+  Aggressive matches the demo; Passive shortens only link, image and reference URLs. Applying
+  a preset replaces custom rules/options; default concealment remains disabled.
 - Configure the demo to hide Markdown markers and link syntax while shortening image
   and reference-definition URLs; inline link URLs remain unshortened.
 - `MarkdownConcealRules::set(kind)` selects default policies: heading, emphasis, strong,

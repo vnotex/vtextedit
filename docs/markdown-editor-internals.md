@@ -362,6 +362,26 @@ both the threshold and the compact spelling's grapheme count; 20 graphemes stay 
 and 21 shorten. Negative thresholds act as zero; invalid lengths or multiline replacements
 leave the source visible.
 
+`setPreset(MarkdownConcealPreset)` replaces the complete rule set and resets its options:
+
+| Preset | Persistent marker hiding | Link syntax | URL shortening |
+|--------|--------------------------|-------------|----------------|
+| `Aggressive` | Emphasis, strong, strike, mark, inline code, headings and inline formulas | Hidden; reveals on caret entry | `ImageUrl`, `ReferenceUrl`; **not** `LinkUrl` |
+| `Passive` | None | Visible | `LinkUrl`, `ImageUrl`, `ReferenceUrl` |
+
+Aggressive matches the demo. When its link syntax reveals, the destination is unshortened.
+Both presets use the default shortening rule above. Applying either preset discards previous
+custom rules/options; `set()` and `remove()` afterward can customize the chosen rules. No preset
+is selected by default, and `clear()` still disables concealment. To update a live editor:
+
+```cpp
+config->m_concealRules.setPreset(MarkdownConcealPreset::Aggressive);
+editor->setConfig(config);
+// Or choose URL shortening only:
+config->m_concealRules.setPreset(MarkdownConcealPreset::Passive);
+editor->setConfig(config);
+```
+
 Syntax kinds are opt-in. `set(kind)` installs the kind's default rule: the marker
 kinds below use `MarkdownConcealHideSyntax{true}` (`m_keepHidden`), while `LinkSyntax`
 keeps reveal-on-entry. The two-argument `set(kind, rule)` selects an explicit policy;

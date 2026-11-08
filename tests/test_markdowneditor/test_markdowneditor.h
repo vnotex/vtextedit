@@ -29,6 +29,7 @@ private slots:
 
   // Source-preserving Markdown concealment through the real editor and Vi input.
   void testConcealMarkdownConfig();
+  void testConcealPresets();
   void testConcealHoverToolTip();
   void testConcealCaretAndViMotion();
   void testConcealSyntaxRules_data();

@@ -11,6 +11,8 @@
 #include <variant>
 
 namespace vte {
+enum class MarkdownConcealPreset { Aggressive, Passive };
+
 struct MarkdownConcealShortenDestination {
   int m_threshold = 20;
   int m_keepPrefix = 5;
@@ -60,6 +62,27 @@ public:
     }
     m_rules[static_cast<size_t>(p_kind)] = p_rule;
     return true;
+  }
+
+  // Replace all rules/options with the preset; callers may customize individual kinds afterward.
+  void setPreset(MarkdownConcealPreset p_preset) {
+    clear();
+    set(MarkdownConcealElement::ImageUrl);
+    set(MarkdownConcealElement::ReferenceUrl);
+    switch (p_preset) {
+    case MarkdownConcealPreset::Aggressive:
+      for (auto kind :
+           {MarkdownConcealElement::EmphasisMarkers, MarkdownConcealElement::StrongMarkers,
+            MarkdownConcealElement::StrikethroughMarkers, MarkdownConcealElement::MarkMarkers,
+            MarkdownConcealElement::InlineCodeMarkers, MarkdownConcealElement::LinkSyntax,
+            MarkdownConcealElement::HeadingMarkers, MarkdownConcealElement::InlineFormulaMarkers}) {
+        set(kind);
+      }
+      break;
+    case MarkdownConcealPreset::Passive:
+      set(MarkdownConcealElement::LinkUrl);
+      break;
+    }
   }
 
   void remove(MarkdownConcealElement p_kind) {

@@ -3,7 +3,8 @@
 
 ## Source-preserving concealment ##
 
-The demo hides heading hashes and the markers of **bold**, *italic*, ~~strike~~ and ==mark==.
+The demo uses the Aggressive concealment preset: heading hashes and the markers of
+**bold**, *italic*, ~~strike~~ and ==mark== are hidden.
 Inline code can use ``two ` backticks``; formulas include $x + y$ and $$a^2 + b^2$$.
 These markers stay hidden while editing; arrows and counted Vi character motions skip them.
 Deleting an element's last content removes its markers too. Links still reveal on caret entry.
@@ -23,7 +24,8 @@ Autolink: <https://example.com/abcdefghijklmnopqrstuvwxyz>
 The demo shortens image and reference-definition URLs, keeping the first 5 graphemes, three middle
 dots and the last 12 graphemes: 20 in total. Only destinations over 20 graphemes shorten.
 Inline link URLs stay unshortened; link syntax still reveals on caret entry.
-Hover over a compact destination to see its complete raw source.
+Hover over a compact destination to see its complete raw source. The Passive preset instead
+keeps all syntax markers visible and shortens link, image and reference-definition URLs.
 
 [20-graphemes]: abcdefghijklmnopqrst
 [21-graphemes]: abcdefghijklmnopqrstu
