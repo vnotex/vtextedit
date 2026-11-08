@@ -77,13 +77,13 @@ static VMarkdownEditor *setupMarkdownEditor(QWidget *p_parent) {
   markdownEditorConfig->m_inplacePreviewSources |= MarkdownEditorConfig::Table;
   markdownEditorConfig->m_autoFormatTableSourceEnabled = true;
   markdownEditorConfig->m_autoNumberOrderedListsEnabled = true;
-  // Hide syntax and shorten reference definitions, but not inline link or image URLs.
+  // Hide syntax and shorten image/reference URLs, but not inline link URLs.
   for (const auto kind :
        {MarkdownConcealElement::EmphasisMarkers, MarkdownConcealElement::StrongMarkers,
         MarkdownConcealElement::StrikethroughMarkers, MarkdownConcealElement::MarkMarkers,
         MarkdownConcealElement::InlineCodeMarkers, MarkdownConcealElement::LinkSyntax,
         MarkdownConcealElement::HeadingMarkers, MarkdownConcealElement::InlineFormulaMarkers,
-        MarkdownConcealElement::ReferenceUrl}) {
+        MarkdownConcealElement::ReferenceUrl, MarkdownConcealElement::ImageUrl}) {
     markdownEditorConfig->m_concealRules.set(kind);
   }
   auto editorParas = QSharedPointer<TextEditorParameters>::create();

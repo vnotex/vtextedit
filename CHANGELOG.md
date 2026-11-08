@@ -12,8 +12,8 @@
 
 ### Features
 
-- Configure the demo to hide Markdown markers and link syntax while shortening only
-  reference-definition URLs; inline link and image URLs remain unshortened.
+- Configure the demo to hide Markdown markers and link syntax while shortening image
+  and reference-definition URLs; inline link URLs remain unshortened.
 - `MarkdownConcealRules::set(kind)` selects default policies: heading, emphasis, strong,
   inline code/math, mark and strikethrough markers stay hidden while editing. Link syntax
   and destination shortening retain reveal-on-entry. Explicit `MarkdownConcealHideSyntax`
