@@ -38,7 +38,7 @@ The Markdown-specific configuration is in `MarkdownEditorConfig`:
 | Field or method | Effect |
 |-----------------|--------|
 | `m_inplacePreviewSources` | Enables the `ImageLink`, `CodeBlock`, `Math` and/or `Table` preview sources. The first three are enabled by default; `Table` is opt-in, because its sheet writes back to the document. |
-| `m_concealRules` | Typed per-kind rules. URL shortening is enabled by default; syntax hiding is opt-in. An empty rule set disables concealment. |
+| `m_concealRules` | Typed per-kind rules. URL shortening and syntax hiding are both opt-in. An empty rule set disables concealment. |
 | `m_constrainInplacePreviewWidthEnabled` | Allows block preview images to shrink to the text layout width. |
 | `m_webCodeBlockHighlighterEnabled` | Selects the web or KSyntax fenced-code source highlighter during construction. |
 | `m_autoFoldPreviewedBlocksEnabled` | Folds a foldable region as soon as it first gets a valid in-place preview. Default on. See [Preview driven folding](#preview-driven-folding). |
@@ -353,11 +353,14 @@ sentinel semantics while letting following blocks share its Y position.
 
 `MarkdownEditorConfig::m_concealRules` is the single selection and configuration table.
 Missing kinds are disabled; `clear()` disables all concealment. `set()` rejects an invalid
-kind/operation pairing. The default table contains `ImageUrl`, `LinkUrl` and `ReferenceUrl`
-with `MarkdownConcealShortenDestination{}`: threshold 20, three retained graphemes at each
-end, and three U+00B7 middle dots. A destination must exceed both the threshold and the
-compact spelling's grapheme count. Negative thresholds act as zero; invalid lengths or
-multiline replacements leave the source visible.
+kind/operation pairing. The default table is empty, so URL shortening and syntax hiding
+are disabled. Opt into `ImageUrl`, `LinkUrl` or `ReferenceUrl` with `set(kind)` or an explicit
+`MarkdownConcealShortenDestination{}`: threshold 20, five retained prefix graphemes, three
+U+00B7 middle dots and twelve retained suffix graphemes (20 total). For example,
+`abcdefghijklmnopqrstuvwxyz` displays as `abcde···opqrstuvwxyz`. A destination must exceed
+both the threshold and the compact spelling's grapheme count; 20 graphemes stay visible
+and 21 shorten. Negative thresholds act as zero; invalid lengths or multiline replacements
+leave the source visible.
 
 Syntax kinds are opt-in. `set(kind)` installs the kind's default rule: the marker
 kinds below use `MarkdownConcealHideSyntax{true}` (`m_keepHidden`), while `LinkSyntax`
@@ -374,7 +377,7 @@ revealable behavior for any syntax kind:
 | `HeadingMarkers` | ATX opening hashes/separator and any recognized closing hash suffix/separator | Heading text, indentation and section numbers; Setext underlines are untouched |
 | `InlineFormulaMarkers` | `$...$` or single-line `$$...$$` delimiters | Formula source, not a new rendered preview; multiline math blocks are untouched |
 
-For example, opt into heading and formula markers without changing the URL defaults:
+For example, opt into heading and formula markers while leaving URL shortening disabled:
 
 ```cpp
 config->m_concealRules.set(MarkdownConcealElement::HeadingMarkers);

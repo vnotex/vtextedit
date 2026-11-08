@@ -13,8 +13,8 @@
 namespace vte {
 struct MarkdownConcealShortenDestination {
   int m_threshold = 20;
-  int m_keepPrefix = 3;
-  int m_keepSuffix = 3;
+  int m_keepPrefix = 5;
+  int m_keepSuffix = 12;
   QString m_replacement = QString(3, QChar(0x00b7));
 };
 
@@ -137,11 +137,8 @@ public:
 
   InplacePreviewSources m_inplacePreviewSources;
 
-  // Syntax rules are opt-in. Empty disables concealment; source text is never changed.
-  MarkdownConcealRules m_concealRules = {
-      {MarkdownConcealElement::ImageUrl, MarkdownConcealShortenDestination{}},
-      {MarkdownConcealElement::LinkUrl, MarkdownConcealShortenDestination{}},
-      {MarkdownConcealElement::ReferenceUrl, MarkdownConcealShortenDestination{}}};
+  // All concealment rules are opt-in; source text is never changed.
+  MarkdownConcealRules m_concealRules;
 
   // Native KSyntaxHighlighting is the default for code blocks. Set true before
   // constructing the editor to use the host-provided external/web highlighter.

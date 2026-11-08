@@ -993,6 +993,7 @@ void TestMarkdownEditor::testMarkBackgroundOnCursorLine() {
       QString::fromUtf8(QJsonDocument(json).toJson(QJsonDocument::Compact)));
   QVERIFY(config->m_textEditorConfig->m_theme);
   if (conceal) {
+    config->m_concealRules.set(MarkdownConcealElement::LinkUrl);
     config->m_concealRules.set(MarkdownConcealElement::MarkMarkers, MarkdownConcealHideSyntax{});
   } else {
     config->m_concealRules.clear();
@@ -1030,8 +1031,8 @@ void TestMarkdownEditor::testMarkBackgroundOnCursorLine() {
     }
     if (conceal) {
       for (const auto &part :
-           {qMakePair(urlStart, urlStart + 3), qMakePair(urlStart + 3, urlEnd - 3),
-            qMakePair(urlEnd - 3, urlEnd)}) {
+           {qMakePair(urlStart, urlStart + 5), qMakePair(urlStart + 5, urlEnd - 12),
+            qMakePair(urlEnd - 12, urlEnd)}) {
         const auto rect = concealConfigViewportRange(f, part.first, part.second);
         QVERIFY(concealConfigColorCount(image, rect, compactBackground) > 10);
         QVERIFY(concealConfigColorCount(image, rect,
@@ -1079,7 +1080,9 @@ void TestMarkdownEditor::testConcealHoverToolTip() {
   const auto destination = QStringLiteral("abc  defghijklmnopqrstuvwxyz<b>&amp;");
   const auto source = QStringLiteral("prefix <img src=\"%1\" alt=\"offline\">\n\ncursor elsewhere")
                           .arg(destination);
-  Fixture f(source, -1, -1, makeConcealConfig());
+  auto config = makeConcealConfig();
+  config->m_concealRules.set(MarkdownConcealElement::ImageUrl);
+  Fixture f(source, -1, -1, config);
   f.editor()->setSpellCheckEnabled(false);
   f.editor()->resize(900, 480);
   f.editor()->show();
@@ -1104,9 +1107,9 @@ void TestMarkdownEditor::testConcealHoverToolTip() {
     QHelpEvent event(QEvent::ToolTip, p_point, viewport->mapToGlobal(p_point));
     QApplication::sendEvent(viewport, &event);
   };
-  for (const auto &point : {concealConfigViewportRange(f, start, start + 3).center(),
-                            concealConfigViewportRange(f, start + 3, end - 3).center(),
-                            concealConfigViewportRange(f, end - 3, end).center()}) {
+  for (const auto &point : {concealConfigViewportRange(f, start, start + 5).center(),
+                            concealConfigViewportRange(f, start + 5, end - 12).center(),
+                            concealConfigViewportRange(f, end - 12, end).center()}) {
     QToolTip::hideText();
     QTRY_VERIFY(QToolTip::text().isEmpty());
     hover(point.toPoint());
@@ -1130,7 +1133,7 @@ void TestMarkdownEditor::testConcealHoverToolTip() {
 }
 
 void TestMarkdownEditor::testConcealMarkdownConfig() {
-  const auto compact = QStringLiteral("abc\u00b7\u00b7\u00b7xyz");
+  const auto compact = QStringLiteral("abcde\u00b7\u00b7\u00b7opqrstuvwxyz");
   const auto alphabet = QStringLiteral("abcdefghijklmnopqrstuvwxyz");
   struct ThresholdCase {
     QString m_payload;
@@ -1142,24 +1145,22 @@ void TestMarkdownEditor::testConcealMarkdownConfig() {
   const auto dots = QStringLiteral("\u00b7\u00b7\u00b7");
   const ThresholdCase cases[] = {
       {alphabet.left(20), alphabet.left(20), 20},
-      {alphabet.left(21), QStringLiteral("abc") + dots + QStringLiteral("stu"), 20},
+      {alphabet.left(21), QStringLiteral("abcde") + dots + QStringLiteral("jklmnopqrstu"), 20},
       // UTF-16 length and code-point length must not substitute for graphemes.
       {combining.repeated(20), combining.repeated(20), 20},
-      {combining.repeated(21), combining.repeated(3) + dots + combining.repeated(3), 20},
+      {combining.repeated(21), combining.repeated(5) + dots + combining.repeated(12), 20},
       {supplementary.repeated(20), supplementary.repeated(20), 20},
-      {supplementary.repeated(21), supplementary.repeated(3) + dots + supplementary.repeated(3),
+      {supplementary.repeated(21), supplementary.repeated(5) + dots + supplementary.repeated(12),
        20},
-      {alphabet.left(8), alphabet.left(8), 0},
-      {alphabet.left(9), alphabet.left(9), 0},
-      {alphabet.left(10), QStringLiteral("abc") + dots + QStringLiteral("hij"), 0},
-      {combining.repeated(9), combining.repeated(9), -7},
-      {combining.repeated(10), combining.repeated(3) + dots + combining.repeated(3), -7}};
+      {alphabet.left(19), alphabet.left(19), 0},
+      {alphabet.left(20), alphabet.left(20), 0},
+      {alphabet.left(21), QStringLiteral("abcde") + dots + QStringLiteral("jklmnopqrstu"), 0},
+      {combining.repeated(20), combining.repeated(20), -7},
+      {combining.repeated(21), combining.repeated(5) + dots + combining.repeated(12), -7}};
   for (const auto &item : cases) {
     auto config = makeConcealConfig();
-    if (item.m_threshold != 20) {
-      config->m_concealRules.set(MarkdownConcealElement::LinkUrl,
-                                 MarkdownConcealShortenDestination{item.m_threshold});
-    }
+    config->m_concealRules.set(MarkdownConcealElement::LinkUrl,
+                              MarkdownConcealShortenDestination{item.m_threshold});
     const auto source = QStringLiteral("[x](") + item.m_payload + QStringLiteral(") tail\noutside");
     Fixture fixture(source, 1, 0, config);
     QVERIFY(!renderConcealEditor(fixture).isNull());
@@ -1221,8 +1222,16 @@ void TestMarkdownEditor::testConcealMarkdownConfig() {
       {MarkdownConcealElement::ImageUrl,
        static_cast<int>(source.indexOf(alphabet, source.indexOf(alphabet) + 1))},
       {MarkdownConcealElement::ReferenceUrl, static_cast<int>(source.lastIndexOf(alphabet))}};
+  // Without opt-in, every authored destination remains fully visible.
+  for (const auto &item : kinds) {
+    concealConfigVerifyWidth(fixture, item.m_start, item.m_start + alphabet.size(), alphabet);
+    config->m_concealRules.set(item.m_kind);
+  }
+  fixture.editor()->setConfig(config);
+  waitForConcealPublication(fixture);
+  verifySourceUnchanged();
   const auto all = config->m_concealRules;
-  // Actual default behavior: each authored destination is shortened, not labels/titles.
+  // Opt-in shortens destinations, not labels/titles.
   for (const auto &item : kinds) {
     concealConfigVerifyWidth(fixture, item.m_start, item.m_start + alphabet.size(), compact);
   }
@@ -1277,7 +1286,7 @@ void TestMarkdownEditor::testConcealMarkdownConfig() {
     concealConfigVerifyWidth(fixture, start, end, compact);
     // Inspect each retained end AND the dots, not merely a colored overlay elsewhere.
     for (const auto &part :
-         {qMakePair(start, start + 3), qMakePair(start + 3, end - 3), qMakePair(end - 3, end)}) {
+         {qMakePair(start, start + 5), qMakePair(start + 5, end - 12), qMakePair(end - 12, end)}) {
       const auto rect = concealConfigViewportRange(fixture, part.first, part.second);
       QVERIFY(rect.width() > 0);
       QVERIFY(concealConfigColorCount(image, rect, style.first, style.second) > 0);
@@ -1309,7 +1318,7 @@ void TestMarkdownEditor::testConcealMarkdownConfig() {
   QVERIFY(!omitted.isNull());
   concealConfigVerifyWidth(fixture, start, end, compact);
   for (const auto &part :
-       {qMakePair(start, start + 3), qMakePair(start + 3, end - 3), qMakePair(end - 3, end)}) {
+       {qMakePair(start, start + 5), qMakePair(start + 5, end - 12), qMakePair(end - 12, end)}) {
     rect = concealConfigViewportRange(fixture, part.first, part.second);
     QVERIFY(concealConfigColorCount(omitted, rect, sourceForeground, QColor(Qt::white)) > 0);
     QVERIFY(concealConfigColorCount(omitted, rect, QColor(Qt::white)) > 0);
@@ -1856,6 +1865,7 @@ void TestMarkdownEditor::testPersistentConcealRevealPolicies() {
   config->m_concealRules.set(MarkdownConcealElement::StrongMarkers,
                              MarkdownConcealHideSyntax{true});
   config->m_concealRules.set(MarkdownConcealElement::LinkSyntax, MarkdownConcealHideSyntax{});
+  config->m_concealRules.set(MarkdownConcealElement::LinkUrl);
   const QString url = QStringLiteral("abcdefghijklmnopqrstuvwxyz");
   const QString source = QStringLiteral("**bold** [label](") + url + QStringLiteral(") tail");
   Fixture f(source, -1, -1, config);
@@ -1863,7 +1873,7 @@ void TestMarkdownEditor::testPersistentConcealRevealPolicies() {
   waitForConcealPublication(f);
   setConcealCursor(f, 11);
   QVERIFY(concealConfigRangeWidth(f, 9, 10) > 1);
-  concealConfigVerifyWidth(f, 17, 43, QStringLiteral("abc\u00b7\u00b7\u00b7xyz"));
+  concealConfigVerifyWidth(f, 17, 43, QStringLiteral("abcde\u00b7\u00b7\u00b7opqrstuvwxyz"));
   setConcealCursor(f, 20);
   concealConfigVerifyWidth(f, 17, 43, url);
   QVERIFY(qAbs(concealConfigRangeWidth(f, 0, 2)) < 0.1);
@@ -1875,6 +1885,7 @@ void TestMarkdownEditor::testConcealNestedAndMultilineSyntax() {
   auto config = makeConcealConfig();
   config->m_concealRules.set(MarkdownConcealElement::StrongMarkers, MarkdownConcealHideSyntax{});
   config->m_concealRules.set(MarkdownConcealElement::LinkSyntax, MarkdownConcealHideSyntax{});
+  config->m_concealRules.set(MarkdownConcealElement::LinkUrl);
   const auto source = QStringLiteral("**[label](abcdefghijklmnopqrstuvwxyz)** tail\n\noutside");
   Fixture f(source, -1, -1, config);
   QVERIFY(!renderConcealEditor(f).isNull());
@@ -1886,7 +1897,7 @@ void TestMarkdownEditor::testConcealNestedAndMultilineSyntax() {
   // Revealing the outer link lets the independent URL policy shorten its destination.
   setConcealCursor(f, 4);
   QVERIFY(concealConfigRangeWidth(f, 0, 3) > 1);
-  concealConfigVerifyWidth(f, urlStart, urlEnd, QStringLiteral("abc\u00b7\u00b7\u00b7xyz"));
+  concealConfigVerifyWidth(f, urlStart, urlEnd, QStringLiteral("abcde\u00b7\u00b7\u00b7opqrstuvwxyz"));
   setConcealCursor(f, urlStart + 5);
   concealConfigVerifyWidth(f, urlStart, urlEnd, QStringLiteral("abcdefghijklmnopqrstuvwxyz"));
   QCOMPARE(f.text(), source);
@@ -1972,11 +1983,13 @@ void TestMarkdownEditor::testConcealCustomDestinationRule() {
 
 void TestMarkdownEditor::testConcealCaretAndViMotion() {
   const auto alphabet = QStringLiteral("abcdefghijklmnopqrstuvwxyz");
-  const auto compact = QStringLiteral("abc\u00b7\u00b7\u00b7xyz");
+  const auto compact = QStringLiteral("abcde\u00b7\u00b7\u00b7opqrstuvwxyz");
   const auto source = QStringLiteral("[x](") + alphabet + QStringLiteral(") tail\nother block");
   const int start = source.indexOf(alphabet);
   const int end = start + alphabet.size();
-  Fixture fixture(source, 0, start - 1, makeConcealConfig(true));
+  auto config = makeConcealConfig(true);
+  config->m_concealRules.set(MarkdownConcealElement::LinkUrl);
+  Fixture fixture(source, 0, start - 1, config);
   QVERIFY(!renderConcealEditor(fixture).isNull());
   QTRY_VERIFY_WITH_TIMEOUT(fixture.edit()->hasFocus(), 5000);
   waitForConcealPublication(fixture);
@@ -6494,8 +6507,8 @@ concealEditConfig(bool p_enabled = true,
   config->m_textEditorConfig->m_theme = Theme::createThemeFromContent(
       QString::fromUtf8(QJsonDocument(json).toJson(QJsonDocument::Compact)));
   Q_ASSERT(config->m_textEditorConfig->m_theme);
-  if (!p_enabled) {
-    config->m_concealRules.clear();
+  if (p_enabled) {
+    config->m_concealRules.set(MarkdownConcealElement::LinkUrl);
   }
   return config;
 }
@@ -6565,11 +6578,11 @@ void concealEditSaveImage(const QImage &p_image, const QString &p_name) {
 
 void TestMarkdownEditor::testConcealEditingAndGeometry() {
   const QString url = QStringLiteral("abcdefghijklmnopqrstuvwxyz");
-  const QString compactUrl = QStringLiteral("abc\u00b7\u00b7\u00b7xyz");
+  const QString compactUrl = QStringLiteral("abcde\u00b7\u00b7\u00b7opqrstuvwxyz");
   const QString source = QStringLiteral("[x](") + url + QStringLiteral(") tail\noutside");
   const QString compact = QStringLiteral("[x](") + compactUrl + QStringLiteral(") tail\noutside");
   const int start = source.indexOf(url);
-  const int hidden = start + 3;
+  const int hidden = start + 5;
 
   {
     Fixture reference(compact, -1, -1, concealEditConfig(false));

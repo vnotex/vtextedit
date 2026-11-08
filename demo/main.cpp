@@ -77,7 +77,7 @@ static VMarkdownEditor *setupMarkdownEditor(QWidget *p_parent) {
   markdownEditorConfig->m_inplacePreviewSources |= MarkdownEditorConfig::Table;
   markdownEditorConfig->m_autoFormatTableSourceEnabled = true;
   markdownEditorConfig->m_autoNumberOrderedListsEnabled = true;
-  // Destination shortening remains the library default; the demo opts into syntax hiding.
+  // URL shortening stays disabled; the demo opts into syntax hiding.
   for (const auto kind :
        {MarkdownConcealElement::EmphasisMarkers, MarkdownConcealElement::StrongMarkers,
         MarkdownConcealElement::StrikethroughMarkers, MarkdownConcealElement::MarkMarkers,

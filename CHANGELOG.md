@@ -4,6 +4,9 @@
 
 ### Breaking changes
 
+- Make Markdown URL shortening opt-in for links, images and reference definitions. Enabled
+  default rules retain five prefix graphemes, three middle dots and twelve suffix graphemes
+  (20 total); the shortening threshold remains 20.
 - Add persistent hiding to syntax rules and source-projection input hooks, including the
   KateVi character-movement interface. Rebuild consumers; VTextEdit SOVERSION is 12.
 

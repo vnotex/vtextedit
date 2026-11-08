@@ -20,8 +20,9 @@ Autolink: <https://example.com/abcdefghijklmnopqrstuvwxyz>
 
 [conceal-example]: https://example.com/abcdefghijklmnopqrstuvwxyz "Reference title"
 
-Destination-only rules shorten text over 20 graphemes to three at each end around middle dots.
-Hover over a compact destination to see its complete raw source.
+Destination shortening is disabled by default, including in this demo. When enabled, it keeps
+the first 5 graphemes, three middle dots and the last 12 graphemes: 20 in total. Only destinations
+over 20 graphemes shorten. Hover over a compact destination to see its complete raw source.
 
 [20-graphemes]: abcdefghijklmnopqrst
 [21-graphemes]: abcdefghijklmnopqrstu
