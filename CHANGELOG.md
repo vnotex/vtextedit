@@ -25,6 +25,12 @@
   exact source lineage and cancels on undo/redo, restored content, changed markers or reset.
   Deferred cleanup joins undo only when proven safe; otherwise it is a separate undo step.
 
+### Fixes
+
+- Keep insertion carets inside concealed closing markers across full parses and prefer that
+  boundary on mouse clicks, so slow typing continues the formatting. Preserve existing explicit
+  marker-action exits, visible-character navigation, selection anchors and IME hit coordinates.
+
 ## 11.0.0 (unreleased)
 
 ### Breaking changes

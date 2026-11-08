@@ -39,6 +39,14 @@ private slots:
   void testPersistentConcealKinds_data();
   void testPersistentConcealKinds();
   void testPersistentConcealNavigation();
+  void testPersistentConcealClickBoundary_data();
+  void testPersistentConcealClickBoundary();
+  void testPersistentConcealSlowTyping_data();
+  void testPersistentConcealSlowTyping();
+  void testPersistentConcealBoundarySelection();
+  void testPersistentConcealBoundaryBackspace_data();
+  void testPersistentConcealBoundaryBackspace();
+  void testPersistentConcealBoundaryIme();
   void testPersistentConcealNested_data();
   void testPersistentConcealNested();
   void testPersistentConcealEmptyHeading();

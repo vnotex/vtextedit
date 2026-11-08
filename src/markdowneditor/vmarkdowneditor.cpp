@@ -2031,6 +2031,12 @@ private:
       p_cursor.clearSelection();
       return true;
     }
+    const auto original = m_edit->textCursor();
+    const bool restoreOutside =
+        p_text.isEmpty() && !original.hasSelection() &&
+        original.position() == p_cursor.selectionEnd() &&
+        m_layout->normalizePersistentConcealPosition(original.position(), false, false) ==
+            original.position();
     QTextCursor caret(p_cursor);
     caret.setPosition(p_cursor.selectionStart());
     QPointer<MarkdownConcealController> guard(this);
@@ -2051,6 +2057,11 @@ private:
     }
     edit.endEditBlock();
     if (guard) {
+      // Qt maps this outside caret through the removals even when a Vi edit
+      // block defers the layout's source-change notification until later.
+      if (restoreOutside) {
+        caret = original;
+      }
       m_applying = false;
       notifySourceEditStateChanged();
       p_cursor = caret;

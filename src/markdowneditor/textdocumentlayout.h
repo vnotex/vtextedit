@@ -169,7 +169,8 @@ public:
 
   void setConcealment(const ConcealSnapshot &p_snapshot);
   void setConcealCursorPosition(int p_position);
-  int normalizePersistentConcealPosition(int p_position, bool p_onCharacter) const;
+  int normalizePersistentConcealPosition(int p_position, bool p_onCharacter,
+                                         bool p_preserveClosingBoundary = true) const;
   bool movePersistentConcealCursor(QTextCursor &p_cursor, QTextCursor::MoveOperation p_operation,
                                    QTextCursor::MoveMode p_mode, int p_count) const;
   bool persistentConcealRemovalRanges(int p_start, int p_end, QVector<md::ElementRegion> &p_ranges,
@@ -522,6 +523,7 @@ private:
 
   bool hasPersistentConceal(const QTextBlock &p_block) const;
   bool persistentConcealSpanAt(int p_position, int &p_start, int &p_end) const;
+  int persistentConcealClosingBoundary(const QTextBlock &p_block, int p_position) const;
   int concealCursorPosition() const;
   void updateConcealSource(int p_position, int p_removed, int p_added);
   bool concealGroupRevealed(const LiveConcealGroup &p_group, int p_cursor) const;

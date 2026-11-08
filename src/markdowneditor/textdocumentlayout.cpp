@@ -650,8 +650,52 @@ bool TextDocumentLayout::persistentConcealSpanAt(int p_position, int &p_start, i
   return p_end > p_position;
 }
 
-int TextDocumentLayout::normalizePersistentConcealPosition(int p_position,
-                                                           bool p_onCharacter) const {
+int TextDocumentLayout::persistentConcealClosingBoundary(const QTextBlock &p_block,
+                                                         int p_position) const {
+  const auto &groups = BlockLayoutData::get(p_block)->m_concealGroups;
+  int start = p_position, end = p_position;
+  bool changed;
+  do {
+    changed = false;
+    for (int index : groups) {
+      const auto &group = m_concealGroups.at(index);
+      if (!group.m_active || !group.m_spec.m_keepHidden) {
+        continue;
+      }
+      for (int i = group.m_spec.m_firstRun; i < group.m_spec.m_firstRun + group.m_spec.m_runCount;
+           ++i) {
+        const auto &run = m_concealRuns.at(i);
+        // Include both ends: later nested closers and adjacent openers belong
+        // to the same visible gap, but only its first closer is an inside caret.
+        if (run.m_block == p_block && run.m_sourceStart <= end && run.m_sourceEnd >= start) {
+          const int nextStart = qMin(start, run.m_sourceStart);
+          const int nextEnd = qMax(end, run.m_sourceEnd);
+          changed |= start != nextStart || end != nextEnd;
+          start = nextStart;
+          end = nextEnd;
+        }
+      }
+    }
+  } while (changed);
+  int boundary = -1;
+  for (int index : groups) {
+    const auto &group = m_concealGroups.at(index);
+    if (!group.m_active || !group.m_spec.m_keepHidden || group.m_spec.m_runCount < 2) {
+      continue;
+    }
+    const auto &closing =
+        m_concealRuns.at(group.m_spec.m_firstRun + group.m_spec.m_runCount - 1);
+    if (closing.m_block == p_block && closing.m_sourceStart > group.m_spec.m_start &&
+        closing.m_sourceEnd == group.m_spec.m_end && closing.m_sourceStart >= start &&
+        closing.m_sourceEnd <= end) {
+      boundary = boundary < 0 ? closing.m_sourceStart : qMin(boundary, closing.m_sourceStart);
+    }
+  }
+  return boundary;
+}
+
+int TextDocumentLayout::normalizePersistentConcealPosition(int p_position, bool p_onCharacter,
+                                                           bool p_preserveClosingBoundary) const {
   const auto block = document()->findBlock(p_position);
   if (!hasPersistentConceal(block)) {
     return p_position;
@@ -659,6 +703,10 @@ int TextDocumentLayout::normalizePersistentConcealPosition(int p_position,
   const int end = block.position() + block.length() - 1;
   int hiddenStart, hiddenEnd;
   if (persistentConcealSpanAt(p_position, hiddenStart, hiddenEnd)) {
+    if (!p_onCharacter && p_preserveClosingBoundary &&
+        persistentConcealClosingBoundary(block, p_position) == p_position) {
+      return p_position;
+    }
     p_position = hiddenEnd;
   }
   // QTextLayout's boundaries include preedit; the cursor and all returned
@@ -701,10 +749,12 @@ bool TextDocumentLayout::movePersistentConcealCursor(QTextCursor &p_cursor,
   }
   auto cursor = p_cursor;
   bool handled = hasPersistentConceal(cursor.block());
-  const int normalized = normalizePersistentConcealPosition(cursor.position(), false);
+  const int normalized = normalizePersistentConcealPosition(cursor.position(), false, false);
   if (normalized != cursor.position() ||
       (p_mode == QTextCursor::MoveAnchor && cursor.hasSelection())) {
-    cursor.setPosition(normalized, p_mode);
+    // Canonicalization crosses no visible character. Do not start a selection
+    // inside hidden closers before applying the requested character step.
+    cursor.setPosition(normalized, cursor.hasSelection() ? p_mode : QTextCursor::MoveAnchor);
   }
   auto probe = cursor;
   probe.clearSelection();
@@ -716,7 +766,7 @@ bool TextDocumentLayout::movePersistentConcealCursor(QTextCursor &p_cursor,
     bool moved = false;
     while (probe.movePosition(p_operation, QTextCursor::MoveAnchor)) {
       handled |= hasPersistentConceal(probe.block());
-      const int position = normalizePersistentConcealPosition(probe.position(), false);
+      const int position = normalizePersistentConcealPosition(probe.position(), false, false);
       if (position != origin) {
         cursor.setPosition(position, p_mode);
         moved = true;
@@ -2400,7 +2450,40 @@ int TextDocumentLayout::hitTest(const QPointF &p_point, Qt::HitTestAccuracy p_ac
       return concealed;
     }
     const auto line = layout->lineAt(targetLine);
-    off = visibleBoundary(line, line.xToCursor(pos.x(), QTextLine::CursorBetweenCharacters));
+    off = line.xToCursor(pos.x(), QTextLine::CursorBetweenCharacters);
+    int sourceColumn = off;
+    const int preedit = layout->preeditAreaPosition();
+    const int preeditLength = layout->preeditAreaText().size();
+    if (preeditLength > 0) {
+      // Neither composition endpoint may be pulled into an adjacent hidden
+      // group, including by visibleBoundary's ordinary zero-width fallback.
+      if (off >= preedit && off <= preedit + preeditLength) {
+        return block.position() + off;
+      }
+      if (off > preedit) {
+        sourceColumn -= preeditLength;
+      }
+      if (sourceColumn == preedit) {
+        return block.position() + off;
+      }
+    }
+    for (const auto &marker : data->m_concealMarkers) {
+      const int start = concealLayoutPosition(layout, marker.m_hiddenStart);
+      const int end = concealLayoutPosition(layout, marker.m_hiddenEnd, true);
+      if (marker.m_rect.width() != 0 || off < start || off > end ||
+          layout->lineForTextPosition(start).lineNumber() != targetLine) {
+        continue;
+      }
+      const int closing = persistentConcealClosingBoundary(block, block.position() + sourceColumn);
+      if (closing >= 0) {
+        const int boundary = concealLayoutPosition(layout, closing - block.position());
+        if (layout->lineForTextPosition(boundary).lineNumber() == targetLine) {
+          return block.position() + boundary;
+        }
+      }
+      break;
+    }
+    off = visibleBoundary(line, off);
   } else if (lineCount > 0) {
     // Below every line of the block, such as the preview image area. Keep the
     // cursor at the end of the block.

@@ -421,12 +421,20 @@ neighbor affinity and an exclusive-end fallback. Completely hidden paragraphs re
 editable line height. Copy and search remain source-based.
 
 Persistent groups (`m_keepHidden`) stay hidden during caret entry and IME composition.
-Insertion carets use one source position per visible gap: immediately before the next visible
-grapheme, or at line end after trailing markers. In `**bold**a`, positions 6/7/8 therefore
-canonicalize to 8; Left from 9 visits 8 then 5. Vi block carets instead rest on visible
-characters, including after line-end clamping and leaving Insert mode. Arrows, selection
-extension and counted Vi character motions reuse block-local memberships, without allocating
-another text projection or scanning unrelated blocks.
+An insertion caret immediately before the first closing marker of a connected hidden cluster
+stays inside through source edits and full-parse publication. Slow typing from `**|**` therefore
+produces `**bold|**`, not `**b**old`. Fuzzy mouse hits at that collapsed boundary prefer the same
+inside position; opening-only spans, character hits and URL replacements are unchanged.
+
+In `**bold**a`, a right-edge click chooses position 6. The existing bold action explicitly skips
+to 8 and stays outside on publication; later closers in a nested cluster are not stable inside
+positions. Backspace retains the starting side: deleting backward from outside does not resume
+formatting, including in Vi Insert mode. Character-motion traversal still uses one position per
+visible gap: Left from 9 visits 8 then 5. Starting a Shift selection canonicalizes its anchor before taking the visible
+step, so Shift+Right from the inside boundary selects only `a`, not the hidden `**`. Vi block
+carets still rest on visible characters. IME preedit and both composition endpoints keep native
+hit coordinates; a click there cannot jump to a preceding group. These paths reuse block-local
+memberships without allocating another text projection or scanning unrelated blocks.
 
 A movement's landing range is not its deletion range. The shared removal planner subtracts
 persistent marker spans, includes wrappers whose last visible content is removed, and applies

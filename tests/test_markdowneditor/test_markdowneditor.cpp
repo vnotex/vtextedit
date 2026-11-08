@@ -1527,7 +1527,8 @@ void TestMarkdownEditor::testPersistentConcealNavigation() {
   auto *edit = f.edit();
   for (int position : {0, 1, 2, 6, 7, 8, 9}) {
     setConcealCursor(f, position);
-    QCOMPARE(edit->textCursor().position(), position < 3 ? 2 : position < 9 ? 8 : 9);
+    QCOMPARE(edit->textCursor().position(),
+             position < 3 ? 2 : position == 6 ? 6 : position < 9 ? 8 : 9);
   }
   const QList<int> positions{2, 3, 4, 5, 8, 9};
   for (int repetition = 0; repetition < 2; ++repetition) {
@@ -1565,6 +1566,216 @@ void TestMarkdownEditor::testPersistentConcealNavigation() {
   QTest::keyClick(edit, Qt::Key_Delete, Qt::NoModifier, 0);
   QCOMPARE(f.text(), source);
   QVERIFY(!f.editor()->document()->isUndoAvailable());
+}
+
+void TestMarkdownEditor::testPersistentConcealClickBoundary_data() {
+  QTest::addColumn<QString>("source");
+  QTest::addColumn<int>("boundary");
+  QTest::addColumn<int>("outside");
+  QTest::addColumn<bool>("wrapped");
+  QTest::newRow("end-of-line") << QStringLiteral("**bold**") << 6 << 8 << false;
+  QTest::newRow("before-text") << QStringLiteral("**bold**a") << 6 << 8 << false;
+  QTest::newRow("nested-closers") << QStringLiteral("***bold***") << 7 << 10 << false;
+  QTest::newRow("adjacent-opener") << QStringLiteral("**bold**`code`") << 6 << 9 << false;
+  QTest::newRow("graphemes") << QStringLiteral("**e\u0301\U0001f600**") << 6 << 8 << false;
+  QTest::newRow("rtl") << QStringLiteral("**\u05d0\u05d1\u05d2**") << 5 << 7 << false;
+  QTest::newRow("multiline") << QStringLiteral("**first\nlast**") << 12 << 14 << false;
+  const QString longBody = QStringLiteral("**several words on a wrapped line**");
+  QTest::newRow("wrapped") << longBody << int(longBody.size() - 2) << int(longBody.size()) << true;
+}
+
+void TestMarkdownEditor::testPersistentConcealClickBoundary() {
+  QFETCH(QString, source);
+  QFETCH(int, boundary);
+  QFETCH(int, outside);
+  QFETCH(bool, wrapped);
+  auto config = makeConcealConfig();
+  for (auto kind : {MarkdownConcealElement::StrongMarkers, MarkdownConcealElement::EmphasisMarkers,
+                    MarkdownConcealElement::InlineCodeMarkers}) {
+    config->m_concealRules.set(kind);
+  }
+  Fixture f(source, -1, -1, config);
+  QVERIFY(!renderConcealEditor(f).isNull());
+  if (wrapped) {
+    f.edit()->setLineWrapMode(QTextEdit::FixedPixelWidth);
+    f.edit()->setLineWrapColumnOrWidth(170);
+  }
+  waitForConcealPublication(f);
+  auto *doc = f.editor()->document();
+  doc->clearUndoRedoStacks();
+  doc->setModified(false);
+  const auto clickBoundary = [&]() {
+    QTextCursor cursor(doc);
+    cursor.setPosition(boundary);
+    const QPoint point = f.edit()->cursorRect(cursor).center();
+    QTest::mouseClick(f.edit()->viewport(), Qt::LeftButton, Qt::NoModifier, point, 0);
+  };
+  clickBoundary();
+  QCOMPARE(f.edit()->textCursor().position(), boundary);
+  QCOMPARE(f.text(), source);
+  QVERIFY(!doc->isModified());
+  QVERIFY(!doc->isUndoAvailable());
+  QTest::keyClicks(f.edit(), QStringLiteral("x"), Qt::NoModifier, 0);
+  QString inside = source;
+  inside.insert(boundary, QLatin1Char('x'));
+  waitForConcealPublication(f);
+  QCOMPARE(f.text(), inside);
+  QCOMPARE(f.edit()->textCursor().position(), boundary + 1);
+  f.edit()->undo();
+  waitForConcealPublication(f);
+  QCOMPARE(f.text(), source);
+  clickBoundary();
+  const int undoSteps = doc->availableUndoSteps();
+  const int redoSteps = doc->availableRedoSteps();
+  const bool modified = doc->isModified();
+  QVERIFY(f.editor()->handleTypeAction(TypeAction::TypeBold));
+  waitForConcealPublication(f);
+  QCOMPARE(f.edit()->textCursor().position(), outside);
+  QCOMPARE(f.text(), source);
+  QCOMPARE(doc->availableUndoSteps(), undoSteps);
+  QCOMPARE(doc->availableRedoSteps(), redoSteps);
+  QCOMPARE(doc->isModified(), modified);
+  QTest::keyClicks(f.edit(), QStringLiteral("X"), Qt::NoModifier, 0);
+  QString after = source;
+  after.insert(outside, QLatin1Char('X'));
+  QCOMPARE(f.text(), after);
+}
+
+void TestMarkdownEditor::testPersistentConcealSlowTyping_data() {
+  QTest::addColumn<bool>("vi");
+  QTest::newRow("normal") << false;
+  QTest::newRow("vi-insert") << true;
+}
+
+void TestMarkdownEditor::testPersistentConcealSlowTyping() {
+  QFETCH(bool, vi);
+  auto config = makeConcealConfig(vi);
+  config->m_concealRules.set(MarkdownConcealElement::StrongMarkers);
+  Fixture f(QString(), -1, -1, config);
+  QVERIFY(!renderConcealEditor(f).isNull());
+  waitForConcealPublication(f);
+  QVERIFY(f.editor()->handleTypeAction(TypeAction::TypeBold));
+  QCOMPARE(f.text(), QStringLiteral("****"));
+  QCOMPARE(f.edit()->textCursor().position(), 2);
+  QString body;
+  for (const auto ch : QStringLiteral("bold")) {
+    QTest::keyClicks(f.edit(), QString(ch), Qt::NoModifier, 0);
+    body += ch;
+    // Force the parse/normalization that used to eject the caret after the first b.
+    waitForConcealPublication(f);
+    QCOMPARE(f.text(), QStringLiteral("**") + body + QStringLiteral("**"));
+    QCOMPARE(f.edit()->textCursor().position(), 2 + body.size());
+    QVERIFY(qAbs(concealConfigRangeWidth(f, 2 + body.size(), 4 + body.size())) < 0.1);
+  }
+  const int undoSteps = f.editor()->document()->availableUndoSteps();
+  QVERIFY(f.editor()->handleTypeAction(TypeAction::TypeBold));
+  waitForConcealPublication(f);
+  QCOMPARE(f.text(), QStringLiteral("**bold**"));
+  QCOMPARE(f.edit()->textCursor().position(), 8);
+  QCOMPARE(f.editor()->document()->availableUndoSteps(), undoSteps);
+  QTest::keyClicks(f.edit(), QStringLiteral("!"), Qt::NoModifier, 0);
+  waitForConcealPublication(f);
+  QCOMPARE(f.text(), QStringLiteral("**bold**!"));
+}
+
+void TestMarkdownEditor::testPersistentConcealBoundarySelection() {
+  auto config = makeConcealConfig();
+  config->m_concealRules.set(MarkdownConcealElement::StrongMarkers);
+  Fixture f(QStringLiteral("**bold**a"), -1, -1, config);
+  QVERIFY(!renderConcealEditor(f).isNull());
+  waitForConcealPublication(f);
+  setConcealCursor(f, 6);
+  QTest::keyClick(f.edit(), Qt::Key_Right, Qt::ShiftModifier, 0);
+  QCOMPARE(f.edit()->textCursor().selectionStart(), 8);
+  QCOMPARE(f.edit()->textCursor().selectionEnd(), 9);
+  f.edit()->copy();
+  QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("a"));
+  QTest::keyClicks(f.edit(), QStringLiteral("X"), Qt::NoModifier, 0);
+  QCOMPARE(f.text(), QStringLiteral("**bold**X"));
+  f.edit()->undo();
+  QCOMPARE(f.text(), QStringLiteral("**bold**a"));
+}
+
+void TestMarkdownEditor::testPersistentConcealBoundaryBackspace_data() {
+  QTest::addColumn<QString>("source");
+  QTest::addColumn<int>("position");
+  QTest::addColumn<bool>("vi");
+  QTest::addColumn<QString>("expected");
+  QTest::newRow("inside-normal") << QStringLiteral("**bold**a") << 6 << false
+                                 << QStringLiteral("**bolX**a");
+  QTest::newRow("outside-normal") << QStringLiteral("**bold**a") << 8 << false
+                                  << QStringLiteral("**bol**Xa");
+  QTest::newRow("outside-eof") << QStringLiteral("**bold**") << 8 << false
+                               << QStringLiteral("**bol**X");
+  QTest::newRow("outside-nested") << QStringLiteral("***bold***") << 10 << false
+                                  << QStringLiteral("***bol***X");
+  QTest::newRow("adjacent-code") << QStringLiteral("**bold**`code`") << 9 << false
+                                 << QStringLiteral("**bol**`Xcode`");
+  QTest::newRow("inside-vi-insert") << QStringLiteral("**bold**a") << 6 << true
+                                    << QStringLiteral("**bolX**a");
+  QTest::newRow("outside-vi-insert") << QStringLiteral("**bold**a") << 8 << true
+                                     << QStringLiteral("**bol**Xa");
+}
+
+void TestMarkdownEditor::testPersistentConcealBoundaryBackspace() {
+  QFETCH(QString, source);
+  QFETCH(int, position);
+  QFETCH(bool, vi);
+  QFETCH(QString, expected);
+  auto config = makeConcealConfig(vi);
+  for (auto kind : {MarkdownConcealElement::StrongMarkers, MarkdownConcealElement::EmphasisMarkers,
+                    MarkdownConcealElement::InlineCodeMarkers}) {
+    config->m_concealRules.set(kind);
+  }
+  Fixture f(source, 0, 0, config);
+  QVERIFY(!renderConcealEditor(f).isNull());
+  waitForConcealPublication(f);
+  if (vi) {
+    QTest::keyClick(f.edit(), Qt::Key_I);
+  }
+  setConcealCursor(f, position);
+  QTest::keyClick(f.edit(), Qt::Key_Backspace, Qt::NoModifier, 0);
+  waitForConcealPublication(f);
+  QTest::keyClicks(f.edit(), QStringLiteral("X"), Qt::NoModifier, 0);
+  QCOMPARE(f.text(), expected);
+}
+
+void TestMarkdownEditor::testPersistentConcealBoundaryIme() {
+  auto config = makeConcealConfig();
+  config->m_concealRules.set(MarkdownConcealElement::StrongMarkers);
+  config->m_concealRules.set(MarkdownConcealElement::InlineCodeMarkers);
+  const QString source = QStringLiteral("**a**`b` **tail**");
+  Fixture f(source, -1, -1, config);
+  QVERIFY(!renderConcealEditor(f).isNull());
+  waitForConcealPublication(f);
+  const QString composition = QStringLiteral("\u4e2d\u6587");
+  for (int anchor : {3, 6}) {
+    setConcealCursor(f, anchor);
+    QInputMethodEvent preedit(composition, QList<QInputMethodEvent::Attribute>());
+    QCoreApplication::sendEvent(f.edit(), &preedit);
+    auto block = f.editor()->document()->firstBlock();
+    auto *layout = block.layout();
+    QCOMPARE(layout->preeditAreaPosition(), anchor);
+    auto *documentLayout = f.editor()->document()->documentLayout();
+    const auto blockRect = documentLayout->blockBoundingRect(block);
+    for (int position : {anchor, anchor + 1, anchor + 2}) {
+      const auto line = layout->lineForTextPosition(position);
+      const qreal x = line.cursorToX(position);
+      const int native = line.xToCursor(x, QTextLine::CursorBetweenCharacters);
+      const QPointF point(x, blockRect.top() + line.y() + line.height() / 2);
+      QCOMPARE(documentLayout->hitTest(point, Qt::FuzzyHit), native);
+    }
+    // A later, unrelated closing boundary still prefers its source-side interior.
+    const int closing = source.lastIndexOf(QStringLiteral("**"));
+    const auto line = layout->lineForTextPosition(closing + composition.size());
+    const QPointF point(line.cursorToX(closing + composition.size()),
+                        blockRect.top() + line.y() + line.height() / 2);
+    QCOMPARE(documentLayout->hitTest(point, Qt::FuzzyHit), closing + composition.size());
+    QCOMPARE(f.text(), source);
+    QCOMPARE(layout->preeditAreaText(), composition);
+    QInputMethodEvent cancel;
+    QCoreApplication::sendEvent(f.edit(), &cancel);
+  }
 }
 
 void TestMarkdownEditor::testPersistentConcealNested_data() {
@@ -1678,9 +1889,6 @@ void TestMarkdownEditor::testPersistentConcealPendingEdits() {
     QTest::keyClick(f.edit(), backward ? Qt::Key_Backspace : Qt::Key_Delete, Qt::NoModifier, 0);
     QCOMPARE(f.text(), body.isEmpty() ? QStringLiteral("a")
                                       : QStringLiteral("**") + body + QStringLiteral("**a"));
-    QCOMPARE(f.edit()->textCursor().position(), body.isEmpty() ? 0
-                                                : backward     ? body.size() + 4
-                                                               : 2);
     if (!body.isEmpty()) {
       QVERIFY(qAbs(concealConfigRangeWidth(f, 0, 2)) < 0.1);
       QVERIFY(qAbs(concealConfigRangeWidth(f, body.size() + 2, body.size() + 4)) < 0.1);
