@@ -2262,6 +2262,7 @@ VMarkdownEditor::VMarkdownEditor(const QSharedPointer<MarkdownEditorConfig> &p_c
                                  const QSharedPointer<TextEditorParameters> &p_paras,
                                  QWidget *p_parent)
     : VTextEditor(p_config->m_textEditorConfig, p_paras, p_parent), m_config(p_config) {
+  m_textEdit->setCursorProjectionEnabled(m_config->m_concealRules.hasPersistentSyntaxRules());
   setupDocumentLayout();
   new MarkdownConcealController(this);
 
@@ -2661,6 +2662,7 @@ PreviewMgr *VMarkdownEditor::getPreviewMgr() const { return m_previewMgr; }
 
 void VMarkdownEditor::setConfig(const QSharedPointer<MarkdownEditorConfig> &p_config) {
   m_config = p_config;
+  m_textEdit->setCursorProjectionEnabled(m_config->m_concealRules.hasPersistentSyntaxRules());
   m_config->fillDefaultTheme();
 
   VTextEditor::setConfig(p_config->m_textEditorConfig);

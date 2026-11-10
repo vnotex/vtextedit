@@ -98,7 +98,22 @@ VTextEdit::VTextEdit(QWidget *p_parent) : QTextEdit(p_parent) {
 }
 
 void VTextEdit::handleCursorPositionChange() {
-  normalizeCursorInProjection();
+  bool prepared = false;
+  if (m_cursorNavigationState && m_cursorNavigationState->m_installPending) {
+    auto &navigation = *m_cursorNavigationState;
+    // Consume before any receiver can reenter: only this exact installation is prepared.
+    navigation.m_installPending = false;
+    if (m_cursorProjectionEnabled) {
+      const auto current = cursorNavigationState();
+      prepared = current.m_sourceRevision == navigation.m_sourceRevision &&
+                 current.m_position == navigation.m_preparedPosition &&
+                 current.m_anchor == navigation.m_preparedAnchor &&
+                 current.m_mode == navigation.m_preparedMode;
+    }
+  }
+  if (m_cursorProjectionEnabled && !prepared) {
+    normalizeCursorInProjection();
+  }
 
   // Qt BUG: In the case of exist of invislbe blocks, when a user click at the
   // top of the document, the hit test of underlying document layout may treat
@@ -256,7 +271,9 @@ void VTextEdit::setInputMode(const QSharedPointer<AbstractInputMode> &p_mode) {
 QSharedPointer<AbstractInputMode> VTextEdit::getInputMode() const { return m_inputMode; }
 
 void VTextEdit::keyPressEvent(QKeyEvent *p_event) {
-  const auto before = cursorNavigationState();
+  auto before = m_cursorProjectionEnabled ? cursorNavigationState() : CursorNavigationState{};
+  QScopedValueRollback<CursorNavigationState *> navigationGuard(
+      m_cursorNavigationState, m_cursorProjectionEnabled ? &before : nullptr);
   if (!m_inputMode || !m_inputMode->handleKeyPress(p_event)) {
     if (m_inputMode) {
       m_inputMode->preKeyPressDefaultHandle(p_event);
@@ -268,7 +285,9 @@ void VTextEdit::keyPressEvent(QKeyEvent *p_event) {
       m_inputMode->postKeyPressDefaultHandle(p_event);
     }
   }
-  finishCursorNavigation(before);
+  if (m_cursorNavigationState) {
+    finishCursorNavigation(before);
+  }
 }
 
 void VTextEdit::keyReleaseEvent(QKeyEvent *p_event) {
@@ -360,7 +379,7 @@ void VTextEdit::handleDefaultKeyPress(QKeyEvent *p_event) {
   }
 #endif
 
-  if (!isHandled && !isReadOnly() && !p_event->text().isEmpty() &&
+  if (m_cursorProjectionEnabled && !isHandled && !isReadOnly() && !p_event->text().isEmpty() &&
       p_event->text().at(0).isPrint() &&
       (!(modifiers & (Qt::ControlModifier | Qt::MetaModifier)) ||
        ((modifiers & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier)) ==
@@ -392,9 +411,13 @@ bool VTextEdit::eventFilter(QObject *p_obj, QEvent *p_event) {
     }
 
     if (m_inputMode) {
-      const auto before = cursorNavigationState();
+      auto before = m_cursorProjectionEnabled ? cursorNavigationState() : CursorNavigationState{};
+      QScopedValueRollback<CursorNavigationState *> navigationGuard(
+          m_cursorNavigationState, m_cursorProjectionEnabled ? &before : nullptr);
       if (m_inputMode->stealShortcut(ke)) {
-        finishCursorNavigation(before);
+        if (m_cursorNavigationState) {
+          finishCursorNavigation(before);
+        }
         ke->accept();
         return true;
       }
@@ -505,16 +528,25 @@ QString VTextEdit::selectedText() const {
   return getSelectedText(selection);
 }
 
+void VTextEdit::setCursorProjectionEnabled(bool p_enabled) {
+  m_cursorProjectionEnabled = p_enabled;
+}
+
+bool VTextEdit::isCursorProjectionEnabled() const { return m_cursorProjectionEnabled; }
+
 bool VTextEdit::moveCursorInProjection(QTextCursor &p_cursor,
                                        QTextCursor::MoveOperation p_operation,
                                        QTextCursor::MoveMode p_mode, int p_count) {
+  if (!m_cursorProjectionEnabled) {
+    return false;
+  }
   bool handled = false;
   emit cursorMoveRequested(&p_cursor, p_operation, p_mode, p_count, &handled);
   return handled;
 }
 
 bool VTextEdit::replaceTextInProjection(QTextCursor &p_cursor, const QString &p_text) {
-  if (isReadOnly()) {
+  if (!m_cursorProjectionEnabled || isReadOnly()) {
     return false;
   }
   bool handled = false;
@@ -523,12 +555,21 @@ bool VTextEdit::replaceTextInProjection(QTextCursor &p_cursor, const QString &p_
 }
 
 VTextEdit::CursorNavigationState VTextEdit::cursorNavigationState() const {
-  return {m_lastDocumentRevisionWithChanges, textCursor().position(),
+  const auto cursor = textCursor();
+  return {m_lastDocumentRevisionWithChanges, cursor.position(), cursor.anchor(),
           m_inputMode ? m_inputMode->editorMode() : EditorMode::NormalModeInsert};
 }
 
 void VTextEdit::finishCursorNavigation(const CursorNavigationState &p_before) {
+  if (!m_cursorProjectionEnabled) {
+    return;
+  }
   const auto after = cursorNavigationState();
+  if (after.m_sourceRevision == p_before.m_sourceRevision &&
+      after.m_position == p_before.m_preparedPosition &&
+      after.m_anchor == p_before.m_preparedAnchor && after.m_mode == p_before.m_preparedMode) {
+    return;
+  }
   // Vi i enters Insert without moving. An ordinary Insert/Overwrite toggle
   // must instead preserve an explicit formatting exit.
   const bool enteredViInsert = after.m_mode == EditorMode::ViModeInsert &&
@@ -542,13 +583,22 @@ void VTextEdit::finishCursorNavigation(const CursorNavigationState &p_before) {
 }
 
 void VTextEdit::normalizeCursorInProjection(bool p_preferInside) {
-  if (m_normalizingCursor) {
+  if (!m_cursorProjectionEnabled || m_normalizingCursor) {
     return;
   }
   QScopedValueRollback<bool> guard(m_normalizingCursor, true);
   auto cursor = textCursor();
   const int position = cursor.position();
   const int anchor = cursor.anchor();
+  normalizeTemporaryCursorInProjection(cursor, p_preferInside);
+  if (cursor.position() != position || cursor.anchor() != anchor) {
+    setTextCursor(cursor);
+  }
+}
+
+void VTextEdit::normalizeTemporaryCursorInProjection(QTextCursor &p_cursor, bool p_preferInside) {
+  const int position = p_cursor.position();
+  const int anchor = p_cursor.anchor();
   bool onCharacter = false;
   if (m_inputMode) {
     switch (m_inputMode->editorMode()) {
@@ -563,19 +613,19 @@ void VTextEdit::normalizeCursorInProjection(bool p_preferInside) {
       break;
     }
   }
-  emit cursorNormalizationRequested(&cursor, onCharacter,
+  emit cursorNormalizationRequested(&p_cursor, onCharacter,
                                     p_preferInside && !onCharacter && position == anchor);
   if (position != anchor) {
-    const int normalizedPosition = cursor.position();
-    cursor.setPosition(anchor);
-    cursor.setPosition(normalizedPosition, QTextCursor::KeepAnchor);
-  }
-  if (cursor.position() != position || cursor.anchor() != anchor) {
-    setTextCursor(cursor);
+    const int normalizedPosition = p_cursor.position();
+    p_cursor.setPosition(anchor);
+    p_cursor.setPosition(normalizedPosition, QTextCursor::KeepAnchor);
   }
 }
 
 bool VTextEdit::handleKeyInProjection(QKeyEvent *p_event) {
+  if (!m_cursorProjectionEnabled) {
+    return false;
+  }
   auto cursor = textCursor();
   QTextCursor::MoveOperation operation = QTextCursor::NoMove;
   QTextCursor::MoveMode mode = QTextCursor::MoveAnchor;
@@ -600,7 +650,35 @@ bool VTextEdit::handleKeyInProjection(QKeyEvent *p_event) {
     if (!moveCursorInProjection(cursor, operation, mode, count)) {
       return false;
     }
+    auto *navigation = m_cursorNavigationState;
+    if (mode == QTextCursor::MoveAnchor && navigation && !m_normalizingCursor &&
+        m_cursorProjectionEnabled &&
+        m_lastDocumentRevisionWithChanges == navigation->m_sourceRevision) {
+      const auto editorMode =
+          m_inputMode ? m_inputMode->editorMode() : EditorMode::NormalModeInsert;
+      if (editorMode == EditorMode::NormalModeInsert ||
+          editorMode == EditorMode::NormalModeOverwrite || editorMode == EditorMode::ViModeInsert) {
+        {
+          QScopedValueRollback<bool> guard(m_normalizingCursor, true);
+          normalizeTemporaryCursorInProjection(cursor, true);
+        }
+        if (m_cursorProjectionEnabled &&
+            m_lastDocumentRevisionWithChanges == navigation->m_sourceRevision &&
+            editorMode ==
+                (m_inputMode ? m_inputMode->editorMode() : EditorMode::NormalModeInsert)) {
+          navigation->m_preparedPosition = cursor.position();
+          navigation->m_preparedAnchor = cursor.anchor();
+          navigation->m_preparedMode = editorMode;
+          navigation->m_installPending = true;
+        }
+      }
+    }
+    // Do not hold the normalizer guard across installation: nested changes need Preserve.
     setTextCursor(cursor);
+    if (navigation) {
+      // A no-op installation may not emit cursorPositionChanged.
+      navigation->m_installPending = false;
+    }
     return true;
   }
 

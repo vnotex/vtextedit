@@ -115,6 +115,10 @@ public:
 
   void removeSelectedText();
 
+  // Disabled by default; enabling does not immediately normalize the cursor.
+  void setCursorProjectionEnabled(bool p_enabled);
+  bool isCursorProjectionEnabled() const;
+
   // Optional synchronous source-coordinate projection. False leaves native handling in charge.
   bool moveCursorInProjection(QTextCursor &p_cursor, QTextCursor::MoveOperation p_operation,
                               QTextCursor::MoveMode p_mode = QTextCursor::MoveAnchor,
@@ -281,13 +285,19 @@ private:
   bool handleBracketRemoval();
 
   struct CursorNavigationState {
-    int m_sourceRevision;
-    int m_position;
-    EditorMode m_mode;
+    int m_sourceRevision = 0;
+    int m_position = 0;
+    int m_anchor = 0;
+    EditorMode m_mode = EditorMode::NormalModeInsert;
+    int m_preparedPosition = -1;
+    int m_preparedAnchor = -1;
+    EditorMode m_preparedMode = EditorMode::NormalModeInsert;
+    bool m_installPending = false;
   };
 
   CursorNavigationState cursorNavigationState() const;
   void finishCursorNavigation(const CursorNavigationState &p_before);
+  void normalizeTemporaryCursorInProjection(QTextCursor &p_cursor, bool p_preferInside);
 
   bool handleKeyInProjection(QKeyEvent *p_event);
 
@@ -344,7 +354,12 @@ private:
 
   bool m_selectionChangedByOverride = false;
 
+  bool m_cursorProjectionEnabled = false;
+
   bool m_normalizingCursor = false;
+
+  // Points only to the current key-event frame and is restored after nested events.
+  CursorNavigationState *m_cursorNavigationState = nullptr;
 
   // Leader key to skip input method.
   // Like key sequence `Ctrl+G, E`, `Ctrl+G` will trigger ShortcutOverride event

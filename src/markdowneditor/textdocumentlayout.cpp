@@ -115,6 +115,20 @@ void mergeSourceRanges(QVector<md::ElementRegion> &p_ranges) {
   p_ranges.resize(count);
 }
 
+// The inclusive end is needed for inside affinity. Ordinary span coverage
+// checks that same end exclusively, without a second interval lookup.
+PersistentConcealSpan persistentConcealClusterAt(const QVector<PersistentConcealSpan> &p_spans,
+                                                 int p_position) {
+  auto it = std::upper_bound(
+      p_spans.cbegin(), p_spans.cend(), p_position,
+      [](int p_pos, const PersistentConcealSpan &p_span) { return p_pos < p_span.m_start; });
+  if (it == p_spans.cbegin()) {
+    return {};
+  }
+  --it;
+  return p_position <= it->m_end ? *it : PersistentConcealSpan{};
+}
+
 struct ConcealSourceChange {
   int m_position;
   int m_removed;
@@ -506,6 +520,8 @@ void TextDocumentLayout::setConcealment(const ConcealSnapshot &p_snapshot) {
     requestIdleNotification();
     return;
   }
+  // Invalidate before replacing membership, including empty/deferred snapshots.
+  ++m_persistentConcealGeneration;
   m_hasDeferredConcealment = false;
   for (const auto &block : m_concealBlocks) {
     if (block.isValid()) {
@@ -608,16 +624,56 @@ void TextDocumentLayout::setConcealment(const ConcealSnapshot &p_snapshot) {
   flushConcealRelayout();
 }
 
-bool TextDocumentLayout::hasPersistentConceal(const QTextBlock &p_block) const {
-  if (p_block.isValid()) {
-    for (int index : BlockLayoutData::get(p_block)->m_concealGroups) {
-      const auto &group = m_concealGroups.at(index);
-      if (group.m_active && group.m_spec.m_keepHidden) {
-        return true;
+const QVector<PersistentConcealSpan> &
+TextDocumentLayout::persistentConcealSpans(const QTextBlock &p_block) const {
+  auto data = BlockLayoutData::get(p_block);
+  auto &spans = data->m_persistentConcealSpans;
+  if (data->m_persistentConcealGeneration == m_persistentConcealGeneration) {
+    return spans;
+  }
+  // Keep the storage across source edits; cursor-only queries never rebuild it.
+  spans.resize(0);
+  for (int index : data->m_concealGroups) {
+    const auto &group = m_concealGroups.at(index);
+    const auto &spec = group.m_spec;
+    if (!group.m_active || !spec.m_keepHidden) {
+      continue;
+    }
+    const int lastRun = spec.m_firstRun + spec.m_runCount - 1;
+    for (int i = spec.m_firstRun; i <= lastRun; ++i) {
+      const auto &run = m_concealRuns.at(i);
+      if (run.m_block != p_block) {
+        continue;
       }
+      const bool closing = i == lastRun && spec.m_runCount >= 2 &&
+                           run.m_sourceStart > spec.m_start && run.m_sourceEnd == spec.m_end;
+      spans.append({run.m_range.m_hiddenStart, run.m_range.m_hiddenEnd,
+                    closing ? run.m_range.m_hiddenStart : -1});
     }
   }
-  return false;
+  std::sort(spans.begin(), spans.end(),
+            [](const auto &p_a, const auto &p_b) { return p_a.m_start < p_b.m_start; });
+  int count = 0;
+  for (const auto &span : spans) {
+    if (count && span.m_start <= spans.at(count - 1).m_end) {
+      auto &merged = spans[count - 1];
+      merged.m_end = qMax(merged.m_end, span.m_end);
+      if (span.m_firstClosing >= 0) {
+        merged.m_firstClosing = merged.m_firstClosing < 0
+                                    ? span.m_firstClosing
+                                    : qMin(merged.m_firstClosing, span.m_firstClosing);
+      }
+    } else {
+      spans[count++] = span;
+    }
+  }
+  spans.resize(count);
+  data->m_persistentConcealGeneration = m_persistentConcealGeneration;
+  return spans;
+}
+
+bool TextDocumentLayout::hasPersistentConceal(const QTextBlock &p_block) const {
+  return p_block.isValid() && !persistentConcealSpans(p_block).isEmpty();
 }
 
 bool TextDocumentLayout::persistentConcealSpanAt(int p_position, int &p_start, int &p_end) const {
@@ -625,104 +681,50 @@ bool TextDocumentLayout::persistentConcealSpanAt(int p_position, int &p_start, i
   if (!block.isValid()) {
     return false;
   }
-  p_start = p_end = p_position;
-  bool changed;
-  do {
-    changed = false;
-    for (int index : BlockLayoutData::get(block)->m_concealGroups) {
-      const auto &group = m_concealGroups.at(index);
-      if (!group.m_active || !group.m_spec.m_keepHidden) {
-        continue;
-      }
-      for (int i = group.m_spec.m_firstRun; i < group.m_spec.m_firstRun + group.m_spec.m_runCount;
-           ++i) {
-        const auto &run = m_concealRuns.at(i);
-        if (run.m_block == block && run.m_sourceStart <= p_end && run.m_sourceEnd > p_start) {
-          const int start = qMin(p_start, run.m_sourceStart);
-          const int end = qMax(p_end, run.m_sourceEnd);
-          changed |= start != p_start || end != p_end;
-          p_start = start;
-          p_end = end;
-        }
-      }
-    }
-  } while (changed);
-  return p_end > p_position;
-}
-
-int TextDocumentLayout::persistentConcealClosingBoundary(const QTextBlock &p_block,
-                                                         int p_position) const {
-  const auto &groups = BlockLayoutData::get(p_block)->m_concealGroups;
-  int start = p_position, end = p_position;
-  bool changed;
-  do {
-    changed = false;
-    for (int index : groups) {
-      const auto &group = m_concealGroups.at(index);
-      if (!group.m_active || !group.m_spec.m_keepHidden) {
-        continue;
-      }
-      for (int i = group.m_spec.m_firstRun; i < group.m_spec.m_firstRun + group.m_spec.m_runCount;
-           ++i) {
-        const auto &run = m_concealRuns.at(i);
-        // Include both ends: later nested closers and adjacent openers belong
-        // to the same visible gap, but only its first closer is an inside caret.
-        if (run.m_block == p_block && run.m_sourceStart <= end && run.m_sourceEnd >= start) {
-          const int nextStart = qMin(start, run.m_sourceStart);
-          const int nextEnd = qMax(end, run.m_sourceEnd);
-          changed |= start != nextStart || end != nextEnd;
-          start = nextStart;
-          end = nextEnd;
-        }
-      }
-    }
-  } while (changed);
-  if (start == end) {
-    return -1;
+  const int blockPosition = block.position();
+  const auto span =
+      persistentConcealClusterAt(persistentConcealSpans(block), p_position - blockPosition);
+  if (span.m_end <= p_position - blockPosition) {
+    return false;
   }
-  int boundary = -1;
-  for (int index : groups) {
-    const auto &group = m_concealGroups.at(index);
-    if (!group.m_active || !group.m_spec.m_keepHidden || group.m_spec.m_runCount < 2) {
-      continue;
-    }
-    const auto &closing =
-        m_concealRuns.at(group.m_spec.m_firstRun + group.m_spec.m_runCount - 1);
-    if (closing.m_block == p_block && closing.m_sourceStart > group.m_spec.m_start &&
-        closing.m_sourceEnd == group.m_spec.m_end && closing.m_sourceStart >= start &&
-        closing.m_sourceEnd <= end) {
-      boundary = boundary < 0 ? closing.m_sourceStart : qMin(boundary, closing.m_sourceStart);
-    }
-  }
-  return boundary;
+  // The merged start is only used for dry backward probing, never installed.
+  p_start = blockPosition + span.m_start;
+  p_end = blockPosition + span.m_end;
+  return true;
 }
 
 int TextDocumentLayout::normalizePersistentConcealPosition(int p_position, bool p_onCharacter,
                                                            ConcealCursorAffinity p_affinity) const {
   const auto block = document()->findBlock(p_position);
-  if (!hasPersistentConceal(block)) {
+  if (!block.isValid()) {
     return p_position;
+  }
+  const int blockPosition = block.position();
+  PersistentConcealSpan span;
+  {
+    const auto &spans = persistentConcealSpans(block);
+    if (spans.isEmpty()) {
+      return p_position;
+    }
+    // Copy one cluster; no cache pointers survive cursor writes or callbacks.
+    span = persistentConcealClusterAt(spans, p_position - blockPosition);
   }
   const auto *layout = block.layout();
   const bool preferInside = !p_onCharacter && p_affinity == ConcealCursorAffinity::PreferInside &&
                             layout->preeditAreaText().isEmpty();
-  if (preferInside) {
-    // Mouse hits and completed insertion-caret navigation share the same
-    // connected-cluster policy, including both ends and interior positions.
-    const int boundary = persistentConcealClosingBoundary(block, p_position);
-    if (boundary >= 0) {
-      return boundary;
-    }
+  // Both ends and interior positions share the first closer for inside affinity.
+  if (preferInside && span.m_firstClosing >= 0) {
+    return blockPosition + span.m_firstClosing;
   }
-  const int end = block.position() + block.length() - 1;
-  int hiddenStart, hiddenEnd;
-  if (persistentConcealSpanAt(p_position, hiddenStart, hiddenEnd)) {
+  const int end = blockPosition + block.length() - 1;
+  if (span.m_end > p_position - blockPosition) {
     if (!p_onCharacter && !preferInside && p_affinity != ConcealCursorAffinity::Skip &&
-        persistentConcealClosingBoundary(block, p_position) == p_position) {
+        span.m_firstClosing == p_position - blockPosition) {
       return p_position;
     }
-    p_position = hiddenEnd;
+    p_position = blockPosition + span.m_end;
   }
+  int hiddenStart, hiddenEnd;
   // QTextLayout's boundaries include preedit; the cursor and all returned
   // positions remain in the document's UTF-16 source coordinates.
   if (p_position < end && !layout->isValidCursorPosition(
@@ -979,6 +981,11 @@ bool TextDocumentLayout::concealGroupRevealed(const LiveConcealGroup &p_group, i
 }
 
 void TextDocumentLayout::queueConcealGroup(const LiveConcealGroup &p_group) {
+  // Source rebinds and active/valid transitions arrive here before consumers.
+  // Revealable-only caret flips do not change the persistent cursor intervals.
+  if (p_group.m_spec.m_keepHidden) {
+    ++m_persistentConcealGeneration;
+  }
   for (int i = p_group.m_firstDependency; i < p_group.m_firstDependency + p_group.m_dependencyCount;
        ++i) {
     queueConcealRelayout(m_concealDependencies.at(i).m_block);
@@ -2489,9 +2496,10 @@ int TextDocumentLayout::hitTest(const QPointF &p_point, Qt::HitTestAccuracy p_ac
           layout->lineForTextPosition(start).lineNumber() != targetLine) {
         continue;
       }
-      const int closing = persistentConcealClosingBoundary(block, block.position() + sourceColumn);
+      const int closing =
+          persistentConcealClusterAt(persistentConcealSpans(block), sourceColumn).m_firstClosing;
       if (closing >= 0) {
-        const int boundary = concealLayoutPosition(layout, closing - block.position());
+        const int boundary = concealLayoutPosition(layout, closing);
         if (layout->lineForTextPosition(boundary).lineNumber() == targetLine) {
           return block.position() + boundary;
         }

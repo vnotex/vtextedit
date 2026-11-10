@@ -210,6 +210,9 @@ KateViI::Cursor TextEditInputMode::cursorPosition() const {
 
 KateViI::Cursor TextEditInputMode::moveCharacters(const KateViI::Cursor &p_cursor,
                                                   int p_count) const {
+  if (!m_textEdit->isCursorProjectionEnabled()) {
+    return KateViI::KateViEditorInterface::moveCharacters(p_cursor, p_count);
+  }
   const auto block = document()->findBlockByNumber(p_cursor.line());
   if (!p_cursor.isValid() || !block.isValid()) {
     return p_cursor;

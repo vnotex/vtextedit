@@ -12,6 +12,10 @@
 - Add `bool p_preferInside = false` to `VTextEdit::normalizeCursorInProjection()` and a third
   boolean argument to `cursorNormalizationRequested`. Update connected handlers and rebuild
   consumers; ordinary normalization preserves the existing source-side cursor position.
+- Cursor projection hooks on standalone `VTextEdit` now default to disabled. Consumers using
+  those hooks must call `setCursorProjectionEnabled(true)` and rebuild;
+  `isCursorProjectionEnabled()` reports the flag. `VMarkdownEditor` derives it from persistent
+  syntax rules before activating a configuration, independently of parser publication.
 
 ### Features
 
@@ -39,6 +43,11 @@
 - Apply that same inside preference after insertion-mode keyboard navigation and Vi `a`/`i`/`A`/`I`.
   Explicit `Ctrl+B` marker exits remain outside through typing and reparsing. Reuse block-local
   concealment metadata without allocating another projection or scanning unrelated blocks.
+- Skip cursor amendment for Passive, URL-only, reveal-only and empty rule sets. Index persistent
+  marker clusters per block for binary cursor lookup and resolve handled arrow destinations
+  before installation, avoiding transient outside notifications and repeated normalization.
+  Index storage is reused across edits and invalidated by snapshot/ownership changes; URL
+  reveal, selection semantics and reentrant source/cursor changes retain their behavior.
 
 ## 11.0.0 (unreleased)
 

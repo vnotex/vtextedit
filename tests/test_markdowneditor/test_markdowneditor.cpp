@@ -1699,6 +1699,214 @@ void TestMarkdownEditor::testPersistentConcealNavigation() {
   QVERIFY(!f.editor()->document()->isUndoAvailable());
 }
 
+void TestMarkdownEditor::testPersistentConcealRuleSwitch_data() {
+  QTest::addColumn<QString>("policy");
+  QTest::newRow("passive") << QStringLiteral("passive");
+  QTest::newRow("reveal-only") << QStringLiteral("reveal-only");
+  QTest::newRow("empty") << QStringLiteral("empty");
+}
+
+void TestMarkdownEditor::testPersistentConcealRuleSwitch() {
+  QFETCH(QString, policy);
+  const QString url = QStringLiteral("abcdefghijklmnopqrstuvwxyz");
+  const QString source = QStringLiteral("**bold**a\n\n[x](") + url + QLatin1Char(')');
+  auto config = makeConcealConfig();
+  config->m_concealRules.setPreset(MarkdownConcealPreset::Aggressive);
+  Fixture f(source, 0, 5, config);
+  QVERIFY(!renderConcealEditor(f).isNull());
+  waitForConcealPublication(f);
+  QTest::keyClick(f.edit(), Qt::Key_Right, Qt::NoModifier, 0);
+  QCOMPARE(f.edit()->textCursor().position(), 6);
+
+  // Model a pending native caret inside a collapsed run. Reconfiguration must
+  // disable amendment before input-mode activation can normalize the old AST.
+  f.edit()->setCursorProjectionEnabled(false);
+  setConcealCursor(f, 7);
+  f.edit()->setCursorProjectionEnabled(true);
+  auto changed = makeConcealConfig();
+  if (policy == QLatin1String("passive")) {
+    changed->m_concealRules.setPreset(MarkdownConcealPreset::Passive);
+  } else if (policy == QLatin1String("reveal-only")) {
+    changed->m_concealRules.set(MarkdownConcealElement::StrongMarkers,
+                                MarkdownConcealHideSyntax{false});
+    changed->m_concealRules.set(MarkdownConcealElement::LinkUrl);
+  }
+  auto *doc = f.editor()->document();
+  doc->clearUndoRedoStacks();
+  doc->setModified(false);
+  f.editor()->setConfig(changed);
+  QCOMPARE(f.edit()->textCursor().position(), 7);
+  QCOMPARE(f.text(), source);
+  QVERIFY(!doc->isModified());
+  QVERIFY(!doc->isUndoAvailable());
+  QTest::keyClick(f.edit(), Qt::Key_Right, Qt::NoModifier, 0);
+  QCOMPARE(f.edit()->textCursor().position(), 8);
+  QTest::keyClick(f.edit(), Qt::Key_Left, Qt::NoModifier, 0);
+  QCOMPARE(f.edit()->textCursor().position(), 7);
+
+  if (policy != QLatin1String("empty")) {
+    waitForConcealPublication(f);
+    const int start = source.indexOf(url);
+    const qreal shortened = concealConfigRangeWidth(f, start, start + url.size());
+    setConcealCursor(f, start + 7);
+    QCOMPARE(f.edit()->textCursor().position(), start + 7);
+    QVERIFY(concealConfigRangeWidth(f, start, start + url.size()) > shortened);
+  }
+
+  // A custom persistent rule, without a preset, must re-enable amendment even
+  // while switching the parser profile temporarily clears published metadata.
+  changed->m_concealRules.clear();
+  changed->m_concealRules.set(MarkdownConcealElement::StrongMarkers,
+                              MarkdownConcealHideSyntax{true});
+  f.editor()->setConfig(changed);
+  waitForConcealPublication(f);
+  setConcealCursor(f, 5);
+  QTest::keyClick(f.edit(), Qt::Key_Right, Qt::NoModifier, 0);
+  QCOMPARE(f.edit()->textCursor().position(), 6);
+  QTest::keyClick(f.edit(), Qt::Key_Right, Qt::NoModifier, 0);
+  QCOMPARE(f.edit()->textCursor().position(), 9);
+  QCOMPARE(f.text(), source);
+  QVERIFY(!doc->isModified());
+  QVERIFY(!doc->isUndoAvailable());
+}
+
+void TestMarkdownEditor::testPersistentConcealCursorPublication() {
+  auto config = makeConcealConfig();
+  config->m_concealRules.setPreset(MarkdownConcealPreset::Aggressive);
+  Fixture f(QStringLiteral("**bold**a"), 0, 5, config);
+  QVERIFY(!renderConcealEditor(f).isNull());
+  waitForConcealPublication(f);
+  QVector<int> positions;
+  QObject observer;
+  QObject::connect(f.edit(), &QTextEdit::cursorPositionChanged, &observer,
+                   [&]() { positions.append(f.edit()->textCursor().position()); });
+  QTest::keyClick(f.edit(), Qt::Key_Right, Qt::NoModifier, 0);
+  QCOMPARE(positions, QVector<int>{6});
+  positions.clear();
+  QTest::keyClick(f.edit(), Qt::Key_Right, Qt::NoModifier, 0);
+  QCOMPARE(positions, QVector<int>{9});
+  positions.clear();
+  QTest::keyClick(f.edit(), Qt::Key_Left, Qt::NoModifier, 0);
+  QCOMPARE(positions, QVector<int>{6});
+  QVERIFY(!f.editor()->document()->isUndoAvailable());
+  QTest::keyClicks(f.edit(), QStringLiteral("X"), Qt::NoModifier, 0);
+  QCOMPARE(f.text(), QStringLiteral("**boldX**a"));
+}
+
+void TestMarkdownEditor::testPersistentConcealCursorReentrancy_data() {
+  QTest::addColumn<QString>("action");
+  QTest::newRow("cursor") << QStringLiteral("cursor");
+  QTest::newRow("source") << QStringLiteral("source");
+  QTest::newRow("nested-key") << QStringLiteral("nested-key");
+}
+
+void TestMarkdownEditor::testPersistentConcealCursorReentrancy() {
+  QFETCH(QString, action);
+  auto config = makeConcealConfig();
+  config->m_concealRules.setPreset(MarkdownConcealPreset::Aggressive);
+  Fixture f(QStringLiteral("**bold**a"), 0, 5, config);
+  QVERIFY(!renderConcealEditor(f).isNull());
+  waitForConcealPublication(f);
+  bool entered = false;
+  int nestedPosition = -1;
+  QObject observer;
+  QObject::connect(f.edit(), &QTextEdit::cursorPositionChanged, &observer, [&]() {
+    if (entered || f.edit()->textCursor().position() != 6) {
+      return;
+    }
+    entered = true;
+    if (action == QLatin1String("nested-key")) {
+      QTest::keyClick(f.edit(), Qt::Key_Right, Qt::NoModifier, 0);
+    } else {
+      if (action == QLatin1String("source")) {
+        auto cursor = f.edit()->textCursor();
+        cursor.insertText(QStringLiteral("X"));
+        f.edit()->setTextCursor(cursor);
+      }
+      setConcealCursor(f, action == QLatin1String("source") ? 8 : 7);
+    }
+    nestedPosition = f.edit()->textCursor().position();
+  });
+  QTest::keyClick(f.edit(), Qt::Key_Right, Qt::NoModifier, 0);
+  QVERIFY(entered);
+  QCOMPARE(nestedPosition, action == QLatin1String("cursor") ? 8 : 9);
+  QCOMPARE(f.edit()->textCursor().position(), action == QLatin1String("cursor") ? 6 : 9);
+  if (action == QLatin1String("source")) {
+    QTest::keyClicks(f.edit(), QStringLiteral("Y"), Qt::NoModifier, 0);
+    QCOMPARE(f.text(), QStringLiteral("**boldX**Ya"));
+  } else {
+    QCOMPARE(f.text(), QStringLiteral("**bold**a"));
+    QVERIFY(!f.editor()->document()->isUndoAvailable());
+  }
+}
+
+void TestMarkdownEditor::testPersistentConcealIndexEdits_data() {
+  QTest::addColumn<QString>("action");
+  for (const char *action :
+       {"body", "prefix-in-block", "prefix-block", "split", "merge", "marker-replaced"}) {
+    QTest::newRow(action) << QString::fromLatin1(action);
+  }
+}
+
+void TestMarkdownEditor::testPersistentConcealIndexEdits() {
+  QFETCH(QString, action);
+  auto config = makeConcealConfig();
+  config->m_concealRules.setPreset(MarkdownConcealPreset::Aggressive);
+  Fixture f(QStringLiteral("prefix\n**bold**a\nsuffix"), 0, 0, config);
+  QVERIFY(!renderConcealEditor(f).isNull());
+  waitForConcealPublication(f);
+  const int start = f.text().indexOf(QStringLiteral("**"));
+  setConcealCursor(f, start + 5);
+  QTest::keyClick(f.edit(), Qt::Key_Right, Qt::NoModifier, 0);
+  QCOMPARE(f.edit()->textCursor().position(), start + 6);
+  // Source indexes must survive a geometry-only reset with the same generation.
+  f.editor()->resize(700, 360);
+  QVERIFY(!renderConcealEditor(f).isNull());
+  setConcealCursor(f, start + 5);
+  QTest::keyClick(f.edit(), Qt::Key_Right, Qt::NoModifier, 0);
+  QCOMPARE(f.edit()->textCursor().position(), start + 6);
+
+  QTextCursor edit(f.editor()->document());
+  if (action == QLatin1String("body")) {
+    edit.setPosition(start + 3);
+    edit.insertText(QStringLiteral("X"));
+  } else if (action == QLatin1String("prefix-in-block")) {
+    edit.setPosition(start);
+    edit.insertText(QStringLiteral("q "));
+  } else if (action == QLatin1String("prefix-block")) {
+    edit.setPosition(0);
+    edit.insertText(QStringLiteral("new\n"));
+  } else if (action == QLatin1String("split")) {
+    edit.setPosition(start + 4);
+    edit.insertText(QStringLiteral("\n"));
+  } else if (action == QLatin1String("merge")) {
+    edit.setPosition(start - 1);
+    edit.deleteChar();
+  } else {
+    edit.setPosition(start);
+    edit.setPosition(start + 2, QTextCursor::KeepAnchor);
+    edit.insertText(QStringLiteral("**"));
+  }
+  const QString changed = f.text();
+  const int closing = changed.lastIndexOf(QStringLiteral("**"));
+  const int undoSteps = f.editor()->document()->availableUndoSteps();
+  setConcealCursor(f, closing - 1);
+  QTest::keyClick(f.edit(), Qt::Key_Right, Qt::NoModifier, 0);
+  QCOMPARE(f.edit()->textCursor().position(), closing);
+  QTest::keyClick(f.edit(), Qt::Key_Right, Qt::NoModifier, 0);
+  QCOMPARE(f.edit()->textCursor().position(),
+           closing + (action == QLatin1String("marker-replaced") ? 1 : 3));
+  QCOMPARE(f.text(), changed);
+  QCOMPARE(f.editor()->document()->availableUndoSteps(), undoSteps);
+  waitForConcealPublication(f);
+  setConcealCursor(f, closing - 1);
+  QTest::keyClick(f.edit(), Qt::Key_Right, Qt::NoModifier, 0);
+  QCOMPARE(f.edit()->textCursor().position(), closing);
+  QTest::keyClick(f.edit(), Qt::Key_Right, Qt::NoModifier, 0);
+  QCOMPARE(f.edit()->textCursor().position(), closing + 3);
+  QCOMPARE(f.text(), changed);
+}
+
 void TestMarkdownEditor::testPersistentConcealKeyboardBoundary_data() {
   QTest::addColumn<QString>("source");
   QTest::addColumn<int>("position");

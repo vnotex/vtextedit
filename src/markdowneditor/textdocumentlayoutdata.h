@@ -51,6 +51,13 @@ struct ConcealedRange {
   int m_group = -1;
 };
 
+// A connected persistent marker cluster in block-relative source coordinates.
+struct PersistentConcealSpan {
+  int m_start = 0;
+  int m_end = 0;
+  int m_firstClosing = -1;
+};
+
 struct ConcealPaintData {
   int m_group = -1;
   int m_hiddenStart = 0;
@@ -99,6 +106,9 @@ struct BlockLayoutData {
   // Indices into the layout's flat group array, including visible interior
   // dependency blocks. Survive geometry resets, never a new snapshot.
   QVector<int> m_concealGroups;
+  // Source-derived cursor intervals survive geometry resets; rebuilt lazily.
+  QVector<PersistentConcealSpan> m_persistentConcealSpans;
+  quint64 m_persistentConcealGeneration = 0;
   QVector<ConcealPaintData> m_concealMarkers;
   // Retain shaped replacements only across the atomic preflight/layout pass.
   QVector<ConcealPaintData> m_concealPreflightMarkers;

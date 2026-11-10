@@ -123,6 +123,18 @@ public:
     return false;
   }
 
+  bool hasPersistentSyntaxRules() const {
+    for (const auto &rule : m_rules) {
+      if (rule) {
+        const auto *syntax = std::get_if<MarkdownConcealHideSyntax>(&*rule);
+        if (syntax && syntax->m_keepHidden) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
 private:
   std::array<std::optional<MarkdownConcealRule>, static_cast<size_t>(MarkdownConcealElement::Count)>
       m_rules;

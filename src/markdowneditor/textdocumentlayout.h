@@ -523,9 +523,9 @@ private:
     bool m_preeditRevealed = false;
   };
 
+  const QVector<PersistentConcealSpan> &persistentConcealSpans(const QTextBlock &p_block) const;
   bool hasPersistentConceal(const QTextBlock &p_block) const;
   bool persistentConcealSpanAt(int p_position, int &p_start, int &p_end) const;
-  int persistentConcealClosingBoundary(const QTextBlock &p_block, int p_position) const;
   int concealCursorPosition() const;
   void updateConcealSource(int p_position, int p_removed, int p_added);
   bool concealGroupRevealed(const LiveConcealGroup &p_group, int p_cursor) const;
@@ -566,6 +566,7 @@ private:
   };
   ConcealRemovalHint m_concealRemovalHint;
   int m_concealSourceRevision = -1;
+  quint64 m_persistentConcealGeneration = 1;
   QVector<LiveConcealGroup> m_concealGroups;
   QVector<LiveConcealRun> m_concealRuns;
   QVector<ConcealDependency> m_concealDependencies;

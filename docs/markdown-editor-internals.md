@@ -462,18 +462,39 @@ before stepping; only the final insertion caret prefers inside. Starting a Shift
 canonicalizes its anchor before taking the visible step, so Shift+Right from 6 selects only `a`,
 not the hidden `**`. Selection endpoints never receive the insertion preference.
 
-`VTextEdit` completes navigation after native/input-mode key handling (and after a successful
-shortcut steal). The stack-only checkpoint compares the text-bearing revision, cursor position
-and editor mode; typing, deletion, undo and no-op shortcut replays do not request inside affinity.
-Thus Vi `i` is handled even without a position change. Ordinary cursor/source/publication
-normalization preserves the chosen side. Both mouse and keyboard reuse
-`persistentConcealClosingBoundary()` and existing block-local memberships: no allocated text
-projection, document-wide search, parse or relayout is requested by the boundary resolver.
-Blocks without persistent concealment return immediately; character-mode completion avoids
-another lookup. IME preedit excludes keyboard inside preference, and mouse composition
-endpoints retain native hit coordinates rather than jumping into an adjacent group.
-Coverage: `testPersistentConcealKeyboardBoundary`, `testPersistentConcealShortcutExit` and the
-existing navigation, nested, selection, deletion and IME cases.
+`MarkdownConcealRules::hasPersistentSyntaxRules()` derives cursor amendment from configured
+`HideSyntax.m_keepHidden` rules, not from a preset name or a nonempty parse. `VMarkdownEditor`
+sets `VTextEdit::setCursorProjectionEnabled()` before configuration can reactivate an input mode.
+Passive, URL-only, reveal-on-entry-only and empty rules bypass navigation checkpoints and
+move/normalization/replacement projection requests; ordinary URL reveal and hit testing remain
+active. Standalone `VTextEdit` consumers must explicitly enable these optional hooks. Enabling
+the flag alone does not move the cursor, and Markdown configuration owns its subsequent value.
+
+For handled insertion-mode Left/Right moves, `VTextEdit` resolves the temporary destination before
+installing it, so observers see the final inside caret rather than an intermediate outside caret.
+A stack-only expected-install token skips only its first matching position-change normalization;
+it is consumed before other receivers run. Nested cursor/source changes still receive Preserve.
+Key completion skips repeated work only if source revision, position, anchor and mode still match.
+Native word/vertical/line-end movement and Vi insertion commands retain the completion fallback,
+including `i` without a position change. Typed edits and explicit formatting exits retain their
+chosen source side; ordinary Insert/Overwrite toggles do not request inside affinity.
+
+Mouse and keyboard share `persistentConcealClusterAt()`: a binary lookup over sorted, merged,
+block-relative persistent spans. Each cluster stores its exclusive end and earliest closing
+boundary, with that end included only for inside affinity. One lookup serves Skip, Preserve and
+PreferInside; no text projection, document-wide search, parse or relayout is requested. Empty
+indexes return immediately. Index vectors and generation stamps survive geometry resets. Accepted
+snapshots and persistent ownership/activity changes invalidate the generation; the next query
+rebuilds only that block from live groups and reuses capacity. Pure preceding-block shifts preserve
+relative coordinates, and revealable URL/caret flips do not invalidate the index. The tradeoff is
+retained per-block index storage and a possible rebuild on first use after invalidation; steady-state
+lookup does not allocate or scan the block's groups.
+
+IME preedit excludes keyboard inside preference, and mouse composition endpoints retain native
+hit coordinates rather than jumping into an adjacent group. Coverage includes
+`testPersistentConcealRuleSwitch`, `testPersistentConcealCursorPublication`,
+`testPersistentConcealCursorReentrancy`, `testPersistentConcealIndexEdits`, the keyboard/shortcut
+cases and the existing nested, selection, deletion and IME cases.
 
 A movement's landing range is not its deletion range. The shared removal planner subtracts
 persistent marker spans, includes wrappers whose last visible content is removed, and applies
