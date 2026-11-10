@@ -1953,10 +1953,12 @@ public:
             });
     connect(
         m_edit, &VTextEdit::cursorNormalizationRequested, this,
-        [this](QTextCursor *p_cursor, bool p_onCharacter) {
+        [this](QTextCursor *p_cursor, bool p_onCharacter, bool p_preferInside) {
           if (!m_applying) {
-            const int position =
-                m_layout->normalizePersistentConcealPosition(p_cursor->position(), p_onCharacter);
+            using Affinity = TextDocumentLayout::ConcealCursorAffinity;
+            const int position = m_layout->normalizePersistentConcealPosition(
+                p_cursor->position(), p_onCharacter,
+                p_preferInside ? Affinity::PreferInside : Affinity::Preserve);
             if (position != p_cursor->position()) {
               p_cursor->setPosition(position, p_cursor->hasSelection() ? QTextCursor::KeepAnchor
                                                                        : QTextCursor::MoveAnchor);
@@ -2035,7 +2037,8 @@ private:
     const bool restoreOutside =
         p_text.isEmpty() && !original.hasSelection() &&
         original.position() == p_cursor.selectionEnd() &&
-        m_layout->normalizePersistentConcealPosition(original.position(), false, false) ==
+        m_layout->normalizePersistentConcealPosition(
+            original.position(), false, TextDocumentLayout::ConcealCursorAffinity::Skip) ==
             original.position();
     QTextCursor caret(p_cursor);
     caret.setPosition(p_cursor.selectionStart());

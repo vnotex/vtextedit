@@ -256,19 +256,19 @@ void VTextEdit::setInputMode(const QSharedPointer<AbstractInputMode> &p_mode) {
 QSharedPointer<AbstractInputMode> VTextEdit::getInputMode() const { return m_inputMode; }
 
 void VTextEdit::keyPressEvent(QKeyEvent *p_event) {
-  if (m_inputMode && m_inputMode->handleKeyPress(p_event)) {
-    return;
-  }
+  const auto before = cursorNavigationState();
+  if (!m_inputMode || !m_inputMode->handleKeyPress(p_event)) {
+    if (m_inputMode) {
+      m_inputMode->preKeyPressDefaultHandle(p_event);
+    }
 
-  if (m_inputMode) {
-    m_inputMode->preKeyPressDefaultHandle(p_event);
-  }
+    handleDefaultKeyPress(p_event);
 
-  handleDefaultKeyPress(p_event);
-
-  if (m_inputMode) {
-    m_inputMode->postKeyPressDefaultHandle(p_event);
+    if (m_inputMode) {
+      m_inputMode->postKeyPressDefaultHandle(p_event);
+    }
   }
+  finishCursorNavigation(before);
 }
 
 void VTextEdit::keyReleaseEvent(QKeyEvent *p_event) {
@@ -391,9 +391,13 @@ bool VTextEdit::eventFilter(QObject *p_obj, QEvent *p_event) {
       break;
     }
 
-    if (m_inputMode && m_inputMode->stealShortcut(ke)) {
-      ke->accept();
-      return true;
+    if (m_inputMode) {
+      const auto before = cursorNavigationState();
+      if (m_inputMode->stealShortcut(ke)) {
+        finishCursorNavigation(before);
+        ke->accept();
+        return true;
+      }
     }
 
     break;
@@ -518,7 +522,26 @@ bool VTextEdit::replaceTextInProjection(QTextCursor &p_cursor, const QString &p_
   return handled;
 }
 
-void VTextEdit::normalizeCursorInProjection() {
+VTextEdit::CursorNavigationState VTextEdit::cursorNavigationState() const {
+  return {m_lastDocumentRevisionWithChanges, textCursor().position(),
+          m_inputMode ? m_inputMode->editorMode() : EditorMode::NormalModeInsert};
+}
+
+void VTextEdit::finishCursorNavigation(const CursorNavigationState &p_before) {
+  const auto after = cursorNavigationState();
+  // Vi i enters Insert without moving. An ordinary Insert/Overwrite toggle
+  // must instead preserve an explicit formatting exit.
+  const bool enteredViInsert = after.m_mode == EditorMode::ViModeInsert &&
+                               p_before.m_mode != EditorMode::ViModeInsert;
+  if (after.m_sourceRevision == p_before.m_sourceRevision &&
+      (after.m_position != p_before.m_position || enteredViInsert) &&
+      (after.m_mode == EditorMode::NormalModeInsert ||
+       after.m_mode == EditorMode::NormalModeOverwrite || after.m_mode == EditorMode::ViModeInsert)) {
+    normalizeCursorInProjection(true);
+  }
+}
+
+void VTextEdit::normalizeCursorInProjection(bool p_preferInside) {
   if (m_normalizingCursor) {
     return;
   }
@@ -540,7 +563,8 @@ void VTextEdit::normalizeCursorInProjection() {
       break;
     }
   }
-  emit cursorNormalizationRequested(&cursor, onCharacter);
+  emit cursorNormalizationRequested(&cursor, onCharacter,
+                                    p_preferInside && !onCharacter && position == anchor);
   if (position != anchor) {
     const int normalizedPosition = cursor.position();
     cursor.setPosition(anchor);

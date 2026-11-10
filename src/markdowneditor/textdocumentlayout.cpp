@@ -677,6 +677,9 @@ int TextDocumentLayout::persistentConcealClosingBoundary(const QTextBlock &p_blo
       }
     }
   } while (changed);
+  if (start == end) {
+    return -1;
+  }
   int boundary = -1;
   for (int index : groups) {
     const auto &group = m_concealGroups.at(index);
@@ -695,15 +698,26 @@ int TextDocumentLayout::persistentConcealClosingBoundary(const QTextBlock &p_blo
 }
 
 int TextDocumentLayout::normalizePersistentConcealPosition(int p_position, bool p_onCharacter,
-                                                           bool p_preserveClosingBoundary) const {
+                                                           ConcealCursorAffinity p_affinity) const {
   const auto block = document()->findBlock(p_position);
   if (!hasPersistentConceal(block)) {
     return p_position;
   }
+  const auto *layout = block.layout();
+  const bool preferInside = !p_onCharacter && p_affinity == ConcealCursorAffinity::PreferInside &&
+                            layout->preeditAreaText().isEmpty();
+  if (preferInside) {
+    // Mouse hits and completed insertion-caret navigation share the same
+    // connected-cluster policy, including both ends and interior positions.
+    const int boundary = persistentConcealClosingBoundary(block, p_position);
+    if (boundary >= 0) {
+      return boundary;
+    }
+  }
   const int end = block.position() + block.length() - 1;
   int hiddenStart, hiddenEnd;
   if (persistentConcealSpanAt(p_position, hiddenStart, hiddenEnd)) {
-    if (!p_onCharacter && p_preserveClosingBoundary &&
+    if (!p_onCharacter && !preferInside && p_affinity != ConcealCursorAffinity::Skip &&
         persistentConcealClosingBoundary(block, p_position) == p_position) {
       return p_position;
     }
@@ -711,7 +725,6 @@ int TextDocumentLayout::normalizePersistentConcealPosition(int p_position, bool 
   }
   // QTextLayout's boundaries include preedit; the cursor and all returned
   // positions remain in the document's UTF-16 source coordinates.
-  const auto *layout = block.layout();
   if (p_position < end && !layout->isValidCursorPosition(
                               concealLayoutPosition(layout, p_position - block.position()))) {
     QTextCursor cursor(document());
@@ -749,7 +762,8 @@ bool TextDocumentLayout::movePersistentConcealCursor(QTextCursor &p_cursor,
   }
   auto cursor = p_cursor;
   bool handled = hasPersistentConceal(cursor.block());
-  const int normalized = normalizePersistentConcealPosition(cursor.position(), false, false);
+  const int normalized =
+      normalizePersistentConcealPosition(cursor.position(), false, ConcealCursorAffinity::Skip);
   if (normalized != cursor.position() ||
       (p_mode == QTextCursor::MoveAnchor && cursor.hasSelection())) {
     // Canonicalization crosses no visible character. Do not start a selection
@@ -766,7 +780,8 @@ bool TextDocumentLayout::movePersistentConcealCursor(QTextCursor &p_cursor,
     bool moved = false;
     while (probe.movePosition(p_operation, QTextCursor::MoveAnchor)) {
       handled |= hasPersistentConceal(probe.block());
-      const int position = normalizePersistentConcealPosition(probe.position(), false, false);
+      const int position =
+          normalizePersistentConcealPosition(probe.position(), false, ConcealCursorAffinity::Skip);
       if (position != origin) {
         cursor.setPosition(position, p_mode);
         moved = true;

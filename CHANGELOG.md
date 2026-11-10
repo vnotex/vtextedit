@@ -9,6 +9,9 @@
   (20 total); the shortening threshold remains 20.
 - Add persistent hiding to syntax rules and source-projection input hooks, including the
   KateVi character-movement interface. Rebuild consumers; VTextEdit SOVERSION is 12.
+- Add `bool p_preferInside = false` to `VTextEdit::normalizeCursorInProjection()` and a third
+  boolean argument to `cursorNormalizationRequested`. Update connected handlers and rebuild
+  consumers; ordinary normalization preserves the existing source-side cursor position.
 
 ### Features
 
@@ -33,6 +36,9 @@
 - Keep insertion carets inside concealed closing markers across full parses and prefer that
   boundary on mouse clicks, so slow typing continues the formatting. Preserve existing explicit
   marker-action exits, visible-character navigation, selection anchors and IME hit coordinates.
+- Apply that same inside preference after insertion-mode keyboard navigation and Vi `a`/`i`/`A`/`I`.
+  Explicit `Ctrl+B` marker exits remain outside through typing and reparsing. Reuse block-local
+  concealment metadata without allocating another projection or scanning unrelated blocks.
 
 ## 11.0.0 (unreleased)
 

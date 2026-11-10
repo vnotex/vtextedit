@@ -169,8 +169,10 @@ public:
 
   void setConcealment(const ConcealSnapshot &p_snapshot);
   void setConcealCursorPosition(int p_position);
-  int normalizePersistentConcealPosition(int p_position, bool p_onCharacter,
-                                         bool p_preserveClosingBoundary = true) const;
+  enum class ConcealCursorAffinity { Preserve, PreferInside, Skip };
+  int normalizePersistentConcealPosition(
+      int p_position, bool p_onCharacter,
+      ConcealCursorAffinity p_affinity = ConcealCursorAffinity::Preserve) const;
   bool movePersistentConcealCursor(QTextCursor &p_cursor, QTextCursor::MoveOperation p_operation,
                                    QTextCursor::MoveMode p_mode, int p_count) const;
   bool persistentConcealRemovalRanges(int p_start, int p_end, QVector<md::ElementRegion> &p_ranges,

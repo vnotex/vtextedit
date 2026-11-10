@@ -446,15 +446,34 @@ stays inside through source edits and full-parse publication. Slow typing from `
 produces `**bold|**`, not `**b**old`. Fuzzy mouse hits at that collapsed boundary prefer the same
 inside position; opening-only spans, character hits and URL replacements are unchanged.
 
-In `**bold**a`, a right-edge click chooses position 6. The existing bold action explicitly skips
-to 8 and stays outside on publication; later closers in a nested cluster are not stable inside
-positions. Backspace retains the starting side: deleting backward from outside does not resume
-formatting, including in Vi Insert mode. Character-motion traversal still uses one position per
-visible gap: Left from 9 visits 8 then 5. Starting a Shift selection canonicalizes its anchor before taking the visible
-step, so Shift+Right from the inside boundary selects only `a`, not the hidden `**`. Vi block
-carets still rest on visible characters. IME preedit and both composition endpoints keep native
-hit coordinates; a click there cannot jump to a preceding group. These paths reuse block-local
-memberships without allocating another text projection or scanning unrelated blocks.
+In `**bold**a`, a right-edge click and completed insertion-caret navigation choose position 6.
+Left from 9 visits 6 then 5; Right from 5 visits 6 then 9. Word, vertical and line-end movement
+use the same first-closer policy. Vi `a` on `d` and `i` on the following plain `a` both enter at
+6; `A`/`I` resolve their insertion destinations too. Normal/Visual/Replace character carets
+still rest on visible characters. Later closers in a nested cluster are not stable inside
+positions; at adjacent formatted spans the first closer wins.
+
+The existing bold action (`Ctrl+B` when bound by the host) explicitly skips to 8. That outside
+position survives typing and publication; no-op keys and ordinary Insert/Overwrite toggles
+do not revoke it. Backspace retains the
+starting side: deleting backward from outside does not resume formatting, including in Vi
+Insert mode. Character traversal still steps once per visible gap, canonicalizing to the outside
+before stepping; only the final insertion caret prefers inside. Starting a Shift selection
+canonicalizes its anchor before taking the visible step, so Shift+Right from 6 selects only `a`,
+not the hidden `**`. Selection endpoints never receive the insertion preference.
+
+`VTextEdit` completes navigation after native/input-mode key handling (and after a successful
+shortcut steal). The stack-only checkpoint compares the text-bearing revision, cursor position
+and editor mode; typing, deletion, undo and no-op shortcut replays do not request inside affinity.
+Thus Vi `i` is handled even without a position change. Ordinary cursor/source/publication
+normalization preserves the chosen side. Both mouse and keyboard reuse
+`persistentConcealClosingBoundary()` and existing block-local memberships: no allocated text
+projection, document-wide search, parse or relayout is requested by the boundary resolver.
+Blocks without persistent concealment return immediately; character-mode completion avoids
+another lookup. IME preedit excludes keyboard inside preference, and mouse composition
+endpoints retain native hit coordinates rather than jumping into an adjacent group.
+Coverage: `testPersistentConcealKeyboardBoundary`, `testPersistentConcealShortcutExit` and the
+existing navigation, nested, selection, deletion and IME cases.
 
 A movement's landing range is not its deletion range. The shared removal planner subtracts
 persistent marker spans, includes wrappers whose last visible content is removed, and applies

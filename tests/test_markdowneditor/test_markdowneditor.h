@@ -40,6 +40,10 @@ private slots:
   void testPersistentConcealKinds_data();
   void testPersistentConcealKinds();
   void testPersistentConcealNavigation();
+  void testPersistentConcealKeyboardBoundary_data();
+  void testPersistentConcealKeyboardBoundary();
+  void testPersistentConcealShortcutExit_data();
+  void testPersistentConcealShortcutExit();
   void testPersistentConcealClickBoundary_data();
   void testPersistentConcealClickBoundary();
   void testPersistentConcealSlowTyping_data();

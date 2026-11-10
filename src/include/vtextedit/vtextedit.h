@@ -120,7 +120,9 @@ public:
                               QTextCursor::MoveMode p_mode = QTextCursor::MoveAnchor,
                               int p_count = 1);
   bool replaceTextInProjection(QTextCursor &p_cursor, const QString &p_text);
-  void normalizeCursorInProjection();
+  // Prefer inside only after navigation; source edits and explicit formatting
+  // actions preserve their chosen side of a collapsed boundary.
+  void normalizeCursorInProjection(bool p_preferInside = false);
 
   // Insert a block above or below the cursor block, preserving its text and
   // ignoring any selection. Split is not accepted. Returns false if read-only.
@@ -215,7 +217,7 @@ signals:
   void cursorMoveRequested(QTextCursor *p_cursor, QTextCursor::MoveOperation p_operation,
                            QTextCursor::MoveMode p_mode, int p_count, bool *p_handled);
   void textReplacementRequested(QTextCursor *p_cursor, const QString &p_text, bool *p_handled);
-  void cursorNormalizationRequested(QTextCursor *p_cursor, bool p_onCharacter);
+  void cursorNormalizationRequested(QTextCursor *p_cursor, bool p_onCharacter, bool p_preferInside);
 
   void preKeyReturn(int p_modifiers, bool *p_changed, bool *p_handled);
 
@@ -277,6 +279,15 @@ private:
   bool handleClosingBracket(const QChar &p_open, const QChar &p_close);
 
   bool handleBracketRemoval();
+
+  struct CursorNavigationState {
+    int m_sourceRevision;
+    int m_position;
+    EditorMode m_mode;
+  };
+
+  CursorNavigationState cursorNavigationState() const;
+  void finishCursorNavigation(const CursorNavigationState &p_before);
 
   bool handleKeyInProjection(QKeyEvent *p_event);
 
