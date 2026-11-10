@@ -19,11 +19,13 @@
 
 ### Features
 
-- Add `MarkdownConcealPreset::{Aggressive, Passive}` and `MarkdownConcealRules::setPreset()`.
-  Aggressive matches the demo; Passive shortens only link, image and reference URLs. Applying
-  a preset replaces custom rules/options; default concealment remains disabled.
-- Configure the demo to hide Markdown markers and link syntax while shortening image
-  and reference-definition URLs; inline link URLs remain unshortened.
+- Add `MarkdownConcealPreset::{Aggressive, Moderate, Passive}` and `MarkdownConcealRules::setPreset()`.
+  Moderate uses Aggressive's syntax and URL rules but reveals markers when the caret enters
+  their content or marker boundaries, without persistent marker skipping. Moderate matches
+  the demo; Passive shortens only link, image and reference URLs. Applying a preset replaces
+  custom rules/options; default concealment remains disabled.
+- Configure the demo with Moderate: Markdown markers and link syntax reveal on caret entry,
+  while image and reference-definition URLs shorten; inline link URLs remain unshortened.
 - `MarkdownConcealRules::set(kind)` selects default policies: heading, emphasis, strong,
   inline code/math, mark and strikethrough markers stay hidden while editing. Link syntax
   and destination shortening retain reveal-on-entry. Explicit `MarkdownConcealHideSyntax`

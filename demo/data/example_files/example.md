@@ -3,11 +3,12 @@
 
 ## Source-preserving concealment ##
 
-The demo uses the Aggressive concealment preset: heading hashes and the markers of
-**bold**, *italic*, ~~strike~~ and ==mark== are hidden.
+The demo uses the Moderate concealment preset: heading hashes and the markers of
+**bold**, *italic*, ~~strike~~ and ==mark== are hidden while the caret is away.
 Inline code can use ``two ` backticks``; formulas include $x + y$ and $$a^2 + b^2$$.
-These markers stay hidden while editing; arrows and counted Vi character motions skip them.
-Deleting an element's last content removes its markers too. Links still reveal on caret entry.
+The complete marker pair reveals when the caret is in the content or markers, including
+both source boundaries. Arrows and counted Vi character motions can enter the markers.
+Links also reveal on caret entry; Aggressive instead keeps non-link markers hidden while editing.
 Copy and search continue to use the original Markdown source.
 
 [Alphabet](abcdefghijklmnopqrstuvwxyz) followed by ordinary text.

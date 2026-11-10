@@ -364,17 +364,25 @@ leave the source visible.
 
 `setPreset(MarkdownConcealPreset)` replaces the complete rule set and resets its options:
 
-| Preset | Persistent marker hiding | Link syntax | URL shortening |
-|--------|--------------------------|-------------|----------------|
-| `Aggressive` | Emphasis, strong, strike, mark, inline code, headings and inline formulas | Hidden; reveals on caret entry | `ImageUrl`, `ReferenceUrl`; **not** `LinkUrl` |
-| `Passive` | None | Visible | `LinkUrl`, `ImageUrl`, `ReferenceUrl` |
+| Preset | Syntax markers | Link syntax | URL shortening |
+|--------|----------------|-------------|----------------|
+| `Passive` | Always visible | Visible | `LinkUrl`, `ImageUrl`, `ReferenceUrl` |
+| `Moderate` | Hidden away; reveal on caret entry | Hidden; reveals on caret entry | `ImageUrl`, `ReferenceUrl`; **not** `LinkUrl` |
+| `Aggressive` | Persistently hidden | Hidden; reveals on caret entry | `ImageUrl`, `ReferenceUrl`; **not** `LinkUrl` |
 
-Aggressive matches the demo. When its link syntax reveals, the destination is unshortened.
-Both presets use the default shortening rule above. Applying either preset discards previous
+Moderate and Aggressive conceal emphasis, strong, strike, mark, inline code, headings and inline
+formula markers. Moderate reveals the complete group when the caret is in its content or markers,
+including both source boundaries; it never forces markers to stay hidden or skips them during
+cursor navigation. Moderate is the demo default. Aggressive keeps those markers hidden while editing.
+Both leave link destinations unshortened when their link syntax reveals.
+All presets use the default shortening rule above. Applying any preset discards previous
 custom rules/options; `set()` and `remove()` afterward can customize the chosen rules. No preset
 is selected by default, and `clear()` still disables concealment. To update a live editor:
 
 ```cpp
+config->m_concealRules.setPreset(MarkdownConcealPreset::Moderate);
+editor->setConfig(config);
+// Or keep syntax markers hidden while editing:
 config->m_concealRules.setPreset(MarkdownConcealPreset::Aggressive);
 editor->setConfig(config);
 // Or choose URL shortening only:
@@ -465,7 +473,7 @@ not the hidden `**`. Selection endpoints never receive the insertion preference.
 `MarkdownConcealRules::hasPersistentSyntaxRules()` derives cursor amendment from configured
 `HideSyntax.m_keepHidden` rules, not from a preset name or a nonempty parse. `VMarkdownEditor`
 sets `VTextEdit::setCursorProjectionEnabled()` before configuration can reactivate an input mode.
-Passive, URL-only, reveal-on-entry-only and empty rules bypass navigation checkpoints and
+Moderate, Passive, URL-only, reveal-on-entry-only and empty rules bypass navigation checkpoints and
 move/normalization/replacement projection requests; ordinary URL reveal and hit testing remain
 active. Standalone `VTextEdit` consumers must explicitly enable these optional hooks. Enabling
 the flag alone does not move the cursor, and Markdown configuration owns its subsequent value.

@@ -77,7 +77,7 @@ static VMarkdownEditor *setupMarkdownEditor(QWidget *p_parent) {
   markdownEditorConfig->m_inplacePreviewSources |= MarkdownEditorConfig::Table;
   markdownEditorConfig->m_autoFormatTableSourceEnabled = true;
   markdownEditorConfig->m_autoNumberOrderedListsEnabled = true;
-  markdownEditorConfig->m_concealRules.setPreset(MarkdownConcealPreset::Aggressive);
+  markdownEditorConfig->m_concealRules.setPreset(MarkdownConcealPreset::Moderate);
   auto editorParas = QSharedPointer<TextEditorParameters>::create();
   editorParas->m_spellCheckEnabled = false;
 

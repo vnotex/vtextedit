@@ -1398,7 +1398,8 @@ void TestMarkdownEditor::testConcealPresets() {
     QCOMPARE(doc->availableUndoSteps(), undoSteps);
     QCOMPARE(doc->availableRedoSteps(), redoSteps);
   };
-  for (auto preset : {MarkdownConcealPreset::Aggressive, MarkdownConcealPreset::Passive,
+  for (auto preset : {MarkdownConcealPreset::Aggressive, MarkdownConcealPreset::Moderate,
+                      MarkdownConcealPreset::Passive, MarkdownConcealPreset::Moderate,
                       MarkdownConcealPreset::Aggressive}) {
     config->m_concealRules.setPreset(preset);
     f.editor()->setConfig(config);
@@ -1406,21 +1407,36 @@ void TestMarkdownEditor::testConcealPresets() {
     QCOMPARE(f.edit()->textCursor().position(), savedSelection.position());
     QCOMPARE(f.edit()->textCursor().anchor(), savedSelection.anchor());
     const bool aggressive = preset == MarkdownConcealPreset::Aggressive;
+    const bool passive = preset == MarkdownConcealPreset::Passive;
     for (const auto &marker : markers) {
       const int body = marker.start + marker.opening.size();
       const int closing = body + marker.body.size();
-      // Aggressive's marker policy stays hidden even while the caret edits the body.
-      setConcealCursor(f, body + 1);
-      if (aggressive) {
-        QVERIFY(qAbs(concealConfigRangeWidth(f, marker.start, body)) < 0.1);
-        QVERIFY(qAbs(concealConfigRangeWidth(f, closing, closing + marker.closing.size())) < 0.1);
-      } else {
-        QVERIFY(concealConfigRangeWidth(f, marker.start, body) > 1);
-        QVERIFY(concealConfigRangeWidth(f, closing, closing + marker.closing.size()) > 1);
+      const int end = closing + marker.closing.size();
+      const auto verifyMarkers = [&](bool p_hidden) {
+        if (p_hidden) {
+          QVERIFY(qAbs(concealConfigRangeWidth(f, marker.start, body)) < 0.1);
+          QVERIFY(qAbs(concealConfigRangeWidth(f, closing, end)) < 0.1);
+        } else {
+          QVERIFY(concealConfigRangeWidth(f, marker.start, body) > 1);
+          QVERIFY(concealConfigRangeWidth(f, closing, end) > 1);
+        }
+      };
+      // Moderate conceals away from the group, but reveals both markers throughout
+      // its content and at either side of each marker. Passive never conceals them.
+      setConcealCursor(f, savedSelection.position());
+      verifyMarkers(!passive);
+      for (int position : {marker.start, marker.start + 1, body, body + 1, closing, end - 1, end}) {
+        setConcealCursor(f, position);
+        if (!aggressive) {
+          QCOMPARE(f.edit()->textCursor().position(), position);
+        }
+        verifyMarkers(aggressive);
+        setConcealCursor(f, savedSelection.position());
+        verifyMarkers(!passive);
       }
     }
     f.edit()->setTextCursor(savedSelection);
-    if (aggressive) {
+    if (!passive) {
       QVERIFY(qAbs(concealConfigRangeWidth(f, link, link + 1)) < 0.1);
       QVERIFY(qAbs(concealConfigRangeWidth(f, linkUrl, linkUrl + url.size())) < 0.1);
     } else {
@@ -1429,7 +1445,7 @@ void TestMarkdownEditor::testConcealPresets() {
     }
     setConcealCursor(f, link + 2);
     QVERIFY(concealConfigRangeWidth(f, link, link + 1) > 1);
-    concealConfigVerifyWidth(f, linkUrl, linkUrl + url.size(), aggressive ? url : compact);
+    concealConfigVerifyWidth(f, linkUrl, linkUrl + url.size(), passive ? compact : url);
     for (int start : {linkUrl, imageUrl, htmlUrl, referenceUrl}) {
       setConcealCursor(f, start + 1);
       concealConfigVerifyWidth(f, start, start + url.size(), url);
@@ -1702,6 +1718,7 @@ void TestMarkdownEditor::testPersistentConcealNavigation() {
 void TestMarkdownEditor::testPersistentConcealRuleSwitch_data() {
   QTest::addColumn<QString>("policy");
   QTest::newRow("passive") << QStringLiteral("passive");
+  QTest::newRow("moderate") << QStringLiteral("moderate");
   QTest::newRow("reveal-only") << QStringLiteral("reveal-only");
   QTest::newRow("empty") << QStringLiteral("empty");
 }
@@ -1726,6 +1743,8 @@ void TestMarkdownEditor::testPersistentConcealRuleSwitch() {
   auto changed = makeConcealConfig();
   if (policy == QLatin1String("passive")) {
     changed->m_concealRules.setPreset(MarkdownConcealPreset::Passive);
+  } else if (policy == QLatin1String("moderate")) {
+    changed->m_concealRules.setPreset(MarkdownConcealPreset::Moderate);
   } else if (policy == QLatin1String("reveal-only")) {
     changed->m_concealRules.set(MarkdownConcealElement::StrongMarkers,
                                 MarkdownConcealHideSyntax{false});

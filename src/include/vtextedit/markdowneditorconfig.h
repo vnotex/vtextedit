@@ -11,7 +11,7 @@
 #include <variant>
 
 namespace vte {
-enum class MarkdownConcealPreset { Aggressive, Passive };
+enum class MarkdownConcealPreset { Aggressive, Passive, Moderate };
 
 struct MarkdownConcealShortenDestination {
   int m_threshold = 20;
@@ -70,13 +70,16 @@ public:
     set(MarkdownConcealElement::ImageUrl);
     set(MarkdownConcealElement::ReferenceUrl);
     switch (p_preset) {
+    case MarkdownConcealPreset::Moderate:
     case MarkdownConcealPreset::Aggressive:
       for (auto kind :
            {MarkdownConcealElement::EmphasisMarkers, MarkdownConcealElement::StrongMarkers,
             MarkdownConcealElement::StrikethroughMarkers, MarkdownConcealElement::MarkMarkers,
             MarkdownConcealElement::InlineCodeMarkers, MarkdownConcealElement::LinkSyntax,
             MarkdownConcealElement::HeadingMarkers, MarkdownConcealElement::InlineFormulaMarkers}) {
-        set(kind);
+        set(kind,
+            MarkdownConcealHideSyntax{p_preset == MarkdownConcealPreset::Aggressive &&
+                                      kind != MarkdownConcealElement::LinkSyntax});
       }
       break;
     case MarkdownConcealPreset::Passive:
