@@ -582,7 +582,7 @@ void MarkdownUtils::typeStrikethrough(VTextEdit *p_edit) {
 }
 
 void MarkdownUtils::typeMark(VTextEdit *p_edit) {
-  typeMarker(p_edit, QStringLiteral("<mark>"), QStringLiteral("</mark>"));
+  typeMarker(p_edit, QStringLiteral("=="), QStringLiteral("=="));
 }
 
 void MarkdownUtils::typeUnorderedList(VTextEdit *p_edit) {

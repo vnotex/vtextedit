@@ -3765,7 +3765,7 @@ void TestMarkdownEditor::testMultiLineMarkerAllMarkers() {
       {&MarkdownUtils::typeBold, "**a**\n**b**"},
       {&MarkdownUtils::typeItalic, "*a*\n*b*"},
       {&MarkdownUtils::typeStrikethrough, "~~a~~\n~~b~~"},
-      {&MarkdownUtils::typeMark, "<mark>a</mark>\n<mark>b</mark>"},
+      {&MarkdownUtils::typeMark, "==a==\n==b=="},
       {&MarkdownUtils::typeCode, "`a`\n`b`"},
       {&MarkdownUtils::typeMath, "$a$\n$b$"},
   };

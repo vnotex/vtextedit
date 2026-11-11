@@ -923,8 +923,7 @@ void TestInteractivePreview::testTableTypeActions_data() {
   QTest::newRow("italic") << static_cast<int>(TypeAction::TypeItalic) << QStringLiteral("*a*");
   QTest::newRow("strikethrough") << static_cast<int>(TypeAction::TypeStrikethrough)
                                  << QStringLiteral("~~a~~");
-  QTest::newRow("mark") << static_cast<int>(TypeAction::TypeMark)
-                        << QStringLiteral("<mark>a</mark>");
+  QTest::newRow("mark") << static_cast<int>(TypeAction::TypeMark) << QStringLiteral("==a==");
   QTest::newRow("code") << static_cast<int>(TypeAction::TypeCode) << QStringLiteral("`a`");
   QTest::newRow("math") << static_cast<int>(TypeAction::TypeMath) << QStringLiteral("$a$");
 }

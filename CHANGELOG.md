@@ -39,6 +39,8 @@
 
 ### Fixes
 
+- Insert native Markdown `==` markers for the mark action instead of HTML `<mark>` tags,
+  including table cells and multiline selections. Existing document content is not converted.
 - Keep insertion carets inside concealed closing markers across full parses and prefer that
   boundary on mouse clicks, so slow typing continues the formatting. Preserve existing explicit
   marker-action exits, visible-character navigation, selection anchors and IME hit coordinates.
