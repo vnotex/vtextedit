@@ -3104,6 +3104,116 @@ void TestMarkdownEditor::testEmptyQuoteStartsANewQuoteLine() {
   }
 }
 
+void TestMarkdownEditor::testEmptyQuotePairExit_data() {
+  QTest::addColumn<QString>("text");
+  QTest::addColumn<int>("block");
+  QTest::addColumn<QString>("expected");
+
+  QTest::newRow("document-start") << QStringLiteral("> \n> ") << 1 << QStringLiteral("\n");
+  QTest::newRow("after-content") << QStringLiteral("> text\n> \n> ") << 2
+                                 << QStringLiteral("> text\n\n");
+  QTest::newRow("before-content") << QStringLiteral("> text\n> \n> \nnext") << 2
+                                  << QStringLiteral("> text\n\n\nnext");
+  QTest::newRow("bare-markers") << QStringLiteral(">\n>") << 1 << QStringLiteral("\n");
+  QTest::newRow("whitespace") << QStringLiteral("> \t \n>   ") << 1 << QStringLiteral("\n");
+  QTest::newRow("nested") << QStringLiteral("> > \n>> ") << 1 << QStringLiteral("\n");
+  QTest::newRow("indented") << QStringLiteral("  > \n  > ") << 1 << QStringLiteral("\n");
+  QTest::newRow("longer-empty-run")
+      << QStringLiteral("> \n> \n> ") << 2 << QStringLiteral("> \n\n");
+}
+
+void TestMarkdownEditor::testEmptyQuotePairExit() {
+  QFETCH(QString, text);
+  QFETCH(int, block);
+  QFETCH(QString, expected);
+  Fixture fixture(text, block);
+  const int beforePosition = fixture.edit()->textCursor().position();
+
+  fixture.pressReturn();
+  QCOMPARE(fixture.text(), expected);
+  QCOMPARE(fixture.edit()->textCursor().blockNumber(), block);
+  QCOMPARE(fixture.edit()->textCursor().positionInBlock(), 0);
+  QVERIFY(!fixture.edit()->textCursor().hasSelection());
+
+  fixture.edit()->undo();
+  QCOMPARE(fixture.text(), text);
+  QCOMPARE(fixture.edit()->textCursor().position(), beforePosition);
+  fixture.edit()->redo();
+  QCOMPARE(fixture.text(), expected);
+  QCOMPARE(fixture.edit()->textCursor().blockNumber(), block);
+  QCOMPARE(fixture.edit()->textCursor().positionInBlock(), 0);
+}
+
+void TestMarkdownEditor::testEmptyQuotePairExitBoundaries() {
+  struct Case {
+    const char *m_text;
+    int m_column;
+    const char *m_expected;
+  };
+  const Case cases[] = {
+      {"> text\n> ", -1, "> text\n> \n> "}, {"plain\n> ", -1, "plain\n> \n> "},
+      {"> \n> text", 2, "> \n> \n> text"},  {"> \n> ", 0, "> \n\n> "},
+      {"> \n> > ", -1, "> \n> > \n> > "},   {"> > \n> ", -1, "> > \n> \n> "},
+      {"> \n  > ", -1, "> \n  > \n  > "},
+  };
+  for (const auto &c : cases) {
+    Fixture fixture(QString::fromUtf8(c.m_text), 1, c.m_column);
+    fixture.pressReturn();
+    QCOMPARE(fixture.text(), QString::fromUtf8(c.m_expected));
+  }
+
+  // A selection is replaced normally, without deleting the preceding quote.
+  for (const bool backwards : {false, true}) {
+    Fixture fixture(QStringLiteral("> \n> "), 1);
+    fixture.waitForFreshAst(1);
+    fixture.select(1, backwards ? 2 : 0, 1, backwards ? 0 : 2);
+    fixture.pressReturn();
+    QCOMPARE(fixture.text(), QStringLiteral("> \n\n"));
+  }
+  {
+    Fixture fixture(QStringLiteral("> \n> "), 1);
+    fixture.pressShiftReturn();
+    QCOMPARE(fixture.text(), QStringLiteral("> \n>   \n"));
+  }
+  {
+    Fixture fixture(QStringLiteral("> \n> "), 1);
+    fixture.pressCtrlReturn();
+    QCOMPARE(fixture.text(), QStringLiteral("> \n> "));
+  }
+}
+
+void TestMarkdownEditor::testEmptyQuotePairFenceVeto() {
+  for (const bool stale : {false, true}) {
+    Fixture fixture(QStringLiteral("```\n> \n> \n```"), 2);
+    fixture.waitForFreshAst(2);
+    if (stale) {
+      auto cursor = fixture.edit()->textCursor();
+      cursor.insertText(QStringLiteral(" "));
+      fixture.edit()->setTextCursor(cursor);
+      QVERIFY(!fixture.editor()->getHighlighter()->getBlockContext(2).m_fresh);
+    }
+    QVERIFY(fixture.editor()->getHighlighter()->getBlockContext(2).m_inFencedCode);
+    fixture.pressReturn();
+    QCOMPARE(fixture.text(),
+             stale ? QStringLiteral("```\n> \n>  \n\n```") : QStringLiteral("```\n> \n> \n\n```"));
+  }
+}
+
+void TestMarkdownEditor::testEmptyQuotePairTypingSequence() {
+  Fixture fixture(QStringLiteral("> text"), 0);
+  fixture.pressReturn();
+  QCOMPARE(fixture.text(), QStringLiteral("> text\n> "));
+  fixture.pressReturn();
+  QCOMPARE(fixture.text(), QStringLiteral("> text\n> \n> "));
+  fixture.waitForFreshAst(2);
+  fixture.pressReturn();
+  QCOMPARE(fixture.text(), QStringLiteral("> text\n\n"));
+
+  QTest::keyClicks(fixture.edit(), "outside");
+  fixture.pressReturn();
+  QCOMPARE(fixture.text(), QStringLiteral("> text\n\noutside\n"));
+}
+
 void TestMarkdownEditor::testEmptyListInQuoteExit() {
   Fixture fixture(QStringLiteral("> - "), 0);
   fixture.pressReturn();
@@ -3386,9 +3496,6 @@ void TestMarkdownEditor::testRepeatedReturnDoesNotLeakContext() {
   // next one, which now continues the quote.
   fixture.pressReturn();
   QCOMPARE(fixture.text(), QStringLiteral("> \n> "));
-
-  fixture.pressReturn();
-  QCOMPARE(fixture.text(), QStringLiteral("> \n> \n> "));
 }
 
 void TestMarkdownEditor::testUndoIsASingleStep() {

@@ -93,6 +93,11 @@ private slots:
   void testQuoteWithListContinuation();
 
   void testEmptyQuoteStartsANewQuoteLine();
+  void testEmptyQuotePairExit_data();
+  void testEmptyQuotePairExit();
+  void testEmptyQuotePairExitBoundaries();
+  void testEmptyQuotePairFenceVeto();
+  void testEmptyQuotePairTypingSequence();
 
   void testEmptyListInQuoteExit();
 

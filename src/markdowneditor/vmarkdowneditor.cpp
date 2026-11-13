@@ -3144,6 +3144,33 @@ void VMarkdownEditor::preKeyReturn(int p_modifiers, bool *p_changed, bool *p_han
     cursor.endEditBlock();
     m_textEdit->setTextCursor(cursor);
   } else if (p_modifiers == Qt::NoModifier) {
+    auto cursor = m_textEdit->textCursor();
+    const auto previous = cursor.block().previous();
+    if (!cursor.hasSelection() && cursor.atBlockEnd() && previous.isValid() &&
+        !(m_returnBlockContext.m_valid && m_returnBlockContext.m_inFencedCode)) {
+      QString indentation, prefix, rest;
+      int depth = 0;
+      if (MarkdownUtils::isQuote(cursor.block().text(), indentation, prefix, rest, depth) &&
+          QStringView(rest).trimmed().isEmpty()) {
+        QString previousIndentation, previousPrefix, previousRest;
+        int previousDepth = 0;
+        if (MarkdownUtils::isQuote(previous.text(), previousIndentation, previousPrefix,
+                                   previousRest, previousDepth) &&
+            QStringView(previousRest).trimmed().isEmpty() && previousDepth == depth &&
+            previousIndentation == indentation) {
+          // Replace the pair, retaining the second block's following separator.
+          cursor.beginEditBlock();
+          cursor.setPosition(previous.position(), QTextCursor::KeepAnchor);
+          cursor.insertText(QStringLiteral("\n"));
+          cursor.endEditBlock();
+          m_textEdit->setTextCursor(cursor);
+          *p_changed = true;
+          *p_handled = true;
+          m_returnBlockContext = md::BlockContext();
+          return;
+        }
+      }
+    }
     if (formatter->handleListInsertion(VTextEdit::BlockInsertion::Split)) {
       *p_changed = true;
       *p_handled = true;
