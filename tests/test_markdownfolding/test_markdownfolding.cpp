@@ -1393,7 +1393,8 @@ void TestMarkdownFolding::testWidgetPreviewInlineBand() {
   QVERIFY(wrappedBand.bottom() <= offset + wrappedLine.y());
   QVERIFY(wrappedLine.textStart() < 17);
   QCOMPARE(wrappedBand.left(), wrappedLine.cursorToX(17));
-  const qreal remaining = layout->availableContentWidth() + doc.documentMargin() - wrappedBand.left();
+  const qreal remaining =
+      layout->availableContentWidth() + doc.documentMargin() - wrappedBand.left();
   QVERIFY(remaining < 40);
   QCOMPARE(wrappedBand.width(), remaining);
 
@@ -3335,6 +3336,55 @@ void TestMarkdownFolding::testReconcileNotificationCanDisableFolding() {
   // A later parse while disabled must not resurrect the just-committed ranges.
   provider.updateFoldingRegions(updated);
   QVERIFY(folding.isEmpty());
+}
+
+void TestMarkdownFolding::testFoldedHeadingGrowth() {
+  QTextDocument doc(generateLines(30));
+  TextFolding folding(&doc);
+  MarkdownFoldingProvider provider(&folding, &doc);
+  provider.updateFoldingRegions(
+      {{0, 9, md::Heading, 1}, {3, 7, md::FencedCode, 0}, {12, 19, md::Heading, 1}});
+  const auto heading = folding.foldingRangesStartingOnBlock(0).first().first;
+  const auto following = folding.foldingRangesStartingOnBlock(12).first().first;
+  QVERIFY(folding.foldRange(heading));
+  QVERIFY(folding.foldRange(following));
+  QTextCursor cursor(doc.findBlockByNumber(10));
+  cursor.insertBlock();
+  const QVector<md::FoldingRegion> grown{
+      {0, 10, md::Heading, 1}, {3, 7, md::FencedCode, 0}, {13, 20, md::Heading, 1}};
+  for (int pass = 0; pass < 2; ++pass) {
+    provider.updateFoldingRegions(grown);
+    int last = -1;
+    QVERIFY(folding.foldingRangeBlocks(heading, nullptr, &last));
+    QCOMPARE(last, 9);
+    QVERIFY(folding.isRangeFolded(heading));
+    QVERIFY(!doc.findBlockByNumber(9).isVisible());
+    QVERIFY(doc.findBlockByNumber(10).isVisible());
+    QVERIFY(folding.isRangeFolded(following));
+    QVERIFY(!doc.findBlockByNumber(20).isVisible());
+  }
+  // Removing the following heading must not hide the rest of the document.
+  const QVector<md::FoldingRegion> merged{{0, 30, md::Heading, 1}, {3, 7, md::FencedCode, 0}};
+  provider.updateFoldingRegions(merged);
+  QVERIFY(folding.isRangeFolded(heading));
+  QVERIFY(doc.findBlockByNumber(10).isVisible());
+  QVERIFY(doc.findBlockByNumber(20).isVisible());
+  QVERIFY(folding.toggleRange(heading));
+  provider.updateFoldingRegions(merged);
+  const auto expanded = folding.foldingRangesStartingOnBlock(0).first().first;
+  int last = -1;
+  QVERIFY(folding.foldingRangeBlocks(expanded, nullptr, &last));
+  QCOMPARE(last, 30);
+  QVERIFY(!folding.isRangeFolded(expanded));
+
+  // A shorter section is a new extent, not the retained collapsed source.
+  QVERIFY(folding.foldRange(expanded));
+  provider.updateFoldingRegions({{0, 5, md::Heading, 1}});
+  const auto shortened = folding.foldingRangesStartingOnBlock(0).first().first;
+  QVERIFY(folding.foldingRangeBlocks(shortened, nullptr, &last));
+  QCOMPARE(last, 5);
+  QVERIFY(!folding.isRangeFolded(shortened));
+  QVERIFY(doc.findBlockByNumber(5).isVisible());
 }
 
 // A changed end block gets a live range back in one snapshot replacement;

@@ -140,6 +140,8 @@ private slots:
 
   void testReconcileNotificationCanDisableFolding();
 
+  void testFoldedHeadingGrowth();
+
   void testReconcileEndBlockChange();
 
   void testReconcileTypeChange();

@@ -231,6 +231,18 @@ VTextEdit *VTextEditor::getTextEdit() const { return m_textEdit; }
 void VTextEditor::setupTextFolding() {
   Q_ASSERT(m_textEdit && m_indicatorsBorder);
   m_folding = new TextFolding(m_textEdit->document());
+  connect(
+      m_textEdit, &VTextEdit::preKeyReturn, this, [this](int p_modifiers, bool *, bool *p_handled) {
+        if (!*p_handled && p_modifiers == Qt::NoModifier && m_textEdit->textCursor().atBlockEnd()) {
+          *p_handled = insertBlockAfterFold();
+        }
+      });
+  connect(m_textEdit, &VTextEdit::openLineRequested, this,
+          [this](VTextEdit::BlockInsertion p_placement, bool *p_handled) {
+            if (!*p_handled && p_placement == VTextEdit::BlockInsertion::Below) {
+              *p_handled = insertBlockAfterFold();
+            }
+          });
   connect(m_folding, &TextFolding::foldingRangesChanged, this, [this]() {
     auto cursor = m_textEdit->textCursor();
     if (cursor.block().isVisible()) {
@@ -252,6 +264,34 @@ void VTextEditor::setupTextFolding() {
   });
   connect(m_folding, &TextFolding::foldingRangesChanged, m_indicatorsBorder,
           &IndicatorsBorder::updateBorder);
+}
+
+bool VTextEditor::insertBlockAfterFold() {
+  auto cursor = m_textEdit->textCursor();
+  if (isReadOnly() || cursor.hasSelection() || !cursor.block().isVisible()) {
+    return false;
+  }
+  const auto id = m_folding->outermostFoldedRangeOnBlock(cursor.blockNumber());
+  int first = -1;
+  int last = -1;
+  if (!m_folding->foldingRangeBlocks(id, &first, &last) || first != cursor.blockNumber()) {
+    return false;
+  }
+
+  const auto indentation = TextUtils::fetchIndentationSpaces(cursor.block().text());
+  const auto following = document()->findBlockByNumber(last).next();
+  // Insert before the following block, not at an empty folded endpoint's anchor.
+  cursor.setPosition(following.isValid() ? following.position() : document()->characterCount() - 1);
+  const int position = cursor.position();
+  cursor.beginEditBlock();
+  cursor.insertBlock();
+  if (following.isValid()) {
+    cursor.setPosition(position);
+  }
+  cursor.insertText(indentation);
+  cursor.endEditBlock();
+  m_textEdit->setTextCursor(cursor);
+  return true;
 }
 
 void VTextEditor::setupExtraSelection() {

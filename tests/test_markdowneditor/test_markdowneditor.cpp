@@ -1161,7 +1161,7 @@ void TestMarkdownEditor::testConcealMarkdownConfig() {
   for (const auto &item : cases) {
     auto config = makeConcealConfig();
     config->m_concealRules.set(MarkdownConcealElement::LinkUrl,
-                              MarkdownConcealShortenDestination{item.m_threshold});
+                               MarkdownConcealShortenDestination{item.m_threshold});
     const auto source = QStringLiteral("[x](") + item.m_payload + QStringLiteral(") tail\noutside");
     Fixture fixture(source, 1, 0, config);
     QVERIFY(!renderConcealEditor(fixture).isNull());
@@ -1359,8 +1359,9 @@ void TestMarkdownEditor::testConcealPresets() {
     source += marker.opening + marker.body + marker.closing + QStringLiteral("\n\n");
   }
   const int link = source.size();
-  source += QStringLiteral("[label](%1)\n\n![image](%1)\n\n<img src=\"%1\">\n\n[ref]: %1\n\noutside")
-                .arg(url);
+  source +=
+      QStringLiteral("[label](%1)\n\n![image](%1)\n\n<img src=\"%1\">\n\n[ref]: %1\n\noutside")
+          .arg(url);
   const int linkUrl = source.indexOf(url, link);
   const int imageUrl = source.indexOf(url, linkUrl + url.size());
   const int htmlUrl = source.indexOf(url, imageUrl + url.size());
@@ -1368,7 +1369,7 @@ void TestMarkdownEditor::testConcealPresets() {
   auto config = makeConcealConfig();
   config->m_concealRules.set(MarkdownConcealElement::StrongMarkers, MarkdownConcealHideSyntax{});
   config->m_concealRules.set(MarkdownConcealElement::ImageUrl,
-                           MarkdownConcealShortenDestination{0, 1, 2, QStringLiteral("<>")});
+                             MarkdownConcealShortenDestination{0, 1, 2, QStringLiteral("<>")});
   Fixture f(source, -1, -1, config);
   QVERIFY(!renderConcealEditor(f).isNull());
   waitForConcealPublication(f);
@@ -1457,7 +1458,7 @@ void TestMarkdownEditor::testConcealPresets() {
     verifySource();
     // Per-kind overrides remain supported, but the next preset must reset their options.
     config->m_concealRules.set(MarkdownConcealElement::ReferenceUrl,
-                             MarkdownConcealShortenDestination{0, 1, 2, QStringLiteral("<>")});
+                               MarkdownConcealShortenDestination{0, 1, 2, QStringLiteral("<>")});
     f.editor()->setConfig(config);
     waitForConcealPublication(f);
     concealConfigVerifyWidth(f, referenceUrl, referenceUrl + url.size(), QStringLiteral("a<>yz"));
@@ -1673,8 +1674,10 @@ void TestMarkdownEditor::testPersistentConcealNavigation() {
   auto *edit = f.edit();
   for (int position : {0, 1, 2, 6, 7, 8, 9}) {
     setConcealCursor(f, position);
-    QCOMPARE(edit->textCursor().position(),
-             position < 3 ? 2 : position == 6 ? 6 : position < 9 ? 8 : 9);
+    QCOMPARE(edit->textCursor().position(), position < 3    ? 2
+                                            : position == 6 ? 6
+                                            : position < 9  ? 8
+                                                            : 9);
   }
   const QList<int> positions{2, 3, 4, 5, 6, 9};
   for (int repetition = 0; repetition < 2; ++repetition) {
@@ -2222,10 +2225,10 @@ void TestMarkdownEditor::testPersistentConcealBoundaryBackspace_data() {
                                   << QStringLiteral("***bol***X");
   QTest::newRow("adjacent-code") << QStringLiteral("**bold**`code`") << 9 << false
                                  << QStringLiteral("**bol**`Xcode`");
-  QTest::newRow("inside-vi-insert") << QStringLiteral("**bold**a") << 6 << true
-                                    << QStringLiteral("**bolX**a");
-  QTest::newRow("outside-vi-insert") << QStringLiteral("**bold**a") << 8 << true
-                                     << QStringLiteral("**bol**Xa");
+  QTest::newRow("inside-vi-insert")
+      << QStringLiteral("**bold**a") << 6 << true << QStringLiteral("**bolX**a");
+  QTest::newRow("outside-vi-insert")
+      << QStringLiteral("**bold**a") << 8 << true << QStringLiteral("**bol**Xa");
 }
 
 void TestMarkdownEditor::testPersistentConcealBoundaryBackspace() {
@@ -2618,7 +2621,8 @@ void TestMarkdownEditor::testConcealNestedAndMultilineSyntax() {
   // Revealing the outer link lets the independent URL policy shorten its destination.
   setConcealCursor(f, 4);
   QVERIFY(concealConfigRangeWidth(f, 0, 3) > 1);
-  concealConfigVerifyWidth(f, urlStart, urlEnd, QStringLiteral("abcde\u00b7\u00b7\u00b7opqrstuvwxyz"));
+  concealConfigVerifyWidth(f, urlStart, urlEnd,
+                           QStringLiteral("abcde\u00b7\u00b7\u00b7opqrstuvwxyz"));
   setConcealCursor(f, urlStart + 5);
   concealConfigVerifyWidth(f, urlStart, urlEnd, QStringLiteral("abcdefghijklmnopqrstuvwxyz"));
   QCOMPARE(f.text(), source);
@@ -5123,6 +5127,205 @@ void TestMarkdownEditor::testListAstCodeAndStaleness() {
     QTest::keyClick(fixture.edit(), Qt::Key_Return, Qt::KeypadModifier);
     QCOMPARE(fixture.text(), QStringLiteral("3) a  \n4) \n"));
   }
+}
+
+void TestMarkdownEditor::testFoldHeaderInsertion_data() {
+  QTest::addColumn<bool>("markdown");
+  QTest::addColumn<QString>("source");
+  QTest::addColumn<int>("last");
+  QTest::addColumn<int>("action");
+  struct Case {
+    const char *name;
+    bool markdown;
+    QString source;
+    int last;
+  };
+  const Case cases[] = {
+      {"syntax", false,
+       QStringLiteral("  void f() {\n    if (true) {\n      work();\n    }\n  }\n"
+                      "void tail() {\n  work();\n}"),
+       4},
+      {"heading", true, QStringLiteral("# Heading\nbody\n## Nested\ninner\n# Tail\nmore"), 3},
+      {"heading-eof", true, QStringLiteral("# Heading\nbody"), 1},
+      {"heading-empty-eof", true, QStringLiteral("# Heading\nbody\n"), 2},
+      {"heading-empty-tail", true, QStringLiteral("# Heading\nbody\n\n# Tail\nmore"), 2},
+      {"fence", true, QStringLiteral("```text\nbody\n```\ntail"), 2},
+      {"quote", true, QStringLiteral("> outer\n> body\n\ntail"), 1},
+      {"list", true, QStringLiteral("- ```text\n  body\n  ```\n\ntail"), 2},
+  };
+  for (const auto &item : cases) {
+    for (int action = 0; action < 5; ++action) {
+      QTest::newRow(qPrintable(QStringLiteral("%1-%2").arg(item.name).arg(action)))
+          << item.markdown << item.source << item.last << action;
+    }
+  }
+}
+
+void TestMarkdownEditor::testFoldHeaderInsertion() {
+  QFETCH(bool, markdown);
+  QFETCH(QString, source);
+  QFETCH(int, last);
+  QFETCH(int, action);
+  auto config = QSharedPointer<TextEditorConfig>::create();
+  config->m_inputMode = action >= 3   ? InputMode::ViMode
+                        : action == 2 ? InputMode::VscodeMode
+                                      : InputMode::NormalMode;
+  auto params = QSharedPointer<TextEditorParameters>::create();
+  std::unique_ptr<VTextEditor> editor;
+  VMarkdownEditor *mdEditor = nullptr;
+  if (markdown) {
+    auto mdConfig = QSharedPointer<MarkdownEditorConfig>::create(config);
+    mdConfig->m_inplacePreviewSources = MarkdownEditorConfig::NoInplacePreview;
+    mdEditor = new VMarkdownEditor(mdConfig, params);
+    editor.reset(mdEditor);
+  } else {
+    editor.reset(new VTextEditor(config, params));
+    editor->setSyntax(QStringLiteral("C++"));
+  }
+  editor->setText(source);
+  auto doc = editor->document();
+  auto edit = editor->getTextEdit();
+  auto settle = [&]() {
+    if (mdEditor) {
+      QSignalSpy publication(mdEditor->getHighlighter(),
+                             &MarkdownHighlighter::foldingRegionsUpdated);
+      mdEditor->getHighlighter()->updateHighlight();
+      QTRY_VERIFY_WITH_TIMEOUT(!publication.isEmpty(), 5000);
+    }
+  };
+  settle();
+  auto moveTo = [&](int block, bool end) {
+    QTextCursor cursor(doc->findBlockByNumber(block));
+    if (end) {
+      cursor.movePosition(QTextCursor::EndOfBlock);
+    }
+    edit->setTextCursor(cursor);
+  };
+  const int following = last + 1;
+  const bool foldFollowing =
+      following + 1 < doc->blockCount() && (source.contains(QStringLiteral("# Tail")) || !markdown);
+  if (foldFollowing) {
+    moveTo(following, true);
+    QVERIFY(editor->foldAtCursor());
+    QVERIFY(!doc->findBlockByNumber(following + 1).isVisible());
+  }
+  moveTo(0, action != 4); // Vi o also works away from EOL.
+  QVERIFY(editor->foldAtCursor());
+  for (int block = 1; block <= last; ++block) {
+    QVERIFY2(!doc->findBlockByNumber(block).isVisible(), qPrintable(QString::number(block)));
+  }
+  doc->clearUndoRedoStacks();
+  if (action == 3) {
+    QTest::keyClicks(edit, QStringLiteral("A"));
+  }
+  if (action == 4) {
+    QTest::keyClicks(edit, QStringLiteral("o"));
+  } else {
+    QTest::keyClick(edit, action == 1 ? Qt::Key_Enter : Qt::Key_Return,
+                    action == 1 ? Qt::KeypadModifier : Qt::NoModifier);
+  }
+  auto lines = source.split(QLatin1Char('\n'));
+  const QString indentation = markdown ? QString() : QStringLiteral("  ");
+  lines.insert(following, indentation);
+  const QString expected = lines.join(QLatin1Char('\n'));
+  QCOMPARE(doc->toPlainText(), expected);
+  QCOMPARE(edit->textCursor().blockNumber(), following);
+  QCOMPARE(edit->textCursor().positionInBlock(), indentation.size());
+  QVERIFY(edit->textCursor().block().isVisible());
+  settle();
+  QCOMPARE(edit->textCursor().blockNumber(), following);
+  QVERIFY(edit->textCursor().block().isVisible());
+  for (int block = 1; block <= last; ++block) {
+    QVERIFY(!doc->findBlockByNumber(block).isVisible());
+  }
+  if (foldFollowing) {
+    QVERIFY(!doc->findBlockByNumber(following + 2).isVisible());
+  }
+  if (action >= 3) {
+    QTest::keyClick(edit, Qt::Key_Escape);
+    QTest::keyClicks(edit, QStringLiteral("u"));
+  } else {
+    edit->undo();
+  }
+  QCOMPARE(doc->toPlainText(), source);
+  settle();
+  QVERIFY(!doc->findBlockByNumber(last).isVisible());
+  if (action >= 3) {
+    QTest::keyClick(edit, Qt::Key_R, Qt::ControlModifier);
+  } else {
+    edit->redo();
+  }
+  QCOMPARE(doc->toPlainText(), expected);
+  settle();
+  QVERIFY(!doc->findBlockByNumber(last).isVisible());
+  QVERIFY(doc->findBlockByNumber(following).isVisible());
+  // Repeated publication and typing must not absorb the inserted line into a heading.
+  moveTo(following, true);
+  if (action >= 3) {
+    QTest::keyClicks(edit, QStringLiteral("A"));
+  }
+  QTest::keyClicks(edit, QStringLiteral("new"));
+  lines[following] += QStringLiteral("new");
+  QCOMPARE(doc->toPlainText(), lines.join(QLatin1Char('\n')));
+  settle();
+  QCOMPARE(edit->textCursor().blockNumber(), following);
+  QVERIFY(edit->textCursor().block().isVisible());
+  if (source.startsWith(QLatin1Char('#'))) {
+    QVERIFY(!doc->findBlockByNumber(last).isVisible());
+  }
+}
+
+void TestMarkdownEditor::testFoldHeaderInsertionGuards_data() {
+  QTest::addColumn<QString>("operation");
+  for (const char *operation :
+       {"middle", "selection", "readonly", "expanded", "disabled", "above", "shift", "control"}) {
+    QTest::newRow(operation) << QString::fromLatin1(operation);
+  }
+}
+
+void TestMarkdownEditor::testFoldHeaderInsertionGuards() {
+  QFETCH(QString, operation);
+  const QString source = QStringLiteral("# Heading\nbody\n# Tail");
+  auto config = makeConfig();
+  if (operation == QLatin1String("above")) {
+    config->m_textEditorConfig->m_inputMode = InputMode::ViMode;
+  }
+  Fixture fixture(source, 0, -1, config);
+  fixture.waitForFreshListAst();
+  QVERIFY(fixture.editor()->foldAtCursor());
+  QVERIFY(!fixture.editor()->document()->findBlockByNumber(1).isVisible());
+  QString expected = source;
+  if (operation == QLatin1String("middle")) {
+    fixture.select(0, 5, 0, 5);
+    expected = QStringLiteral("# Hea\nding\nbody\n# Tail");
+  } else if (operation == QLatin1String("selection")) {
+    fixture.select(0, 2, 0, 9);
+    expected = QStringLiteral("# \n\nbody\n# Tail");
+  } else if (operation == QLatin1String("readonly")) {
+    fixture.editor()->setReadOnly(true);
+  } else if (operation == QLatin1String("expanded")) {
+    QVERIFY(fixture.editor()->unfoldAtCursor());
+    expected = QStringLiteral("# Heading\n\nbody\n# Tail");
+  } else if (operation == QLatin1String("disabled")) {
+    config->m_textEditorConfig->m_textFoldingEnabled = false;
+    fixture.editor()->setConfig(config);
+    expected = QStringLiteral("# Heading\n\nbody\n# Tail");
+  } else if (operation == QLatin1String("above")) {
+    QTest::keyClicks(fixture.edit(), QStringLiteral("O"));
+    QCOMPARE(fixture.text(), QLatin1Char('\n') + source);
+    QCOMPARE(fixture.edit()->textCursor().blockNumber(), 0);
+    return;
+  } else if (operation == QLatin1String("shift")) {
+    fixture.pressShiftReturn();
+    QCOMPARE(fixture.text(), QStringLiteral("# Heading  \n\nbody\n# Tail"));
+    return;
+  } else if (operation == QLatin1String("control")) {
+    fixture.pressCtrlReturn();
+    QCOMPARE(fixture.text(), source);
+    return;
+  }
+  fixture.pressReturn();
+  QCOMPARE(fixture.text(), expected);
 }
 
 void TestMarkdownEditor::testViListOpenLines() {

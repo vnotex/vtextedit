@@ -857,6 +857,52 @@ void TestTextFolding::testGroupedBoundaryInsertionsUndoRedo() {
   checkRange(5, 9);
 }
 
+void TestTextFolding::testEmptyEofInsertionUndoRedo() {
+  QTextDocument doc(QStringLiteral("header\nbody\n"));
+  TextFolding folding(&doc);
+  const auto id = folding.newFoldingRange(TextBlockRange(doc.firstBlock(), doc.lastBlock()),
+                                          TextFolding::Persistent | TextFolding::Folded);
+  QVERIFY(id != TextFolding::InvalidRangeId);
+  auto check = [&](int p_last) {
+    int last = -1;
+    QVERIFY(folding.foldingRangeBlocks(id, nullptr, &last));
+    QCOMPARE(last, p_last);
+    QVERIFY(folding.isRangeFolded(id));
+    QVERIFY(!doc.findBlockByNumber(p_last).isVisible());
+  };
+  QTextCursor cursor(&doc);
+  cursor.movePosition(QTextCursor::End);
+  cursor.beginEditBlock();
+  cursor.insertBlock();
+  cursor.insertText(QStringLiteral("  "));
+  cursor.endEditBlock();
+  QCOMPARE(doc.toPlainText(), QStringLiteral("header\nbody\n\n  "));
+  check(2);
+  QVERIFY(doc.lastBlock().isVisible());
+  doc.undo();
+  QCOMPARE(doc.toPlainText(), QStringLiteral("header\nbody\n"));
+  check(2);
+  doc.redo();
+  QCOMPARE(doc.toPlainText(), QStringLiteral("header\nbody\n\n  "));
+  check(2);
+  QVERIFY(doc.lastBlock().isVisible());
+  doc.undo();
+
+  // Joining the empty EOF block moves its anchor onto the preceding block.
+  cursor.movePosition(QTextCursor::End);
+  cursor.deletePreviousChar();
+  QCOMPARE(doc.toPlainText(), QStringLiteral("header\nbody"));
+  check(1);
+
+  // Deleting a non-empty endpoint AND its preceding separator covers its anchor.
+  cursor.setPosition(doc.firstBlock().length() - 1);
+  cursor.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+  cursor.removeSelectedText();
+  QCOMPARE(doc.toPlainText(), QStringLiteral("header"));
+  QVERIFY(!folding.foldingRangeBlocks(id, nullptr, nullptr));
+  QVERIFY(doc.firstBlock().isVisible());
+}
+
 void TestTextFolding::testNestedSharedLastBlock() {
   QTextDocument doc(QStringLiteral("0\n1\n2\n3\n4\n5\n6"));
   TextFolding folding(&doc);

@@ -191,6 +191,7 @@ void MarkdownFoldingProvider::updateFoldingRegions(const QVector<md::FoldingRegi
   };
 
   QHash<QPair<int, int>, LiveEntry> live;
+  QHash<int, QPair<int, int>> foldedHeadings;
   live.reserve(m_entries.size());
   for (auto it = m_entries.cbegin(); it != m_entries.cend(); ++it) {
     int first = 0;
@@ -210,6 +211,9 @@ void MarkdownFoldingProvider::updateFoldingRegions(const QVector<md::FoldingRegi
     entry.m_entry = it.value();
     entry.m_folded = m_textFolding->isRangeFolded(entry.m_entry.m_id);
     live.insert(key, entry);
+    if (entry.m_folded && entry.m_entry.m_type == md::Heading) {
+      foldedHeadings.insert(first, qMakePair(last, entry.m_entry.m_level));
+    }
   }
 
   // 4. Describe the complete new tree. Only the same semantic region at a
@@ -223,6 +227,15 @@ void MarkdownFoldingProvider::updateFoldingRegions(const QVector<md::FoldingRegi
     range.m_first = region.m_startBlock;
     range.m_last = region.m_endBlock;
     range.m_flags = TextFolding::Persistent;
+    if (region.m_type == md::Heading) {
+      const auto heading = foldedHeadings.constFind(range.m_first);
+      if (heading != foldedHeadings.cend() && heading->second == region.m_level &&
+          heading->first <= range.m_last) {
+        // A heading's parsed section includes newly opened lines after its fold.
+        // Keep those lines outside the collapsed source, also on later parses.
+        range.m_last = heading->first;
+      }
+    }
 
     auto &entry = entries[i];
     entry.m_type = region.m_type;

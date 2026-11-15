@@ -266,6 +266,8 @@ private:
 
   void setupTextFolding();
 
+  bool insertBlockAfterFold();
+
   void setupExtraSelection();
 
   void updateExtraSelectionMgrFromConfig();

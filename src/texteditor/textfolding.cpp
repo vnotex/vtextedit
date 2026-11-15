@@ -76,9 +76,16 @@ void TextFolding::handleContentsChange(int p_position, int p_charsRemoved, int p
   m_contentsChangePending = true;
   const int removedEnd = p_position + p_charsRemoved;
   const int delta = p_charsAdded - p_charsRemoved;
+  const int oldEnd = m_document->characterCount() - 1 - delta;
+  const bool eofSuffixEdit = (p_charsRemoved == 0 || p_charsAdded == 0) && removedEnd == oldEnd;
   for (auto range : qAsConst(m_idToFoldingRange)) {
     for (int *anchor : {&range->m_firstPosition, &range->m_lastPosition}) {
       if (*anchor < 0) {
+        continue;
+      }
+      if (anchor == &range->m_lastPosition && *anchor == p_position && eofSuffixEdit) {
+        // Appending after an empty EOF block leaves that endpoint in place.
+        // Undo removes the suffix but retains the same empty terminal block.
         continue;
       }
       if (p_charsRemoved > 0 && p_position <= *anchor && *anchor < removedEnd) {

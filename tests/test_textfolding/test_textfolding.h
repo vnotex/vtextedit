@@ -40,6 +40,8 @@ private slots:
 
   void testGroupedBoundaryInsertionsUndoRedo();
 
+  void testEmptyEofInsertionUndoRedo();
+
   void testNestedSharedLastBlock();
 
   void testFoldingPublication();

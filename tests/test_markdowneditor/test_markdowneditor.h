@@ -234,6 +234,10 @@ private slots:
   void testListItemDecorationsGeometry();
   void testListItemDecorationsFoldingAndPreviews();
   // Vi open-line completion through the real normal/insert-mode key pipeline.
+  void testFoldHeaderInsertion_data();
+  void testFoldHeaderInsertion();
+  void testFoldHeaderInsertionGuards_data();
+  void testFoldHeaderInsertionGuards();
   void testViListOpenLines();
   void testViListOpenContext();
   void testViListOpenNumbering();

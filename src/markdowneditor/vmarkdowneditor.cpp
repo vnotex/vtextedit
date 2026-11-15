@@ -1951,20 +1951,20 @@ public:
                     m_layout->movePersistentConcealCursor(*p_cursor, p_operation, p_mode, p_count);
               }
             });
-    connect(
-        m_edit, &VTextEdit::cursorNormalizationRequested, this,
-        [this](QTextCursor *p_cursor, bool p_onCharacter, bool p_preferInside) {
-          if (!m_applying) {
-            using Affinity = TextDocumentLayout::ConcealCursorAffinity;
-            const int position = m_layout->normalizePersistentConcealPosition(
-                p_cursor->position(), p_onCharacter,
-                p_preferInside ? Affinity::PreferInside : Affinity::Preserve);
-            if (position != p_cursor->position()) {
-              p_cursor->setPosition(position, p_cursor->hasSelection() ? QTextCursor::KeepAnchor
-                                                                       : QTextCursor::MoveAnchor);
-            }
-          }
-        });
+    connect(m_edit, &VTextEdit::cursorNormalizationRequested, this,
+            [this](QTextCursor *p_cursor, bool p_onCharacter, bool p_preferInside) {
+              if (!m_applying) {
+                using Affinity = TextDocumentLayout::ConcealCursorAffinity;
+                const int position = m_layout->normalizePersistentConcealPosition(
+                    p_cursor->position(), p_onCharacter,
+                    p_preferInside ? Affinity::PreferInside : Affinity::Preserve);
+                if (position != p_cursor->position()) {
+                  p_cursor->setPosition(position, p_cursor->hasSelection()
+                                                      ? QTextCursor::KeepAnchor
+                                                      : QTextCursor::MoveAnchor);
+                }
+              }
+            });
     connect(m_edit, &VTextEdit::textReplacementRequested, this,
             [this](QTextCursor *p_cursor, const QString &p_text, bool *p_handled) {
               if (!*p_handled) {
@@ -3133,6 +3133,10 @@ void VMarkdownEditor::preKeyReturn(int p_modifiers, bool *p_changed, bool *p_han
       QStringLiteral("vte_markdown_source_formatter"), Qt::FindDirectChildrenOnly);
   Q_ASSERT(formatter);
   formatter->takeListReturnSuppression();
+  if (*p_handled) {
+    m_returnBlockContext = md::BlockContext();
+    return;
+  }
 
   // Probe before splitting; only this Return may consume the quote context.
   m_returnBlockContext = getHighlighter()->getBlockContext(m_textEdit->textCursor().blockNumber());

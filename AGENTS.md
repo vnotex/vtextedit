@@ -785,6 +785,25 @@ highlighter and list worker in `testSourceEditSettlement`, `testSourceEditJoined
 and `testSourceEditConcealment`, including undo/redo, separate writes, feature cancellation,
 empty headings, IME-delayed cleanup and reentrant body-only publication changes.
 
+## Insertion After Collapsed Blocks
+
+`VTextEditor` handles unmodified Enter at the end of an unselected fold header, and Vi `o`
+from any column of that header, before Markdown continuation hooks. The new block goes after
+all blocks in the outermost collapsed range, retaining header whitespace indentation but not
+list or quote markers. Normal, Vi insert, keypad Enter and VSCode share this path. Mid-line
+splits, selections, modified Return, Vi `O`, disabled folding and read-only input keep their
+existing behavior.
+
+Use a local insertion cursor; publishing a cursor inside hidden source snaps it to the header.
+Insert before the following block when present. At empty EOF, the last folding anchor stays
+left-affine for suffix append and its undo; other endpoint edits retain normal rebasing.
+Folded Markdown headings keep their surviving endpoint when a same-level parsed section grows,
+so reparsing does not absorb the new line or unfold the original section. Shortened sections,
+changed heading levels/types and deleted endpoints do not inherit that retained fold.
+
+Coverage: `testFoldHeaderInsertion*`, `testEmptyEofInsertionUndoRedo` and
+`testFoldedHeadingGrowth`. No configuration defaults or persisted fields change; no migration.
+
 ## Testing
 
 * Framework: QtTest (`#include <QtTest>`, link `Qt::Test`)
