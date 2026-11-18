@@ -32,6 +32,9 @@ private slots:
   void testConcealPresets();
   void testConcealHoverToolTip();
   void testConcealCaretAndViMotion();
+  void testConcealEmptyElements_data();
+  void testConcealEmptyElements();
+  void testConcealEmptyBodyEdits();
   void testConcealSyntaxRules_data();
   void testConcealSyntaxRules();
   void testConcealNestedAndMultilineSyntax();

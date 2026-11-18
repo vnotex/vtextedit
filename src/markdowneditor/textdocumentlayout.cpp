@@ -595,6 +595,7 @@ void TextDocumentLayout::setConcealment(const ConcealSnapshot &p_snapshot) {
     LiveConcealGroup group;
     group.m_spec = spec;
     group.m_spec.m_firstRun = firstRun;
+    group.m_hasVisibleContent = concealGroupHasVisibleContent(group.m_spec);
     group.m_start = anchor(spec.m_start, false);
     group.m_end = anchor(spec.m_end, true);
     group.m_revealStart = anchor(spec.m_revealStart, false);
@@ -1304,6 +1305,9 @@ void TextDocumentLayout::updateConcealSource(int p_position, int p_removed, int 
       dependency = {block, block.revision()};
       queueConcealRelayout(block);
     }
+    if (changedBody) {
+      group.m_hasVisibleContent = concealGroupHasVisibleContent(spec);
+    }
     if (cleanupCandidate && ownRunsCoverExtent(spec)) {
       empty.append({spec.m_start, spec.m_end, qBound(spec.m_start, bodyPosition, spec.m_end),
                     sourceText(doc, spec.m_start, spec.m_end)});
@@ -1319,6 +1323,40 @@ void TextDocumentLayout::updateConcealSource(int p_position, int p_removed, int 
       return;
     }
   }
+}
+
+bool TextDocumentLayout::concealGroupHasVisibleContent(const ConcealGroup &p_spec) const {
+  const int endRun = p_spec.m_firstRun + p_spec.m_runCount;
+  for (int i = p_spec.m_firstRun; i < endRun; ++i) {
+    if (!QStringView(m_concealRuns.at(i).m_range.m_replacement).trimmed().isEmpty()) {
+      return true;
+    }
+  }
+  // Walk the union without changing run order (the final run identifies the closer).
+  // Only inspect surviving source, and stop at its first non-whitespace character.
+  int position = p_spec.m_start;
+  while (position < p_spec.m_end) {
+    int coveredEnd = position;
+    int nextStart = p_spec.m_end;
+    for (int i = p_spec.m_firstRun; i < endRun; ++i) {
+      const auto &run = m_concealRuns.at(i);
+      if (run.m_sourceStart <= position) {
+        coveredEnd = qMax(coveredEnd, run.m_sourceEnd);
+      } else {
+        nextStart = qMin(nextStart, run.m_sourceStart);
+      }
+    }
+    if (coveredEnd > position) {
+      position = coveredEnd;
+      continue;
+    }
+    while (position < nextStart) {
+      if (!document()->characterAt(position++).isSpace()) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 void TextDocumentLayout::refreshConcealGroups() {
@@ -1344,8 +1382,8 @@ void TextDocumentLayout::refreshConcealGroups() {
     }
     group.m_composing = composing;
     group.m_preeditRevealed = preeditRevealed;
-    const bool active =
-        group.m_valid && !preeditRevealed && !concealGroupRevealed(group, concealCursorPosition());
+    const bool active = group.m_valid && group.m_hasVisibleContent && !preeditRevealed &&
+                        !concealGroupRevealed(group, concealCursorPosition());
     if (group.m_active != active) {
       group.m_active = active;
       queueConcealGroup(group);
@@ -1388,7 +1426,8 @@ void TextDocumentLayout::setConcealCursorPosition(int p_position) {
         auto &group = m_concealGroups[index];
         if (group.m_valid &&
             concealGroupRevealed(group, oldPosition) != concealGroupRevealed(group, p_position)) {
-          const bool active = !group.m_preeditRevealed && !concealGroupRevealed(group, p_position);
+          const bool active = group.m_hasVisibleContent && !group.m_preeditRevealed &&
+                              !concealGroupRevealed(group, p_position);
           if (active != group.m_active) {
             group.m_active = active;
             queueConcealGroup(group);

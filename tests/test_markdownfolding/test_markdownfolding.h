@@ -119,6 +119,8 @@ private slots:
 
   void testConcealWrappingAndSelection();
 
+  void testConcealEmptyGroups();
+
   void testConcealGenericRuns();
 
   void testConcealNestingAndConflicts();

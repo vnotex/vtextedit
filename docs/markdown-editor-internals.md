@@ -437,9 +437,17 @@ single-line text, including an empty string or text longer than its source. Grou
 blocks; neither source nor replacement may consume or introduce a paragraph separator.
 Shortening thresholds and delimiter recognition never enter the layout engine.
 
+A group is not concealed if its replacements and surviving source would be empty after trimming
+Unicode whitespace. Empty headings (`# `), empty-label links (`[](https://aa.com)`) and
+whitespace-only code spans therefore keep their source visible, even with persistent rules.
+This check is per element/group, not per paragraph; a multiblock group with visible content
+elsewhere can still hide a whole paragraph. Eligibility is cached on publication and body edits,
+not recomputed on caret movement. Dormant groups retain ownership so inserting nonblank content
+can restore concealment before the next parse. Source text and undo history are unchanged.
+
 For revealable rules, the caret reveals an entire group on entering its reveal region or any
-run. These syntax groups also reveal at their exclusive end, keeping empty headings editable at
-EOF; URL groups retain their half-open boundary behavior. Selection alone does not reveal a
+run. These syntax groups also reveal at their exclusive end, including at EOF; URL groups retain
+their half-open boundary behavior. Selection alone does not reveal a
 group. IME preedit uses its source anchor and the same reveal boundaries: composing inside a
 multiblock group reveals all its runs, but unrelated groups on that line stay concealed.
 Conceal overlays and glyph patches account for Qt's temporary UTF-16 preedit insertion;

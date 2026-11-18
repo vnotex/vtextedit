@@ -2604,6 +2604,53 @@ void TestMarkdownFolding::testConcealWrappingAndSelection() {
   }
 }
 
+void TestMarkdownFolding::testConcealEmptyGroups() {
+  QImage device(1200, 900, QImage::Format_ARGB32_Premultiplied);
+  device.fill(Qt::white);
+  DocumentResourceMgr resources;
+  struct Case {
+    QString m_source;
+    QVector<TextDocumentLayout::ConcealRun> m_runs;
+    QString m_display;
+  };
+  const Case cases[] = {
+      {QStringLiteral("hide"), {{0, 4, {}}}, QStringLiteral("hide")},
+      {QStringLiteral("[ \t\u2003]"), {{0, 1, {}}, {4, 5, {}}}, QStringLiteral("[ \t\u2003]")},
+      {QStringLiteral("abcdef"), {{3, 5, {}}, {0, 6, {}}}, QStringLiteral("abcdef")},
+      {QStringLiteral("[ \n\t ]"), {{0, 1, {}}, {5, 6, {}}}, QStringLiteral("[ \n\t ]")},
+      {QStringLiteral("[ \nX ]"), {{0, 1, {}}, {5, 6, {}}}, QStringLiteral(" \nX ")},
+      {QStringLiteral("hide"), {{0, 4, QStringLiteral(" \t")}}, QStringLiteral("hide")},
+      {QStringLiteral("hide"), {{0, 4, QStringLiteral("...")}}, QStringLiteral("...")}};
+  for (const auto &test : cases) {
+    QTextDocument doc(test.m_source);
+    QTextDocument reference(test.m_display);
+    auto *layout = makeConcealLayout(doc, resources, device);
+    auto *referenceLayout = makeConcealLayout(reference, resources, device);
+    TextDocumentLayout::ConcealSnapshot snapshot;
+    TextDocumentLayout::ConcealGroup group;
+    group.m_end = group.m_revealEnd = test.m_source.size();
+    group.m_runCount = test.m_runs.size();
+    snapshot.m_groups = {group};
+    snapshot.m_runs = test.m_runs;
+    const int revision = doc.revision();
+    for (bool persistent : {false, true}) {
+      if (persistent && !test.m_runs.first().m_replacement.isEmpty()) {
+        continue;
+      }
+      snapshot.m_groups[0].m_keepHidden = persistent;
+      layout->setConcealment(snapshot);
+      for (int position : {-1, 0, int(test.m_source.size())}) {
+        layout->setConcealCursorPosition(position);
+        reference.setPlainText(!persistent && position == 0 ? test.m_source : test.m_display);
+        QCOMPARE(renderConcealLayout(layout, device), renderConcealLayout(referenceLayout, device));
+        QVERIFY(doc.firstBlock().layout()->lineAt(0).height() > 0);
+      }
+    }
+    QCOMPARE(doc.toPlainText(), test.m_source);
+    QCOMPARE(doc.revision(), revision);
+  }
+}
+
 void TestMarkdownFolding::testConcealGenericRuns() {
   QImage device(1200, 900, QImage::Format_ARGB32_Premultiplied);
   device.fill(Qt::white);
@@ -2653,21 +2700,6 @@ void TestMarkdownFolding::testConcealGenericRuns() {
   QCOMPARE(eofLayout->sourceTextRect(9, 11).width(), 0.0);
   eofLayout->setConcealCursorPosition(eof.characterCount() - 1);
   QVERIFY(eofLayout->sourceTextRect(9, 11).width() > 0);
-
-  // Hiding the complete paragraph retains its editable native line height,
-  // and a hit with no visible neighbor resolves to the exclusive source end.
-  QTextDocument empty(QStringLiteral("hide"));
-  auto *emptyLayout = makeConcealLayout(empty, resources, device);
-  auto emptySnapshot = snapshot;
-  emptySnapshot.m_groups[0].m_end = emptySnapshot.m_groups[0].m_revealEnd = 4;
-  emptySnapshot.m_groups[0].m_runCount = 1;
-  emptySnapshot.m_runs = {{0, 4, {}}};
-  emptyLayout->setConcealment(emptySnapshot);
-  QCOMPARE(emptyLayout->sourceTextRect(0, 4).width(), 0.0);
-  QVERIFY(empty.firstBlock().layout()->lineAt(0).height() > 0);
-  QCOMPARE(
-      emptyLayout->hitTest(concealCursorPoint(emptyLayout, empty.firstBlock(), 0), Qt::FuzzyHit),
-      4);
 
   // No relationship between source length and replacement length is required.
   const QString replacement = QStringLiteral("arbitrarily long replacement");
@@ -2758,7 +2790,7 @@ void TestMarkdownFolding::testConcealNestingAndConflicts() {
   snapshot.m_runs.clear();
   append(0, 12, 0, 2, 2, 10, QString());
   append(3, 8, 3, 8, 4, 7, QStringLiteral("nested"));
-  append(6, 16, 6, 16, 6, 16, QString());
+  append(6, 21, 6, 16, 6, 16, QString());
   append(17, 21, 17, 21, 17, 21, QStringLiteral("Y"));
   layout->setConcealment(snapshot);
   reference.setPlainText(QStringLiteral("ab Y"));

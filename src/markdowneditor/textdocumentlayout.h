@@ -519,6 +519,7 @@ private:
     int m_dependencyCount = 0;
     bool m_valid = true;
     bool m_active = false;
+    bool m_hasVisibleContent = false;
     bool m_composing = false;
     bool m_preeditRevealed = false;
   };
@@ -530,6 +531,7 @@ private:
   void updateConcealSource(int p_position, int p_removed, int p_added);
   bool concealGroupRevealed(const LiveConcealGroup &p_group, int p_cursor) const;
   void queueConcealGroup(const LiveConcealGroup &p_group);
+  bool concealGroupHasVisibleContent(const ConcealGroup &p_spec) const;
   void refreshConcealGroups();
   void failConcealGroups(const QVector<int> &p_groups);
   QVector<ConcealedRange> concealRunsForBlock(const QTextBlock &p_block,

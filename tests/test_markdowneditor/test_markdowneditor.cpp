@@ -1482,6 +1482,77 @@ void TestMarkdownEditor::testConcealPresets() {
   QCOMPARE(f.text(), savedSource);
 }
 
+void TestMarkdownEditor::testConcealEmptyElements_data() {
+  QTest::addColumn<QString>("element");
+  QTest::addColumn<int>("kind");
+  const auto add = [](const char *p_name, const QString &p_element, MarkdownConcealElement p_kind) {
+    QTest::newRow(p_name) << p_element << int(p_kind);
+  };
+  add("heading-space", QStringLiteral("# "), MarkdownConcealElement::HeadingMarkers);
+  add("heading-bare", QStringLiteral("###"), MarkdownConcealElement::HeadingMarkers);
+  add("heading-closing", QStringLiteral("###   ###"), MarkdownConcealElement::HeadingMarkers);
+  add("heading-unicode", QStringLiteral("# \u2003"), MarkdownConcealElement::HeadingMarkers);
+  add("link-empty", QStringLiteral("[](https://aa.com)"), MarkdownConcealElement::LinkSyntax);
+  add("link-in-paragraph", QStringLiteral("before [](https://aa.com) after"),
+      MarkdownConcealElement::LinkSyntax);
+  add("link-whitespace", QStringLiteral("[ \t\u2003](https://aa.com)"),
+      MarkdownConcealElement::LinkSyntax);
+  add("code-whitespace", QStringLiteral("` \t `"), MarkdownConcealElement::InlineCodeMarkers);
+}
+
+void TestMarkdownEditor::testConcealEmptyElements() {
+  QFETCH(QString, element);
+  QFETCH(int, kind);
+  const QString source = element + QStringLiteral("\n\noutside");
+  for (bool persistent : {false, true}) {
+    auto config = makeConcealConfig();
+    config->m_concealRules.set(static_cast<MarkdownConcealElement>(kind),
+                               MarkdownConcealHideSyntax{persistent});
+    Fixture f(source, -1, -1, config);
+    QVERIFY(!renderConcealEditor(f).isNull());
+    waitForConcealPublication(f);
+    auto *doc = f.editor()->document();
+    const int revision = doc->revision();
+    for (int position : {int(source.size()), 0, int(element.size()), int(source.size())}) {
+      setConcealCursor(f, position);
+      QCOMPARE(f.edit()->textCursor().position(), position);
+      concealConfigVerifyWidth(f, 0, element.size(), element);
+    }
+    QCOMPARE(f.text(), source);
+    QCOMPARE(doc->revision(), revision);
+    QVERIFY(!doc->isUndoAvailable());
+  }
+}
+
+void TestMarkdownEditor::testConcealEmptyBodyEdits() {
+  auto config = makeConcealConfig();
+  config->m_concealRules.set(MarkdownConcealElement::HeadingMarkers,
+                             MarkdownConcealHideSyntax{true});
+  Fixture f(QStringLiteral("# \n\noutside"), -1, -1, config);
+  QVERIFY(!renderConcealEditor(f).isNull());
+  waitForConcealPublication(f);
+  QVERIFY(concealConfigRangeWidth(f, 0, 2) > 1);
+  setConcealCursor(f, 2);
+  QTest::keyClicks(f.edit(), QStringLiteral("x"), Qt::NoModifier, 0);
+  QVERIFY(qAbs(concealConfigRangeWidth(f, 0, 2)) < 0.1);
+  f.select(0, 2, 0, 3);
+  QTest::keyClicks(f.edit(), QStringLiteral(" "), Qt::NoModifier, 0);
+  QCOMPARE(f.text(), QStringLiteral("#  \n\noutside"));
+  QVERIFY(concealConfigRangeWidth(f, 0, 2) > 1);
+  setConcealCursor(f, f.text().size());
+  QVERIFY(concealConfigRangeWidth(f, 0, 2) > 1);
+  waitForConcealPublication(f);
+  QVERIFY(concealConfigRangeWidth(f, 0, 2) > 1);
+  f.edit()->undo();
+  QCOMPARE(f.text(), QStringLiteral("# x\n\noutside"));
+  waitForConcealPublication(f);
+  QVERIFY(qAbs(concealConfigRangeWidth(f, 0, 2)) < 0.1);
+  f.edit()->redo();
+  QCOMPARE(f.text(), QStringLiteral("#  \n\noutside"));
+  waitForConcealPublication(f);
+  QVERIFY(concealConfigRangeWidth(f, 0, 2) > 1);
+}
+
 void TestMarkdownEditor::testConcealSyntaxRules_data() {
   QTest::addColumn<int>("kind");
   QTest::addColumn<QString>("opening");
@@ -2660,7 +2731,7 @@ void TestMarkdownEditor::testConcealHeadingAndFormulaBoundaries() {
   config->m_concealRules.set(MarkdownConcealElement::InlineFormulaMarkers,
                              MarkdownConcealHideSyntax{});
   for (const auto &element : {QStringLiteral("### Heading ###"), QStringLiteral("$x + y$"),
-                              QStringLiteral("$$x + y$$"), QStringLiteral("###")}) {
+                              QStringLiteral("$$x + y$$")}) {
     const auto source = QStringLiteral("outside\n\n") + element;
     Fixture f(source, 0, 0, config);
     QVERIFY(!renderConcealEditor(f).isNull());

@@ -39,6 +39,9 @@
 
 ### Fixes
 
+- Keep elements visible when concealment would leave empty or whitespace-only output, including
+  empty headings and empty-label links. Apply the same guard to generic text-layout groups and
+  persistent editing, without changing source text or nonempty concealment.
 - Insert native Markdown `==` markers for the mark action instead of HTML `<mark>` tags,
   including table cells and multiline selections. Existing document content is not converted.
 - Keep insertion carets inside concealed closing markers across full parses and prefer that
