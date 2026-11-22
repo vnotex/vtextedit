@@ -165,6 +165,14 @@ struct ConcealRanges {
   }
 };
 
+// A Markdown link, including explicit/reference links and linkified text.
+struct LinkInfo {
+  // Absolute, half-open UTF-16 source extent of the complete link.
+  ElementRegion m_region;
+  // Parser-resolved destination, not the raw source spelling.
+  QString m_destination;
+};
+
 // One image link found by the parse that produced the current highlighting,
 // carrying exactly what the two consumers of the highlighter's image channel
 // need: PreviewMgr, to fetch and scale the preview, and VNote's context menu,

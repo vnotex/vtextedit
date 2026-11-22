@@ -5,8 +5,8 @@
 #include <QTextCharFormat>
 
 #include <vtextedit/codeblockhighlighter.h>
-#include <vtextedit/markdownhighlighterdata.h>
 #include <vtextedit/markdowndocument.h>
+#include <vtextedit/markdownhighlighterdata.h>
 #include <vtextedit/preview.h>
 #include <vtextedit/vsyntaxhighlighter.h>
 
@@ -87,6 +87,9 @@ public:
   // The image links found by the parse behind the current highlighting,
   // carrying each link's region, resolved destination and declared `=WxH` size.
   const QVector<md::ImageLinkInfo> &getImageLinks() const;
+
+  // Empty unless the full parse matches the current source and grammar profile.
+  const QVector<md::LinkInfo> &getLinks() const;
 
   // Empty unless the complete parse result matches the current document.
   const md::ConcealRanges &getConcealRanges() const;

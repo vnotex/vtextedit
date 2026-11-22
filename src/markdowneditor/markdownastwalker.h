@@ -230,6 +230,7 @@ struct ASTWalkResult {
   // only as parser-level test surface (and via MarkdownParseResult, whose
   // parseImageRegions() likewise has no caller). Use imageElements.
   QVector<ElementRegion> imageRegions;
+  QVector<LinkInfo> links;
   QVector<ElementRegion> headerRegions;
   QMap<int, ElementRegion> codeBlockRegions;
   QVector<ElementRegion> inlineEquationRegions;

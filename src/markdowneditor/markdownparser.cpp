@@ -1,7 +1,7 @@
 #include "markdownparser.h"
 
-#include "markdownastwalker.h"
 #include "cmarkadapter.h"
+#include "markdownastwalker.h"
 
 using namespace vte;
 using namespace vte::md;
@@ -69,6 +69,7 @@ MarkdownParserWorker::parseMarkdown(const QSharedPointer<MarkdownParseConfig> &p
   if (!p_config->m_fast) {
     result->m_concealRanges = std::move(walkResult.concealRanges);
     result->m_imageRegions = std::move(walkResult.imageRegions);
+    result->m_links = std::move(walkResult.links);
     result->m_headerRegions = std::move(walkResult.headerRegions);
     result->m_codeBlockRegions = std::move(walkResult.codeBlockRegions);
     result->m_inlineEquationRegions = std::move(walkResult.inlineEquationRegions);
@@ -150,6 +151,7 @@ MarkdownParser::parse(const QSharedPointer<MarkdownParseConfig> &p_config) {
   if (!p_config->m_fast) {
     result->m_concealRanges = std::move(walkResult.concealRanges);
     result->m_imageRegions = std::move(walkResult.imageRegions);
+    result->m_links = std::move(walkResult.links);
     result->m_headerRegions = std::move(walkResult.headerRegions);
     result->m_codeBlockRegions = std::move(walkResult.codeBlockRegions);
     result->m_inlineEquationRegions = std::move(walkResult.inlineEquationRegions);

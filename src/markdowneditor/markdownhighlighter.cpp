@@ -1048,6 +1048,13 @@ const QVector<md::ImageLinkInfo> &MarkdownHighlighter::getImageLinks() const {
   return m_result->m_imageLinks;
 }
 
+const QVector<md::LinkInfo> &MarkdownHighlighter::getLinks() const {
+  static const QVector<md::LinkInfo> empty;
+  return m_result && m_result->matched(m_timeStamp) && m_result->m_parseOptions == m_parseOptions
+             ? m_result->m_links
+             : empty;
+}
+
 const md::ConcealRanges &MarkdownHighlighter::getConcealRanges() const {
   static const md::ConcealRanges empty;
   return m_result && m_result->matched(m_timeStamp) ? m_result->m_concealRanges : empty;

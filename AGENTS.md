@@ -107,6 +107,12 @@ host buffer revision. Replacing source/profile or disabling retention releases a
 workers retain their own immutable inputs until completion. Existing metadata can remain valid
 without retaining a tree, allowing hosts to perform a direct render-only parse.
 
+`MarkdownHighlighter::getLinks()` exposes parser-resolved destinations and absolute half-open
+UTF-16 extents for Markdown links, including reference links, angle autolinks and linkified
+text. It is independent of tree retention and concealment. It returns empty until a full
+result matches both the current source and grammar profile; consumers must not cache it
+across edits. Code and raw HTML text do not produce link actions.
+
 Heading records include zero-based source lines and rendered order. Unreferenced footnote
 headings have no rendered rank and must not reserve reader slugs. Shared title extraction is
 iterative so deeply nested inline formatting does not overflow the native stack.

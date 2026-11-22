@@ -81,6 +81,7 @@ public:
   // All image links, with their declared `=WxH` size. Order follows the
   // walker's sorted image elements.
   QVector<md::ImageLinkInfo> m_imageLinks;
+  QVector<md::LinkInfo> m_links;
 
   md::ConcealRanges m_concealRanges;
 

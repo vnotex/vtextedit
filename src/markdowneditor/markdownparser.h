@@ -79,6 +79,7 @@ struct MarkdownParseResult {
 
   // All image link regions.
   QVector<ElementRegion> m_imageRegions;
+  QVector<LinkInfo> m_links;
 
   ConcealRanges m_concealRanges;
 

@@ -141,6 +141,7 @@ MarkdownHighlighterResult::MarkdownHighlighterResult(
   // Implicit sharing: keeping the raw typed data is nearly free, and lets the
   // snapshots be built later for exactly the enabled element types.
   m_imageElements = p_result->m_imageElements;
+  m_links = p_result->m_links;
   m_codeElements = p_result->m_codeElements;
   m_mathElements = p_result->m_mathElements;
   m_tableElements = p_result->m_tableElements;

@@ -2761,6 +2761,13 @@ ASTWalkResult walkAndConvert(const QByteArray &p_utf8Text, int p_numBlocks, int 
       int absEnd = p_offset + docEnd;
       addRegion(result, style, absStart, absEnd);
 
+      if (type == CMARK_NODE_LINK && rawText.m_element.isEmpty()) {
+        const char *url = cmark_node_get_url(node);
+        if (url && *url) {
+          result.links.append({ElementRegion(absStart, absEnd), QString::fromUtf8(url)});
+        }
+      }
+
       if (type == CMARK_NODE_HEADING) {
         result.headingElements.append(headingInfo(node, absStart, absEnd, p_startBlock));
       } else if (type == CMARK_NODE_TABLE) {
