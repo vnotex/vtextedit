@@ -5200,6 +5200,91 @@ void TestMarkdownEditor::testListAstCodeAndStaleness() {
   }
 }
 
+void TestMarkdownEditor::testFoldedTailNavigation_data() {
+  QTest::addColumn<QString>("source");
+  QTest::addColumn<QString>("operation");
+  const QString heading = QStringLiteral("Introduction\n\n# Tail\nhidden");
+  const QString fence = QStringLiteral("Introduction\n\n```text\nhidden\n```");
+  QTest::newRow("right") << heading << QStringLiteral("right");
+  QTest::newRow("down") << heading << QStringLiteral("down");
+  QTest::newRow("click-below") << heading << QStringLiteral("click");
+  QTest::newRow("empty-tail") << heading + QLatin1Char('\n') << QStringLiteral("right");
+  QTest::newRow("nested-tail") << QStringLiteral("Introduction\n\n# Tail\n## Nested\nhidden")
+                               << QStringLiteral("down");
+  QTest::newRow("fence-tail") << fence << QStringLiteral("click");
+  QTest::newRow("shift-right") << heading << QStringLiteral("shift-right");
+  QTest::newRow("extend-selection") << heading << QStringLiteral("shift-down");
+  QTest::newRow("right-following") << fence + QStringLiteral("\nafter") << QStringLiteral("right");
+  QTest::newRow("down-following") << fence + QStringLiteral("\nafter") << QStringLiteral("down");
+  QTest::newRow("click-following") << fence + QStringLiteral("\nafter") << QStringLiteral("click");
+  QTest::newRow("shift-left-following")
+      << fence + QStringLiteral("\nafter") << QStringLiteral("shift-left");
+  QTest::newRow("click-above") << heading << QStringLiteral("above");
+}
+
+void TestMarkdownEditor::testFoldedTailNavigation() {
+  QFETCH(QString, source);
+  QFETCH(QString, operation);
+  auto config = makeConfig();
+  config->m_inplacePreviewSources = MarkdownEditorConfig::NoInplacePreview;
+  Fixture fixture(source, 2, -1, config);
+  auto editor = fixture.editor();
+  auto edit = fixture.edit();
+  auto doc = editor->document();
+  editor->setSpellCheckEnabled(false);
+  editor->resize(900, 480);
+  editor->show();
+  QVERIFY(QTest::qWaitForWindowExposed(editor));
+  QApplication::setActiveWindow(editor);
+  edit->setFocus();
+  fixture.waitForFreshListAst();
+  if (source.contains(QStringLiteral("## Nested"))) {
+    fixture.moveTo(3);
+    QVERIFY(editor->foldAtCursor());
+    fixture.moveTo(2);
+  }
+  QVERIFY(editor->foldAtCursor());
+  QVERIFY(!doc->findBlockByNumber(3).isVisible());
+  const int headerEnd = fixture.blockEnd(2);
+  const bool following = doc->lastBlock().isVisible();
+  const bool extend = operation == QLatin1String("shift-down");
+  const bool shift = operation.startsWith(QLatin1String("shift-"));
+  const bool left = operation == QLatin1String("shift-left");
+  const int start = left ? doc->lastBlock().position() : headerEnd;
+  const int anchor = extend ? 0 : start;
+  QTextCursor cursor(doc);
+  cursor.setPosition(anchor);
+  cursor.setPosition(start, shift ? QTextCursor::KeepAnchor : QTextCursor::MoveAnchor);
+  edit->setTextCursor(cursor);
+  int expected = headerEnd;
+  if (operation == QLatin1String("click")) {
+    QVERIFY(doc->documentLayout()->documentSize().height() < edit->viewport()->height() - 10);
+    QTest::mouseClick(edit->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      QPoint(10, edit->viewport()->height() - 10));
+    if (following) {
+      expected = fixture.blockEnd(doc->blockCount() - 1);
+    }
+  } else if (operation == QLatin1String("above")) {
+    QTest::mouseClick(edit->viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(1, 1));
+    expected = 0;
+  } else {
+    const bool right = operation.endsWith(QLatin1String("right"));
+    const auto key = left ? Qt::Key_Left : right ? Qt::Key_Right : Qt::Key_Down;
+    QTest::keyClick(edit, key, shift ? Qt::ShiftModifier : Qt::NoModifier);
+    if (following && !left) {
+      expected = right ? doc->lastBlock().position() : fixture.blockEnd(doc->blockCount() - 1);
+    }
+  }
+  QCOMPARE(edit->textCursor().position(), expected);
+  QCOMPARE(edit->textCursor().anchor(), shift ? anchor : expected);
+  QVERIFY(edit->textCursor().block().isVisible());
+  QCOMPARE(doc->toPlainText(), source);
+  const int lastHidden = doc->blockCount() - (following ? 2 : 1);
+  for (int block = 3; block <= lastHidden; ++block) {
+    QVERIFY(!doc->findBlockByNumber(block).isVisible());
+  }
+}
+
 void TestMarkdownEditor::testFoldHeaderInsertion_data() {
   QTest::addColumn<bool>("markdown");
   QTest::addColumn<QString>("source");

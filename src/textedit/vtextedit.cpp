@@ -115,27 +115,33 @@ void VTextEdit::handleCursorPositionChange() {
     normalizeCursorInProjection();
   }
 
-  // Qt BUG: In the case of exist of invislbe blocks, when a user click at the
-  // top of the document, the hit test of underlying document layout may treat
-  // the cursor at wrong blocks (such as those invisible blocks or the next
-  // block to those invisible blocks).
-  // TODO: We could do something tricky to fix it here if necessary.
   const int intervalThreshold = 50;
   const int interval = m_cursorPositionChangeTime.restart();
 
   auto cursor = textCursor();
   auto tb = cursor.block();
   if (!tb.isVisible()) {
-    // When cursor is placed in a invisible block. We move it
-    // to the first block that is visible.
-    m_cursorLine = tb.blockNumber();
-    tb = document()->firstBlock();
-    while (tb.isValid() && !tb.isVisible()) {
-      tb = tb.next();
+    // Qt can leave the cursor in hidden source when crossing a fold or clicking
+    // below a folded document tail. Follow the movement, then try the other side.
+    const auto visibleBlock = [](QTextBlock p_block, bool p_forward) {
+      while (p_block.isValid() && !p_block.isVisible()) {
+        p_block = p_forward ? p_block.next() : p_block.previous();
+      }
+      return p_block;
+    };
+    bool forward = tb.blockNumber() > m_cursorLine;
+    tb = visibleBlock(tb, forward);
+    if (!tb.isValid()) {
+      forward = !forward;
+      tb = visibleBlock(cursor.block(), forward);
     }
-
-    Q_ASSERT(tb.isValid());
-    cursor.setPosition(tb.position());
+    if (!tb.isValid()) {
+      return;
+    }
+    // A folded tail has no following block: stay at its visible header's end.
+    const int position = tb.position() + (forward ? 0 : tb.length() - 1);
+    cursor.setPosition(position,
+                       cursor.hasSelection() ? QTextCursor::KeepAnchor : QTextCursor::MoveAnchor);
     setTextCursor(cursor);
     return;
   }

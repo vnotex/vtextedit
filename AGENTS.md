@@ -794,15 +794,21 @@ list or quote markers. Normal, Vi insert, keypad Enter and VSCode share this pat
 splits, selections, modified Return, Vi `O`, disabled folding and read-only input keep their
 existing behavior.
 
-Use a local insertion cursor; publishing a cursor inside hidden source snaps it to the header.
+Use a local insertion cursor; publishing a cursor inside hidden source relocates it.
 Insert before the following block when present. At empty EOF, the last folding anchor stays
 left-affine for suffix append and its undo; other endpoint edits retain normal rebasing.
 Folded Markdown headings keep their surviving endpoint when a same-level parsed section grows,
 so reparsing does not absorb the new line or unfold the original section. Shortened sections,
 changed heading levels/types and deleted endpoints do not inherit that retained fold.
 
-Coverage: `testFoldHeaderInsertion*`, `testEmptyEofInsertionUndoRedo` and
-`testFoldedHeadingGrowth`. No configuration defaults or persisted fields change; no migration.
+`VTextEdit` repairs hidden cursors in the direction of movement from the previous visible line,
+then tries the opposite side if no visible block exists there. Forward lands at block start;
+backward lands at block end. Clicks below a folded document tail and Right/Down at its header
+therefore stay at the visible header's end, not the document start. Keep selection anchors,
+leave source and folds unchanged, and retain forward recovery when no visible predecessor exists.
+
+Coverage: `testFoldHeaderInsertion*`, `testEmptyEofInsertionUndoRedo`, `testFoldedHeadingGrowth`
+and `testFoldedTailNavigation`. No configuration defaults or persisted fields change; no migration.
 
 ## Testing
 
